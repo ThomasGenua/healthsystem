@@ -32,6 +32,8 @@ export interface FiledropSourceConfig {
   /** Regex applied to filenames. Default: all files. */
   pattern?: string;
   pollMs?: number;
+  /** Poll on a 5-field cron schedule instead of every pollMs. */
+  cron?: string;
   /** Move ingested files here. Default: delete after ingest. */
   archiveDir?: string;
   contentType?: string;
@@ -50,9 +52,58 @@ export interface DbPollSourceConfig {
   query: string;
   cursorColumn: string;
   pollMs?: number;
+  /** Poll on a 5-field cron schedule instead of every pollMs. */
+  cron?: string;
 }
 
-export type SourceConfig = MllpSourceConfig | HttpSourceConfig | FhirSourceConfig | FiledropSourceConfig | DbPollSourceConfig;
+/**
+ * Poll a Postgres or MySQL database. The query binds the persisted cursor
+ * with a single `?`, exactly like the sqlite dbpoll source; the Postgres
+ * adapter rewrites it to $1, so the same channel JSON reads the same way
+ * whichever database is behind it.
+ */
+export interface SqlPollSourceConfig {
+  type: "sqlpoll";
+  driver: "postgres" | "mysql";
+  /** Connection string, e.g. postgres://user:pass@host:5432/db */
+  dsn: string;
+  query: string;
+  cursorColumn: string;
+  /** Cursor to start from on first run. Defaults to 0. */
+  initialCursor?: string;
+  pollMs?: number;
+  cron?: string;
+  contentType?: string;
+}
+
+/** Poll a remote SFTP directory, the filedrop pattern without a local mount. */
+export interface SftpSourceConfig {
+  type: "sftp";
+  host: string;
+  port?: number;
+  username: string;
+  password?: string;
+  /** Path to a private key file. Preferred over password. */
+  privateKeyPath?: string;
+  passphrase?: string;
+  dir: string;
+  /** Regex applied to filenames. Default: all files. */
+  pattern?: string;
+  /** Move ingested files here on the remote. Default: delete after ingest. */
+  archiveDir?: string;
+  pollMs?: number;
+  cron?: string;
+  contentType?: string;
+}
+
+export type SourceConfig =
+  | MllpSourceConfig
+  | HttpSourceConfig
+  | FhirSourceConfig
+  | FiledropSourceConfig
+  | DbPollSourceConfig
+  | SqlPollSourceConfig
+  | SftpSourceConfig;
 
 export interface Hl7TypeFilter {
   type: "filter.hl7Type";

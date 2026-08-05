@@ -20,6 +20,9 @@ import { ApiKeyStore } from "../auth/keys.ts";
 import { buildAck, getHl7, parseHl7, serializeHl7 } from "../hl7/parser.ts";
 import { startMllpServer, type MllpServerHandle } from "../hl7/mllp.ts";
 import { applyMapping, type MapperContext } from "../transform/mapper.ts";
+import { connectSql, type SqlClient, type SqlDriver } from "../connectors/sql.ts";
+import { connectSftp, type SftpClient, type SftpConnectOptions } from "../connectors/sftp.ts";
+import { CronSchedule, minuteKey } from "../connectors/cron.ts";
 import type { ChannelConfig, ConformanceIssue, MappingDoc, MessageRow, PipelineStep } from "../types.ts";
 
 interface RuntimeChannel {
@@ -27,8 +30,26 @@ interface RuntimeChannel {
   mllp?: MllpServerHandle;
   timers: NodeJS.Timeout[];
   pollDb?: DatabaseSync;
+  sqlClient?: SqlClient;
+  sftpClient?: SftpClient;
   polling: boolean;
   destinationIds: string[];
+}
+
+/**
+ * How often a cron-scheduled source checks whether its minute has arrived.
+ * Cron is minute-granular, so anything under a minute suffices; 20s keeps the
+ * worst-case lateness small without waking often.
+ */
+const CRON_TICK_MS = 20_000;
+
+/**
+ * Connector constructors, injectable so tests can drive the poll loops with
+ * fakes instead of standing up a real Postgres or SSH server.
+ */
+export interface ConnectorFactories {
+  sql?: (driver: SqlDriver, dsn: string) => Promise<SqlClient>;
+  sftp?: (opts: SftpConnectOptions) => Promise<SftpClient>;
 }
 
 export interface EngineOptions {
@@ -40,6 +61,8 @@ export interface EngineOptions {
    */
   validatePack?: string;
   validateMode?: "reject" | "annotate";
+  /** Override connector constructors. Tests inject fakes here. */
+  connectors?: ConnectorFactories;
 }
 
 export class Engine {
@@ -53,6 +76,7 @@ export class Engine {
   readonly mappings = new Map<string, MappingDoc>();
   private channels = new Map<string, RuntimeChannel>();
   private mapperCtx: MapperContext;
+  private connectors: Required<ConnectorFactories>;
 
   constructor(opts: EngineOptions) {
     this.db = new Db(opts.dbPath);
@@ -70,6 +94,10 @@ export class Engine {
     this.worker = new DeliveryWorker(this.db, opts.tickMs ?? 250, 25, this.fhir);
     this.subs = new SubscriptionManager(this.db, this.worker);
     this.keys = new ApiKeyStore(this.db);
+    this.connectors = {
+      sql: opts.connectors?.sql ?? connectSql,
+      sftp: opts.connectors?.sftp ?? connectSftp,
+    };
     this.fhir.onChange((result, resource) => this.subs.notify(result, resource));
     this.mapperCtx = {
       translate: (value, args) => {
@@ -106,6 +134,8 @@ export class Engine {
       if (rc.mllp) await rc.mllp.close();
       for (const t of rc.timers) clearInterval(t);
       rc.pollDb?.close();
+      await this.dropSqlClient(rc);
+      await this.dropSftpClient(rc);
     }
     this.channels.clear();
     this.db.close();
@@ -225,10 +255,7 @@ export class Engine {
           rc.polling = false;
         }
       };
-      const t = setInterval(poll, src.pollMs ?? 2000);
-      t.unref?.();
-      rc.timers.push(t);
-      poll();
+      this.schedule(rc, config.id, src, poll);
     }
 
     if (config.source.type === "dbpoll") {
@@ -252,13 +279,142 @@ export class Engine {
           rc.polling = false;
         }
       };
-      const t = setInterval(poll, src.pollMs ?? 2000);
-      t.unref?.();
-      rc.timers.push(t);
-      poll();
+      this.schedule(rc, config.id, src, poll);
+    }
+
+    if (config.source.type === "sqlpoll") {
+      const src = config.source;
+      const poll = async () => {
+        if (rc.polling) return;
+        rc.polling = true;
+        try {
+          // Connect lazily rather than at activation. A channel whose database
+          // is unreachable at boot still starts and picks up when the link
+          // returns, which is the normal condition here, not the exception.
+          if (!rc.sqlClient) rc.sqlClient = await this.connectors.sql(src.driver, src.dsn);
+          const stored = this.db.getChannelState(config.id, "cursor") ?? src.initialCursor ?? "0";
+          const bound: string | number = /^-?\d+(\.\d+)?$/.test(stored) ? Number(stored) : stored;
+          const rows = await rc.sqlClient.query(src.query, [bound]);
+          for (const row of rows) {
+            this.ingest(config.id, JSON.stringify(row), src.contentType ?? "application/json", "sqlpoll");
+            this.db.setChannelState(config.id, "cursor", cursorValue(row[src.cursorColumn]));
+          }
+        } catch (err) {
+          console.error(`sqlpoll ${config.id}: ${err instanceof Error ? err.message : err}`);
+          await this.dropSqlClient(rc);
+        } finally {
+          rc.polling = false;
+        }
+      };
+      this.schedule(rc, config.id, src, poll);
+    }
+
+    if (config.source.type === "sftp") {
+      const src = config.source;
+      const pattern = src.pattern ? new RegExp(src.pattern) : null;
+      const poll = async () => {
+        if (rc.polling) return;
+        rc.polling = true;
+        try {
+          if (!rc.sftpClient) {
+            rc.sftpClient = await this.connectors.sftp({
+              host: src.host,
+              port: src.port,
+              username: src.username,
+              password: src.password,
+              privateKey: src.privateKeyPath ? readFileSync(src.privateKeyPath) : undefined,
+              passphrase: src.passphrase,
+            });
+          }
+          const files = (await rc.sftpClient.list(src.dir))
+            .filter((f) => !pattern || pattern.test(f.name))
+            .sort((a, b) => a.name.localeCompare(b.name));
+          for (const f of files) {
+            const remote = remoteJoin(src.dir, f.name);
+            const content = await rc.sftpClient.get(remote);
+            this.ingest(config.id, content, src.contentType ?? "text/plain", "sftp", { file: f.name });
+            // Archive or delete only after the message is durably stored, so a
+            // crash mid-poll re-reads the file rather than losing it.
+            if (src.archiveDir) {
+              await rc.sftpClient.mkdir(src.archiveDir);
+              await rc.sftpClient.rename(remote, remoteJoin(src.archiveDir, f.name));
+            } else {
+              await rc.sftpClient.delete(remote);
+            }
+          }
+        } catch (err) {
+          console.error(`sftp ${config.id}: ${err instanceof Error ? err.message : err}`);
+          await this.dropSftpClient(rc);
+        } finally {
+          rc.polling = false;
+        }
+      };
+      this.schedule(rc, config.id, src, poll);
     }
 
     this.channels.set(config.id, rc);
+  }
+
+  /**
+   * Registers a polling source's timer: either a plain interval or, when the
+   * source carries a cron expression, a coarse tick that fires once per
+   * matching minute. The fired minute is persisted, so a restart inside a
+   * matching minute does not run the job twice.
+   */
+  private schedule(
+    rc: RuntimeChannel,
+    channelId: string,
+    src: { pollMs?: number; cron?: string },
+    poll: () => void | Promise<void>
+  ): void {
+    const run = (): void => {
+      void Promise.resolve(poll()).catch((err: unknown) => {
+        console.error(`poll ${channelId}: ${err instanceof Error ? err.message : err}`);
+      });
+    };
+
+    if (src.cron) {
+      const schedule = new CronSchedule(src.cron);
+      const tick = (): void => {
+        const now = new Date();
+        if (!schedule.matches(now)) return;
+        const key = minuteKey(now);
+        if (this.db.getChannelState(channelId, "cron_fired") === key) return;
+        this.db.setChannelState(channelId, "cron_fired", key);
+        run();
+      };
+      const t = setInterval(tick, CRON_TICK_MS);
+      t.unref?.();
+      rc.timers.push(t);
+      tick();
+      return;
+    }
+
+    const t = setInterval(run, src.pollMs ?? 2000);
+    t.unref?.();
+    rc.timers.push(t);
+    run();
+  }
+
+  private async dropSqlClient(rc: RuntimeChannel): Promise<void> {
+    const client = rc.sqlClient;
+    rc.sqlClient = undefined;
+    try {
+      await client?.close();
+    } catch {
+      // The connection is already being discarded; a failure to close it
+      // cleanly must not mask the error that caused the drop.
+    }
+  }
+
+  private async dropSftpClient(rc: RuntimeChannel): Promise<void> {
+    const client = rc.sftpClient;
+    rc.sftpClient = undefined;
+    try {
+      await client?.close();
+    } catch {
+      // As above.
+    }
   }
 
   private async deactivate(id: string): Promise<void> {
@@ -267,6 +423,8 @@ export class Engine {
     if (rc.mllp) await rc.mllp.close();
     for (const t of rc.timers) clearInterval(t);
     rc.pollDb?.close();
+    await this.dropSqlClient(rc);
+    await this.dropSftpClient(rc);
     this.worker.unregisterChannel(id);
     this.channels.delete(id);
   }
@@ -450,6 +608,24 @@ export function validateChannel(config: ChannelConfig): void {
     if (!s.dbPath || !s.query || !s.cursorColumn) throw new Error("dbpoll source requires dbPath, query and cursorColumn");
     if (!s.query.includes("?")) throw new Error("dbpoll query must bind the cursor with a single ?");
   }
+  if (config.source.type === "sqlpoll") {
+    const s = config.source;
+    if (s.driver !== "postgres" && s.driver !== "mysql") {
+      throw new Error("sqlpoll driver must be postgres or mysql");
+    }
+    if (!s.dsn || !s.query || !s.cursorColumn) throw new Error("sqlpoll source requires dsn, query and cursorColumn");
+    if (!s.query.includes("?")) throw new Error("sqlpoll query must bind the cursor with a single ?");
+  }
+  if (config.source.type === "sftp") {
+    const s = config.source;
+    if (!s.host || !s.username || !s.dir) throw new Error("sftp source requires host, username and dir");
+    if (!s.password && !s.privateKeyPath) throw new Error("sftp source requires password or privateKeyPath");
+  }
+  // Reject a bad cron expression at configuration time rather than letting a
+  // channel activate and then silently never fire.
+  const cron = (config.source as { cron?: string }).cron;
+  if (cron) new CronSchedule(cron);
+
   if (!Array.isArray(config.destinations) || config.destinations.length === 0) {
     throw new Error("At least one destination is required");
   }
@@ -457,4 +633,23 @@ export function validateChannel(config: ChannelConfig): void {
     if (d.type === "http" && !d.url) throw new Error("HTTP destination requires url");
     if (d.type === "mllp" && (!d.host || !d.port)) throw new Error("MLLP destination requires host and port");
   }
+}
+
+/**
+ * Joins remote SFTP path segments. Always POSIX: node:path would use
+ * backslashes on Windows, which the remote server would read as part of the
+ * filename rather than as a separator.
+ */
+function remoteJoin(dir: string, name: string): string {
+  return `${dir.replace(/\/+$/, "")}/${name}`;
+}
+
+/**
+ * Serialises a cursor for storage. Drivers hand back Dates for timestamp
+ * columns, and String(date) yields a locale form that will not round-trip
+ * back into a query.
+ */
+function cursorValue(v: unknown): string {
+  if (v instanceof Date) return v.toISOString();
+  return String(v);
 }

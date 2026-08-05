@@ -17,5 +17,11 @@
   "devDependencies": {
     "@types/node": "^26.1.2",
     "typescript": "^7.0.2"
+  },
+  "//": "Drivers for the sqlpoll and sftp sources. Optional and lazily imported: the engine core has no required runtime dependency, and an operator who never polls Postgres never needs pg.",
+  "optionalDependencies": {
+    "mysql2": "^3.11.0",
+    "pg": "^8.13.0",
+    "ssh2-sftp-client": "^11.0.0"
   }
 }
