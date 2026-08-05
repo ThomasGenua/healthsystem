@@ -11,7 +11,11 @@
  *          loss and no duplicates, and the hash chain still verifies.
  *
  * Run:  npm run demo
- * Args: --messages-before 5 --messages-during 10 --outage-ms 4000 --latency-ms 120 --jitter-ms 60
+ * Args: --messages-before 5 --messages-during 10 --outage-ms 4000 --latency-ms 120
+ *       --jitter-ms 60 --packet-loss-pct 0 --bandwidth-kbps 0
+ *
+ * A lossy, bandwidth-constrained link is the harder case and the more
+ * realistic one. Try:  npm run demo -- --packet-loss-pct 8 --bandwidth-kbps 128
  */
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,6 +36,8 @@ const DURING = arg("messages-during", 10);
 const OUTAGE_MS = arg("outage-ms", 4000);
 const LATENCY = arg("latency-ms", 120);
 const JITTER = arg("jitter-ms", 60);
+const PACKET_LOSS = arg("packet-loss-pct", 0);
+const BANDWIDTH = arg("bandwidth-kbps", 0);
 
 const ADT_TEMPLATE = (n: number) =>
   [
@@ -61,6 +67,8 @@ async function main(): Promise<void> {
     targetPort: meridian.port,
     latencyMs: LATENCY,
     jitterMs: JITTER,
+    packetLossPct: PACKET_LOSS,
+    bandwidthKbps: BANDWIDTH,
   });
 
   const dataDir = mkdtempSync(join(tmpdir(), "portage-demo-"));
@@ -96,7 +104,10 @@ async function main(): Promise<void> {
   const mllpPort = engine.mllpPort("demo-adt")!;
 
   console.log(`meridian-sim (territorial EHR)   :${meridian.port}`);
-  console.log(`satlink latency ${LATENCY}ms jitter ${JITTER}ms  :${link.port}`);
+  const shaping = BANDWIDTH > 0 ? `${BANDWIDTH}kbps` : "unshaped";
+  console.log(
+    `satlink latency ${LATENCY}ms jitter ${JITTER}ms loss ${PACKET_LOSS}% ${shaping}  :${link.port}`
+  );
   console.log(`portage MLLP (community side)    :${mllpPort}\n`);
 
   let sent = 0;
@@ -148,7 +159,12 @@ async function main(): Promise<void> {
   console.log(`  strict arrival order preserved: ${ordered ? "yes" : "NO"}`);
   console.log(`  duplicates: ${meridian.received.length - new Set(identifiers).size}`);
   console.log(`  hash chain verified: ${chain.ok ? `yes (${chain.checked} links)` : "NO"}`);
-  console.log(`  link stats: ${JSON.stringify(link.stats())}\n`);
+  const linkStats = link.stats();
+  console.log(`  link stats: ${JSON.stringify(linkStats)}`);
+  if (PACKET_LOSS > 0) {
+    console.log(`  retransmissions absorbed: ${linkStats.retransmits}`);
+  }
+  console.log();
 
   const ok = ordered && chain.ok && meridian.received.length === total;
   console.log(ok ? "DEMO PASSED: zero loss, zero duplicates, strict order through a dead link." : "DEMO FAILED");
