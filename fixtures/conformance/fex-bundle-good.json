@@ -1,0 +1,8 @@
+{
+  "resourceType": "Bundle",
+  "type": "document",
+  "entry": [
+    { "resource": { "resourceType": "Composition", "title": "Patient summary" } },
+    { "resource": { "resourceType": "Patient", "identifier": [{ "system": "x", "value": "y" }] } }
+  ]
+}

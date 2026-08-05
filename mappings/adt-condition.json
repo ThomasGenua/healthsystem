@@ -1,0 +1,39 @@
+{
+  "id": "adt-condition",
+  "name": "ADT DG1 to FHIR R4 Condition",
+  "input": "hl7",
+  "output": "json",
+  "ops": [
+    { "set": "resourceType", "value": "Condition" },
+    { "set": "clinicalStatus.coding[0].system", "value": "http://terminology.hl7.org/CodeSystem/condition-clinical" },
+    { "set": "clinicalStatus.coding[0].code", "value": "active" },
+    { "set": "category[0].coding[0].system", "value": "http://terminology.hl7.org/CodeSystem/condition-category" },
+    { "set": "category[0].coding[0].code", "value": "encounter-diagnosis" },
+    { "set": "code.coding[0].code", "from": "DG1-3.1" },
+    { "set": "code.coding[0].display", "from": "DG1-3.2" },
+    {
+      "set": "code.coding[0].system",
+      "from": "DG1-3.3",
+      "fn": "mapCode",
+      "args": {
+        "table": {
+          "I10": "http://hl7.org/fhir/sid/icd-10",
+          "I9": "http://hl7.org/fhir/sid/icd-9-cm",
+          "I10CA": "https://fhir.infoway-inforoute.ca/CodeSystem/icd10ca"
+        }
+      }
+    },
+    { "set": "code.text", "from": "DG1-3.2" },
+    { "set": "subject.type", "value": "Patient" },
+    { "set": "subject.identifier.system", "value": "https://ehealth.gov.nt.ca/fhir/NamingSystem/nwt-hcn" },
+    { "set": "subject.identifier.value", "from": "PID-3.1" },
+    { "set": "recordedDate", "from": "EVN-2", "fn": "hl7date" },
+    { "set": "recordedDate", "from": "DG1-5", "fn": "hl7date" },
+    { "set": "identifier[0].system", "value": "https://portage.dev/fhir/NamingSystem/condition" },
+    {
+      "set": "identifier[0].value",
+      "fn": "concat",
+      "args": { "parts": [{ "from": "PID-3.1" }, { "from": "DG1-1" }, { "from": "DG1-3.1" }], "sep": "-" }
+    }
+  ]
+}

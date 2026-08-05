@@ -1,0 +1,6 @@
+{
+  "resourceType": "Patient",
+  "identifier": [{ "value": "NT123456" }],
+  "gender": "W",
+  "birthDate": "17/03/1984"
+}

@@ -1,0 +1,7 @@
+{
+  "resourceType": "Patient",
+  "identifier": [{ "system": "https://ehealth.gov.nt.ca/fhir/NamingSystem/nwt-hcn", "value": "NT123456" }],
+  "name": [{ "family": "Beaulieu", "given": ["Marie", "Louise"] }],
+  "gender": "female",
+  "birthDate": "1984-03-17"
+}

@@ -1,0 +1,42 @@
+{
+  "id": "rde-medicationrequest",
+  "name": "RDE O11 to FHIR R4 MedicationRequest",
+  "input": "hl7",
+  "output": "json",
+  "ops": [
+    { "set": "resourceType", "value": "MedicationRequest" },
+    { "set": "status", "value": "active" },
+    { "set": "intent", "value": "order" },
+    { "set": "medicationCodeableConcept.coding[0].code", "from": "RXE-2.1" },
+    { "set": "medicationCodeableConcept.coding[0].display", "from": "RXE-2.2" },
+    {
+      "set": "medicationCodeableConcept.coding[0].system",
+      "from": "RXE-2.3",
+      "fn": "mapCode",
+      "args": { "table": { "DIN": "http://hl7.org/fhir/NamingSystem/ca-hc-din" } }
+    },
+    { "set": "medicationCodeableConcept.text", "from": "RXE-2.2" },
+    { "set": "subject.type", "value": "Patient" },
+    { "set": "subject.identifier.system", "value": "https://ehealth.gov.nt.ca/fhir/NamingSystem/nwt-hcn" },
+    { "set": "subject.identifier.value", "from": "PID-3.1" },
+    { "set": "authoredOn", "from": "MSH-7", "fn": "hl7date" },
+    { "set": "authoredOn", "from": "ORC-9", "fn": "hl7date" },
+    {
+      "set": "dosageInstruction[0].text",
+      "fn": "concat",
+      "args": { "parts": [{ "from": "RXE-3" }, { "from": "RXE-5.1" }, { "from": "RXE-1.2" }], "sep": " " }
+    },
+    { "set": "dispenseRequest.quantity.value", "from": "RXE-10", "fn": "number" },
+    {
+      "set": "requester.display",
+      "fn": "concat",
+      "args": { "parts": [{ "from": "ORC-12.3" }, { "from": "ORC-12.2" }], "sep": " " }
+    },
+    { "set": "identifier[0].system", "value": "https://portage.dev/fhir/NamingSystem/medicationrequest" },
+    {
+      "set": "identifier[0].value",
+      "fn": "concat",
+      "args": { "parts": [{ "from": "PID-3.1" }, { "from": "ORC-2.1" }], "sep": "-" }
+    }
+  ]
+}

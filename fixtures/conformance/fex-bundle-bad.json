@@ -1,0 +1,5 @@
+{
+  "resourceType": "Bundle",
+  "type": "album",
+  "entry": [{ "fullUrl": "urn:uuid:1" }]
+}

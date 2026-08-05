@@ -1,0 +1,44 @@
+{
+  "id": "oru-observation",
+  "name": "ORU OBX to FHIR R4 Observation",
+  "input": "hl7",
+  "output": "json",
+  "ops": [
+    { "set": "resourceType", "value": "Observation" },
+    { "set": "status", "value": "final" },
+    {
+      "set": "status",
+      "from": "OBX-11",
+      "fn": "mapCode",
+      "args": { "table": { "F": "final", "C": "corrected", "P": "preliminary", "I": "registered", "X": "cancelled" } }
+    },
+    { "set": "code.coding[0].code", "from": "OBX-3.1" },
+    { "set": "code.coding[0].display", "from": "OBX-3.2" },
+    {
+      "set": "code.coding[0].system",
+      "from": "OBX-3.3",
+      "fn": "mapCode",
+      "args": { "table": { "LN": "http://loinc.org", "SCT": "http://snomed.info/sct" } }
+    },
+    { "set": "code.text", "from": "OBX-3.2" },
+    { "set": "subject.type", "value": "Patient" },
+    { "set": "subject.identifier.system", "value": "https://ehealth.gov.nt.ca/fhir/NamingSystem/nwt-hcn" },
+    { "set": "subject.identifier.value", "from": "PID-3.1" },
+    { "set": "effectiveDateTime", "from": "OBX-14", "fn": "hl7date" },
+    { "set": "effectiveDateTime", "from": "OBR-7", "fn": "hl7date" },
+    { "set": "valueQuantity.value", "from": "OBX-5", "fn": "number", "when": { "path": "OBX-2", "equals": "NM" } },
+    { "set": "valueQuantity.unit", "from": "OBX-6.1", "when": { "path": "OBX-2", "equals": "NM" } },
+    { "set": "valueString", "from": "OBX-5", "when": { "path": "OBX-2", "equals": "ST" } },
+    { "set": "valueString", "from": "OBX-5", "when": { "path": "OBX-2", "equals": "TX" } },
+    { "set": "referenceRange[0].text", "from": "OBX-7" },
+    { "set": "identifier[0].system", "value": "https://portage.dev/fhir/NamingSystem/observation" },
+    {
+      "set": "identifier[0].value",
+      "fn": "concat",
+      "args": {
+        "parts": [{ "from": "OBR-3.1" }, { "from": "PID-3.1" }, { "from": "OBX-1" }, { "from": "OBX-3.1" }],
+        "sep": "-"
+      }
+    }
+  ]
+}

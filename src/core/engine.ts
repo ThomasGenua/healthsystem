@@ -1,0 +1,443 @@
+/**
+ * The engine owns channels. A channel is configuration: a source, a pipeline
+ * of filters, splits, transforms and validators, and one or more
+ * destinations. Ingest stores the raw message on the channel's hash chain,
+ * runs the pipeline with every step recorded, and enqueues one durable
+ * delivery per payload per destination. A pipeline carries a set of
+ * payloads: filters narrow it, splits widen it, transforms map it one to
+ * one, validators gate or annotate it.
+ */
+import { readdirSync, readFileSync, renameSync, unlinkSync, mkdirSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { Db } from "../db.ts";
+import { DeliveryWorker } from "./queue.ts";
+import { FhirStore } from "../fhir/store.ts";
+import { SubscriptionManager } from "../fhir/subscriptions.ts";
+import { TerminologyStore } from "../terminology/store.ts";
+import { ConformanceRegistry, validateResource } from "../conformance/validator.ts";
+import { buildAck, getHl7, parseHl7, serializeHl7 } from "../hl7/parser.ts";
+import { startMllpServer, type MllpServerHandle } from "../hl7/mllp.ts";
+import { applyMapping, type MapperContext } from "../transform/mapper.ts";
+import type { ChannelConfig, ConformanceIssue, MappingDoc, MessageRow, PipelineStep } from "../types.ts";
+
+interface RuntimeChannel {
+  config: ChannelConfig;
+  mllp?: MllpServerHandle;
+  timers: NodeJS.Timeout[];
+  pollDb?: DatabaseSync;
+  polling: boolean;
+  destinationIds: string[];
+}
+
+export interface EngineOptions {
+  dbPath: string;
+  tickMs?: number;
+}
+
+export class Engine {
+  readonly db: Db;
+  readonly fhir: FhirStore;
+  readonly worker: DeliveryWorker;
+  readonly terminology: TerminologyStore;
+  readonly conformance: ConformanceRegistry;
+  readonly subs: SubscriptionManager;
+  readonly mappings = new Map<string, MappingDoc>();
+  private channels = new Map<string, RuntimeChannel>();
+  private mapperCtx: MapperContext;
+
+  constructor(opts: EngineOptions) {
+    this.db = new Db(opts.dbPath);
+    this.fhir = new FhirStore(this.db);
+    this.worker = new DeliveryWorker(this.db, opts.tickMs ?? 250, 25, this.fhir);
+    this.terminology = new TerminologyStore(this.db);
+    this.conformance = new ConformanceRegistry();
+    this.subs = new SubscriptionManager(this.db, this.worker);
+    this.fhir.onChange((result, resource) => this.subs.notify(result, resource));
+    this.mapperCtx = {
+      translate: (value, args) => {
+        const matches = this.terminology.translate({
+          code: String(value ?? ""),
+          system: typeof args.system === "string" ? args.system : undefined,
+          map: typeof args.map === "string" ? args.map : undefined,
+          targetSystem: typeof args.targetSystem === "string" ? args.targetSystem : undefined,
+        });
+        const m = matches[0];
+        if (!m) return "";
+        return args.result === "display" ? (m.display ?? "") : m.code;
+      },
+    };
+  }
+
+  registerMapping(doc: MappingDoc): void {
+    this.mappings.set(doc.id, doc);
+  }
+
+  async start(): Promise<void> {
+    this.worker.start();
+    this.subs.load();
+    for (const row of this.db.listChannels()) {
+      if (!row.enabled) continue;
+      const config = JSON.parse(row.config) as ChannelConfig;
+      await this.activate(config);
+    }
+  }
+
+  async stop(): Promise<void> {
+    await this.worker.stop();
+    for (const rc of this.channels.values()) {
+      if (rc.mllp) await rc.mllp.close();
+      for (const t of rc.timers) clearInterval(t);
+      rc.pollDb?.close();
+    }
+    this.channels.clear();
+    this.db.close();
+  }
+
+  /** Persist and activate a channel. Replaces a running channel of the same id. */
+  async addChannel(config: ChannelConfig): Promise<void> {
+    validateChannel(config);
+    this.db.upsertChannel(config.id, config.name, config.enabled !== false, JSON.stringify(config));
+    if (this.channels.has(config.id)) await this.deactivate(config.id);
+    if (config.enabled !== false) await this.activate(config);
+  }
+
+  async removeChannel(id: string): Promise<void> {
+    await this.deactivate(id);
+    this.db.deleteChannel(id);
+  }
+
+  listChannels(): Array<{ id: string; name: string; enabled: boolean; running: boolean; source: string; mllpPort?: number }> {
+    return this.db.listChannels().map((row) => {
+      const cfg = JSON.parse(row.config) as ChannelConfig;
+      const rc = this.channels.get(row.id);
+      return {
+        id: row.id,
+        name: row.name,
+        enabled: row.enabled === 1,
+        running: !!rc,
+        source: cfg.source.type,
+        ...(rc?.mllp ? { mllpPort: rc.mllp.port } : {}),
+      };
+    });
+  }
+
+  getChannelConfig(id: string): ChannelConfig | undefined {
+    const row = this.db.getChannel(id);
+    return row ? (JSON.parse(row.config) as ChannelConfig) : undefined;
+  }
+
+  /** The bound MLLP port for a running channel. Useful when configured as 0. */
+  mllpPort(channelId: string): number | undefined {
+    return this.channels.get(channelId)?.mllp?.port;
+  }
+
+  fhirChannels(resourceType: string): ChannelConfig[] {
+    const out: ChannelConfig[] = [];
+    for (const rc of this.channels.values()) {
+      const src = rc.config.source;
+      if (src.type !== "fhir") continue;
+      if (!src.resourceTypes || src.resourceTypes.length === 0 || src.resourceTypes.includes(resourceType)) {
+        out.push(rc.config);
+      }
+    }
+    return out;
+  }
+
+  httpChannel(path: string): ChannelConfig | undefined {
+    for (const rc of this.channels.values()) {
+      const src = rc.config.source;
+      if (src.type === "http" && (src.path ?? rc.config.id) === path) return rc.config;
+    }
+    return undefined;
+  }
+
+  private async activate(config: ChannelConfig): Promise<void> {
+    const destinationIds = config.destinations.map((d, i) => this.worker.registerDestination(config.id, d, i));
+    const rc: RuntimeChannel = { config, destinationIds, timers: [], polling: false };
+
+    if (config.source.type === "mllp") {
+      const src = config.source;
+      rc.mllp = await startMllpServer(src.port, src.host ?? "0.0.0.0", async (raw) => {
+        try {
+          const result = this.ingest(config.id, raw, "x-application/hl7-v2+er7", "mllp");
+          const parsed = parseHl7(raw);
+          if (result.status === "error") return buildAck(parsed, "AE", result.error ?? "processing error");
+          return buildAck(parsed, "AA");
+        } catch (err) {
+          try {
+            return buildAck(parseHl7(raw), "AE", err instanceof Error ? err.message : "parse error");
+          } catch {
+            throw err;
+          }
+        }
+      });
+    }
+
+    if (config.source.type === "filedrop") {
+      const src = config.source;
+      const pattern = src.pattern ? new RegExp(src.pattern) : null;
+      const poll = () => {
+        if (rc.polling) return;
+        rc.polling = true;
+        try {
+          let names: string[];
+          try {
+            names = readdirSync(src.dir).sort();
+          } catch {
+            return;
+          }
+          for (const name of names) {
+            if (pattern && !pattern.test(name)) continue;
+            const full = join(src.dir, name);
+            try {
+              if (!statSync(full).isFile()) continue;
+              const content = readFileSync(full, "utf8");
+              this.ingest(config.id, content, src.contentType ?? "text/plain", "filedrop", { file: name });
+              if (src.archiveDir) {
+                mkdirSync(src.archiveDir, { recursive: true });
+                renameSync(full, join(src.archiveDir, name));
+              } else {
+                unlinkSync(full);
+              }
+            } catch (err) {
+              console.error(`filedrop ${config.id}: ${name}: ${err instanceof Error ? err.message : err}`);
+            }
+          }
+        } finally {
+          rc.polling = false;
+        }
+      };
+      const t = setInterval(poll, src.pollMs ?? 2000);
+      t.unref?.();
+      rc.timers.push(t);
+      poll();
+    }
+
+    if (config.source.type === "dbpoll") {
+      const src = config.source;
+      rc.pollDb = new DatabaseSync(src.dbPath);
+      const poll = () => {
+        if (rc.polling || !rc.pollDb) return;
+        rc.polling = true;
+        try {
+          const cursor = this.db.getChannelState(config.id, "cursor");
+          const bound: string | number =
+            cursor === undefined ? 0 : /^-?\d+(\.\d+)?$/.test(cursor) ? Number(cursor) : cursor;
+          const rows = rc.pollDb.prepare(src.query).all(bound) as Array<Record<string, unknown>>;
+          for (const row of rows) {
+            this.ingest(config.id, JSON.stringify(row), "application/json", "dbpoll");
+            this.db.setChannelState(config.id, "cursor", String(row[src.cursorColumn]));
+          }
+        } catch (err) {
+          console.error(`dbpoll ${config.id}: ${err instanceof Error ? err.message : err}`);
+        } finally {
+          rc.polling = false;
+        }
+      };
+      const t = setInterval(poll, src.pollMs ?? 2000);
+      t.unref?.();
+      rc.timers.push(t);
+      poll();
+    }
+
+    this.channels.set(config.id, rc);
+  }
+
+  private async deactivate(id: string): Promise<void> {
+    const rc = this.channels.get(id);
+    if (!rc) return;
+    if (rc.mllp) await rc.mllp.close();
+    for (const t of rc.timers) clearInterval(t);
+    rc.pollDb?.close();
+    this.worker.unregisterChannel(id);
+    this.channels.delete(id);
+  }
+
+  /**
+   * Ingest one message into a channel. Synchronous by design: the store,
+   * pipeline and enqueue all commit before the source is acknowledged, so an
+   * MLLP AA means every resulting payload is durably queued, not merely seen.
+   */
+  ingest(
+    channelId: string,
+    raw: string,
+    contentType: string,
+    sourceType: string,
+    meta?: unknown
+  ): { message: MessageRow; status: "processed" | "filtered" | "error"; error?: string; payloads: number } {
+    const config = this.getChannelConfig(channelId);
+    if (!config) throw new Error(`Unknown channel: ${channelId}`);
+
+    const message = this.db.insertMessage(channelId, sourceType, contentType, raw, meta);
+
+    let payloads: string[] = [raw];
+    let payloadType = contentType;
+    let stepIndex = 0;
+
+    try {
+      for (const step of config.pipeline ?? []) {
+        const result = this.runStep(step, payloads, payloadType);
+        payloads = result.payloads;
+        payloadType = result.contentType;
+        if (payloads.length === 0) {
+          this.db.addStep(message.id, stepIndex, step.type, "filtered");
+          this.db.setMessageStatus(message.id, "filtered");
+          return { message, status: "filtered", payloads: 0 };
+        }
+        const record = result.note ?? (payloads.length === 1 ? payloads[0] : JSON.stringify(payloads));
+        this.db.addStep(message.id, stepIndex, step.type, record.length > 20_000 ? record.slice(0, 20_000) : record);
+        stepIndex++;
+      }
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      this.db.addStep(message.id, stepIndex, "error", error);
+      this.db.setMessageStatus(message.id, "error", error);
+      return { message, status: "error", error, payloads: 0 };
+    }
+
+    for (const payload of payloads) {
+      config.destinations.forEach((dest, i) => {
+        const destId = dest.id ?? `${dest.type}-${i}`;
+        this.db.enqueueDelivery({
+          messageId: message.id,
+          channelId,
+          destinationId: destId,
+          seq: message.seq,
+          ordered: dest.ordered ?? false,
+          skipOnDead: dest.skipOnDead ?? false,
+          maxAttempts: dest.maxAttempts ?? 8,
+          payload,
+          contentType: payloadType,
+        });
+      });
+    }
+    this.db.setMessageStatus(message.id, "processed");
+    return { message, status: "processed", payloads: payloads.length };
+  }
+
+  private runStep(
+    step: PipelineStep,
+    payloads: string[],
+    contentType: string
+  ): { payloads: string[]; contentType: string; note?: string } {
+    switch (step.type) {
+      case "filter.hl7Type": {
+        const kept = payloads.filter((p) => {
+          const msg = parseHl7(p);
+          const type = `${getHl7(msg, "MSH-9.1")}^${getHl7(msg, "MSH-9.2")}`;
+          return step.allow.includes(type);
+        });
+        return { payloads: kept, contentType };
+      }
+      case "filter.hl7FieldEquals": {
+        const kept = payloads.filter((p) => getHl7(parseHl7(p), step.path) === step.equals);
+        return { payloads: kept, contentType };
+      }
+      case "filter.jsonEquals": {
+        const kept = payloads.filter((p) => {
+          const obj = JSON.parse(p);
+          const parts = step.path.split(".");
+          let cur: unknown = obj;
+          for (const q of parts) cur = cur == null ? undefined : (cur as Record<string, unknown>)[q];
+          return String(cur ?? "") === String(step.equals);
+        });
+        return { payloads: kept, contentType };
+      }
+      case "split.hl7Segment": {
+        const out = payloads.flatMap((p) => splitHl7Segment(p, step.segment));
+        return { payloads: out, contentType };
+      }
+      case "split.hl7Group": {
+        const out = payloads.flatMap((p) => splitHl7Group(p, step.segment));
+        return { payloads: out, contentType };
+      }
+      case "validate.profile": {
+        const pack = this.conformance.get(step.pack);
+        if (!pack) throw new Error(`Unknown conformance pack: ${step.pack}`);
+        const errors: ConformanceIssue[] = [];
+        for (const p of payloads) {
+          let obj: Record<string, unknown>;
+          try {
+            obj = JSON.parse(p) as Record<string, unknown>;
+          } catch {
+            throw new Error("validate.profile requires JSON payloads; place it after transform.mapping");
+          }
+          errors.push(...validateResource(pack, obj, this.terminology).filter((i) => i.severity === "error"));
+        }
+        if ((step.mode ?? "reject") === "reject" && errors.length > 0) {
+          const more = errors.length > 1 ? ` (+${errors.length - 1} more)` : "";
+          throw new Error(`Conformance ${step.pack}: ${errors[0].message}${more}`);
+        }
+        return { payloads, contentType, note: JSON.stringify({ pack: step.pack, errors }) };
+      }
+      case "transform.mapping": {
+        const doc = typeof step.mapping === "string" ? this.mappings.get(step.mapping) : step.mapping;
+        if (!doc) throw new Error(`Unknown mapping: ${String(step.mapping)}`);
+        const out = payloads.map((p) => JSON.stringify(applyMapping(doc, p, this.mapperCtx)));
+        return { payloads: out, contentType: "application/fhir+json" };
+      }
+      default:
+        throw new Error(`Unknown pipeline step: ${(step as { type: string }).type}`);
+    }
+  }
+}
+
+/** One message per instance of the named segment; non-matching segments kept in place. */
+function splitHl7Segment(payload: string, segmentName: string): string[] {
+  const msg = parseHl7(payload);
+  const positions: number[] = [];
+  msg.segments.forEach((s, i) => {
+    if (s.name === segmentName) positions.push(i);
+  });
+  if (positions.length === 0) return [];
+  if (positions.length === 1) return [payload];
+  return positions.map((keep) =>
+    serializeHl7({
+      delimiters: msg.delimiters,
+      segments: msg.segments.filter((s, i) => s.name !== segmentName || i === keep),
+    })
+  );
+}
+
+/** One message per group: shared header, then the anchor and everything up to the next anchor. */
+function splitHl7Group(payload: string, segmentName: string): string[] {
+  const msg = parseHl7(payload);
+  const positions: number[] = [];
+  msg.segments.forEach((s, i) => {
+    if (s.name === segmentName) positions.push(i);
+  });
+  if (positions.length === 0) return [];
+  if (positions.length === 1) return [payload];
+  const header = msg.segments.slice(0, positions[0]);
+  return positions.map((start, i) => {
+    const end = positions[i + 1] ?? msg.segments.length;
+    return serializeHl7({
+      delimiters: msg.delimiters,
+      segments: [...header, ...msg.segments.slice(start, end)],
+    });
+  });
+}
+
+export function validateChannel(config: ChannelConfig): void {
+  if (!config.id || !/^[a-z0-9][a-z0-9-]*$/.test(config.id)) {
+    throw new Error("Channel id must be lowercase alphanumeric with hyphens");
+  }
+  if (!config.name) throw new Error("Channel name is required");
+  if (!config.source?.type) throw new Error("Channel source is required");
+  if (config.source.type === "filedrop" && !config.source.dir) {
+    throw new Error("filedrop source requires dir");
+  }
+  if (config.source.type === "dbpoll") {
+    const s = config.source;
+    if (!s.dbPath || !s.query || !s.cursorColumn) throw new Error("dbpoll source requires dbPath, query and cursorColumn");
+    if (!s.query.includes("?")) throw new Error("dbpoll query must bind the cursor with a single ?");
+  }
+  if (!Array.isArray(config.destinations) || config.destinations.length === 0) {
+    throw new Error("At least one destination is required");
+  }
+  for (const d of config.destinations) {
+    if (d.type === "http" && !d.url) throw new Error("HTTP destination requires url");
+    if (d.type === "mllp" && (!d.host || !d.port)) throw new Error("MLLP destination requires host and port");
+  }
+}

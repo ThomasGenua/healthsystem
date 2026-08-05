@@ -1,0 +1,7 @@
+{
+  "resourceType": "ServiceRequest",
+  "status": "active",
+  "intent": "order",
+  "code": { "text": "diabetes follow-up" },
+  "subject": { "display": "Marie Beaulieu" }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "rde-to-fhir-medreq",
+  "name": "Pharmacy RDE to FHIR MedicationRequest facade",
+  "enabled": true,
+  "source": { "type": "mllp", "port": 6664 },
+  "pipeline": [
+    { "type": "filter.hl7Type", "allow": ["RDE^O11"] },
+    { "type": "transform.mapping", "mapping": "rde-medicationrequest" }
+  ],
+  "destinations": [{ "id": "facade", "type": "fhirstore", "ordered": true }]
+}

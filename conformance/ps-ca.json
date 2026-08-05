@@ -1,0 +1,49 @@
+{
+  "id": "ps-ca",
+  "name": "PS-CA patient summary conformance (working profile pack)",
+  "description": "Working-subset rules shaped on the PS-CA patient summary profiles. Tighten by editing this pack; no code changes needed.",
+  "profiles": [
+    {
+      "resourceType": "Patient",
+      "profile": "http://fhir.infoway-inforoute.ca/io/psca/StructureDefinition/patient-ca-ps",
+      "rules": [
+        { "path": "identifier", "min": 1, "description": "At least one identifier" },
+        { "path": "identifier", "each": { "required": ["system", "value"] }, "description": "Every identifier carries system and value" },
+        { "path": "name", "min": 1, "description": "At least one name" },
+        { "path": "name", "each": { "required": ["family"] }, "description": "Every name carries a family name" },
+        { "path": "gender", "inSet": ["male", "female", "other", "unknown"] },
+        { "path": "birthDate", "pattern": "^\\d{4}(-\\d{2}(-\\d{2})?)?$", "description": "FHIR date" }
+      ]
+    },
+    {
+      "resourceType": "Observation",
+      "rules": [
+        { "path": "status", "min": 1, "inSet": ["registered", "preliminary", "final", "amended", "corrected", "cancelled"] },
+        { "path": "code.coding", "min": 1, "each": { "required": ["system", "code"] }, "description": "Coded with system and code" },
+        { "path": "subject", "min": 1 },
+        { "oneOf": ["valueQuantity", "valueString", "valueCodeableConcept", "component"], "description": "A result value or components" }
+      ]
+    },
+    {
+      "resourceType": "Condition",
+      "rules": [
+        { "path": "clinicalStatus.coding", "min": 1, "each": { "required": ["system", "code"] } },
+        { "path": "code.coding", "min": 1, "each": { "required": ["system", "code"] } },
+        { "path": "subject", "min": 1 }
+      ]
+    },
+    {
+      "resourceType": "MedicationRequest",
+      "rules": [
+        { "path": "status", "min": 1, "inSet": ["active", "on-hold", "cancelled", "completed", "stopped", "draft"] },
+        { "path": "intent", "min": 1, "inSet": ["proposal", "plan", "order", "original-order"] },
+        { "path": "medicationCodeableConcept.coding", "min": 1, "each": { "required": ["system", "code"] } },
+        { "path": "subject", "min": 1 }
+      ]
+    }
+  ],
+  "capability": {
+    "resourceTypes": ["Patient", "Observation", "Condition", "MedicationRequest"],
+    "interactions": ["read", "search-type"]
+  }
+}

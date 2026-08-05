@@ -1,0 +1,38 @@
+{
+  "id": "ca-demo-subset",
+  "name": "Canadian terminology demo subset. NOT a licensed distribution: operators load SNOMED CT CA, LOINC, pCLOCD, ICD-10-CA and CCI releases through this same pack format under their own licences.",
+  "concepts": [
+    { "system": "http://loinc.org", "code": "718-7", "display": "Hemoglobin [Mass/volume] in Blood" },
+    { "system": "http://loinc.org", "code": "6690-2", "display": "Leukocytes [#/volume] in Blood by Automated count" },
+    { "system": "http://loinc.org", "code": "2345-7", "display": "Glucose [Mass/volume] in Serum or Plasma" },
+    { "system": "http://loinc.org", "code": "58410-2", "display": "CBC panel - Blood by Automated count" },
+    { "system": "http://snomed.info/sct", "code": "195967001", "display": "Asthma" },
+    { "system": "http://snomed.info/sct", "code": "44054006", "display": "Diabetes mellitus type 2" },
+    { "system": "https://fhir.infoway-inforoute.ca/CodeSystem/icd10ca", "code": "J45", "display": "Asthma" },
+    { "system": "https://fhir.infoway-inforoute.ca/CodeSystem/icd10ca", "code": "E11", "display": "Type 2 diabetes mellitus" },
+    { "system": "https://fhir.infoway-inforoute.ca/CodeSystem/pCLOCD", "code": "XON10382-3", "display": "Hemoglobin (pCLOCD)" },
+    { "system": "https://fhir.infoway-inforoute.ca/CodeSystem/pCLOCD", "code": "XON10383-1", "display": "Leukocytes (pCLOCD)" },
+    { "system": "https://fhir.infoway-inforoute.ca/CodeSystem/cci", "code": "1VG53", "display": "Implantation of internal device, knee joint" },
+    { "system": "https://fhir.infoway-inforoute.ca/CodeSystem/cci", "code": "2OT71", "display": "Biopsy, lung" }
+  ],
+  "valueSets": [
+    { "id": "lab-codes-demo", "include": [{ "system": "http://loinc.org", "codes": ["718-7", "6690-2", "2345-7", "58410-2"] }] },
+    { "id": "diagnosis-icd10ca-demo", "include": [{ "system": "https://fhir.infoway-inforoute.ca/CodeSystem/icd10ca", "codes": ["J45", "E11"] }] }
+  ],
+  "conceptMaps": [
+    {
+      "id": "pclocd-to-loinc",
+      "entries": [
+        { "sourceSystem": "https://fhir.infoway-inforoute.ca/CodeSystem/pCLOCD", "sourceCode": "XON10382-3", "targetSystem": "http://loinc.org", "targetCode": "718-7", "targetDisplay": "Hemoglobin [Mass/volume] in Blood" },
+        { "sourceSystem": "https://fhir.infoway-inforoute.ca/CodeSystem/pCLOCD", "sourceCode": "XON10383-1", "targetSystem": "http://loinc.org", "targetCode": "6690-2", "targetDisplay": "Leukocytes [#/volume] in Blood by Automated count" }
+      ]
+    },
+    {
+      "id": "icd10ca-to-snomed",
+      "entries": [
+        { "sourceSystem": "https://fhir.infoway-inforoute.ca/CodeSystem/icd10ca", "sourceCode": "J45", "targetSystem": "http://snomed.info/sct", "targetCode": "195967001", "targetDisplay": "Asthma" },
+        { "sourceSystem": "https://fhir.infoway-inforoute.ca/CodeSystem/icd10ca", "sourceCode": "E11", "targetSystem": "http://snomed.info/sct", "targetCode": "44054006", "targetDisplay": "Diabetes mellitus type 2" }
+      ]
+    }
+  ]
+}

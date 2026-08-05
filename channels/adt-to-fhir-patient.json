@@ -1,0 +1,31 @@
+{
+  "id": "adt-to-fhir-patient",
+  "name": "ADT feed to FHIR Patient",
+  "enabled": true,
+  "source": {
+    "type": "mllp",
+    "port": 6661
+  },
+  "pipeline": [
+    {
+      "type": "filter.hl7Type",
+      "allow": [
+        "ADT^A01",
+        "ADT^A04",
+        "ADT^A08",
+        "ADT^A31"
+      ]
+    },
+    {
+      "type": "transform.mapping",
+      "mapping": "adt-patient"
+    }
+  ],
+  "destinations": [
+    {
+      "id": "facade",
+      "type": "fhirstore",
+      "ordered": true
+    }
+  ]
+}
