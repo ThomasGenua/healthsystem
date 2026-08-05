@@ -1,0 +1,12 @@
+{
+  "id": "oru-to-fhir-observation",
+  "name": "Lab ORU to FHIR Observation facade",
+  "enabled": true,
+  "source": { "type": "mllp", "port": 6662 },
+  "pipeline": [
+    { "type": "filter.hl7Type", "allow": ["ORU^R01"] },
+    { "type": "split.hl7Segment", "segment": "OBX" },
+    { "type": "transform.mapping", "mapping": "oru-observation" }
+  ],
+  "destinations": [{ "id": "facade", "type": "fhirstore", "ordered": true }]
+}

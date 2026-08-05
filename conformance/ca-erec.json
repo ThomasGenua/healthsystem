@@ -1,0 +1,26 @@
+{
+  "id": "ca-erec",
+  "name": "CA:eReC eReferral conformance (working profile pack)",
+  "description": "Working-subset rules for the eReferral ServiceRequest exchange.",
+  "profiles": [
+    {
+      "resourceType": "ServiceRequest",
+      "rules": [
+        { "path": "status", "min": 1, "inSet": ["draft", "active", "on-hold", "completed", "revoked"] },
+        { "path": "intent", "min": 1, "inSet": ["proposal", "plan", "order"] },
+        { "path": "subject", "min": 1, "description": "The referral needs a patient" },
+        { "path": "code.coding", "min": 1, "each": { "required": ["system", "code"] }, "description": "Coded referral reason" },
+        { "path": "requester", "min": 1, "description": "Who is referring" },
+        { "path": "priority", "inSet": ["routine", "urgent", "asap", "stat"] }
+      ]
+    },
+    {
+      "resourceType": "Patient",
+      "rules": [
+        { "path": "identifier", "min": 1, "each": { "required": ["system", "value"] } },
+        { "path": "name", "min": 1 }
+      ]
+    }
+  ],
+  "capability": { "resourceTypes": ["Patient"], "interactions": ["read", "search-type"] }
+}

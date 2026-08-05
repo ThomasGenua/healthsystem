@@ -1,0 +1,28 @@
+{
+  "name": "portage",
+  "version": "0.4.0",
+  "description": "Health integration engine for northern operating conditions. HL7 v2, FHIR R4, durable store-and-forward, ordered replay, hash-chained message lineage, authenticated API with mutual TLS.",
+  "type": "module",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node src/server.ts",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "demo": "node demo/run-demo.ts",
+    "terminology:import": "node scripts/import-terminology.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "typescript": "^7.0.2"
+  },
+  "//": "Drivers for the sqlpoll and sftp sources. Optional and lazily imported: the engine core has no required runtime dependency, and an operator who never polls Postgres never needs pg.",
+  "optionalDependencies": {
+    "mysql2": "^3.11.0",
+    "pg": "^8.13.0",
+    "ssh2-sftp-client": "^11.0.0"
+  }
+}

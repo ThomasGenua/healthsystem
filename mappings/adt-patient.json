@@ -1,0 +1,34 @@
+{
+  "id": "adt-patient",
+  "name": "ADT to FHIR R4 Patient (PS-CA style)",
+  "input": "hl7",
+  "output": "json",
+  "ops": [
+    { "set": "resourceType", "value": "Patient" },
+    { "set": "meta.profile[0]", "value": "http://fhir.infoway-inforoute.ca/io/psca/StructureDefinition/patient-ca-ps" },
+    { "set": "identifier[0].system", "value": "https://ehealth.gov.nt.ca/fhir/NamingSystem/nwt-hcn" },
+    { "set": "identifier[0].value", "from": "PID-3.1" },
+    { "set": "identifier[0].type.coding[0].system", "value": "http://terminology.hl7.org/CodeSystem/v2-0203" },
+    { "set": "identifier[0].type.coding[0].code", "value": "JHN" },
+    { "set": "name[0].family", "from": "PID-5.1" },
+    { "set": "name[0].given[0]", "from": "PID-5.2" },
+    { "set": "name[0].given[1]", "from": "PID-5.3" },
+    { "set": "name[0].use", "value": "official" },
+    { "set": "birthDate", "from": "PID-7", "fn": "hl7date" },
+    {
+      "set": "gender",
+      "from": "PID-8",
+      "fn": "mapCode",
+      "args": { "table": { "M": "male", "F": "female", "O": "other", "U": "unknown", "A": "other", "N": "other" }, "other": "unknown" }
+    },
+    { "set": "address[0].line[0]", "from": "PID-11.1" },
+    { "set": "address[0].city", "from": "PID-11.3" },
+    { "set": "address[0].state", "from": "PID-11.4" },
+    { "set": "address[0].postalCode", "from": "PID-11.5" },
+    { "set": "address[0].country", "from": "PID-11.6", "fn": "default", "args": { "value": "CA" } },
+    { "set": "telecom[0].system", "value": "phone", "when": { "path": "PID-13.1", "exists": true } },
+    { "set": "telecom[0].value", "from": "PID-13.1" },
+    { "set": "telecom[0].use", "value": "home", "when": { "path": "PID-13.1", "exists": true } },
+    { "set": "deceasedBoolean", "value": true, "when": { "path": "PID-30", "equals": "Y" } }
+  ]
+}

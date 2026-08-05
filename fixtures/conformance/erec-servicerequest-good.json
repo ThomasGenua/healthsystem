@@ -1,0 +1,9 @@
+{
+  "resourceType": "ServiceRequest",
+  "status": "active",
+  "intent": "order",
+  "priority": "routine",
+  "code": { "coding": [{ "system": "http://snomed.info/sct", "code": "44054006", "display": "Diabetes mellitus type 2" }] },
+  "subject": { "identifier": { "system": "https://ehealth.gov.nt.ca/fhir/NamingSystem/nwt-hcn", "value": "NT123456" } },
+  "requester": { "display": "Dr John Tetso" }
+}

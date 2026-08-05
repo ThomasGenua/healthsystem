@@ -1,0 +1,19 @@
+{
+  "id": "ca-fex",
+  "name": "CA:FeX FHIR exchange conformance (working profile pack)",
+  "description": "Exchange-level checks: bundle shape plus a CapabilityStatement self-check that the facade serves read and search for the exchanged types.",
+  "profiles": [
+    {
+      "resourceType": "Bundle",
+      "rules": [
+        { "path": "type", "min": 1, "inSet": ["document", "transaction", "searchset", "collection", "message"] },
+        { "path": "entry", "min": 1, "description": "A bundle without entries exchanges nothing" },
+        { "path": "entry", "each": { "required": ["resource"] }, "description": "Every entry carries a resource" }
+      ]
+    }
+  ],
+  "capability": {
+    "resourceTypes": ["Patient", "Observation", "Condition", "MedicationRequest"],
+    "interactions": ["read", "search-type"]
+  }
+}

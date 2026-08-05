@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Portage</title>
+<link rel="icon" href="data:,">
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--line:#2b3240;--text:#d7dde6;--dim:#8b95a5;--acc:#4ea1ff;--ok:#3fb950;--warn:#d29922;--bad:#f85149;font-size:15px}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+header{display:flex;align-items:baseline;gap:16px;padding:14px 20px;border-bottom:1px solid var(--line)}
+header h1{margin:0;font-size:17px;letter-spacing:.04em}
+header .sub{color:var(--dim);font-size:12px}
+nav{display:flex;gap:2px;padding:0 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+nav button{background:none;border:none;color:var(--dim);padding:10px 12px;cursor:pointer;font:inherit;border-bottom:2px solid transparent}
+nav button.on{color:var(--text);border-bottom-color:var(--acc)}
+main{padding:16px 20px;max-width:1200px}
+.cards{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 16px;min-width:130px}
+.card .n{font-size:22px}
+.card .l{color:var(--dim);font-size:12px}
+table{border-collapse:collapse;width:100%;background:var(--panel);border:1px solid var(--line);border-radius:6px;overflow:hidden}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:normal;font-size:12px}
+tr:last-child td{border-bottom:none}
+tr.row{cursor:pointer}
+tr.row:hover td{background:#1b2230}
+.tag{padding:1px 7px;border-radius:9px;font-size:12px}
+.tag.ok{background:#12321c;color:var(--ok)}.tag.warn{background:#332a12;color:var(--warn)}.tag.bad{background:#3a1518;color:var(--bad)}.tag.dim{background:#232a36;color:var(--dim)}
+pre{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px;overflow:auto;max-height:420px;white-space:pre-wrap;word-break:break-word}
+select,input,textarea{background:var(--panel);border:1px solid var(--line);border-radius:5px;color:var(--text);padding:6px 9px;font:inherit}
+textarea{width:100%;min-height:170px}
+button.act{background:#1c2634;border:1px solid var(--line);border-radius:5px;color:var(--text);padding:6px 12px;cursor:pointer;font:inherit}
+button.act:hover{border-color:var(--acc)}
+button.mini{padding:2px 8px;font-size:12px}
+.bar{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:900px){.split{grid-template-columns:1fr}}
+h2{font-size:13px;color:var(--dim);font-weight:normal;text-transform:uppercase;letter-spacing:.08em;margin:18px 0 8px}
+.err{color:var(--bad)}
+a{color:var(--acc);text-decoration:none}
+header input{width:230px;font-size:12px;padding:4px 8px}
+.grid3{display:grid;grid-template-columns:auto 1fr auto;gap:6px 10px;align-items:center}
+.rowlist{display:flex;flex-direction:column;gap:6px}
+.rowlist .item{display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#131923;border:1px solid var(--line);border-radius:5px;padding:7px 9px}
+.rowlist input,.rowlist select{font-size:12px;padding:4px 7px}
+svg .axis{stroke:var(--line)}
+svg text{fill:var(--dim);font-size:10px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin:6px 0 0;font-size:12px;color:var(--dim)}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}
+</style>
+</head>
+<body>
+<header><h1>PORTAGE</h1><span class="sub">health integration engine</span>
+  <span class="sub" style="margin-left:auto">api key</span>
+  <input id="apikey" type="password" placeholder="ptg_… (blank if auth is off)" title="Stored in this browser only and sent with every request">
+</header>
+<nav id="nav"></nav>
+<main id="main"></main>
+<script>
+const $=(s,el=document)=>el.querySelector(s);
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+// The key lives in this browser and is attached to every request. Nothing is
+// sent anywhere else, and the server never returns a stored key.
+const KEY="portage.apikey";
+const apiKey=()=>localStorage.getItem(KEY)||"";
+const j=async(url,opts={})=>{
+  const key=apiKey();
+  const headers={...(opts.headers||{}),...(key?{authorization:"Bearer "+key}:{})};
+  const r=await fetch(url,{...opts,headers});
+  const b=await r.text();let d;try{d=JSON.parse(b)}catch{d=b}
+  if(r.status===401||r.status===403)throw new Error(r.status===401?"not authenticated — set an API key above":"this key lacks the scope for that");
+  if(!r.ok&&!(d&&typeof d==="object"))throw new Error(r.status+" "+b);
+  return{status:r.status,data:d};
+};
+const tag=(t,cls)=>`<span class="tag ${cls}">${esc(t)}</span>`;
+const stTag=s=>tag(s,{processed:"ok",delivered:"ok",filtered:"dim",queued:"warn",retrying:"warn",inflight:"warn",error:"bad",dead:"bad",discarded:"dim",active:"ok"}[s]||"dim");
+const TABS=["Dashboard","History","Channels","Designer","Mappings","Messages","Deliveries","FHIR","Subscriptions","Terminology","Conformance"];
+let tab="Dashboard",timer=null;
+
+function nav(){$("#nav").innerHTML=TABS.map(t=>`<button class="${t===tab?"on":""}" onclick="go('${t}')">${t}</button>`).join("")}
+window.go=t=>{tab=t;if(timer){clearInterval(timer);timer=null}nav();render()};
+
+async function render(){
+  const m=$("#main");
+  try{
+    if(tab==="Dashboard")await dash(m);
+    else if(tab==="History")await history(m);
+    else if(tab==="Designer")await designer(m);
+    else if(tab==="Mappings")await mapEditor(m);
+    else if(tab==="Channels")await channels(m);
+    else if(tab==="Messages")await messages(m);
+    else if(tab==="Deliveries")await deliveries(m);
+    else if(tab==="FHIR")await fhirTab(m);
+    else if(tab==="Subscriptions")await subsTab(m);
+    else if(tab==="Terminology")await termTab(m);
+    else if(tab==="Conformance")await confTab(m);
+  }catch(e){m.innerHTML=`<p class="err">${esc(e.message||e)}</p>`}
+}
+
+async function dash(m){
+  const draw=async()=>{
+    const {data}=await j("/api/health");
+    const s=data.stats||{};
+    const msg=s.messages||{},del=s.deliveries||{};
+    const card=(n,l)=>`<div class="card"><div class="n">${n??0}</div><div class="l">${l}</div></div>`;
+    m.innerHTML=`<div class="cards">
+      ${card(s.channels,"channels")}
+      ${card(msg.processed,"processed")}${card(msg.filtered,"filtered")}${card(`<span class="${(msg.error||0)>0?"err":""}">${msg.error||0}</span>`,"errors")}
+      ${card(del.delivered,"delivered")}${card((del.queued||0)+(del.retrying||0)+(del.inflight||0),"in queue")}${card(`<span class="${(del.dead||0)>0?"err":""}">${del.dead||0}</span>`,"dead letters")}
+    </div><h2>fhir facade</h2><div class="cards">${Object.entries(s.fhir||{}).map(([k,v])=>card(v,k)).join("")||'<span class="sub">empty</span>'}</div>
+    <p class="sub" style="color:var(--dim)">auto-refreshing every 5s</p>`;
+  };
+  await draw();
+  timer=setInterval(()=>{if(tab==="Dashboard")draw().catch(()=>{})},5000);
+}
+
+/* ------------------------------- history -------------------------------- */
+
+// Inline SVG rather than a chart library: this file is served whole with no
+// build step and no external fetches, and a CDN script would break that.
+function barChart(buckets,series,height=150){
+  if(!buckets.length)return '<p class="sub" style="color:var(--dim)">no activity in this window</p>';
+  // Bar width is capped so a window holding one or two buckets shows readable
+  // bars rather than two enormous slabs.
+  const pad=26,bw=Math.min(48,Math.max(10,600/buckets.length)),w=Math.max(360,pad*2+bw*buckets.length);
+  const totals=buckets.map((_,i)=>series.reduce((a,s)=>a+(s.values[i]||0),0));
+  const max=Math.max(1,...totals);
+  const y=v=>height-pad-(v/max)*(height-pad*2);
+  let bars="";
+  buckets.forEach((b,i)=>{
+    let base=height-pad;
+    series.forEach(s=>{
+      const v=s.values[i]||0;if(!v)return;
+      const h=(v/max)*(height-pad*2);base-=h;
+      bars+=`<rect x="${pad+i*bw+2}" y="${base}" width="${Math.max(1,bw-4)}" height="${h}" fill="${s.color}"><title>${esc(b)} ${esc(s.label)}: ${v}</title></rect>`;
+    });
+  });
+  const every=Math.ceil(buckets.length/8);
+  const labels=buckets.map((b,i)=>i%every?"":`<text x="${pad+i*bw+bw/2}" y="${height-8}" text-anchor="middle">${esc(b.slice(-5))}</text>`).join("");
+  return `<div style="overflow-x:auto"><svg width="${w}" height="${height}" role="img">
+    <line class="axis" x1="${pad}" y1="${height-pad}" x2="${w-pad}" y2="${height-pad}"/>
+    <line class="axis" x1="${pad}" y1="${pad}" x2="${pad}" y2="${height-pad}"/>
+    <text x="4" y="${y(max)+4}">${max}</text><text x="4" y="${height-pad+4}">0</text>
+    ${bars}${labels}</svg></div>`;
+}
+
+const legend=series=>`<div class="legend">${series.map(s=>`<span><i style="background:${s.color}"></i>${esc(s.label)}</span>`).join("")}</div>`;
+
+async function history(m){
+  const hours=m.dataset.hours||"24",bucket=m.dataset.bucket||"hour";
+  const {data}=await j(`/api/history?hours=${hours}&bucket=${bucket}`);
+
+  // Pivot the grouped rows into one series per status over a shared axis.
+  const keys=[...new Set([...data.messages.map(r=>r.bucket),...data.deliveries.map(r=>r.bucket)])].sort();
+  const series=(rows,field,wanted,color)=>({
+    label:wanted,color,
+    values:keys.map(k=>rows.filter(r=>r.bucket===k&&(field?r[field]===wanted:true)).reduce((a,r)=>a+r.n,0)),
+  });
+  const msgSeries=[
+    series(data.messages,"status","processed","#3fb950"),
+    series(data.messages,"status","filtered","#8b95a5"),
+    series(data.messages,"status","error","#f85149"),
+  ].filter(s=>s.values.some(v=>v>0));
+  const delSeries=[series(data.deliveries,null,"delivered","#4ea1ff")].filter(s=>s.values.some(v=>v>0));
+
+  const sum=s=>s.reduce((a,x)=>a+x.values.reduce((b,v)=>b+v,0),0);
+  m.innerHTML=`<div class="bar">
+      <select onchange="$('#main').dataset.hours=this.value;render()">${["6","24","72","168"].map(h=>`<option value="${h}" ${h===hours?"selected":""}>last ${h}h</option>`).join("")}</select>
+      <select onchange="$('#main').dataset.bucket=this.value;render()">${["hour","day"].map(b=>`<option ${b===bucket?"selected":""}>${b}</option>`).join("")}</select>
+      <button class="act mini" onclick="render()">refresh</button></div>
+    <div class="cards"><div class="card"><div class="n">${sum(msgSeries)}</div><div class="l">messages received</div></div>
+      <div class="card"><div class="n">${sum(delSeries)}</div><div class="l">deliveries completed</div></div></div>
+    <h2>messages received, by status</h2>${barChart(keys,msgSeries)}${msgSeries.length?legend(msgSeries):""}
+    <h2>deliveries completed</h2>${barChart(keys,delSeries)}
+    <p class="sub" style="color:var(--dim)">Messages are bucketed by arrival, deliveries by completion. A message
+      received during an outage and delivered hours later appears in both, at different times — which is the point.</p>`;
+}
+
+/* ------------------------------- designer ------------------------------- */
+
+const SOURCES={
+  mllp:[["port","number","6661"],["host","text","0.0.0.0"]],
+  http:[["path","text","channel id if blank"]],
+  fhir:[["resourceTypes","text","Patient,Observation (blank = all)"]],
+  filedrop:[["dir","text","/var/spool/portage"],["pattern","text","\\\\.hl7$"],["archiveDir","text","optional"],["pollMs","number","2000"],["cron","text","optional, e.g. */5 * * * *"]],
+  dbpoll:[["dbPath","text","/var/lib/lab/results.db"],["query","text","SELECT * FROM r WHERE id > ? ORDER BY id"],["cursorColumn","text","id"],["pollMs","number","2000"],["cron","text","optional"]],
+  sqlpoll:[["driver","text","postgres | mysql"],["dsn","text","postgres://user:pw@host:5432/db"],["query","text","SELECT * FROM r WHERE id > ? ORDER BY id"],["cursorColumn","text","id"],["initialCursor","text","0"],["pollMs","number","2000"],["cron","text","optional"]],
+  sftp:[["host","text","sftp.example.org"],["port","number","22"],["username","text","portage"],["password","text",""],["privateKeyPath","text","/etc/portage/id_ed25519"],["dir","text","/outbound"],["pattern","text","\\\\.hl7$"],["archiveDir","text","optional"],["pollMs","number","5000"],["cron","text","optional"]],
+};
+const STEPS={
+  "filter.hl7Type":[["allow","text","ADT^A01,ADT^A04"]],
+  "filter.hl7FieldEquals":[["path","text","PID-8"],["equals","text","F"]],
+  "filter.jsonEquals":[["path","text","resourceType"],["equals","text","Patient"]],
+  "split.hl7Segment":[["segment","text","OBX"]],
+  "split.hl7Group":[["segment","text","OBR"]],
+  "transform.mapping":[["mapping","text","adt-patient"]],
+  "validate.profile":[["pack","text","ps-ca"],["mode","text","reject | annotate"]],
+};
+const DESTS={
+  fhirstore:[["validatePack","text","optional, e.g. ps-ca"],["validateMode","text","reject | annotate"]],
+  http:[["url","text","https://host/fhir/Patient"],["method","text","POST"],["contentType","text","application/fhir+json"],["timeoutMs","number","15000"]],
+  mllp:[["host","text","10.0.0.5"],["port","number","6661"],["timeoutMs","number","15000"]],
+};
+const COMMON_DEST=[["maxAttempts","number","8"],["backoffBaseMs","number","1000"],["backoffCapMs","number","300000"]];
+
+let design={id:"",name:"",sourceType:"mllp",source:{},steps:[],dests:[{type:"fhirstore",fields:{},ordered:true}]};
+
+const fieldRow=(defs,bag,onchange)=>defs.map(([k,type,ph])=>
+  `<label class="sub" style="color:var(--dim)">${k}</label>
+   <input type="${type}" placeholder="${esc(ph)}" value="${esc(bag[k]??"")}" oninput="${onchange}('${k}',this.value)">`).join("");
+
+function buildConfig(){
+  const cfg={id:design.id,name:design.name||design.id,source:{type:design.sourceType}};
+  for(const[k,v]of Object.entries(design.source)){
+    if(v==="")continue;
+    if(k==="resourceTypes")cfg.source[k]=String(v).split(",").map(s=>s.trim()).filter(Boolean);
+    else if(k==="port"||k==="pollMs")cfg.source[k]=Number(v);
+    else cfg.source[k]=v;
+  }
+  if(design.steps.length)cfg.pipeline=design.steps.map(s=>{
+    const step={type:s.type};
+    for(const[k,v]of Object.entries(s.fields)){
+      if(v==="")continue;
+      step[k]=k==="allow"?String(v).split(",").map(x=>x.trim()).filter(Boolean):v;
+    }
+    return step;
+  });
+  cfg.destinations=design.dests.map((d,i)=>{
+    const dest={id:d.fields.id||`dest-${i+1}`,type:d.type,ordered:!!d.ordered};
+    for(const[k,v]of Object.entries(d.fields)){
+      if(v===""||k==="id")continue;
+      dest[k]=["maxAttempts","backoffBaseMs","backoffCapMs","timeoutMs","port"].includes(k)?Number(v):v;
+    }
+    return dest;
+  });
+  return cfg;
+}
+
+async function designer(m){
+  m.innerHTML=`<div class="split"><div>
+    <h2>channel</h2>
+    <div class="grid3" style="grid-template-columns:110px 1fr">
+      <label class="sub" style="color:var(--dim)">id</label><input placeholder="adt-to-fhir-patient" value="${esc(design.id)}" oninput="dset('id',this.value)">
+      <label class="sub" style="color:var(--dim)">name</label><input placeholder="ADT feed to FHIR Patient" value="${esc(design.name)}" oninput="dset('name',this.value)">
+    </div>
+    <h2>source</h2>
+    <div class="bar"><select onchange="dsource(this.value)">${Object.keys(SOURCES).map(s=>`<option ${s===design.sourceType?"selected":""}>${s}</option>`).join("")}</select></div>
+    <div class="grid3" style="grid-template-columns:130px 1fr">${fieldRow(SOURCES[design.sourceType],design.source,"dsrc")}</div>
+    <h2>pipeline</h2>
+    <div class="rowlist" id="steps">${design.steps.map((s,i)=>`<div class="item"><b>${esc(s.type)}</b>
+        ${(STEPS[s.type]||[]).map(([k,,ph])=>`<input placeholder="${esc(k)}: ${esc(ph)}" value="${esc(s.fields[k]??"")}" oninput="dstep(${i},'${k}',this.value)">`).join("")}
+        <button class="act mini" onclick="dstepDel(${i})">remove</button></div>`).join("")||'<span class="sub" style="color:var(--dim)">no steps: messages pass through unchanged</span>'}</div>
+    <div class="bar" style="margin-top:8px"><select id="new-step">${Object.keys(STEPS).map(s=>`<option>${s}</option>`).join("")}</select>
+      <button class="act mini" onclick="dstepAdd()">add step</button></div>
+    <h2>destinations</h2>
+    <div class="rowlist">${design.dests.map((d,i)=>`<div class="item"><b>${esc(d.type)}</b>
+        <label class="sub" style="color:var(--dim)"><input type="checkbox" ${d.ordered?"checked":""} onchange="ddestOrdered(${i},this.checked)"> ordered</label>
+        ${[...(DESTS[d.type]||[]),...COMMON_DEST].map(([k,,ph])=>`<input placeholder="${esc(k)}: ${esc(ph)}" value="${esc(d.fields[k]??"")}" oninput="ddest(${i},'${k}',this.value)">`).join("")}
+        <button class="act mini" onclick="ddestDel(${i})">remove</button></div>`).join("")}</div>
+    <div class="bar" style="margin-top:8px"><select id="new-dest">${Object.keys(DESTS).map(s=>`<option>${s}</option>`).join("")}</select>
+      <button class="act mini" onclick="ddestAdd()">add destination</button></div>
+    <div class="bar" style="margin-top:14px"><button class="act" onclick="dsave()">create or replace channel</button>
+      <button class="act mini" onclick="dload()">load existing…</button></div>
+    <div id="d-out"></div>
+  </div><div><h2>channel json</h2><pre id="d-json">${esc(JSON.stringify(buildConfig(),null,2))}</pre></div></div>`;
+}
+const redraw=()=>{$("#d-json").textContent=JSON.stringify(buildConfig(),null,2)};
+window.dset=(k,v)=>{design[k]=v;redraw()};
+window.dsrc=(k,v)=>{design.source[k]=v;redraw()};
+window.dsource=t=>{design.sourceType=t;design.source={};render()};
+window.dstep=(i,k,v)=>{design.steps[i].fields[k]=v;redraw()};
+window.dstepAdd=()=>{design.steps.push({type:$("#new-step").value,fields:{}});render()};
+window.dstepDel=i=>{design.steps.splice(i,1);render()};
+window.ddest=(i,k,v)=>{design.dests[i].fields[k]=v;redraw()};
+window.ddestOrdered=(i,v)=>{design.dests[i].ordered=v;redraw()};
+window.ddestAdd=()=>{design.dests.push({type:$("#new-dest").value,fields:{},ordered:true});render()};
+window.ddestDel=i=>{design.dests.splice(i,1);render()};
+window.dsave=async()=>{
+  const cfg=buildConfig();
+  if(!cfg.id){$("#d-out").innerHTML='<p class="err">an id is required</p>';return}
+  try{
+    const r=await j("/api/channels",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(cfg)});
+    $("#d-out").innerHTML=r.status===201?`<p style="color:var(--ok)">channel ${esc(cfg.id)} created and running</p>`:`<p class="err">${esc(JSON.stringify(r.data))}</p>`;
+  }catch(e){$("#d-out").innerHTML=`<p class="err">${esc(e.message)}</p>`}
+};
+window.dload=async()=>{
+  const {data}=await j("/api/channels");
+  $("#d-out").innerHTML=`<div class="bar"><select id="d-pick">${data.map(c=>`<option>${esc(c.id)}</option>`).join("")}</select>
+    <button class="act mini" onclick="dloadPick()">load</button></div>`;
+};
+window.dloadPick=async()=>{
+  const {data:cfg}=await j("/api/channels/"+$("#d-pick").value);
+  const {type,...src}=cfg.source;
+  design={
+    id:cfg.id,name:cfg.name,sourceType:type,
+    source:Object.fromEntries(Object.entries(src).map(([k,v])=>[k,Array.isArray(v)?v.join(","):String(v)])),
+    steps:(cfg.pipeline||[]).map(s=>{const{type,...f}=s;return{type,fields:Object.fromEntries(Object.entries(f).map(([k,v])=>[k,Array.isArray(v)?v.join(","):String(v)]))}}),
+    dests:(cfg.destinations||[]).map(d=>{const{type,ordered,...f}=d;return{type,ordered:!!ordered,fields:Object.fromEntries(Object.entries(f).map(([k,v])=>[k,String(v)]))}}),
+  };
+  render();
+};
+
+/* ---------------------------- mapping editor ---------------------------- */
+
+async function mapEditor(m){
+  const [{data:maps},{data:fixtures}]=await Promise.all([j("/api/mappings"),j("/api/fixtures")]);
+  m.innerHTML=`<div class="bar">
+      <select id="mp-pick" onchange="mpLoad()"><option value="">— start from a registered mapping —</option>${maps.map(d=>`<option>${esc(d.id)}</option>`).join("")}</select>
+      <select id="mp-fix" onchange="mpFixture()"><option value="">— load a sample message —</option>${fixtures.map(f=>`<option>${esc(f.name)}</option>`).join("")}</select>
+      <button class="act" onclick="mpRun()">preview</button>
+      <span class="sub" style="color:var(--dim)">nothing is stored: the preview runs the mapper alone</span></div>
+    <div class="split">
+      <div><h2>mapping document</h2><textarea id="mp-doc" spellcheck="false" style="min-height:300px" placeholder='{"id":"my-map","input":"hl7","ops":[{"set":"name[0].family","from":"PID-5.1"}]}'></textarea>
+        <h2>sample input</h2><textarea id="mp-sample" spellcheck="false" style="min-height:150px" placeholder="paste an HL7 v2 message or a JSON payload"></textarea></div>
+      <div><h2>output</h2><pre id="mp-out" style="max-height:560px">-</pre></div></div>`;
+  window.__fixtures=fixtures;window.__maps=maps;
+}
+window.mpLoad=()=>{
+  const id=$("#mp-pick").value;if(!id)return;
+  $("#mp-doc").value=JSON.stringify((window.__maps||[]).find(d=>d.id===id)||{},null,2);
+};
+window.mpFixture=()=>{
+  const n=$("#mp-fix").value;if(!n)return;
+  const f=(window.__fixtures||[]).find(x=>x.name===n);
+  if(f)$("#mp-sample").value=f.content;
+};
+window.mpRun=async()=>{
+  let mapping;
+  try{mapping=JSON.parse($("#mp-doc").value)}catch(e){$("#mp-out").textContent="mapping document is not valid JSON: "+e.message;return}
+  try{
+    const r=await j("/api/mappings/preview",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({mapping,sample:$("#mp-sample").value})});
+    $("#mp-out").textContent=r.data.ok?JSON.stringify(r.data.output,null,2):"mapping failed: "+r.data.error;
+  }catch(e){$("#mp-out").textContent=e.message}
+};
+
+async function channels(m){
+  const {data}=await j("/api/channels");
+  m.innerHTML=`<table><tr><th>id</th><th>name</th><th>source</th><th>state</th><th>chain</th></tr>
+    ${data.map(c=>`<tr class="row" onclick="chanDetail('${c.id}')"><td>${esc(c.id)}</td><td>${esc(c.name)}</td><td>${esc(c.source)}${c.mllpPort?` :${c.mllpPort}`:""}</td>
+      <td>${c.running?tag("running","ok"):c.enabled?tag("stopped","warn"):tag("disabled","dim")}</td>
+      <td><button class="act mini" onclick="event.stopPropagation();verifyChain('${c.id}',this)">verify</button></td></tr>`).join("")}
+  </table><div id="detail"></div>`;
+}
+window.chanDetail=async id=>{const {data}=await j("/api/channels/"+id);$("#detail").innerHTML=`<h2>${esc(id)}</h2><pre>${esc(JSON.stringify(data,null,2))}</pre>`};
+window.verifyChain=async(id,btn)=>{const {data}=await j("/api/chain/verify?channel_id="+id);btn.outerHTML=data.ok?tag("intact "+data.checked,"ok"):tag("BROKEN at "+esc(data.brokenAt),"bad")};
+
+async function messages(m){
+  const chans=(await j("/api/channels")).data;
+  const cur={ch:m.dataset.ch||"",st:m.dataset.st||""};
+  const {data}=await j(`/api/messages?limit=50${cur.ch?"&channel_id="+cur.ch:""}${cur.st?"&status="+cur.st:""}`);
+  m.innerHTML=`<div class="bar">
+    <select onchange="$('#main').dataset.ch=this.value;render()"><option value="">all channels</option>${chans.map(c=>`<option ${c.id===cur.ch?"selected":""}>${c.id}</option>`).join("")}</select>
+    <select onchange="$('#main').dataset.st=this.value;render()"><option value="">all statuses</option>${["processed","filtered","error"].map(s=>`<option ${s===cur.st?"selected":""}>${s}</option>`).join("")}</select>
+    <button class="act mini" onclick="render()">refresh</button></div>
+  <table><tr><th>seq</th><th>channel</th><th>received</th><th>source</th><th>status</th></tr>
+    ${data.map(r=>`<tr class="row" onclick="msgDetail('${r.id}')"><td>${r.seq}</td><td>${esc(r.channel_id)}</td><td>${esc(r.received_at)}</td><td>${esc(r.source_type)}</td><td>${stTag(r.status)}${r.error?` <span class="err">${esc(r.error)}</span>`:""}</td></tr>`).join("")}
+  </table><div id="detail"></div>`;
+}
+window.msgDetail=async id=>{
+  const {data}=await j("/api/messages/"+id);
+  $("#detail").innerHTML=`<h2>message ${id}</h2><pre>${esc(data.raw)}</pre>
+    <h2>steps</h2><table><tr><th>#</th><th>step</th><th>output</th></tr>${(data.steps||[]).map(s=>`<tr><td>${s.step_index}</td><td>${esc(s.name)}</td><td><pre style="margin:0;max-height:150px">${esc(s.output??"")}</pre></td></tr>`).join("")}</table>
+    <h2>deliveries</h2><table><tr><th>destination</th><th>state</th><th>attempts</th><th>last error</th></tr>${(data.deliveries||[]).map(d=>`<tr><td>${esc(d.destination_id)}</td><td>${stTag(d.state)}</td><td>${d.attempts}</td><td class="err">${esc(d.last_error??"")}</td></tr>`).join("")}</table>`;
+};
+
+async function deliveries(m){
+  const cur=m.dataset.state||"";
+  const {data}=await j(`/api/deliveries?limit=50${cur?"&state="+cur:""}`);
+  m.innerHTML=`<div class="bar"><select onchange="$('#main').dataset.state=this.value;render()">
+      <option value="">all states</option>${["queued","retrying","inflight","delivered","dead","discarded"].map(s=>`<option ${s===cur?"selected":""}>${s}</option>`).join("")}</select>
+    <button class="act mini" onclick="render()">refresh</button></div>
+  <table><tr><th>channel</th><th>destination</th><th>seq</th><th>state</th><th>attempts</th><th>next attempt</th><th>last error</th><th></th></tr>
+    ${data.map(d=>`<tr><td>${esc(d.channel_id)}</td><td>${esc(d.destination_id)}</td><td>${d.seq}</td><td>${stTag(d.state)}</td><td>${d.attempts}/${d.max_attempts}</td><td>${esc(d.next_attempt_at??"")}</td><td class="err">${esc((d.last_error??"").slice(0,80))}</td>
+      <td>${d.state==="dead"?`<button class="act mini" onclick="act('${d.id}','replay')">replay</button> <button class="act mini" onclick="act('${d.id}','discard')">discard</button>`:""}</td></tr>`).join("")}
+  </table>`;
+}
+window.act=async(id,what)=>{await j(`/api/deliveries/${id}/${what}`,{method:"POST"});render()};
+
+async function fhirTab(m){
+  const {data:cap}=await j("/fhir/metadata");
+  const types=(cap.rest?.[0]?.resource||[]).map(r=>r.type);
+  const cur={t:m.dataset.t||types[0]||"Patient",q:m.dataset.q||""};
+  m.innerHTML=`<div class="bar">
+    <select onchange="$('#main').dataset.t=this.value;render()">${types.map(t=>`<option ${t===cur.t?"selected":""}>${t}</option>`).join("")}</select>
+    <input placeholder="identifier token (value or system|value)" value="${esc(cur.q)}" style="width:340px" onchange="$('#main').dataset.q=this.value;render()">
+    <button class="act mini" onclick="render()">search</button></div><div id="list"></div><div id="detail"></div>`;
+  const {data}=await j(`/fhir/${cur.t}?_count=25${cur.q?"&identifier="+encodeURIComponent(cur.q):""}`);
+  $("#list").innerHTML=`<p class="sub" style="color:var(--dim)">${data.total??0} match(es)</p><table><tr><th>id</th><th>version</th><th>updated</th></tr>
+    ${(data.entry||[]).map(e=>`<tr class="row" onclick="readRes('${cur.t}','${e.resource.id}')"><td>${esc(e.resource.id)}</td><td>${esc(e.resource.meta?.versionId??"")}</td><td>${esc(e.resource.meta?.lastUpdated??"")}</td></tr>`).join("")}</table>`;
+}
+window.readRes=async(t,id)=>{const {data}=await j(`/fhir/${t}/${id}`);$("#detail").innerHTML=`<h2>${t}/${esc(id)}</h2><pre>${esc(JSON.stringify(data,null,2))}</pre>`};
+
+async function subsTab(m){
+  const {data}=await j("/fhir/Subscription");
+  m.innerHTML=`<table><tr><th>id</th><th>status</th><th>criteria</th><th>endpoint</th><th></th></tr>
+    ${(data.entry||[]).map(e=>{const r=e.resource;return`<tr><td>${esc(r.id)}</td><td>${stTag(r.status)}</td><td>${esc(r.criteria)}</td><td>${esc(r.channel?.endpoint)}</td>
+      <td><button class="act mini" onclick="delSub('${r.id}')">delete</button></td></tr>`}).join("")}
+  </table>
+  <h2>create rest-hook subscription</h2>
+  <div class="bar"><input id="s-crit" placeholder='criteria, e.g. Patient or Observation?identifier=NT123456' style="width:340px">
+    <input id="s-end" placeholder="endpoint, e.g. https://host/hook" style="width:300px">
+    <button class="act" onclick="mkSub()">create</button></div><div id="s-out"></div>`;
+}
+window.delSub=async id=>{await j("/fhir/Subscription/"+id,{method:"DELETE"});render()};
+window.mkSub=async()=>{
+  const body={resourceType:"Subscription",status:"requested",criteria:$("#s-crit").value,channel:{type:"rest-hook",endpoint:$("#s-end").value}};
+  const r=await j("/fhir/Subscription",{method:"POST",headers:{"content-type":"application/fhir+json"},body:JSON.stringify(body)});
+  if(r.status===201)render();else $("#s-out").innerHTML=`<p class="err">${esc(JSON.stringify(r.data))}</p>`;
+};
+
+async function termTab(m){
+  const {data:s}=await j("/api/terminology/stats");
+  m.innerHTML=`<div class="cards"><div class="card"><div class="n">${s.concepts}</div><div class="l">concepts</div></div>
+    <div class="card"><div class="n">${s.valueSets}</div><div class="l">value sets</div></div>
+    <div class="card"><div class="n">${s.maps}</div><div class="l">concept maps</div></div></div>
+  <div class="split">
+    <div><h2>lookup</h2><div class="bar"><input id="l-sys" placeholder="system" style="width:250px"><input id="l-code" placeholder="code"><button class="act" onclick="doLookup()">go</button></div>
+      <h2>expand</h2><div class="bar"><input id="e-vs" placeholder="valueset id, e.g. lab-codes-demo" style="width:250px"><button class="act" onclick="doExpand()">go</button></div>
+      <h2>translate</h2><div class="bar"><input id="t-code" placeholder="code"><input id="t-map" placeholder="map (optional)"><input id="t-target" placeholder="target system (optional)" style="width:220px"><button class="act" onclick="doTranslate()">go</button></div></div>
+    <div><h2>result</h2><pre id="t-out">-</pre></div></div>`;
+}
+const out=d=>{$("#t-out").textContent=JSON.stringify(d,null,2)};
+window.doLookup=async()=>{const r=await j(`/api/terminology/lookup?system=${encodeURIComponent($("#l-sys").value)}&code=${encodeURIComponent($("#l-code").value)}`);out(r.data)};
+window.doExpand=async()=>{const r=await j(`/api/terminology/expand?valueset=${encodeURIComponent($("#e-vs").value)}`);out(r.data)};
+window.doTranslate=async()=>{const p=new URLSearchParams({code:$("#t-code").value});if($("#t-map").value)p.set("map",$("#t-map").value);if($("#t-target").value)p.set("target",$("#t-target").value);const r=await j("/api/terminology/translate?"+p);out(r.data)};
+
+async function confTab(m){
+  const {data:packs}=await j("/api/conformance/packs");
+  m.innerHTML=`<div class="split"><div>
+    <div class="bar"><select id="c-pack">${packs.map(p=>`<option value="${p.id}">${p.id}: ${esc(p.name)}</option>`).join("")}</select>
+      <button class="act" onclick="doCap()">capability check</button></div>
+    <textarea id="c-res" placeholder='paste a FHIR resource JSON here'></textarea>
+    <div class="bar" style="margin-top:8px"><button class="act" onclick="doValidate()">validate</button></div></div>
+    <div><h2>result</h2><pre id="c-out">-</pre></div></div>`;
+}
+window.doValidate=async()=>{
+  let resource;try{resource=JSON.parse($("#c-res").value)}catch{$("#c-out").textContent="not valid JSON";return}
+  const r=await j("/api/conformance/validate",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({pack:$("#c-pack").value,resource})});
+  $("#c-out").textContent=JSON.stringify(r.data,null,2);
+};
+window.doCap=async()=>{const r=await j("/api/conformance/capability?pack="+encodeURIComponent($("#c-pack").value));$("#c-out").textContent=JSON.stringify(r.data,null,2)};
+
+const keyInput=$("#apikey");
+keyInput.value=apiKey();
+keyInput.addEventListener("change",()=>{localStorage.setItem(KEY,keyInput.value.trim());render()});
+
+nav();render();
+</script>
+</body>
+</html>

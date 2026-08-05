@@ -1,0 +1,12 @@
+node_modules/
+data/
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
+
+# Certificate material, including anything scripts/gen-dev-certs.sh writes.
+certs/
+*.pem
+*.key
+*.crt
