@@ -46,7 +46,7 @@ Boots the engine on port 8686 (override with `PORTAGE_PORT`), creates `./data/po
 ```
   No API key existed, so one was issued for this instance:
 
-    ptg_P0dIXRO8n7TYkpX0usdALslve5EoaodK4uYN2jRdV9Q
+    ptg_EXAMPLEKEYxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
   This is the only time it is shown. Store it now.
 ```
