@@ -118,6 +118,14 @@ export class Engine {
     this.mappings.set(doc.id, doc);
   }
 
+  /**
+   * The mapper context pipelines run with, so a preview resolves `translate`
+   * against the same terminology store the real pipeline would use.
+   */
+  mapperContext(): MapperContext {
+    return this.mapperCtx;
+  }
+
   async start(): Promise<void> {
     this.worker.start();
     this.subs.load();

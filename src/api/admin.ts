@@ -36,12 +36,14 @@
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createServer as createSecureServer } from "node:https";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import type { Engine } from "../core/engine.ts";
 import { checkCapability, toOperationOutcome, validateResource } from "../conformance/validator.ts";
+import { applyMapping } from "../transform/mapper.ts";
 import { AuthGate } from "../auth/gate.ts";
 import type { TlsConfig } from "./tls.ts";
-import type { ChannelConfig, MessageRow } from "../types.ts";
+import type { ChannelConfig, MappingDoc, MessageRow } from "../types.ts";
 
 let UI_HTML: string | null = null;
 function uiHtml(): string {
@@ -183,6 +185,42 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
     const channelId = url.searchParams.get("channel_id");
     if (!channelId) return send(res, 400, { error: "channel_id required" });
     return send(res, 200, engine.db.verifyChain(channelId));
+  }
+
+  if (path === "/api/mappings" && method === "GET") {
+    return send(res, 200, [...engine.mappings.values()]);
+  }
+  if (path === "/api/mappings/preview" && method === "POST") {
+    // Runs a mapping against a sample without touching a channel, the queue or
+    // the store, so the editor can preview freely with no side effects.
+    const body = JSON.parse(await readBody(req)) as { mapping?: MappingDoc | string; sample?: string };
+    const doc = typeof body.mapping === "string" ? engine.mappings.get(body.mapping) : body.mapping;
+    if (!doc) return send(res, 400, { error: "mapping document or a registered mapping id is required" });
+    if (typeof body.sample !== "string" || !body.sample) return send(res, 400, { error: "sample required" });
+    try {
+      return send(res, 200, { ok: true, output: applyMapping(doc, body.sample, engine.mapperContext()) });
+    } catch (err) {
+      let error = err instanceof Error ? err.message : "mapping failed";
+      // Omitting `input: "hl7"` makes the mapper try to JSON.parse an ER7
+      // message, and the resulting parse error explains nothing. Name the
+      // actual mistake instead.
+      if (doc.input !== "hl7" && /^MSH\|/.test(body.sample.trimStart())) {
+        error = `the sample looks like HL7 v2 but the mapping does not set "input": "hl7" (${error})`;
+      }
+      return send(res, 200, { ok: false, error });
+    }
+  }
+
+  if (path === "/api/fixtures" && method === "GET") {
+    return send(res, 200, listFixtures());
+  }
+
+  if (path === "/api/history" && method === "GET") {
+    const bucket = url.searchParams.get("bucket") === "day" ? "day" : "hour";
+    return send(res, 200, {
+      bucket,
+      ...engine.db.history(num(url.searchParams.get("hours")) ?? 24, bucket),
+    });
   }
 
   if (path === "/api/keys" && method === "GET") {
@@ -395,6 +433,28 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
   }
 
   send(res, 404, { error: "not found" });
+}
+
+/**
+ * The shipped sample messages, for the mapping editor's live preview. Reads a
+ * fixed directory and never a caller-supplied path, so there is nothing here
+ * for a traversal to reach.
+ */
+function listFixtures(): Array<{ name: string; content: string }> {
+  const dir = process.env.PORTAGE_FIXTURES ?? join(process.cwd(), "fixtures");
+  if (!existsSync(dir)) return [];
+  const out: Array<{ name: string; content: string }> = [];
+  for (const name of readdirSync(dir).sort()) {
+    const full = join(dir, name);
+    try {
+      const stat = statSync(full);
+      if (!stat.isFile() || stat.size > 256 * 1024) continue;
+      out.push({ name, content: readFileSync(full, "utf8") });
+    } catch {
+      // An unreadable fixture is not worth failing the listing over.
+    }
+  }
+  return out;
 }
 
 function redactMessage(row: MessageRow): Record<string, unknown> {

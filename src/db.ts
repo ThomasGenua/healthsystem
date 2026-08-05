@@ -429,6 +429,46 @@ export class Db {
     return r.changes > 0;
   }
 
+  /* -------------------------------- history ----------------------------- */
+
+  /**
+   * Message arrivals and delivery completions grouped into time buckets.
+   *
+   * Two different clocks, deliberately: messages are bucketed by when they
+   * arrived, deliveries by when they completed. A message received during an
+   * outage and delivered hours later belongs in both places, and collapsing
+   * them onto one axis would hide exactly the behaviour worth watching.
+   */
+  history(hours: number, bucket: "hour" | "day"): {
+    messages: Array<{ bucket: string; status: string; n: number }>;
+    deliveries: Array<{ bucket: string; n: number }>;
+  } {
+    const fmt = bucket === "day" ? "%Y-%m-%d" : "%Y-%m-%dT%H:00";
+    const since = `-${Math.max(1, Math.floor(hours))} hours`;
+
+    const messages = this.sql
+      .prepare(
+        `SELECT strftime(?, received_at) AS bucket, status, COUNT(*) AS n
+           FROM messages
+          WHERE received_at >= datetime('now', ?)
+          GROUP BY bucket, status
+          ORDER BY bucket`
+      )
+      .all(fmt, since) as unknown as Array<{ bucket: string; status: string; n: number }>;
+
+    const deliveries = this.sql
+      .prepare(
+        `SELECT strftime(?, delivered_at) AS bucket, COUNT(*) AS n
+           FROM deliveries
+          WHERE delivered_at IS NOT NULL AND delivered_at >= datetime('now', ?)
+          GROUP BY bucket
+          ORDER BY bucket`
+      )
+      .all(fmt, since) as unknown as Array<{ bucket: string; n: number }>;
+
+    return { messages, deliveries };
+  }
+
   /* ------------------------------- api keys ----------------------------- */
 
   insertApiKey(id: string, name: string, hash: string, scopes: string[]): void {

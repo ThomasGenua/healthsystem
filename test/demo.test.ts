@@ -163,9 +163,9 @@ test("a lossy, bandwidth-shaped link still delivers everything in order", async 
     );
     assert.equal(new Set(ids).size, 6, "no duplicates");
     assert.equal(engine.db.verifyChain("demo-lossy").ok, true);
-
-    // The impairment has to have actually engaged, or this test proves nothing.
-    assert.ok(link.stats().retransmits > 0, "25% loss over six messages must cause retransmissions");
+    // Note: this does not assert that retransmissions occurred. Loss is rolled
+    // per chunk, and a handful of messages can legitimately pass without one.
+    // The deterministic test below pins that behaviour instead.
   } finally {
     await engine.stop();
     await link.close();
@@ -198,11 +198,14 @@ test("bandwidth shaping slows delivery in proportion to the configured rate", as
   };
 
   try {
-    // 20KB at 256kbps is ~640ms of serialisation; unshaped is near-instant.
+    // 20KB at 256kbps is ~640ms of serialisation. That floor comes from the
+    // scheduling arithmetic, not from how fast the machine is, so it is a
+    // stable assertion; a ratio against the unshaped run is not, since load
+    // inflates the unshaped figure.
     const shaped = await timeThrough(256);
     const unshaped = await timeThrough(0);
-    assert.ok(shaped > 300, `256kbps should take real time, took ${shaped}ms`);
-    assert.ok(shaped > unshaped * 2, `shaped ${shaped}ms should clearly exceed unshaped ${unshaped}ms`);
+    assert.ok(shaped > 400, `256kbps should take real time, took ${shaped}ms`);
+    assert.ok(shaped > unshaped, `shaped ${shaped}ms should exceed unshaped ${unshaped}ms`);
   } finally {
     await meridian.close();
   }
@@ -246,6 +249,45 @@ test("delivery stays ordered under jitter that would otherwise reorder chunks", 
     client.destroy();
 
     assert.equal(received, expected.join(""), "chunks must arrive in the order they were written");
+  } finally {
+    await link.close();
+    await new Promise<void>((r) => sink.close(() => r()));
+  }
+});
+
+test("packet loss delays bytes but never discards them", async () => {
+  // The property that matters, pinned deterministically at 100% loss: every
+  // byte still arrives. This proxy sits above TCP, so dropping a chunk would
+  // truncate the stream in a way a real lossy link cannot, and a demo resting
+  // on that would prove something false.
+  let received = "";
+  const sink = createTcpServer((sock) => {
+    sock.on("data", (d: Buffer) => {
+      received += d.toString("utf8");
+    });
+  });
+  await new Promise<void>((r) => sink.listen(0, "127.0.0.1", () => r()));
+  const sinkPort = (sink.address() as { port: number }).port;
+
+  const link = await startSatLink({
+    listenPort: 0,
+    targetHost: "127.0.0.1",
+    targetPort: sinkPort,
+    packetLossPct: 100,
+    rtoMs: 5,
+  });
+
+  try {
+    const client = connectTcp(link.port, "127.0.0.1");
+    await new Promise<void>((r) => client.on("connect", () => r()));
+
+    const payload = "the quick brown fox";
+    client.write(payload);
+    await until(() => received.length >= payload.length, 30_000);
+    client.destroy();
+
+    assert.equal(received, payload, "loss must never cost a byte");
+    assert.ok(link.stats().retransmits > 0, "100% loss must register retransmissions");
   } finally {
     await link.close();
     await new Promise<void>((r) => sink.close(() => r()));

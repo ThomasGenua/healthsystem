@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Portage</title>
+<link rel="icon" href="data:,">
 <style>
 :root{--bg:#0e1116;--panel:#161b22;--line:#2b3240;--text:#d7dde6;--dim:#8b95a5;--acc:#4ea1ff;--ok:#3fb950;--warn:#d29922;--bad:#f85149;font-size:15px}
 *{box-sizing:border-box}
@@ -39,19 +40,43 @@ button.mini{padding:2px 8px;font-size:12px}
 h2{font-size:13px;color:var(--dim);font-weight:normal;text-transform:uppercase;letter-spacing:.08em;margin:18px 0 8px}
 .err{color:var(--bad)}
 a{color:var(--acc);text-decoration:none}
+header input{width:230px;font-size:12px;padding:4px 8px}
+.grid3{display:grid;grid-template-columns:auto 1fr auto;gap:6px 10px;align-items:center}
+.rowlist{display:flex;flex-direction:column;gap:6px}
+.rowlist .item{display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#131923;border:1px solid var(--line);border-radius:5px;padding:7px 9px}
+.rowlist input,.rowlist select{font-size:12px;padding:4px 7px}
+svg .axis{stroke:var(--line)}
+svg text{fill:var(--dim);font-size:10px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin:6px 0 0;font-size:12px;color:var(--dim)}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}
 </style>
 </head>
 <body>
-<header><h1>PORTAGE</h1><span class="sub">health integration engine</span><span class="sub" id="uptime"></span></header>
+<header><h1>PORTAGE</h1><span class="sub">health integration engine</span>
+  <span class="sub" style="margin-left:auto">api key</span>
+  <input id="apikey" type="password" placeholder="ptg_… (blank if auth is off)" title="Stored in this browser only and sent with every request">
+</header>
 <nav id="nav"></nav>
 <main id="main"></main>
 <script>
 const $=(s,el=document)=>el.querySelector(s);
 const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const j=async(url,opts)=>{const r=await fetch(url,opts);const b=await r.text();let d;try{d=JSON.parse(b)}catch{d=b}if(!r.ok&&!(d&&typeof d==="object"))throw new Error(r.status+" "+b);return{status:r.status,data:d}};
+// The key lives in this browser and is attached to every request. Nothing is
+// sent anywhere else, and the server never returns a stored key.
+const KEY="portage.apikey";
+const apiKey=()=>localStorage.getItem(KEY)||"";
+const j=async(url,opts={})=>{
+  const key=apiKey();
+  const headers={...(opts.headers||{}),...(key?{authorization:"Bearer "+key}:{})};
+  const r=await fetch(url,{...opts,headers});
+  const b=await r.text();let d;try{d=JSON.parse(b)}catch{d=b}
+  if(r.status===401||r.status===403)throw new Error(r.status===401?"not authenticated — set an API key above":"this key lacks the scope for that");
+  if(!r.ok&&!(d&&typeof d==="object"))throw new Error(r.status+" "+b);
+  return{status:r.status,data:d};
+};
 const tag=(t,cls)=>`<span class="tag ${cls}">${esc(t)}</span>`;
 const stTag=s=>tag(s,{processed:"ok",delivered:"ok",filtered:"dim",queued:"warn",retrying:"warn",inflight:"warn",error:"bad",dead:"bad",discarded:"dim",active:"ok"}[s]||"dim");
-const TABS=["Dashboard","Channels","Messages","Deliveries","FHIR","Subscriptions","Terminology","Conformance"];
+const TABS=["Dashboard","History","Channels","Designer","Mappings","Messages","Deliveries","FHIR","Subscriptions","Terminology","Conformance"];
 let tab="Dashboard",timer=null;
 
 function nav(){$("#nav").innerHTML=TABS.map(t=>`<button class="${t===tab?"on":""}" onclick="go('${t}')">${t}</button>`).join("")}
@@ -61,6 +86,9 @@ async function render(){
   const m=$("#main");
   try{
     if(tab==="Dashboard")await dash(m);
+    else if(tab==="History")await history(m);
+    else if(tab==="Designer")await designer(m);
+    else if(tab==="Mappings")await mapEditor(m);
     else if(tab==="Channels")await channels(m);
     else if(tab==="Messages")await messages(m);
     else if(tab==="Deliveries")await deliveries(m);
@@ -87,6 +115,225 @@ async function dash(m){
   await draw();
   timer=setInterval(()=>{if(tab==="Dashboard")draw().catch(()=>{})},5000);
 }
+
+/* ------------------------------- history -------------------------------- */
+
+// Inline SVG rather than a chart library: this file is served whole with no
+// build step and no external fetches, and a CDN script would break that.
+function barChart(buckets,series,height=150){
+  if(!buckets.length)return '<p class="sub" style="color:var(--dim)">no activity in this window</p>';
+  // Bar width is capped so a window holding one or two buckets shows readable
+  // bars rather than two enormous slabs.
+  const pad=26,bw=Math.min(48,Math.max(10,600/buckets.length)),w=Math.max(360,pad*2+bw*buckets.length);
+  const totals=buckets.map((_,i)=>series.reduce((a,s)=>a+(s.values[i]||0),0));
+  const max=Math.max(1,...totals);
+  const y=v=>height-pad-(v/max)*(height-pad*2);
+  let bars="";
+  buckets.forEach((b,i)=>{
+    let base=height-pad;
+    series.forEach(s=>{
+      const v=s.values[i]||0;if(!v)return;
+      const h=(v/max)*(height-pad*2);base-=h;
+      bars+=`<rect x="${pad+i*bw+2}" y="${base}" width="${Math.max(1,bw-4)}" height="${h}" fill="${s.color}"><title>${esc(b)} ${esc(s.label)}: ${v}</title></rect>`;
+    });
+  });
+  const every=Math.ceil(buckets.length/8);
+  const labels=buckets.map((b,i)=>i%every?"":`<text x="${pad+i*bw+bw/2}" y="${height-8}" text-anchor="middle">${esc(b.slice(-5))}</text>`).join("");
+  return `<div style="overflow-x:auto"><svg width="${w}" height="${height}" role="img">
+    <line class="axis" x1="${pad}" y1="${height-pad}" x2="${w-pad}" y2="${height-pad}"/>
+    <line class="axis" x1="${pad}" y1="${pad}" x2="${pad}" y2="${height-pad}"/>
+    <text x="4" y="${y(max)+4}">${max}</text><text x="4" y="${height-pad+4}">0</text>
+    ${bars}${labels}</svg></div>`;
+}
+
+const legend=series=>`<div class="legend">${series.map(s=>`<span><i style="background:${s.color}"></i>${esc(s.label)}</span>`).join("")}</div>`;
+
+async function history(m){
+  const hours=m.dataset.hours||"24",bucket=m.dataset.bucket||"hour";
+  const {data}=await j(`/api/history?hours=${hours}&bucket=${bucket}`);
+
+  // Pivot the grouped rows into one series per status over a shared axis.
+  const keys=[...new Set([...data.messages.map(r=>r.bucket),...data.deliveries.map(r=>r.bucket)])].sort();
+  const series=(rows,field,wanted,color)=>({
+    label:wanted,color,
+    values:keys.map(k=>rows.filter(r=>r.bucket===k&&(field?r[field]===wanted:true)).reduce((a,r)=>a+r.n,0)),
+  });
+  const msgSeries=[
+    series(data.messages,"status","processed","#3fb950"),
+    series(data.messages,"status","filtered","#8b95a5"),
+    series(data.messages,"status","error","#f85149"),
+  ].filter(s=>s.values.some(v=>v>0));
+  const delSeries=[series(data.deliveries,null,"delivered","#4ea1ff")].filter(s=>s.values.some(v=>v>0));
+
+  const sum=s=>s.reduce((a,x)=>a+x.values.reduce((b,v)=>b+v,0),0);
+  m.innerHTML=`<div class="bar">
+      <select onchange="$('#main').dataset.hours=this.value;render()">${["6","24","72","168"].map(h=>`<option value="${h}" ${h===hours?"selected":""}>last ${h}h</option>`).join("")}</select>
+      <select onchange="$('#main').dataset.bucket=this.value;render()">${["hour","day"].map(b=>`<option ${b===bucket?"selected":""}>${b}</option>`).join("")}</select>
+      <button class="act mini" onclick="render()">refresh</button></div>
+    <div class="cards"><div class="card"><div class="n">${sum(msgSeries)}</div><div class="l">messages received</div></div>
+      <div class="card"><div class="n">${sum(delSeries)}</div><div class="l">deliveries completed</div></div></div>
+    <h2>messages received, by status</h2>${barChart(keys,msgSeries)}${msgSeries.length?legend(msgSeries):""}
+    <h2>deliveries completed</h2>${barChart(keys,delSeries)}
+    <p class="sub" style="color:var(--dim)">Messages are bucketed by arrival, deliveries by completion. A message
+      received during an outage and delivered hours later appears in both, at different times — which is the point.</p>`;
+}
+
+/* ------------------------------- designer ------------------------------- */
+
+const SOURCES={
+  mllp:[["port","number","6661"],["host","text","0.0.0.0"]],
+  http:[["path","text","channel id if blank"]],
+  fhir:[["resourceTypes","text","Patient,Observation (blank = all)"]],
+  filedrop:[["dir","text","/var/spool/portage"],["pattern","text","\\\\.hl7$"],["archiveDir","text","optional"],["pollMs","number","2000"],["cron","text","optional, e.g. */5 * * * *"]],
+  dbpoll:[["dbPath","text","/var/lib/lab/results.db"],["query","text","SELECT * FROM r WHERE id > ? ORDER BY id"],["cursorColumn","text","id"],["pollMs","number","2000"],["cron","text","optional"]],
+  sqlpoll:[["driver","text","postgres | mysql"],["dsn","text","postgres://user:pw@host:5432/db"],["query","text","SELECT * FROM r WHERE id > ? ORDER BY id"],["cursorColumn","text","id"],["initialCursor","text","0"],["pollMs","number","2000"],["cron","text","optional"]],
+  sftp:[["host","text","sftp.example.org"],["port","number","22"],["username","text","portage"],["password","text",""],["privateKeyPath","text","/etc/portage/id_ed25519"],["dir","text","/outbound"],["pattern","text","\\\\.hl7$"],["archiveDir","text","optional"],["pollMs","number","5000"],["cron","text","optional"]],
+};
+const STEPS={
+  "filter.hl7Type":[["allow","text","ADT^A01,ADT^A04"]],
+  "filter.hl7FieldEquals":[["path","text","PID-8"],["equals","text","F"]],
+  "filter.jsonEquals":[["path","text","resourceType"],["equals","text","Patient"]],
+  "split.hl7Segment":[["segment","text","OBX"]],
+  "split.hl7Group":[["segment","text","OBR"]],
+  "transform.mapping":[["mapping","text","adt-patient"]],
+  "validate.profile":[["pack","text","ps-ca"],["mode","text","reject | annotate"]],
+};
+const DESTS={
+  fhirstore:[["validatePack","text","optional, e.g. ps-ca"],["validateMode","text","reject | annotate"]],
+  http:[["url","text","https://host/fhir/Patient"],["method","text","POST"],["contentType","text","application/fhir+json"],["timeoutMs","number","15000"]],
+  mllp:[["host","text","10.0.0.5"],["port","number","6661"],["timeoutMs","number","15000"]],
+};
+const COMMON_DEST=[["maxAttempts","number","8"],["backoffBaseMs","number","1000"],["backoffCapMs","number","300000"]];
+
+let design={id:"",name:"",sourceType:"mllp",source:{},steps:[],dests:[{type:"fhirstore",fields:{},ordered:true}]};
+
+const fieldRow=(defs,bag,onchange)=>defs.map(([k,type,ph])=>
+  `<label class="sub" style="color:var(--dim)">${k}</label>
+   <input type="${type}" placeholder="${esc(ph)}" value="${esc(bag[k]??"")}" oninput="${onchange}('${k}',this.value)">`).join("");
+
+function buildConfig(){
+  const cfg={id:design.id,name:design.name||design.id,source:{type:design.sourceType}};
+  for(const[k,v]of Object.entries(design.source)){
+    if(v==="")continue;
+    if(k==="resourceTypes")cfg.source[k]=String(v).split(",").map(s=>s.trim()).filter(Boolean);
+    else if(k==="port"||k==="pollMs")cfg.source[k]=Number(v);
+    else cfg.source[k]=v;
+  }
+  if(design.steps.length)cfg.pipeline=design.steps.map(s=>{
+    const step={type:s.type};
+    for(const[k,v]of Object.entries(s.fields)){
+      if(v==="")continue;
+      step[k]=k==="allow"?String(v).split(",").map(x=>x.trim()).filter(Boolean):v;
+    }
+    return step;
+  });
+  cfg.destinations=design.dests.map((d,i)=>{
+    const dest={id:d.fields.id||`dest-${i+1}`,type:d.type,ordered:!!d.ordered};
+    for(const[k,v]of Object.entries(d.fields)){
+      if(v===""||k==="id")continue;
+      dest[k]=["maxAttempts","backoffBaseMs","backoffCapMs","timeoutMs","port"].includes(k)?Number(v):v;
+    }
+    return dest;
+  });
+  return cfg;
+}
+
+async function designer(m){
+  m.innerHTML=`<div class="split"><div>
+    <h2>channel</h2>
+    <div class="grid3" style="grid-template-columns:110px 1fr">
+      <label class="sub" style="color:var(--dim)">id</label><input placeholder="adt-to-fhir-patient" value="${esc(design.id)}" oninput="dset('id',this.value)">
+      <label class="sub" style="color:var(--dim)">name</label><input placeholder="ADT feed to FHIR Patient" value="${esc(design.name)}" oninput="dset('name',this.value)">
+    </div>
+    <h2>source</h2>
+    <div class="bar"><select onchange="dsource(this.value)">${Object.keys(SOURCES).map(s=>`<option ${s===design.sourceType?"selected":""}>${s}</option>`).join("")}</select></div>
+    <div class="grid3" style="grid-template-columns:130px 1fr">${fieldRow(SOURCES[design.sourceType],design.source,"dsrc")}</div>
+    <h2>pipeline</h2>
+    <div class="rowlist" id="steps">${design.steps.map((s,i)=>`<div class="item"><b>${esc(s.type)}</b>
+        ${(STEPS[s.type]||[]).map(([k,,ph])=>`<input placeholder="${esc(k)}: ${esc(ph)}" value="${esc(s.fields[k]??"")}" oninput="dstep(${i},'${k}',this.value)">`).join("")}
+        <button class="act mini" onclick="dstepDel(${i})">remove</button></div>`).join("")||'<span class="sub" style="color:var(--dim)">no steps: messages pass through unchanged</span>'}</div>
+    <div class="bar" style="margin-top:8px"><select id="new-step">${Object.keys(STEPS).map(s=>`<option>${s}</option>`).join("")}</select>
+      <button class="act mini" onclick="dstepAdd()">add step</button></div>
+    <h2>destinations</h2>
+    <div class="rowlist">${design.dests.map((d,i)=>`<div class="item"><b>${esc(d.type)}</b>
+        <label class="sub" style="color:var(--dim)"><input type="checkbox" ${d.ordered?"checked":""} onchange="ddestOrdered(${i},this.checked)"> ordered</label>
+        ${[...(DESTS[d.type]||[]),...COMMON_DEST].map(([k,,ph])=>`<input placeholder="${esc(k)}: ${esc(ph)}" value="${esc(d.fields[k]??"")}" oninput="ddest(${i},'${k}',this.value)">`).join("")}
+        <button class="act mini" onclick="ddestDel(${i})">remove</button></div>`).join("")}</div>
+    <div class="bar" style="margin-top:8px"><select id="new-dest">${Object.keys(DESTS).map(s=>`<option>${s}</option>`).join("")}</select>
+      <button class="act mini" onclick="ddestAdd()">add destination</button></div>
+    <div class="bar" style="margin-top:14px"><button class="act" onclick="dsave()">create or replace channel</button>
+      <button class="act mini" onclick="dload()">load existing…</button></div>
+    <div id="d-out"></div>
+  </div><div><h2>channel json</h2><pre id="d-json">${esc(JSON.stringify(buildConfig(),null,2))}</pre></div></div>`;
+}
+const redraw=()=>{$("#d-json").textContent=JSON.stringify(buildConfig(),null,2)};
+window.dset=(k,v)=>{design[k]=v;redraw()};
+window.dsrc=(k,v)=>{design.source[k]=v;redraw()};
+window.dsource=t=>{design.sourceType=t;design.source={};render()};
+window.dstep=(i,k,v)=>{design.steps[i].fields[k]=v;redraw()};
+window.dstepAdd=()=>{design.steps.push({type:$("#new-step").value,fields:{}});render()};
+window.dstepDel=i=>{design.steps.splice(i,1);render()};
+window.ddest=(i,k,v)=>{design.dests[i].fields[k]=v;redraw()};
+window.ddestOrdered=(i,v)=>{design.dests[i].ordered=v;redraw()};
+window.ddestAdd=()=>{design.dests.push({type:$("#new-dest").value,fields:{},ordered:true});render()};
+window.ddestDel=i=>{design.dests.splice(i,1);render()};
+window.dsave=async()=>{
+  const cfg=buildConfig();
+  if(!cfg.id){$("#d-out").innerHTML='<p class="err">an id is required</p>';return}
+  try{
+    const r=await j("/api/channels",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(cfg)});
+    $("#d-out").innerHTML=r.status===201?`<p style="color:var(--ok)">channel ${esc(cfg.id)} created and running</p>`:`<p class="err">${esc(JSON.stringify(r.data))}</p>`;
+  }catch(e){$("#d-out").innerHTML=`<p class="err">${esc(e.message)}</p>`}
+};
+window.dload=async()=>{
+  const {data}=await j("/api/channels");
+  $("#d-out").innerHTML=`<div class="bar"><select id="d-pick">${data.map(c=>`<option>${esc(c.id)}</option>`).join("")}</select>
+    <button class="act mini" onclick="dloadPick()">load</button></div>`;
+};
+window.dloadPick=async()=>{
+  const {data:cfg}=await j("/api/channels/"+$("#d-pick").value);
+  const {type,...src}=cfg.source;
+  design={
+    id:cfg.id,name:cfg.name,sourceType:type,
+    source:Object.fromEntries(Object.entries(src).map(([k,v])=>[k,Array.isArray(v)?v.join(","):String(v)])),
+    steps:(cfg.pipeline||[]).map(s=>{const{type,...f}=s;return{type,fields:Object.fromEntries(Object.entries(f).map(([k,v])=>[k,Array.isArray(v)?v.join(","):String(v)]))}}),
+    dests:(cfg.destinations||[]).map(d=>{const{type,ordered,...f}=d;return{type,ordered:!!ordered,fields:Object.fromEntries(Object.entries(f).map(([k,v])=>[k,String(v)]))}}),
+  };
+  render();
+};
+
+/* ---------------------------- mapping editor ---------------------------- */
+
+async function mapEditor(m){
+  const [{data:maps},{data:fixtures}]=await Promise.all([j("/api/mappings"),j("/api/fixtures")]);
+  m.innerHTML=`<div class="bar">
+      <select id="mp-pick" onchange="mpLoad()"><option value="">— start from a registered mapping —</option>${maps.map(d=>`<option>${esc(d.id)}</option>`).join("")}</select>
+      <select id="mp-fix" onchange="mpFixture()"><option value="">— load a sample message —</option>${fixtures.map(f=>`<option>${esc(f.name)}</option>`).join("")}</select>
+      <button class="act" onclick="mpRun()">preview</button>
+      <span class="sub" style="color:var(--dim)">nothing is stored: the preview runs the mapper alone</span></div>
+    <div class="split">
+      <div><h2>mapping document</h2><textarea id="mp-doc" spellcheck="false" style="min-height:300px" placeholder='{"id":"my-map","input":"hl7","ops":[{"set":"name[0].family","from":"PID-5.1"}]}'></textarea>
+        <h2>sample input</h2><textarea id="mp-sample" spellcheck="false" style="min-height:150px" placeholder="paste an HL7 v2 message or a JSON payload"></textarea></div>
+      <div><h2>output</h2><pre id="mp-out" style="max-height:560px">-</pre></div></div>`;
+  window.__fixtures=fixtures;window.__maps=maps;
+}
+window.mpLoad=()=>{
+  const id=$("#mp-pick").value;if(!id)return;
+  $("#mp-doc").value=JSON.stringify((window.__maps||[]).find(d=>d.id===id)||{},null,2);
+};
+window.mpFixture=()=>{
+  const n=$("#mp-fix").value;if(!n)return;
+  const f=(window.__fixtures||[]).find(x=>x.name===n);
+  if(f)$("#mp-sample").value=f.content;
+};
+window.mpRun=async()=>{
+  let mapping;
+  try{mapping=JSON.parse($("#mp-doc").value)}catch(e){$("#mp-out").textContent="mapping document is not valid JSON: "+e.message;return}
+  try{
+    const r=await j("/api/mappings/preview",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({mapping,sample:$("#mp-sample").value})});
+    $("#mp-out").textContent=r.data.ok?JSON.stringify(r.data.output,null,2):"mapping failed: "+r.data.error;
+  }catch(e){$("#mp-out").textContent=e.message}
+};
 
 async function channels(m){
   const {data}=await j("/api/channels");
@@ -194,6 +441,10 @@ window.doValidate=async()=>{
   $("#c-out").textContent=JSON.stringify(r.data,null,2);
 };
 window.doCap=async()=>{const r=await j("/api/conformance/capability?pack="+encodeURIComponent($("#c-pack").value));$("#c-out").textContent=JSON.stringify(r.data,null,2)};
+
+const keyInput=$("#apikey");
+keyInput.value=apiKey();
+keyInput.addEventListener("change",()=>{localStorage.setItem(KEY,keyInput.value.trim());render()});
 
 nav();render();
 </script>
