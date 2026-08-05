@@ -1,7 +1,7 @@
 {
   "name": "portage",
-  "version": "0.3.0",
-  "description": "Health integration engine for northern operating conditions. HL7 v2, FHIR R4, durable store-and-forward, ordered replay, hash-chained message lineage.",
+  "version": "0.4.0",
+  "description": "Health integration engine for northern operating conditions. HL7 v2, FHIR R4, durable store-and-forward, ordered replay, hash-chained message lineage, authenticated API with mutual TLS.",
   "type": "module",
   "private": true,
   "license": "UNLICENSED",

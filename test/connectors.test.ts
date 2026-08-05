@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Engine } from "../src/core/engine.ts";
 import type { ChannelConfig } from "../src/types.ts";
+import { until } from "./helpers.ts";
 
 function collector() {
   const received: string[] = [];
@@ -31,14 +32,6 @@ function collector() {
   });
 }
 
-async function until(cond: () => boolean, ms = 8000): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < ms) {
-    if (cond()) return;
-    await new Promise((r) => setTimeout(r, 15));
-  }
-  throw new Error("condition not reached");
-}
 
 test("filedrop source ingests files in name order and archives them", async () => {
   const dir = mkdtempSync(join(tmpdir(), "portage-drop-"));

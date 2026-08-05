@@ -7,6 +7,7 @@ import { startApi } from "../src/api/admin.ts";
 import { mllpSend } from "../src/hl7/mllp.ts";
 import { criteriaMatches } from "../src/fhir/subscriptions.ts";
 import type { ChannelConfig, MappingDoc } from "../src/types.ts";
+import { until } from "./helpers.ts";
 
 const ADT = readFileSync(new URL("../fixtures/adt_a01.hl7", import.meta.url), "utf8");
 const MAPPING = JSON.parse(
@@ -36,14 +37,6 @@ function collector() {
   });
 }
 
-async function until(cond: () => boolean, ms = 6000): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < ms) {
-    if (cond()) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error("condition not reached");
-}
 
 test("criteria matching: bare type and identifier tokens", () => {
   const patient = { resourceType: "Patient", identifier: [{ system: "s", value: "NT1" }] };

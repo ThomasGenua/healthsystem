@@ -7,6 +7,7 @@ import { startMeridianSim } from "../demo/meridian-sim.ts";
 import { startSatLink } from "../demo/satlink.ts";
 import { createServer as createTcpServer, connect as connectTcp } from "node:net";
 import type { ChannelConfig, MappingDoc } from "../src/types.ts";
+import { until } from "./helpers.ts";
 
 const MAPPING = JSON.parse(
   readFileSync(new URL("../mappings/adt-patient.json", import.meta.url), "utf8")
@@ -19,14 +20,6 @@ const adt = (n: number) =>
     "PV1|1|O",
   ].join("\r") + "\r";
 
-async function until(cond: () => boolean, ms = 15_000): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < ms) {
-    if (cond()) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error("condition not reached");
-}
 
 function delivered(engine: Engine): number {
   const s = engine.db.stats() as { deliveries?: Record<string, number> };

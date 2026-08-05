@@ -7,6 +7,7 @@ import { Engine } from "../src/core/engine.ts";
 import { startApi } from "../src/api/admin.ts";
 import { mllpSend } from "../src/hl7/mllp.ts";
 import type { ChannelConfig, MappingDoc } from "../src/types.ts";
+import { until } from "./helpers.ts";
 
 const load = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8");
 const mapping = (p: string) => JSON.parse(load(p)) as MappingDoc;
@@ -16,14 +17,6 @@ const ADT_DG1 = load("../fixtures/adt_a08_dg1.hl7");
 const ORU = load("../fixtures/oru_r01.hl7");
 const RDE = load("../fixtures/rde_o11.hl7");
 
-async function until(cond: () => boolean, ms = 5000): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < ms) {
-    if (cond()) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error("condition not reached");
-}
 
 test("store versions by content: unchanged upsert keeps versionId, change bumps it", () => {
   const db = new Db(":memory:");

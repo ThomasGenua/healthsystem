@@ -4,20 +4,13 @@ import { readFileSync } from "node:fs";
 import { Engine } from "../src/core/engine.ts";
 import { mllpSend } from "../src/hl7/mllp.ts";
 import type { ChannelConfig, MappingDoc } from "../src/types.ts";
+import { until } from "./helpers.ts";
 
 const ORU_MULTI = readFileSync(new URL("../fixtures/oru_r01_multi.hl7", import.meta.url), "utf8");
 const MAPPING = JSON.parse(
   readFileSync(new URL("../mappings/oru-observation.json", import.meta.url), "utf8")
 ) as MappingDoc;
 
-async function until(cond: () => boolean, ms = 6000): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < ms) {
-    if (cond()) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error("condition not reached");
-}
 
 test("split.hl7Group then split.hl7Segment: two OBR batteries become three Observations with per-battery times", async () => {
   const engine = new Engine({ dbPath: ":memory:", tickMs: 15 });

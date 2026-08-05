@@ -1,16 +1,37 @@
 # Portage
 
-A health integration engine built for northern operating conditions. HL7 v2 in and out over MLLP, FHIR R4 over HTTP, declarative transformation, durable store-and-forward with ordered replay, and hash-chained message lineage. Zero runtime dependencies, no build step: Node 22 runs the TypeScript directly and persistence is node:sqlite.
+A health integration engine built for northern operating conditions. HL7 v2 in and out over MLLP, FHIR R4 over HTTP, declarative transformation, durable store-and-forward with ordered replay, and hash-chained message lineage. No build step: Node runs the TypeScript directly and persistence is node:sqlite.
 
 The design targets the interoperability posture Canadian jurisdictions are converging on through Canada Health Infoway: PS-CA patient summaries, CA:FeX FHIR exchange, and CA:eReC eReferral and eConsult, operated over networks where a 5 Mbps satellite tail and a multi-hour outage are normal conditions rather than incidents. Every acknowledgement means the message is durably queued, not merely seen, and an ordered channel resumes exactly where it stopped.
 
 ## Status
 
-v0.3.0. The v0.2.0 core (channels; MLLP, HTTP and FHIR sources; filter, split and mapping pipeline; retrying ordered destinations with DLQ and replay; hash-chained lineage; FHIR R4 facade; satellite outage demo) plus the pan-Canadian conformance layer and the operational surface: a terminology service (concepts, ValueSet expansion, ConceptMap translation, a `translate` mapping function, FHIR $lookup, $expand and $translate operations), declarative conformance packs for PS-CA, CA:FeX and CA:eReC enforced in-pipeline by a `validate.profile` step (reject or annotate), FHIR rest-hook Subscriptions riding the durable delivery queue, `filedrop` and `dbpoll` polling connectors for the SFTP-landing-directory and legacy-database patterns, a `split.hl7Group` step for multi-battery ORU messages, and a single-file no-build admin UI at `GET /`. Backend first, tests before UI: the UI landed last and consumes only the public API.
+v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources; filter, split, mapping and validation pipeline; retrying ordered destinations with DLQ and replay; hash-chained lineage; FHIR R4 facade; terminology service; PS-CA / CA:FeX / CA:eReC conformance packs; rest-hook Subscriptions; satellite outage demo; admin UI) plus:
+
+- **Authentication and authorisation.** API keys and OAuth 2.0 / SMART on FHIR bearer tokens, three scopes, one gate ahead of every route. On by default.
+- **Mutual TLS**, for node-to-node links, inbound and outbound.
+- **Conformance validation on facade writes**, not only in-pipeline and on demand.
+- **Native SFTP, Postgres and MySQL sources**, and cron scheduling for any polling source.
+- **Terminology release loaders** for SNOMED CT RF2, LOINC CSV and the classification tables.
+- **Packet loss and bandwidth shaping** in the link simulator.
+- **Admin UI second round**: channel designer, mapping editor with live fixtures, history dashboards.
+
+83 tests. Backend first, tests before UI.
+
+### What this is not
+
+Honest limits, so nobody discovers them in production:
+
+- **MLLP sources are unauthenticated.** The protocol has no authentication to hook into. Those ports are a network-layer concern — put them behind a VPN, a private APN, or mutual TLS at the transport, not behind Portage.
+- **`node:sqlite` is still flagged experimental on Node 22.** Durability rests on it, so run Node 24+ in production, where it is stable. CI covers both.
+- **The shipped terminology pack is a labelled demo subset.** SNOMED CT CA, LOINC, pCLOCD, ICD-10-CA and CCI are licensed distributions; the loaders are here, the content is not.
+- **The conformance packs are not certified.** They encode the published profiles as data and pass the shipped fixtures, but no projectathon has scored them.
 
 ## Requirements
 
-Node 22.18 or later. Nothing else. `npm install` is only needed if you want the dev-time type checker (`typescript`, `@types/node`).
+Node 22.18 or later; Node 24+ recommended in production (see above). No required runtime dependencies.
+
+Optional, and only if you use the source that needs it: `pg` for a Postgres poller, `mysql2` for MySQL, `ssh2-sftp-client` for SFTP. They are declared as `optionalDependencies` and imported lazily, so an operator who never polls Postgres never installs it. `npm install` also fetches the dev-time type checker.
 
 ## Quickstart
 
@@ -19,6 +40,18 @@ npm start
 ```
 
 Boots the engine on port 8686 (override with `PORTAGE_PORT`), creates `./data/portage.db`, registers every mapping in `./mappings`, loads terminology packs from `./terminology` and conformance packs from `./conformance`, and seeds any channel in `./channels` that does not already exist in the database. Four channels ship: ADT to Patient on MLLP 6661, lab ORU to Observation on 6662 (split per OBX), ADT diagnoses to Condition on 6663 (split per DG1), and pharmacy RDE to MedicationRequest on 6664. All four deliver in strict order into the local FHIR facade, so a fresh boot is immediately queryable. The admin UI is at `http://localhost:8686/`.
+
+**The API is authenticated by default.** With no key configured, one is minted at boot and printed once:
+
+```
+  No API key existed, so one was issued for this instance:
+
+    ptg_P0dIXRO8n7TYkpX0usdALslve5EoaodK4uYN2jRdV9Q
+
+  This is the only time it is shown. Store it now.
+```
+
+Paste it into the admin UI's key box, or send it as `Authorization: Bearer …`. See [Security](#security) to turn it off for local work, or to use an identity provider instead.
 
 Send it a message:
 
@@ -29,29 +62,125 @@ printf '\x0b%s\x1c\x0d' "$(cat fixtures/adt_a01.hl7)" | nc -w2 localhost 6661
 You will get an AA acknowledgement back, and the facade serves the Patient a tick later:
 
 ```bash
-curl "localhost:8686/fhir/Patient?identifier=NT123456"
-curl localhost:8686/fhir/metadata
+curl -H "Authorization: Bearer $KEY" "localhost:8686/fhir/Patient?identifier=NT123456"
+curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 39 tests: parser, mapper, queue, ordered delivery, DLQ, facade, terminology, conformance, subscriptions, connectors, outage, e2e
+npm test          # 83 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
 
+## Security
+
+Two credential schemes, either or both, chosen with `PORTAGE_AUTH_MODE`:
+
+| value | meaning |
+|---|---|
+| `apikey` | **default.** API keys. One is minted and printed at first boot if none exists. |
+| `oauth` | OAuth 2.0 / SMART on FHIR bearer tokens verified against an identity provider's JWKS. |
+| `apikey+oauth` | both accepted |
+| `off` | no authentication; logs a warning at boot |
+
+Three scopes, deliberately coarse — the API has three kinds of caller, and finer distinctions would be invented rather than real:
+
+| scope | reaches |
+|---|---|
+| `admin` | `/api/*`: channels, messages, the delivery queue, keys. Implies the other two. |
+| `read` | `GET /fhir/*` and the terminology and conformance lookups |
+| `write` | `POST /ingest/:path`, `POST /fhir/:resourceType` |
+
+Open without credentials, by design: the admin UI shell, `GET /api/health`, and `GET /fhir/metadata` — a CapabilityStatement is a discovery document, and a client has to read it to learn how to authenticate against everything else. Any unrecognised path defaults to requiring `admin`, so a route added later fails closed.
+
+### API keys
+
+32 random bytes behind a `ptg_` prefix. Only the SHA-256 is stored, so a copy of the database yields no working credentials and a lost key can be replaced but never recovered.
+
+```bash
+curl -X POST localhost:8686/api/keys -H "Authorization: Bearer $KEY" \
+  -H 'content-type: application/json' \
+  -d '{"name":"lab-feed","scopes":["write"]}'      # the response is the only time the key is shown
+
+curl localhost:8686/api/keys -H "Authorization: Bearer $KEY"          # metadata only, never keys
+curl -X DELETE localhost:8686/api/keys/:id -H "Authorization: Bearer $KEY"
+```
+
+### OAuth 2.0 and SMART on FHIR
+
+```bash
+PORTAGE_AUTH_MODE=oauth \
+PORTAGE_OIDC_ISSUER=https://login.microsoftonline.com/<tenant>/v2.0 \
+PORTAGE_OIDC_AUDIENCE=api://portage \
+npm start
+```
+
+The JWKS is discovered from the issuer (`PORTAGE_OIDC_JWKS` overrides) and cached. Signature, issuer, audience and expiry are all checked; the permitted algorithms are a fixed table keyed off the token header, so `alg: none` is refused before any key material is touched. Works against any OIDC provider — Entra ID, Keycloak, Auth0 — nothing here is provider-specific.
+
+SMART scopes are translated rather than requiring Portage-specific scope names in your identity provider. Both v1 (`.read`, `.write`, `.*`) and v2 (`.rs`, `.cud`, `.cruds`) verb syntax are understood:
+
+| token scope | grants |
+|---|---|
+| `system/Patient.read`, `system/Observation.rs` | `read` |
+| `system/Patient.write`, `system/Patient.cud` | `write` |
+| `system/*.*` | `read` + `write` |
+| `portage/admin` | `admin` |
+
+### Mutual TLS
+
+For links between nodes there is no browser, no user and no consent flow — just two hosts that must each prove what they are, so a client certificate is the practical answer.
+
+```bash
+./scripts/gen-dev-certs.sh                 # self-signed CA, server and client certs, for development
+
+PORTAGE_TLS_CERT=certs/server.crt \
+PORTAGE_TLS_KEY=certs/server.key \
+PORTAGE_TLS_CLIENT_CA=certs/ca.crt \
+npm start
+
+curl --cacert certs/ca.crt --cert certs/client.crt --key certs/client.key \
+     https://localhost:8686/api/health
+```
+
+Setting `PORTAGE_TLS_CLIENT_CA` turns on `requestCert` and `rejectUnauthorized`, so an untrusted caller is refused during the handshake and never reaches the router. That is transport-level proof of *which host* is calling; the scope check above is application-level proof of *what it may do*. Both apply. Half-configured TLS throws at startup rather than quietly serving plaintext.
+
+Outbound destinations can present a client certificate too, which routes that delivery through `node:https` since `fetch` cannot carry one:
+
+```json
+{ "type": "http", "url": "https://meridian.gov.nt.ca/fhir/Patient",
+  "tls": { "certPath": "/etc/portage/client.crt", "keyPath": "/etc/portage/client.key",
+           "caPath": "/etc/portage/ca.crt" } }
+```
+
+### Environment
+
+| variable | default | meaning |
+|---|---|---|
+| `PORTAGE_PORT` | 8686 | API port |
+| `PORTAGE_DATA` | `./data` | database directory |
+| `PORTAGE_CHANNELS` / `_MAPPINGS` / `_TERMINOLOGY` / `_CONFORMANCE` / `_FIXTURES` | `./<name>` | boot-time load directories |
+| `PORTAGE_AUTH_MODE` | `apikey` | `apikey`, `oauth`, `apikey+oauth`, `off` |
+| `PORTAGE_OIDC_ISSUER` / `_AUDIENCE` / `_JWKS` | — | OAuth 2.0 configuration |
+| `PORTAGE_TLS_CERT` / `_KEY` | — | serve over TLS |
+| `PORTAGE_TLS_CLIENT_CA` | — | require a client certificate signed by this CA |
+| `PORTAGE_VALIDATE_PACK` / `_MODE` | — | conformance pack enforced on every facade write |
+
 ## Architecture
 
 ```
+                         auth gate (scopes, mTLS)
+                                 |
 sources                 pipeline                        destinations
 -------                 --------                        ------------
-MLLP listener   --->    filter.hl7Type          --->    http (fetch, retry, backoff)
+MLLP listener   --->    filter.hl7Type          --->    http (retry, backoff, mTLS)
 HTTP /ingest    --->    filter.hl7FieldEquals   --->    mllp (framed, NAK aware)
 FHIR /fhir/:T   --->    filter.jsonEquals       --->    fhirstore (local facade)
 filedrop dir    --->    split.hl7Group                          |
-db poll cursor  --->    split.hl7Segment                        v
-                        transform.mapping               GET /fhir/:Type[/:id]
-                        validate.profile                rest-hook Subscriptions
-                 |                              |
+sqlite poll     --->    split.hl7Segment                        | validate.profile
+postgres poll   --->    transform.mapping                       v
+mysql poll      --->    validate.profile                GET /fhir/:Type[/:id]
+sftp poll       --->                                    rest-hook Subscriptions
+  (any on cron) |                              |
                  v                              v
         messages + steps                 deliveries queue
         (hash chained)                   (ordered, replayable)
@@ -60,6 +189,8 @@ db poll cursor  --->    split.hl7Segment                        v
 Everything flows through `Engine.ingest`, which is deliberately synchronous: the raw message is stored on the channel's hash chain, the pipeline runs with every step recorded (a pipeline carries a set of payloads: filters narrow it, the split steps widen it, transforms map it one to one, `validate.profile` gates or annotates it), and one durable delivery row is enqueued per payload per destination, all before the source is acknowledged. An MLLP AA therefore certifies durability. Transform failures return AE with the error recorded on the message.
 
 The delivery worker wakes on a short tick, claims due deliveries, and honours ordering: an ordered destination will not release a message while any earlier message for that destination is queued, in flight, or dead-lettered. A dead head of line is resolved by replaying it (after fixing the fault) or discarding it, either of which releases the queue. Failures back off exponentially per destination configuration and dead-letter after `maxAttempts`.
+
+Delivery into the facade is where conformance is enforced, if a pack is configured. That check runs *before* anything is written — ahead of the unchanged-content short circuit, not merely ahead of the insert — so a rejected resource is never stored and a retry re-validates honestly rather than finding its own earlier write already present and reporting success.
 
 ### Layout
 
@@ -77,7 +208,16 @@ src/
   fhir/store.ts       versioned FHIR resource store behind the facade
   fhir/subscriptions.ts    rest-hook subscriptions on the durable queue
   api/admin.ts        admin, ingest, terminology, conformance and FHIR API
+  api/tls.ts          TLS and mutual TLS for the listener
   api/ui.html         single-file admin UI served at GET /
+  auth/scopes.ts      the scope model and the route-to-scope map
+  auth/keys.ts        API key issue, verify, revoke
+  auth/jwt.ts         OAuth 2.0 / SMART bearer validation against a JWKS
+  auth/gate.ts        the one check every request passes
+  connectors/sql.ts   Postgres and MySQL polling clients
+  connectors/sftp.ts  SFTP polling client
+  connectors/cron.ts  five-field cron schedules
+  terminology/loaders/  SNOMED RF2, LOINC CSV and delimited release readers
   server.ts           entry point, seeds channels, mappings, terminology, conformance
 channels/             channel configurations seeded at boot
 mappings/             mapping documents registered at boot
@@ -85,6 +225,7 @@ terminology/          terminology packs loaded at boot (labelled demo subset shi
 conformance/          conformance packs registered at boot (ps-ca, ca-fex, ca-erec)
 fixtures/             synthetic HL7 test messages and conformance fixtures
 demo/                 satellite link simulator, Meridian endpoint simulator, scripted demo
+scripts/              dev certificate generation, terminology release import
 test/                 node:test suites
 ```
 
@@ -115,11 +256,13 @@ A channel is JSON: a source, an optional pipeline, and one or more destinations.
 }
 ```
 
-Sources: `mllp` (port, host; port 0 binds ephemeral), `http` (POST /ingest/:path), `fhir` (POST /fhir/:resourceType with resource type validation), `filedrop` (poll a landing directory: dir, pattern, pollMs, archiveDir; files ingest in name order), `dbpoll` (poll a SQLite database: query with a single ? bound to the persisted cursor, cursorColumn, pollMs).
+Sources: `mllp` (port, host; port 0 binds ephemeral), `http` (POST /ingest/:path), `fhir` (POST /fhir/:resourceType with resource type validation), `filedrop` (poll a landing directory: dir, pattern, pollMs, archiveDir; files ingest in name order), `dbpoll` (poll a SQLite database: query with a single ? bound to the persisted cursor, cursorColumn, pollMs), `sqlpoll` (the same against Postgres or MySQL: driver, dsn, query, cursorColumn, initialCursor), `sftp` (poll a remote directory: host, port, username, password or privateKeyPath, dir, pattern, archiveDir).
+
+Every polling source accepts `cron` instead of `pollMs` — a five-field expression, evaluated to the minute.
 
 Pipeline steps: `filter.hl7Type` (MSH-9 allow list), `filter.hl7FieldEquals` (HL7 path equality), `filter.jsonEquals` (JSON path equality), `split.hl7Segment` (one output per instance of a repeating segment: an ORU with three OBX becomes three messages; zero instances filters the message), `split.hl7Group` (one output per anchor segment, each carrying the shared header plus everything up to the next anchor: a two-battery ORU becomes two messages that keep their own OBX and NTE children), `transform.mapping` (registered mapping id or inline document), `validate.profile` (validate JSON payloads against a conformance pack; reject fails the message, annotate records the issues and passes it through). Filtered messages are stored and acknowledged but produce no deliveries.
 
-Destinations: `http` (url, method, headers, contentType, timeoutMs), `mllp` (host, port, timeoutMs; a remote MSA AE or AR is treated as failure) and `fhirstore` (no endpoint: upserts into the local facade store). All take `maxAttempts`, `backoffBaseMs`, `backoffCapMs`, `ordered`, `skipOnDead`.
+Destinations: `http` (url, method, headers, contentType, timeoutMs, and `tls` for a client certificate), `mllp` (host, port, timeoutMs; a remote MSA AE or AR is treated as failure) and `fhirstore` (no endpoint: upserts into the local facade store, optionally gated by `validatePack` and `validateMode`). All take `maxAttempts`, `backoffBaseMs`, `backoffCapMs`, `ordered`, `skipOnDead`.
 
 ## Mappings
 
@@ -148,6 +291,13 @@ GET    /api/deliveries?channel_id=&state=   browse; state=dead is the DLQ
 POST   /api/deliveries/:id/replay           requeue a dead, delivered or discarded delivery
 POST   /api/deliveries/:id/discard          discard a dead delivery, releasing ordered flow
 GET    /api/chain/verify?channel_id=        walk and verify the hash chain
+GET    /api/keys                            list API keys (metadata only, never the keys)
+POST   /api/keys                            issue a key; the response is the only time it is shown
+DELETE /api/keys/:id                        revoke a key
+GET    /api/mappings                        registered mapping documents
+POST   /api/mappings/preview                {mapping, sample} -> mapped output; persists nothing
+GET    /api/fixtures                        shipped sample messages, for the mapping editor
+GET    /api/history?hours=&bucket=hour|day  message arrivals and delivery completions over time
 POST   /ingest/:path                        ingest into an http source channel
 POST   /fhir/:resourceType                  ingest into matching fhir source channels
 
@@ -187,7 +337,15 @@ curl "localhost:8686/fhir/Observation?identifier=FL9001-NT123456-1-718-7"
 [community EMR feed] --MLLP--> Portage --HTTP over satlink--> Meridian (territorial EHR)
 ```
 
-Phase A sends admissions across a healthy link. Phase B cuts the link and keeps sending: every message is still acknowledged AA, because an AA certifies durable queueing rather than remote delivery, and the queue grows. Phase C restores the link and the backlog drains in strict arrival order with zero loss and zero duplicates, then the hash chain is verified. Tune it with `--messages-before`, `--messages-during`, `--outage-ms`, `--latency-ms`, `--jitter-ms`. The same scenario runs compressed inside the test suite in `test/demo.test.ts`, and `demo/satlink.ts` and `demo/meridian-sim.ts` both run standalone for manual testing against a live instance.
+Phase A sends admissions across a healthy link. Phase B cuts the link and keeps sending: every message is still acknowledged AA, because an AA certifies durable queueing rather than remote delivery, and the queue grows. Phase C restores the link and the backlog drains in strict arrival order with zero loss and zero duplicates, then the hash chain is verified. Tune it with `--messages-before`, `--messages-during`, `--outage-ms`, `--latency-ms`, `--jitter-ms`, `--packet-loss-pct`, `--bandwidth-kbps`. The same scenario runs compressed inside the test suite in `test/demo.test.ts`, and `demo/satlink.ts` and `demo/meridian-sim.ts` both run standalone for manual testing against a live instance.
+
+The harder and more realistic case is a narrow, lossy link:
+
+```bash
+npm run demo -- --packet-loss-pct 8 --bandwidth-kbps 128
+```
+
+Bandwidth shaping is a per-direction token bucket, so a large message takes real time to clear rather than arriving whole. Packet loss is modelled as **retransmission delay, not discarded bytes**, and that distinction is deliberate: the simulator is a TCP proxy, so by the time a chunk reaches it the sender has already had it acknowledged. Dropping it would silently truncate the stream — something a real lossy link never does, because TCP retransmits — and a demo resting on that would "prove" the engine survives data loss that cannot actually occur. What an application really experiences under loss is delay, with the timeout doubling per successive failure, and that is what is simulated.
 
 ## Terminology
 
@@ -207,7 +365,17 @@ curl "localhost:8686/api/terminology/lookup?system=http://loinc.org&code=718-7"
 { "type": "validate.profile", "pack": "ps-ca", "mode": "reject" }
 ```
 
-reject fails the message, which surfaces as an AE at an MLLP source with the first issue in the acknowledgement; annotate records the issues on the message step and passes the payload through, the honest setting while a feed is being cleaned up. The same validation runs on demand at `POST /api/conformance/validate`, and the pipeline test proves the mapped output of the shipped ADT channel passes `ps-ca` while a gutted PID is rejected with named issues.
+reject fails the message, which surfaces as an AE at an MLLP source with the first issue in the acknowledgement; annotate records the issues on the message step and passes the payload through, the honest setting while a feed is being cleaned up. The same validation runs on demand at `POST /api/conformance/validate`.
+
+Enforcement also happens at the facade, on the write itself, configured per destination or engine-wide:
+
+```json
+{ "id": "facade", "type": "fhirstore", "validatePack": "ps-ca", "validateMode": "reject" }
+```
+
+A rejected write fails the delivery, which retries and then dead-letters with the reason attached — visible in the DLQ rather than silently absent. Nothing is stored and no subscription fires.
+
+The two checks are not deduplicated, on purpose. A pipeline `validate.profile` runs at ingest; the write happens later off the queue — 250ms normally, but hours later after retries or a replay, by which point a pack may have been tightened. The write-time check is the one that reflects the rules in force when the data actually lands.
 
 ## Subscriptions
 
@@ -215,18 +383,60 @@ reject fails the message, which surfaces as an AE at an MLLP source with the fir
 
 ## Connectors
 
-`filedrop` polls a landing directory, ingests each file as one message in filename order, then archives or deletes it. This is the working SFTP pattern for northern sites: openssh terminates the transfer into the directory and Portage takes it from there, so there is no bespoke protocol code to certify. `dbpoll` polls a SQLite database with a cursor bound into the query (`SELECT * FROM results WHERE id > ? ORDER BY id`); the cursor persists in the engine database, so a restart resumes exactly where it stopped. Both are engine sources, so everything downstream (pipeline, lineage, ordered delivery, replay) is identical to a socket feed.
+`filedrop` polls a landing directory, ingests each file as one message in filename order, then archives or deletes it. This remains the simplest SFTP pattern for northern sites: openssh terminates the transfer into the directory and Portage takes it from there, so there is no bespoke protocol code to certify. `sftp` does the same against a remote server when there is no local landing directory to watch — archive or delete happens only after the message is durably stored, so a crash mid-poll re-reads the file rather than losing it.
+
+`dbpoll` polls a SQLite database with a cursor bound into the query (`SELECT * FROM results WHERE id > ? ORDER BY id`); `sqlpoll` does the same against Postgres or MySQL. Both persist the cursor in the engine database, so a restart resumes exactly where it stopped. Queries always use `?` for the placeholder — the Postgres adapter rewrites it to `$1` — so the same channel JSON reads the same way whichever database is behind it.
+
+Connections are made lazily inside the poll and dropped on failure, so a channel whose database or SFTP host is unreachable at boot still starts and picks up when the link returns. On these networks that is the normal condition, not the exception.
+
+Every polling source can run on a cron schedule instead of a fixed interval:
+
+```json
+{ "type": "sqlpoll", "driver": "postgres", "dsn": "postgres://…", "cron": "*/15 * * * *",
+  "query": "SELECT * FROM results WHERE id > ? ORDER BY id", "cursorColumn": "id" }
+```
+
+Day-of-month and day-of-week are OR'd when both are restricted, as standard cron does. A bad expression is rejected when the channel is configured, rather than leaving it activated and silently never firing.
+
+All of these are engine sources, so everything downstream — pipeline, lineage, ordered delivery, replay — is identical to a socket feed.
 
 ## Admin UI
 
-`GET /` serves a single-file, no-build UI over the public API: a dashboard with live counts, channels with hash-chain verification, a message browser with per-step lineage, the delivery queue with dead-letter replay and discard, a FHIR facade browser, subscription management, terminology lookups and a conformance validator. It is deliberately thin; anything it does, curl does.
+`GET /` serves a single-file, no-build UI over the public API: a dashboard with live counts, history charts, channels with hash-chain verification, a channel designer, a mapping editor with live fixtures, a message browser with per-step lineage, the delivery queue with dead-letter replay and discard, a FHIR facade browser, subscription management, terminology lookups and a conformance validator. It is deliberately thin; anything it does, curl does.
+
+Paste an API key into the box in the header and it is attached to every request; it is held in browser local storage and sent nowhere else.
+
+The **designer** builds a channel against the source, pipeline and destination unions with a live JSON preview, and can load an existing channel to edit. The **mapping editor** previews a mapping document against a shipped fixture through `POST /api/mappings/preview`, which runs the mapper alone — no channel, no queue, no store — so previewing has no side effects. **History** charts message arrivals and delivery completions; messages are bucketed by arrival and deliveries by completion, because a message received during an outage and delivered hours later belongs in both places, and collapsing them onto one axis would hide exactly what is worth watching.
+
+Charts are hand-rolled inline SVG. A chart library would have been less code, but it would break the page's no-external-request property, which is what lets it be served from an engine on an isolated network at all.
+
+## Loading a licensed terminology release
+
+Nothing licensed ships here. The loaders read the distributions as published:
+
+```bash
+# SNOMED CT CA, from the RF2 snapshot files
+npm run terminology:import -- --format rf2 \
+  --in sct2_Concept_Snapshot_CA1000087_20260501.txt \
+  --descriptions sct2_Description_Snapshot-en_CA1000087_20260501.txt \
+  --system snomed --pack snomed-ca
+
+# LOINC, from the published CSV
+npm run terminology:import -- --format loinc --in Loinc.csv --system loinc
+
+# ICD-10-CA, pCLOCD, CCI: plain code/description tables
+npm run terminology:import -- --format csv --in icd10ca.csv \
+  --system icd10ca --code-column Code --display-column Description
+```
+
+`--system` accepts a URI or one of the shorthands `snomed`, `loinc`, `icd10ca`, `pclocd`, `cci`. `--db` chooses the database (default `./data/portage.db`) and `--out` additionally writes a pack JSON file.
+
+Everything streams and loads in batches, because a SNOMED snapshot runs to millions of rows. Concepts upsert on (system, code), so re-running a release is safe. RF2 emits only active concepts, uses the fully specified name as the display, and trims its trailing semantic tag — "Asthma (disorder)" becomes "Asthma".
 
 ## Roadmap
 
-- Automatic profile validation on facade writes (validate.profile currently runs in-pipeline and on demand through the API)
 - Projectathon readiness: pack tightening against the published PS-CA, CA:FeX and CA:eReC test scripts
-- Licensed terminology release loaders: SNOMED CT CA, LOINC, pCLOCD, ICD-10-CA and CCI ingested from their distribution formats into the pack store
-- Native SFTP client, Postgres and MySQL pollers, cron-style scheduled pollers
-- Richer link simulation: packet loss and bandwidth shaping on top of the latency, jitter and outage model in demo/satlink.ts
-- mTLS between nodes, OAuth 2.0 and SMART on FHIR for API consumers, Entra ID integration
-- Admin UI second round: channel designer, mapping editor with live fixtures, dashboards over history
+- Terminology: ValueSet and ConceptMap import from release formats (concepts land today; memberships and mappings are still pack JSON)
+- Subscription topics and the R5 backport, alongside today's R4 rest-hook criteria
+- Structured audit: who read which resource, on the same durable chain as message lineage
+- Horizontal operation: today a Portage node is a single writer, which suits a community site but not a territorial hub

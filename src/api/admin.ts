@@ -42,6 +42,7 @@ import type { Engine } from "../core/engine.ts";
 import { checkCapability, toOperationOutcome, validateResource } from "../conformance/validator.ts";
 import { applyMapping } from "../transform/mapper.ts";
 import { AuthGate } from "../auth/gate.ts";
+import { VERSION } from "../version.ts";
 import type { TlsConfig } from "./tls.ts";
 import type { ChannelConfig, MappingDoc, MessageRow } from "../types.ts";
 
@@ -281,7 +282,7 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
   if (method === "GET" && path === "/api/conformance/capability") {
     const pack = engine.conformance.get(url.searchParams.get("pack") ?? "");
     if (!pack) return send(res, 404, { error: "unknown pack" });
-    return send(res, 200, checkCapability(pack, engine.fhir.capability(baseUrl(req), "0.3.0")));
+    return send(res, 200, checkCapability(pack, engine.fhir.capability(baseUrl(req), VERSION)));
   }
 
   if (method === "GET" && path === "/fhir/CodeSystem/$lookup") {
@@ -381,7 +382,7 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
   }
 
   if (path === "/fhir/metadata" && method === "GET") {
-    return send(res, 200, engine.fhir.capability(baseUrl(req), "0.3.0"));
+    return send(res, 200, engine.fhir.capability(baseUrl(req), VERSION));
   }
 
   m = /^\/fhir\/([A-Z][A-Za-z]+)$/.exec(path);
