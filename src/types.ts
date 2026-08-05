@@ -172,6 +172,14 @@ export interface MllpDestinationConfig {
 export interface FhirStoreDestinationConfig {
   id?: string;
   type: "fhirstore";
+  /**
+   * Conformance pack enforced as the resource is written, overriding the
+   * engine-wide default. reject fails the delivery (which retries, then
+   * dead-letters) and stores nothing; annotate records the issues on the
+   * delivery ack and stores the resource anyway.
+   */
+  validatePack?: string;
+  validateMode?: "reject" | "annotate";
   maxAttempts?: number;
   backoffBaseMs?: number;
   backoffCapMs?: number;

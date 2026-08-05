@@ -106,9 +106,13 @@ export class DeliveryWorker {
     if (dest.type === "fhirstore") {
       if (!this.fhir) throw new Error("FHIR store not attached to this worker");
       const resource = JSON.parse(payload) as Record<string, unknown>;
-      const r = this.fhir.upsert(resource);
+      // A conformance failure throws, so the delivery retries and eventually
+      // dead-letters with the reason attached, exactly like a rejected HTTP
+      // POST. Nothing reaches the facade.
+      const r = this.fhir.upsert(resource, { pack: dest.validatePack, mode: dest.validateMode });
       const verb = r.created ? "created" : r.changed ? "updated" : "unchanged";
-      return `${r.resourceType}/${r.id} v${r.versionId} ${verb}`;
+      const annotated = r.issues?.length ? ` [${r.issues.length} conformance issue(s): ${r.issues[0].message}]` : "";
+      return `${r.resourceType}/${r.id} v${r.versionId} ${verb}${annotated}`;
     }
 
     if (dest.type === "http") {

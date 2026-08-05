@@ -34,6 +34,12 @@ interface RuntimeChannel {
 export interface EngineOptions {
   dbPath: string;
   tickMs?: number;
+  /**
+   * Conformance pack enforced on every facade write that does not name its
+   * own. A destination's validatePack overrides it.
+   */
+  validatePack?: string;
+  validateMode?: "reject" | "annotate";
 }
 
 export class Engine {
@@ -50,10 +56,18 @@ export class Engine {
 
   constructor(opts: EngineOptions) {
     this.db = new Db(opts.dbPath);
-    this.fhir = new FhirStore(this.db);
-    this.worker = new DeliveryWorker(this.db, opts.tickMs ?? 250, 25, this.fhir);
+    // The terminology store and conformance registry are built first: the FHIR
+    // facade validates writes against them, so it cannot be constructed before
+    // they exist.
     this.terminology = new TerminologyStore(this.db);
     this.conformance = new ConformanceRegistry();
+    this.fhir = new FhirStore(this.db, {
+      conformance: this.conformance,
+      terminology: this.terminology,
+      defaultPack: opts.validatePack,
+      defaultMode: opts.validateMode,
+    });
+    this.worker = new DeliveryWorker(this.db, opts.tickMs ?? 250, 25, this.fhir);
     this.subs = new SubscriptionManager(this.db, this.worker);
     this.keys = new ApiKeyStore(this.db);
     this.fhir.onChange((result, resource) => this.subs.notify(result, resource));

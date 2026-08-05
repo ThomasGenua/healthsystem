@@ -8,6 +8,9 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import type { Db } from "../db.ts";
+import { validateResource, type ConformanceRegistry } from "../conformance/validator.ts";
+import type { TerminologyStore } from "../terminology/store.ts";
+import type { ConformanceIssue } from "../types.ts";
 
 export interface FhirUpsertResult {
   resourceType: string;
@@ -15,6 +18,26 @@ export interface FhirUpsertResult {
   versionId: number;
   created: boolean;
   changed: boolean;
+  /** Conformance issues found at write time. Only present in annotate mode. */
+  issues?: ConformanceIssue[];
+}
+
+/** Which pack to enforce on a write, and whether a failure blocks it. */
+export interface FacadeValidation {
+  pack?: string;
+  mode?: "reject" | "annotate";
+}
+
+/**
+ * What the store needs to validate. Supplied by the Engine, which owns the
+ * registry and the terminology store.
+ */
+export interface ValidationContext {
+  conformance: ConformanceRegistry;
+  terminology?: TerminologyStore;
+  /** Applied to every write that does not name its own pack. */
+  defaultPack?: string;
+  defaultMode?: "reject" | "annotate";
 }
 
 export interface FhirSearchResult {
@@ -33,9 +56,11 @@ interface Identifier {
 export class FhirStore {
   private db: Db;
   private listeners: Array<(result: FhirUpsertResult, resource: Record<string, unknown>) => void> = [];
+  private validation?: ValidationContext;
 
-  constructor(db: Db) {
+  constructor(db: Db, validation?: ValidationContext) {
     this.db = db;
+    this.validation = validation;
   }
 
   /** Register a change listener, fired after every created or updated upsert. */
@@ -43,7 +68,7 @@ export class FhirStore {
     this.listeners.push(fn);
   }
 
-  upsert(resource: Record<string, unknown>): FhirUpsertResult {
+  upsert(resource: Record<string, unknown>, validate?: FacadeValidation): FhirUpsertResult {
     const type = resource.resourceType;
     if (typeof type !== "string" || !/^[A-Z][A-Za-z]{1,63}$/.test(type)) {
       throw new Error("FHIR resource requires a valid resourceType");
@@ -55,6 +80,14 @@ export class FhirStore {
         : deriveId(type, idents);
 
     const body: Record<string, unknown> = { ...resource, id };
+
+    // Validation gates the write, so it must run before anything touches the
+    // database — ahead of the unchanged-content short circuit below, not just
+    // ahead of the INSERT. A rejected resource is never stored, which is what
+    // makes a retry honest: the same delivery re-validates from scratch
+    // instead of finding its own earlier write already sitting there.
+    const issues = this.runValidation(body, validate);
+
     const hash = createHash("sha256").update(canonical(stripVolatileMeta(body))).digest("hex");
 
     const existing = this.db.sql
@@ -62,7 +95,14 @@ export class FhirStore {
       .get(type, id) as { version_id: number; hash: string } | undefined;
 
     if (existing && existing.hash === hash) {
-      return { resourceType: type, id, versionId: existing.version_id, created: false, changed: false };
+      return {
+        resourceType: type,
+        id,
+        versionId: existing.version_id,
+        created: false,
+        changed: false,
+        ...(issues.length ? { issues } : {}),
+      };
     }
 
     const versionId = existing ? existing.version_id + 1 : 1;
@@ -87,9 +127,47 @@ export class FhirStore {
       if (ident.value) ins.run(type, id, ident.system ?? "", ident.value);
     }
 
-    const result: FhirUpsertResult = { resourceType: type, id, versionId, created: !existing, changed: true };
+    const result: FhirUpsertResult = {
+      resourceType: type,
+      id,
+      versionId,
+      created: !existing,
+      changed: true,
+      ...(issues.length ? { issues } : {}),
+    };
+    // Listeners (today: rest-hook subscription notification) only ever see
+    // resources that passed validation and actually persisted.
     for (const fn of this.listeners) fn(result, body);
     return result;
+  }
+
+  /**
+   * Runs the configured conformance pack against a resource about to be
+   * written. Throws in reject mode; returns the issues in annotate mode.
+   *
+   * This deliberately re-checks resources a channel pipeline may already have
+   * validated. The pipeline runs at ingest; the write happens later off the
+   * delivery queue — 250ms later normally, but hours later for a retried or
+   * replayed delivery, by which time a pack may have been tightened. This is
+   * the check that reflects the rules in force when the data actually lands.
+   */
+  private runValidation(resource: Record<string, unknown>, validate?: FacadeValidation): ConformanceIssue[] {
+    const ctx = this.validation;
+    if (!ctx) return [];
+    const packId = validate?.pack ?? ctx.defaultPack;
+    if (!packId) return [];
+
+    const pack = ctx.conformance.get(packId);
+    if (!pack) throw new Error(`Unknown conformance pack: ${packId}`);
+
+    const issues = validateResource(pack, resource, ctx.terminology);
+    const errors = issues.filter((i) => i.severity === "error");
+    const mode = validate?.mode ?? ctx.defaultMode ?? "reject";
+    if (mode === "reject" && errors.length > 0) {
+      const more = errors.length > 1 ? ` (+${errors.length - 1} more)` : "";
+      throw new Error(`Conformance ${packId}: ${errors[0].message}${more}`);
+    }
+    return issues;
   }
 
   get(type: string, id: string): Record<string, unknown> | undefined {

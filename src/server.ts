@@ -69,7 +69,11 @@ function buildAuthGate(engine: Engine): AuthGate {
 }
 
 async function main(): Promise<void> {
-  const engine = new Engine({ dbPath: join(DATA_DIR, "portage.db") });
+  const engine = new Engine({
+    dbPath: join(DATA_DIR, "portage.db"),
+    validatePack: process.env.PORTAGE_VALIDATE_PACK,
+    validateMode: process.env.PORTAGE_VALIDATE_MODE === "annotate" ? "annotate" : "reject",
+  });
 
   if (existsSync(MAPPINGS_DIR)) {
     for (const f of readdirSync(MAPPINGS_DIR).filter((f) => f.endsWith(".json"))) {
