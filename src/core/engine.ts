@@ -16,6 +16,7 @@ import { FhirStore } from "../fhir/store.ts";
 import { SubscriptionManager } from "../fhir/subscriptions.ts";
 import { TerminologyStore } from "../terminology/store.ts";
 import { ConformanceRegistry, validateResource } from "../conformance/validator.ts";
+import { ApiKeyStore } from "../auth/keys.ts";
 import { buildAck, getHl7, parseHl7, serializeHl7 } from "../hl7/parser.ts";
 import { startMllpServer, type MllpServerHandle } from "../hl7/mllp.ts";
 import { applyMapping, type MapperContext } from "../transform/mapper.ts";
@@ -42,6 +43,7 @@ export class Engine {
   readonly terminology: TerminologyStore;
   readonly conformance: ConformanceRegistry;
   readonly subs: SubscriptionManager;
+  readonly keys: ApiKeyStore;
   readonly mappings = new Map<string, MappingDoc>();
   private channels = new Map<string, RuntimeChannel>();
   private mapperCtx: MapperContext;
@@ -53,6 +55,7 @@ export class Engine {
     this.terminology = new TerminologyStore(this.db);
     this.conformance = new ConformanceRegistry();
     this.subs = new SubscriptionManager(this.db, this.worker);
+    this.keys = new ApiKeyStore(this.db);
     this.fhir.onChange((result, resource) => this.subs.notify(result, resource));
     this.mapperCtx = {
       translate: (value, args) => {

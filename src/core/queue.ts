@@ -6,8 +6,10 @@
  * or discarding its dead letter. The "fhirstore" destination writes into
  * the local FHIR facade instead of a remote endpoint.
  */
+import { request as httpsRequest } from "node:https";
+import { readFileSync } from "node:fs";
 import type { Db } from "../db.ts";
-import type { DeliveryRow, DestinationConfig } from "../types.ts";
+import type { DeliveryRow, DestinationConfig, DestinationTlsConfig } from "../types.ts";
 import type { FhirStore } from "../fhir/store.ts";
 import { mllpSend } from "../hl7/mllp.ts";
 
@@ -110,16 +112,26 @@ export class DeliveryWorker {
     }
 
     if (dest.type === "http") {
+      const headers = {
+        "content-type": dest.contentType ?? contentType,
+        ...(dest.headers ?? {}),
+      };
+      const timeoutMs = dest.timeoutMs ?? DEFAULTS.timeoutMs;
+
+      // fetch() cannot present a client certificate, so a destination that
+      // needs mutual TLS goes out through node:https instead. Everything else
+      // stays on fetch.
+      if (dest.tls) {
+        return httpsSend(dest.url, dest.method ?? "POST", headers, payload, timeoutMs, dest.tls);
+      }
+
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), dest.timeoutMs ?? DEFAULTS.timeoutMs);
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
       timer.unref?.();
       try {
         const res = await fetch(dest.url, {
           method: dest.method ?? "POST",
-          headers: {
-            "content-type": dest.contentType ?? contentType,
-            ...(dest.headers ?? {}),
-          },
+          headers,
           body: payload,
           signal: controller.signal,
         });
@@ -139,4 +151,54 @@ export class DeliveryWorker {
 
     throw new Error(`Unknown destination type: ${(dest as { type: string }).type}`);
   }
+}
+
+/**
+ * POST/PUT over node:https with a client certificate. Certificate material is
+ * read per request rather than cached, so rotating a cert on disk takes effect
+ * on the next attempt without restarting the engine — which matters when the
+ * retry that follows a rotation is the one that has to succeed.
+ */
+function httpsSend(
+  url: string,
+  method: string,
+  headers: Record<string, string>,
+  payload: string,
+  timeoutMs: number,
+  tls: DestinationTlsConfig
+): Promise<string | null> {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const req = httpsRequest(
+      {
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port || 443,
+        path: `${target.pathname}${target.search}`,
+        method,
+        headers: { ...headers, "content-length": String(Buffer.byteLength(payload)) },
+        cert: tls.certPath ? readFileSync(tls.certPath) : undefined,
+        key: tls.keyPath ? readFileSync(tls.keyPath) : undefined,
+        ca: tls.caPath ? readFileSync(tls.caPath) : undefined,
+        rejectUnauthorized: tls.rejectUnauthorized !== false,
+        timeout: timeoutMs,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => {
+          const body = Buffer.concat(chunks).toString("utf8");
+          const status = res.statusCode ?? 0;
+          if (status < 200 || status >= 300) {
+            reject(new Error(`HTTP ${status}: ${body.slice(0, 300)}`));
+            return;
+          }
+          resolve(body.slice(0, 4_000) || null);
+        });
+      }
+    );
+    req.on("timeout", () => req.destroy(new Error(`timeout after ${timeoutMs}ms`)));
+    req.on("error", reject);
+    req.end(payload);
+  });
 }

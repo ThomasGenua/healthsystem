@@ -1,6 +1,10 @@
 /**
  * Admin and ingest HTTP API. No framework: node:http with a small router.
  *
+ * Every request passes one authentication gate before any route runs (see
+ * auth/gate.ts). Scopes: /api/* needs `admin`, GET /fhir/* needs `read`,
+ * writes need `write`. The UI shell, /api/health and /fhir/metadata are open.
+ *
  * GET  /api/health                       liveness and stats
  * GET  /api/channels                     list channels with runtime state
  * POST /api/channels                     create or replace a channel
@@ -12,6 +16,9 @@
  * POST /api/deliveries/:id/replay        requeue a dead, delivered or discarded delivery
  * POST /api/deliveries/:id/discard       discard a dead delivery, releasing ordered flow
  * GET  /api/chain/verify?channel_id      verify the channel hash chain
+ * GET  /api/keys                         list API keys (never the keys themselves)
+ * POST /api/keys                         issue a key; the response is the only time it is shown
+ * DELETE /api/keys/:id                   revoke a key
  * POST /ingest/:path                     ingest into an http-source channel
  * POST /fhir/:resourceType               ingest into matching fhir-source channels
  *
@@ -28,9 +35,12 @@
  * Admin UI:     GET / (single-file, no build step)
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer as createSecureServer } from "node:https";
 import { readFileSync } from "node:fs";
 import type { Engine } from "../core/engine.ts";
 import { checkCapability, toOperationOutcome, validateResource } from "../conformance/validator.ts";
+import { AuthGate } from "../auth/gate.ts";
+import type { TlsConfig } from "./tls.ts";
 import type { ChannelConfig, MessageRow } from "../types.ts";
 
 let UI_HTML: string | null = null;
@@ -50,15 +60,28 @@ const MAX_BODY = 25 * 1024 * 1024;
 export interface ApiHandle {
   server: Server;
   port: number;
+  tls: boolean;
   close(): Promise<void>;
 }
 
-export function startApi(engine: Engine, port: number, host = "0.0.0.0"): Promise<ApiHandle> {
-  const server = createServer((req, res) => {
-    void route(engine, req, res).catch((err) => {
+export interface ApiOptions {
+  /**
+   * Authentication gate. Omitting it leaves the API open, which is why
+   * server.ts — the real entry point — always builds one. Callers embedding
+   * startApi directly are opting out on purpose.
+   */
+  auth?: AuthGate;
+  tls?: TlsConfig;
+}
+
+export function startApi(engine: Engine, port: number, host = "0.0.0.0", options: ApiOptions = {}): Promise<ApiHandle> {
+  const gate = options.auth ?? new AuthGate();
+  const handler = (req: IncomingMessage, res: ServerResponse): void => {
+    void route(engine, req, res, gate).catch((err) => {
       send(res, 500, { error: err instanceof Error ? err.message : "internal error" });
     });
-  });
+  };
+  const server = options.tls ? createSecureServer(options.tls.serverOptions, handler) : createServer(handler);
   return new Promise((resolve, reject) => {
     server.on("error", reject);
     server.listen(port, host, () => {
@@ -67,16 +90,26 @@ export function startApi(engine: Engine, port: number, host = "0.0.0.0"): Promis
       resolve({
         server,
         port: actual,
+        tls: Boolean(options.tls),
         close: () => new Promise<void>((r) => server.close(() => r())),
       });
     });
   });
 }
 
-async function route(engine: Engine, req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, gate: AuthGate): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname.replace(/\/+$/, "") || "/";
   const method = req.method ?? "GET";
+
+  // One gate, ahead of every route. The router below is a flat if-chain with
+  // no middleware layer, so this is the only place a check cannot be
+  // forgotten when a route is added.
+  const auth = await gate.check(method, path, req.headers);
+  if (!auth.ok) {
+    if (auth.status === 401) res.setHeader("www-authenticate", gate.challenge);
+    return send(res, auth.status, { error: auth.error });
+  }
 
   if (method === "GET" && (path === "/" || path === "/ui")) {
     const html = uiHtml();
@@ -150,6 +183,26 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse):
     const channelId = url.searchParams.get("channel_id");
     if (!channelId) return send(res, 400, { error: "channel_id required" });
     return send(res, 200, engine.db.verifyChain(channelId));
+  }
+
+  if (path === "/api/keys" && method === "GET") {
+    return send(res, 200, engine.keys.list());
+  }
+  if (path === "/api/keys" && method === "POST") {
+    const body = JSON.parse(await readBody(req)) as { name?: string; scopes?: string[] };
+    if (!body.name) return send(res, 400, { error: "name required" });
+    try {
+      // The plaintext key appears in this response and nowhere else, ever.
+      return send(res, 201, engine.keys.issue(body.name, body.scopes));
+    } catch (err) {
+      return send(res, 400, { error: err instanceof Error ? err.message : "cannot issue key" });
+    }
+  }
+  m = /^\/api\/keys\/([0-9a-f-]+)$/.exec(path);
+  if (m && method === "DELETE") {
+    return engine.keys.revoke(m[1])
+      ? send(res, 200, { ok: true })
+      : send(res, 404, { error: "unknown or already revoked" });
   }
 
   if (method === "GET" && path === "/api/terminology/lookup") {

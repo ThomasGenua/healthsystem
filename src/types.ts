@@ -124,6 +124,19 @@ export type PipelineStep =
   | Hl7GroupSplit
   | ProfileValidate;
 
+/**
+ * Client certificate for an outbound destination. Present it and the delivery
+ * goes out over node:https rather than fetch, which cannot carry one.
+ */
+export interface DestinationTlsConfig {
+  certPath?: string;
+  keyPath?: string;
+  /** CA that signs the remote's certificate, when it is not publicly trusted. */
+  caPath?: string;
+  /** Defaults to true. Turning it off disables peer verification entirely. */
+  rejectUnauthorized?: boolean;
+}
+
 export interface HttpDestinationConfig {
   id?: string;
   type: "http";
@@ -131,6 +144,7 @@ export interface HttpDestinationConfig {
   method?: "POST" | "PUT";
   headers?: Record<string, string>;
   contentType?: string;
+  tls?: DestinationTlsConfig;
   timeoutMs?: number;
   maxAttempts?: number;
   backoffBaseMs?: number;
@@ -245,6 +259,18 @@ export interface SubscriptionRow {
   endpoint: string;
   payload: string;
   created_at: string;
+}
+
+export interface ApiKeyRow {
+  id: string;
+  name: string;
+  /** SHA-256 of the key. The key itself is never stored. */
+  hash: string;
+  /** Space-delimited scope list. */
+  scopes: string;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
 }
 
 /** Declarative conformance pack: profile rules per resource type. */

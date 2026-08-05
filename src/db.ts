@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { DeliveryRow, MessageRow, MessageStatus, SubscriptionRow } from "./types.ts";
+import type { ApiKeyRow, DeliveryRow, MessageRow, MessageStatus, SubscriptionRow } from "./types.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS channels (
@@ -125,6 +125,19 @@ CREATE TABLE IF NOT EXISTS fhir_subscriptions (
   payload TEXT NOT NULL DEFAULT 'application/fhir+json',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Only the SHA-256 of a key is stored. The key itself is shown once, at issue
+-- time, and is unrecoverable afterwards.
+CREATE TABLE IF NOT EXISTS api_keys (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  hash TEXT NOT NULL UNIQUE,
+  scopes TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_used_at TEXT,
+  revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(hash);
 `;
 
 export class Db {
@@ -414,6 +427,42 @@ export class Db {
       .prepare("UPDATE deliveries SET state = 'discarded' WHERE id = ? AND state = 'dead'")
       .run(id);
     return r.changes > 0;
+  }
+
+  /* ------------------------------- api keys ----------------------------- */
+
+  insertApiKey(id: string, name: string, hash: string, scopes: string[]): void {
+    this.sql
+      .prepare("INSERT INTO api_keys (id, name, hash, scopes) VALUES (?, ?, ?, ?)")
+      .run(id, name, hash, scopes.join(" "));
+  }
+
+  /** Looks a key up by hash. Revoked keys never resolve. */
+  findApiKeyByHash(hash: string): ApiKeyRow | undefined {
+    return this.sql
+      .prepare("SELECT * FROM api_keys WHERE hash = ? AND revoked_at IS NULL")
+      .get(hash) as ApiKeyRow | undefined;
+  }
+
+  touchApiKey(id: string): void {
+    this.sql.prepare("UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?").run(id);
+  }
+
+  listApiKeys(): ApiKeyRow[] {
+    return this.sql
+      .prepare("SELECT * FROM api_keys ORDER BY created_at DESC")
+      .all() as unknown as ApiKeyRow[];
+  }
+
+  revokeApiKey(id: string): boolean {
+    const r = this.sql
+      .prepare("UPDATE api_keys SET revoked_at = datetime('now') WHERE id = ? AND revoked_at IS NULL")
+      .run(id);
+    return r.changes > 0;
+  }
+
+  countActiveApiKeys(): number {
+    return (this.sql.prepare("SELECT COUNT(*) AS n FROM api_keys WHERE revoked_at IS NULL").get() as { n: number }).n;
   }
 
   stats(): Record<string, unknown> {
