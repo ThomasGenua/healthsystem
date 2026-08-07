@@ -19,8 +19,9 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Retention**, redacting stored payloads on a policy while leaving the chain verifiable.
 - **Rate limiting**, closing the flood-the-audit-trail vector the audit work opened.
 - **Verified online backup**, and health signals a monitor can alert on.
+- **One engine per database**, enforced, so an overlapping deploy cannot silently duplicate messages.
 
-146 tests. Backend first, tests before UI.
+154 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -71,7 +72,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 146 tests
+npm test          # 154 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -363,6 +364,23 @@ Runs a real engine in its own process against a real database file, SIGKILLs it 
 The demo's "zero duplicates" claim is about an *outage*, and still holds there: a send that fails is recorded as failed, so nothing is ambiguous. A crash is the harder case, and it is worth being precise about the difference.
 
 A restart also requeues any delivery left in flight. Without that, one orphaned row stops a feed permanently — nothing ever claims an in-flight delivery, and an ordered destination treats it as blocking, so everything behind it waits forever. It fails silently, which is the worst way for a clinical feed to fail.
+
+### One engine per database
+
+That reclaim assumes nothing else is running, and the engine now enforces it rather than assuming it. A second engine started against the same database file refuses, naming the process that holds it:
+
+```
+another Portage instance owns this database (pid 4744 on ykpcc-01, last seen 1s ago).
+Two engines on one database duplicate messages.
+```
+
+SQLite permits two writers, so without the check nothing objects — and the failure is silent rather than loud. Both engines claim due deliveries, and each one's startup reclaim requeues the *other's* genuinely in-flight sends, so a clinical message goes out twice. An overlapping deploy or a stray second `npm start` is enough. `test/instance-lock.test.ts` demonstrates the duplication against a real second engine rather than only asserting the refusal.
+
+The claim has to survive the case it exists to protect, so a crash must not deadlock the restart that follows it:
+
+- **Holder on this host, process gone** — taken over immediately, checked by pid. This is the ordinary crash-then-restart path and it costs no delay, which is why `npm run crashtest` still restarts instantly.
+- **Holder on another host, or a reused pid** — a pid from another machine says nothing about whether that process is alive, so the only safe signal is the heartbeat. The claim is honoured until it goes stale (default 20s, `lockStaleMs`).
+- **Clean shutdown** — released on `stop()`, so a planned restart never sits out the staleness window.
 
 ## Architecture
 

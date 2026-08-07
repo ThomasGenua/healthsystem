@@ -67,6 +67,12 @@ export interface EngineOptions {
   connectors?: ConnectorFactories;
   /** How long stored patient data is kept. Off unless configured. */
   retention?: RetentionPolicy;
+  /**
+   * How long another instance's claim on the database stays valid without a
+   * heartbeat. A crashed holder on this host is detected at once by its pid,
+   * so this only bounds the cross-host and reused-pid cases.
+   */
+  lockStaleMs?: number;
 }
 
 export class Engine {
@@ -83,6 +89,10 @@ export class Engine {
   private channels = new Map<string, RuntimeChannel>();
   private mapperCtx: MapperContext;
   private connectors: Required<ConnectorFactories>;
+  private lockTimer: NodeJS.Timeout | null = null;
+  private lockStaleMs: number;
+  private lockHeartbeatMs: number;
+  private holdsLock = false;
 
   constructor(opts: EngineOptions) {
     this.db = new Db(opts.dbPath);
@@ -106,6 +116,10 @@ export class Engine {
       sql: opts.connectors?.sql ?? connectSql,
       sftp: opts.connectors?.sftp ?? connectSftp,
     };
+    this.lockStaleMs = opts.lockStaleMs ?? 20_000;
+    // Comfortably inside the staleness window, so a slow moment never costs a
+    // running engine its own claim.
+    this.lockHeartbeatMs = Math.max(1_000, Math.floor(this.lockStaleMs / 4));
     this.fhir.onChange((result, resource) => this.subs.notify(result, resource));
     this.mapperCtx = {
       translate: (value, args) => {
@@ -135,9 +149,25 @@ export class Engine {
   }
 
   async start(): Promise<void> {
-    // Before anything else: a previous process may have died mid-delivery,
-    // leaving rows marked in flight that nothing will ever claim and that
-    // block every ordered message behind them.
+    // Ownership first. The reclaim below assumes no other engine is running,
+    // and without that check a second instance would requeue this one's
+    // genuinely in-flight deliveries and send them twice.
+    const lock = this.db.acquireInstanceLock(this.lockStaleMs);
+    if (!lock.acquired) {
+      const held = lock.heldBy!;
+      throw new Error(
+        `another Portage instance owns this database (pid ${held.pid} on ${held.host}, ` +
+          `last seen ${Math.round(held.ageMs / 1000)}s ago). Two engines on one database duplicate messages. ` +
+          `If that process is gone, wait for its claim to expire and start again.`
+      );
+    }
+    this.holdsLock = true;
+    this.lockTimer = setInterval(() => this.db.heartbeatInstanceLock(), this.lockHeartbeatMs);
+    this.lockTimer.unref?.();
+
+    // A previous process may have died mid-delivery, leaving rows marked in
+    // flight that nothing will ever claim and that block every ordered
+    // message behind them.
     const reclaimed = this.db.reclaimInflight();
     if (reclaimed > 0) {
       console.warn(`recovered ${reclaimed} delivery(ies) interrupted by an unclean shutdown; requeued`);
@@ -153,6 +183,8 @@ export class Engine {
   }
 
   async stop(): Promise<void> {
+    if (this.lockTimer) clearInterval(this.lockTimer);
+    this.lockTimer = null;
     await this.worker.stop();
     this.retention.stop();
     for (const rc of this.channels.values()) {
@@ -163,6 +195,18 @@ export class Engine {
       await this.dropSftpClient(rc);
     }
     this.channels.clear();
+    // Release before closing, so a restart does not have to wait out a claim
+    // this process no longer holds. Only if this engine actually holds it:
+    // an engine whose start() was refused still has to be stoppable to close
+    // its handle, and stopping it must not free the claim it lost to.
+    if (this.holdsLock) {
+      this.holdsLock = false;
+      try {
+        this.db.releaseInstanceLock();
+      } catch {
+        // A database already gone is nothing to complain about on the way out.
+      }
+    }
     this.db.close();
   }
 

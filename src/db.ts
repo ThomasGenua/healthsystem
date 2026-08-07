@@ -2,8 +2,20 @@
 import { DatabaseSync } from "node:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
+import { hostname } from "node:os";
 import { dirname } from "node:path";
 import type { ApiKeyRow, DeliveryRow, MessageRow, MessageStatus, SubscriptionRow } from "./types.ts";
+
+/** Whether a pid is still running. Signal 0 checks without delivering. */
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM means it exists but belongs to someone else, which still counts.
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS channels (
@@ -178,6 +190,17 @@ CREATE TABLE IF NOT EXISTS audit_events (
 CREATE INDEX IF NOT EXISTS idx_audit_recorded ON audit_events(recorded_at);
 CREATE INDEX IF NOT EXISTS idx_audit_principal ON audit_events(principal_id, recorded_at);
 CREATE INDEX IF NOT EXISTS idx_audit_patient ON audit_events(patient, recorded_at);
+
+-- At most one engine may own a database. Two would both claim due deliveries
+-- and each would requeue the other's in-flight ones, duplicating messages.
+-- The CHECK keeps it to a single row.
+CREATE TABLE IF NOT EXISTS instance_lock (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  pid INTEGER NOT NULL,
+  host TEXT NOT NULL,
+  acquired_at TEXT NOT NULL,
+  heartbeat_at INTEGER NOT NULL
+);
 `;
 
 export interface DbOptions {
@@ -693,6 +716,72 @@ export class Db {
       .prepare("UPDATE deliveries SET state = 'discarded' WHERE id = ? AND state = 'dead'")
       .run(id);
     return r.changes > 0;
+  }
+
+  /* --------------------------- instance lock ---------------------------- */
+
+  /**
+   * Claims exclusive ownership of this database for the calling process.
+   *
+   * Two engines on one file is silent corruption rather than an error: both
+   * claim due deliveries, and each one's startup reclaim requeues the other's
+   * genuinely in-flight messages, so a message goes out twice. SQLite happily
+   * permits it, so the check has to be here.
+   *
+   * A lock has to survive the case it exists to protect — a crash — without
+   * deadlocking the restart that follows. Two escapes, in order:
+   *
+   *   If the holder is on this host and its process is gone, take over at
+   *   once. That is the common case, and it costs no delay.
+   *
+   *   Otherwise wait for the heartbeat to go stale. That covers a holder on
+   *   another host, or a reused pid, at the cost of a bounded wait.
+   */
+  acquireInstanceLock(staleMs = 20_000): { acquired: boolean; heldBy?: { pid: number; host: string; ageMs: number } } {
+    const host = hostname();
+    const now = Date.now();
+    const held = this.sql.prepare("SELECT pid, host, heartbeat_at FROM instance_lock WHERE id = 1").get() as
+      | { pid: number; host: string; heartbeat_at: number }
+      | undefined;
+
+    if (held) {
+      const ageMs = now - held.heartbeat_at;
+      const sameHost = held.host === host;
+      const holderGone = sameHost && !processAlive(held.pid);
+      if (!holderGone && ageMs < staleMs) {
+        return { acquired: false, heldBy: { pid: held.pid, host: held.host, ageMs } };
+      }
+    }
+
+    this.sql
+      .prepare(
+        `INSERT INTO instance_lock (id, pid, host, acquired_at, heartbeat_at) VALUES (1, ?, ?, datetime('now'), ?)
+         ON CONFLICT(id) DO UPDATE SET pid = excluded.pid, host = excluded.host,
+           acquired_at = excluded.acquired_at, heartbeat_at = excluded.heartbeat_at`
+      )
+      .run(process.pid, host, now);
+    return { acquired: true };
+  }
+
+  /**
+   * Keeps this process's claim fresh.
+   *
+   * Matched on host as well as pid: pid spaces are per-machine, so on a shared
+   * volume this process could otherwise refresh — and so indefinitely prolong
+   * — a same-numbered claim belonging to an engine on another host.
+   */
+  heartbeatInstanceLock(): void {
+    this.sql
+      .prepare("UPDATE instance_lock SET heartbeat_at = ? WHERE id = 1 AND pid = ? AND host = ?")
+      .run(Date.now(), process.pid, hostname());
+  }
+
+  /**
+   * Releases the claim on a clean shutdown, so a restart need not wait.
+   * Scoped the same way, so shutting down never frees someone else's claim.
+   */
+  releaseInstanceLock(): void {
+    this.sql.prepare("DELETE FROM instance_lock WHERE id = 1 AND pid = ? AND host = ?").run(process.pid, hostname());
   }
 
   /**
