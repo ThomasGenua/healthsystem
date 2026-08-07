@@ -5,7 +5,8 @@
  * auth/gate.ts). Scopes: /api/* needs `admin`, GET /fhir/* needs `read`,
  * writes need `write`. The UI shell, /api/health and /fhir/metadata are open.
  *
- * GET  /api/health                       liveness and stats
+ * GET  /api/health                       liveness, counters and alertable signals
+ * GET  /metrics                          Prometheus exposition (public, no patient data)
  * GET  /api/channels                     list channels with runtime state
  * POST /api/channels                     create or replace a channel
  * GET  /api/channels/:id                 channel configuration
@@ -16,6 +17,7 @@
  * POST /api/deliveries/:id/replay        requeue a dead, delivered or discarded delivery
  * POST /api/deliveries/:id/discard       discard a dead delivery, releasing ordered flow
  * GET  /api/chain/verify?channel_id      verify the channel hash chain
+ * POST /api/backup                       take a verified snapshot of the database
  * GET  /api/retention                    retention policy and what it would touch
  * POST /api/retention/run                apply the policy now
  * GET  /api/audit?patient=&principal=&failures=  access trail (admin only)
@@ -46,6 +48,7 @@ import { join } from "node:path";
 import type { Engine } from "../core/engine.ts";
 import { checkCapability, toOperationOutcome, validateResource } from "../conformance/validator.ts";
 import { applyMapping } from "../transform/mapper.ts";
+import { takeBackup } from "../core/backup.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
 import { VERSION } from "../version.ts";
@@ -193,7 +196,75 @@ async function route(
   }
 
   if (method === "GET" && path === "/api/health") {
-    return send(res, 200, { ok: true, stats: engine.db.stats() });
+    const signals = engine.db.healthSignals();
+    const stalledAfter = num(url.searchParams.get("stalled_after_sec")) ?? 3600;
+    // A stalled channel is one holding work that has sat longer than the
+    // threshold. Reported rather than merely counted, because "which feed"
+    // is the first thing an operator needs and the counters cannot say.
+    const stalled = signals.stalledChannels.filter((c) => c.oldestQueuedAgeSec >= stalledAfter);
+    return send(res, 200, {
+      ok: true,
+      // Degraded rather than unhealthy: the engine is working correctly by
+      // holding a backlog through an outage. It is the operator's judgement
+      // whether a backlog this old means something is wrong.
+      degraded: stalled.length > 0 || signals.deadLetters > 0,
+      stats: engine.db.stats(),
+      signals: { ...signals, stalledChannels: stalled, stalledAfterSec: stalledAfter },
+    });
+  }
+
+  if (method === "GET" && path === "/metrics") {
+    // Prometheus text exposition. Public alongside /api/health, and carrying
+    // no patient data: counters, ages and channel ids only.
+    const signals = engine.db.healthSignals();
+    const stats = engine.db.stats() as {
+      channels: number;
+      messages: Record<string, number>;
+      deliveries: Record<string, number>;
+      fhir: Record<string, number>;
+    };
+    const lines: string[] = [];
+    const metric = (name: string, help: string, type: string, samples: Array<[string, number]>): void => {
+      lines.push(`# HELP ${name} ${help}`, `# TYPE ${name} ${type}`);
+      for (const [labels, value] of samples) lines.push(`${name}${labels} ${value}`);
+    };
+
+    metric("portage_channels", "Configured channels.", "gauge", [["", stats.channels]]);
+    metric(
+      "portage_messages_total",
+      "Messages ingested, by status.",
+      "counter",
+      Object.entries(stats.messages).map(([k, v]) => [`{status="${k}"}`, v] as [string, number])
+    );
+    metric(
+      "portage_deliveries",
+      "Deliveries by state.",
+      "gauge",
+      Object.entries(stats.deliveries).map(([k, v]) => [`{state="${k}"}`, v] as [string, number])
+    );
+    metric(
+      "portage_fhir_resources",
+      "Resources in the FHIR facade, by type.",
+      "gauge",
+      Object.entries(stats.fhir).map(([k, v]) => [`{resource_type="${k}"}`, v] as [string, number])
+    );
+    metric("portage_dead_letters", "Deliveries in the dead-letter queue.", "gauge", [["", signals.deadLetters]]);
+    metric("portage_oldest_queued_age_seconds", "Age of the oldest undelivered message.", "gauge", [
+      ["", signals.oldestQueuedAgeSec ?? 0],
+    ]);
+    metric(
+      "portage_channel_oldest_queued_age_seconds",
+      "Age of the oldest undelivered message, per channel.",
+      "gauge",
+      signals.stalledChannels.map(
+        (c) => [`{channel="${c.channelId.replace(/"/g, "")}"}`, c.oldestQueuedAgeSec] as [string, number]
+      )
+    );
+
+    const body = lines.join("\n") + "\n";
+    res.writeHead(200, { "content-type": "text/plain; version=0.0.4", "content-length": Buffer.byteLength(body) });
+    res.end(body);
+    return;
   }
 
   if (path === "/api/channels" && method === "GET") {
@@ -297,6 +368,26 @@ async function route(
       bucket,
       ...engine.db.history(num(url.searchParams.get("hours")) ?? 24, bucket),
     });
+  }
+
+  if (path === "/api/backup" && method === "POST") {
+    const dir = process.env.PORTAGE_BACKUP_DIR ?? join(process.cwd(), "backups");
+    const keep = Number(process.env.PORTAGE_BACKUP_KEEP ?? "7");
+    try {
+      const result = await takeBackup(engine.db, { dir, keep: Number.isInteger(keep) && keep > 0 ? keep : undefined });
+      audit({
+        action: "E",
+        resourceType: "Backup",
+        detail: `snapshot ${result.path} (${result.bytes} bytes, ${result.verified.messages} messages verified)`,
+      });
+      return send(res, 200, result);
+    } catch (err) {
+      // A snapshot that failed verification is worse than none, because it
+      // would be trusted. Report it as a failure and record it.
+      const message = err instanceof Error ? err.message : "backup failed";
+      audit({ action: "E", resourceType: "Backup", outcome: 8, detail: message });
+      return send(res, 500, { error: message });
+    }
   }
 
   if (path === "/api/retention" && method === "GET") {

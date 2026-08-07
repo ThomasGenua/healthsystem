@@ -173,10 +173,22 @@ CREATE INDEX IF NOT EXISTS idx_audit_principal ON audit_events(principal_id, rec
 CREATE INDEX IF NOT EXISTS idx_audit_patient ON audit_events(patient, recorded_at);
 `;
 
+export interface DbOptions {
+  /**
+   * Open without writing. Used to inspect a backup snapshot: the schema is
+   * already there, and applying it would fail against a read-only file.
+   */
+  readOnly?: boolean;
+}
+
 export class Db {
   readonly sql: DatabaseSync;
 
-  constructor(path: string) {
+  constructor(path: string, opts: DbOptions = {}) {
+    if (opts.readOnly) {
+      this.sql = new DatabaseSync(path, { readOnly: true });
+      return;
+    }
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.sql = new DatabaseSync(path);
     this.sql.exec("PRAGMA journal_mode = WAL;");
@@ -607,6 +619,65 @@ export class Db {
       .prepare("UPDATE deliveries SET state = 'discarded' WHERE id = ? AND state = 'dead'")
       .run(id);
     return r.changes > 0;
+  }
+
+  /* -------------------------------- health ------------------------------ */
+
+  /**
+   * The signals a monitoring system can alert on.
+   *
+   * Counters answer "how much"; these answer "is anything wrong". Nobody
+   * watches a dashboard at 03:00 at a community site, so the question that
+   * matters is whether a channel has quietly stopped draining — which a total
+   * delivered count cannot show, because it looks identical whether the queue
+   * moved a minute ago or a week ago.
+   */
+  healthSignals(): {
+    deadLetters: number;
+    queued: number;
+    oldestQueuedAgeSec: number | null;
+    inflight: number;
+    stalledChannels: Array<{ channelId: string; oldestQueuedAgeSec: number; queued: number }>;
+    lastDeliveryAt: string | null;
+  } {
+    const counts = this.sql
+      .prepare("SELECT state, COUNT(*) AS n FROM deliveries GROUP BY state")
+      .all() as Array<{ state: string; n: number }>;
+    const by = Object.fromEntries(counts.map((r) => [r.state, r.n])) as Record<string, number>;
+
+    // next_attempt_at is epoch milliseconds and is set when a delivery is
+    // first queued, so the earliest one is the head of the oldest backlog.
+    const oldest = this.sql
+      .prepare("SELECT MIN(next_attempt_at) AS t FROM deliveries WHERE state IN ('queued', 'inflight')")
+      .get() as { t: number | null };
+
+    const perChannel = this.sql
+      .prepare(
+        `SELECT channel_id, MIN(next_attempt_at) AS t, COUNT(*) AS n
+           FROM deliveries WHERE state IN ('queued', 'inflight')
+          GROUP BY channel_id`
+      )
+      .all() as Array<{ channel_id: string; t: number; n: number }>;
+
+    const lastDelivery = this.sql
+      .prepare("SELECT MAX(delivered_at) AS t FROM deliveries WHERE delivered_at IS NOT NULL")
+      .get() as { t: string | null };
+
+    const ageSec = (epochMs: number | null): number | null =>
+      epochMs === null ? null : Math.max(0, Math.floor((Date.now() - epochMs) / 1000));
+
+    return {
+      deadLetters: by.dead ?? 0,
+      queued: by.queued ?? 0,
+      inflight: by.inflight ?? 0,
+      oldestQueuedAgeSec: ageSec(oldest.t),
+      stalledChannels: perChannel.map((r) => ({
+        channelId: r.channel_id,
+        oldestQueuedAgeSec: ageSec(r.t) ?? 0,
+        queued: r.n,
+      })),
+      lastDeliveryAt: lastDelivery.t,
+    };
   }
 
   /* -------------------------------- history ----------------------------- */
