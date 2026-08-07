@@ -20,7 +20,7 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Rate limiting**, closing the flood-the-audit-trail vector the audit work opened.
 - **Verified online backup**, and health signals a monitor can alert on.
 
-138 tests. Backend first, tests before UI.
+142 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -71,7 +71,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 138 tests
+npm test          # 142 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -333,6 +333,22 @@ About 3.5 KB of database per message, with the raw payload, its lineage, its pip
 
 The drain rate is a property worth watching in particular, because it is what a satellite outage exercises. An ordered destination sends strictly one message at a time — each only after the previous succeeded — but in a loop rather than one per timer tick. Before that distinction was drawn, an ordered channel released a single message per tick regardless of how fast the far end answered, and the rate *fell* as the backlog grew because the gating query could not use an index. A ten thousand message backlog took hours. `test/throughput.test.ts` pins the property: one pass must drain the backlog, and it must still arrive in order.
 
+## Crash recovery
+
+```bash
+npm run crashtest -- --messages 300 --kills 3
+```
+
+Runs a real engine in its own process against a real database file, SIGKILLs it partway through draining, starts it again, and checks what survived. SIGKILL rather than a graceful stop on purpose: the interesting case is the one with no chance to clean up — power loss at a community site, an OOM kill, a container stopped hard mid-deploy.
+
+**What is guaranteed:** nothing is lost, order is preserved, and the hash chain still verifies.
+
+**What is not, and cannot be:** exactly-once. If the process dies between the remote receiving a message and the outcome being committed, the two are indistinguishable, and redelivering is the only safe answer — losing it is not. At most one delivery per ordering key is ever in that state, so a crash redelivers at most one message. This is why the FHIR facade is content-addressed: a repeated upsert is a no-op, and an interface replayed into it converges rather than duplicating.
+
+The demo's "zero duplicates" claim is about an *outage*, and still holds there: a send that fails is recorded as failed, so nothing is ambiguous. A crash is the harder case, and it is worth being precise about the difference.
+
+A restart also requeues any delivery left in flight. Without that, one orphaned row stops a feed permanently — nothing ever claims an in-flight delivery, and an ordered destination treats it as blocking, so everything behind it waits forever. It fails silently, which is the worst way for a clinical feed to fail.
+
 ## Architecture
 
 ```
@@ -397,7 +413,7 @@ terminology/          terminology packs loaded at boot (labelled demo subset shi
 conformance/          conformance packs registered at boot (ps-ca, ca-fex, ca-erec)
 fixtures/             synthetic HL7 test messages and conformance fixtures
 demo/                 satellite link simulator, Meridian endpoint simulator, scripted demo
-scripts/              dev certificate generation, terminology release import, backup, load test
+scripts/              dev certificate generation, terminology release import, backup, load and crash tests
 test/                 node:test suites
 ```
 

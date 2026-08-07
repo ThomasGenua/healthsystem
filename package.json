@@ -14,6 +14,7 @@
     "demo": "node demo/run-demo.ts",
     "backup": "node scripts/backup.ts",
     "loadtest": "node scripts/loadtest.ts",
+    "crashtest": "node scripts/crashtest.ts",
     "terminology:import": "node scripts/import-terminology.ts",
     "typecheck": "tsc --noEmit"
   },

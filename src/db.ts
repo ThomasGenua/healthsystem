@@ -695,6 +695,38 @@ export class Db {
     return r.changes > 0;
   }
 
+  /**
+   * Returns deliveries left in flight by a crash to the queue.
+   *
+   * A delivery is marked inflight, sent, and then marked delivered or failed.
+   * A process that dies in the middle of that leaves the row inflight forever:
+   * nothing retries it, because only queued rows are ever claimed, and an
+   * ordered destination treats an inflight predecessor as blocking — so one
+   * orphaned row silently stops a clinical feed until someone notices.
+   *
+   * Safe only at startup, where a single-writer engine cannot have any
+   * genuinely in-flight delivery. Delivery is at-least-once, so a row
+   * reclaimed after the remote actually received it will be sent again; that
+   * is why the FHIR facade is content-addressed and an unchanged upsert is a
+   * no-op.
+   *
+   * The interrupted attempt stays counted. Not counting it would be kinder to
+   * a delivery that never left, but a message that reliably crashes the
+   * process would then retry forever instead of dead-lettering.
+   */
+  reclaimInflight(): number {
+    const r = this.sql
+      .prepare(
+        `UPDATE deliveries
+            SET state = 'queued',
+                next_attempt_at = ?,
+                last_error = 'interrupted by restart; requeued'
+          WHERE state = 'inflight'`
+      )
+      .run(Date.now());
+    return Number(r.changes);
+  }
+
   /* -------------------------------- health ------------------------------ */
 
   /**
