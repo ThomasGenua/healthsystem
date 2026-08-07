@@ -86,6 +86,10 @@ export function scopesFromSmart(raw: Iterable<string>): Set<Scope> {
 export function requiredScope(method: string, path: string): Scope | null {
   if (method === "GET" && (path === "/" || path === "/ui")) return null;
   if (method === "GET" && path === "/api/health") return null;
+  // Metrics carry counters, ages and channel ids — no patient data — and a
+  // scrape happens before any credential is configured, so it is open like
+  // liveness is.
+  if (method === "GET" && path === "/metrics") return null;
   if (method === "GET" && path === "/fhir/metadata") return null;
 
   if (path.startsWith("/api/")) return "admin";

@@ -70,11 +70,19 @@ test("firstRefusal marks only the request that crosses the threshold", () => {
 });
 
 test("tokens refill over time", async () => {
-  // 6000/min is 100/ms-ish, so a short wait visibly refills without a slow test.
   const limiter = new RateLimiter({ anonymousPerMinute: 6_000, burstFactor: 1 });
-  for (let i = 0; i < 6_000; i++) limiter.check("ip:refill", false);
-  assert.equal(limiter.check("ip:refill", false).allowed, false);
 
+  // Drain until actually refused rather than assuming a fixed count empties
+  // the bucket: tokens refill while the draining loop runs, and under load
+  // that made a fixed count leave the bucket non-empty.
+  let drained = 0;
+  while (limiter.check("ip:refill", false).allowed) {
+    if (++drained > 100_000) throw new Error("bucket never drained");
+  }
+  assert.ok(drained > 0, "the bucket held tokens before draining");
+  assert.equal(limiter.check("ip:refill", false).allowed, false, "and is empty now");
+
+  // 6000/min is 0.1 tokens per ms, so 60ms restores several.
   await new Promise((r) => setTimeout(r, 60));
   assert.equal(limiter.check("ip:refill", false).allowed, true, "waiting must restore capacity");
 });

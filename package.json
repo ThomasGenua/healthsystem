@@ -12,6 +12,7 @@
     "start": "node src/server.ts",
     "test": "node --test \"test/**/*.test.ts\"",
     "demo": "node demo/run-demo.ts",
+    "backup": "node scripts/backup.ts",
     "terminology:import": "node scripts/import-terminology.ts",
     "typecheck": "tsc --noEmit"
   },

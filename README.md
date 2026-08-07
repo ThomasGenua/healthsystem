@@ -18,8 +18,9 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Hash-chained access audit**, answering who read whose record and who was refused.
 - **Retention**, redacting stored payloads on a policy while leaving the chain verifiable.
 - **Rate limiting**, closing the flood-the-audit-trail vector the audit work opened.
+- **Verified online backup**, and health signals a monitor can alert on.
 
-114 tests. Backend first, tests before UI.
+125 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -70,7 +71,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 114 tests
+npm test          # 125 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -188,6 +189,7 @@ A refusal returns `429` with `Retry-After`. Counters are in memory, matching the
 | `PORTAGE_REDACT_AFTER_DAYS` | — | replace stored payloads older than this with a tombstone |
 | `PORTAGE_PURGE_AFTER_DAYS` | — | delete messages older than this outright |
 | `PORTAGE_RATE_AUTHENTICATED` / `_ANONYMOUS` / `PORTAGE_RATE_LIMIT` | 1200 / 120 / on | request rate limits |
+| `PORTAGE_BACKUP_DIR` / `_KEEP` | `./backups` / 7 | where POST /api/backup writes, and how many to keep |
 
 ## Audit trail
 
@@ -241,6 +243,74 @@ In-flight deliveries are never redacted — a queued payload still has to be del
 
 A sweep that destroys data records itself on the audit trail, because that is an event worth being able to account for.
 
+## Backup
+
+Losing this database is the worst thing that can happen to a node. It holds the queue that has not drained, the lineage proving what flowed, the audit trail proving who read it, and the facade a consumer is reading from — a community site with a week of backlog waiting out an outage has a week of unsent clinical messages in one file.
+
+**Copying that file is not a backup.** The engine runs SQLite in WAL mode, so committed data lives in `portage.db-wal` until a checkpoint folds it in. `cp portage.db` on a running engine yields a stale or torn snapshot that looks fine until the day it is needed — in testing, the copy could not even be opened.
+
+```bash
+npm run backup                                    # -> backups/portage-<stamp>.db
+npm run backup -- --out /mnt/usb --keep 7
+npm run backup -- --verify backups/portage-2026-08-07T15-22-33.db
+
+curl -X POST localhost:8686/api/backup -H "Authorization: Bearer $KEY"
+```
+
+Safe against a live engine: this uses SQLite's online backup API, which takes a consistent snapshot without stopping writes.
+
+**A snapshot nobody has opened is not a backup either.** Every snapshot is reopened and its hash chains walked before success is reported, so a backup that says it worked has been read back. A tampered or truncated snapshot fails here rather than on the day it is restored.
+
+Each snapshot is exactly one file — the `-wal` and `-shm` sidecars left by verification are removed, because a restore that copies a `.db` while leaving a stale `-wal` beside it would apply a write-ahead log belonging to a different database.
+
+### Restoring
+
+With the engine stopped:
+
+```bash
+systemctl stop portage
+mv data/portage.db data/portage.db.broken
+rm -f data/portage.db-wal data/portage.db-shm     # stale, and not part of the snapshot
+cp backups/portage-<stamp>.db data/portage.db
+systemctl start portage
+```
+
+Removing the sidecars is the step people skip. Left behind, SQLite tries to apply a write-ahead log belonging to the database you just replaced.
+
+`PORTAGE_BACKUP_DIR` and `PORTAGE_BACKUP_KEEP` configure the API endpoint.
+
+## Monitoring
+
+`GET /api/health` returns counters and, more usefully, the signals worth alerting on. Nobody watches a dashboard at 03:00 at a community site, and a total delivered count looks identical whether the queue moved a minute ago or a week ago.
+
+```json
+{
+  "ok": true,
+  "degraded": false,
+  "signals": {
+    "deadLetters": 0,
+    "queued": 0,
+    "oldestQueuedAgeSec": null,
+    "stalledChannels": [],
+    "lastDeliveryAt": "2026-08-07 15:22:29",
+    "stalledAfterSec": 3600
+  }
+}
+```
+
+`degraded` is set by a dead letter or a channel holding work older than `?stalled_after_sec=` (default an hour). It is deliberately *degraded* rather than *unhealthy*: an engine holding a backlog through a satellite outage is working exactly as designed, and only an operator can say whether a backlog this old means something is wrong. `stalledChannels` names the feed, which is the first thing anyone needs and the thing a counter cannot say.
+
+`GET /metrics` serves the same in Prometheus text format:
+
+```
+portage_deliveries{state="delivered"} 3
+portage_dead_letters 0
+portage_oldest_queued_age_seconds 0
+portage_channel_oldest_queued_age_seconds{channel="oru-to-fhir-observation"} 412
+```
+
+Both are public alongside liveness — a scrape happens before any credential is configured, and neither carries patient data: counters, ages and channel ids only. Neither writes to the audit trail, or a 15-second scrape would bury the disclosures the trail exists to surface.
+
 ## Architecture
 
 ```
@@ -293,6 +363,7 @@ src/
   auth/gate.ts        the one check every request passes
   audit/store.ts      hash-chained access trail
   core/retention.ts   payload redaction and purge under a retention policy
+  core/backup.ts      verified online snapshots
   connectors/sql.ts   Postgres and MySQL polling clients
   connectors/sftp.ts  SFTP polling client
   connectors/cron.ts  five-field cron schedules
@@ -304,7 +375,7 @@ terminology/          terminology packs loaded at boot (labelled demo subset shi
 conformance/          conformance packs registered at boot (ps-ca, ca-fex, ca-erec)
 fixtures/             synthetic HL7 test messages and conformance fixtures
 demo/                 satellite link simulator, Meridian endpoint simulator, scripted demo
-scripts/              dev certificate generation, terminology release import
+scripts/              dev certificate generation, terminology release import, backup
 test/                 node:test suites
 ```
 
@@ -370,6 +441,8 @@ GET    /api/deliveries?channel_id=&state=   browse; state=dead is the DLQ
 POST   /api/deliveries/:id/replay           requeue a dead, delivered or discarded delivery
 POST   /api/deliveries/:id/discard          discard a dead delivery, releasing ordered flow
 GET    /api/chain/verify?channel_id=        walk and verify the hash chain
+POST   /api/backup                          verified online snapshot of the database
+GET    /metrics                             Prometheus exposition (public, no patient data)
 GET    /api/audit?patient=&principal=&failures=  who accessed patient data
 GET    /api/audit/verify                    walk and verify the audit hash chain
 GET    /api/retention                       policy, and what a sweep would touch
