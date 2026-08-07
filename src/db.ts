@@ -78,7 +78,11 @@ CREATE TABLE IF NOT EXISTS deliveries (
   content_type TEXT NOT NULL,
   last_error TEXT,
   ack TEXT,
-  delivered_at TEXT
+  delivered_at TEXT,
+  -- Set when retention emptied this row's payload. Replay consults it: the
+  -- tombstone must never go out to a downstream system as if it were the
+  -- message.
+  redacted_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_deliveries_due ON deliveries(state, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_deliveries_order ON deliveries(ordering_key, seq);
@@ -211,6 +215,27 @@ export interface DbOptions {
   readOnly?: boolean;
 }
 
+/**
+ * Columns added to a table after it first shipped.
+ *
+ * `CREATE TABLE IF NOT EXISTS` does nothing at all to a table that already
+ * exists, so a column added to SCHEMA never reaches a database an earlier
+ * version created. Nothing complains on open — the failure arrives on the
+ * first statement that names the column, which is the first ingest, so an
+ * upgrade takes a working node off the air. New tables and new indexes are
+ * fine, because IF NOT EXISTS does the right thing for those; only columns
+ * need this.
+ *
+ * Every entry is nullable, which is what lets SQLite add it in place instead
+ * of rewriting the table, and what lets existing rows read as "written before
+ * this column existed".
+ */
+const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
+  { table: "messages", column: "raw_digest", type: "TEXT" },
+  { table: "messages", column: "redacted_at", type: "TEXT" },
+  { table: "deliveries", column: "redacted_at", type: "TEXT" },
+];
+
 export class Db {
   readonly sql: DatabaseSync;
 
@@ -223,7 +248,34 @@ export class Db {
     this.sql = new DatabaseSync(path);
     this.sql.exec("PRAGMA journal_mode = WAL;");
     this.sql.exec("PRAGMA foreign_keys = ON;");
+    // Overwrite freed content with zeros instead of leaving it in place.
+    // Without this, redacting a payload only detaches it: SQLite unlinks the
+    // old row and moves on, and the bytes stay legible in the file until some
+    // later write happens to reuse the page. A retention sweep would report
+    // success while a copy of the database — a backup, a decommissioned disk,
+    // an imaged VM — still yielded the patient record, which is the threat
+    // retention exists to answer. Verified in test/retention-leak.test.ts by
+    // searching the file rather than the columns.
+    this.sql.exec("PRAGMA secure_delete = ON;");
     this.sql.exec(SCHEMA);
+    this.migrate();
+  }
+
+  /**
+   * Brings a database created by an earlier version up to the current schema.
+   *
+   * Runs on every open and is a no-op once there is nothing to add, so it
+   * costs one PRAGMA per tracked column at boot and needs no version counter
+   * to stay in step.
+   */
+  private migrate(): void {
+    for (const { table, column, type } of ADDED_COLUMNS) {
+      const cols = this.sql.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      // An empty result means the table is not there at all, which SCHEMA
+      // has just seen to; there is nothing to alter.
+      if (cols.length === 0 || cols.some((c) => c.name === column)) continue;
+      this.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
   }
 
   close(): void {
@@ -438,11 +490,24 @@ export class Db {
    * Replaces stored payloads older than the cutoff with a tombstone.
    *
    * This is the primary retention control: the message, its lineage, its
-   * steps and its deliveries all remain, and the chain still verifies, but the
-   * patient data is gone. Deliveries are covered too — a queued payload is the
-   * same clinical content as the message it came from.
+   * steps and its deliveries all remain as rows, and the chain still verifies,
+   * but the patient data is gone.
+   *
+   * "Gone" has to mean every copy, and the engine keeps more than one. The
+   * message log holds what arrived; a pipeline step holds what the transform
+   * produced from it, which is the same patient by another encoding; a
+   * delivery holds what was sent. Less obviously, a delivery also holds what
+   * the remote said back — a FHIR server answering a create returns the
+   * resource, and a rejection quotes the value it objected to. Redacting only
+   * the first of those leaves the record fully reconstructible and reports
+   * success while doing it, which is the worst shape a privacy control can
+   * take.
+   *
+   * Verified by searching the database file for the patient's identifiers
+   * after a sweep, rather than by checking the columns this comment happens to
+   * list. See test/retention-leak.test.ts.
    */
-  redactBefore(cutoffIso: string, channelId?: string): { messages: number; deliveries: number } {
+  redactBefore(cutoffIso: string, channelId?: string): { messages: number; deliveries: number; steps: number } {
     const where = channelId ? " AND channel_id = ?" : "";
     const args = channelId ? [cutoffIso, channelId] : [cutoffIso];
 
@@ -453,18 +518,32 @@ export class Db {
       )
       .run(...(args as never[])).changes;
 
-    // Only settled deliveries: one still queued or retrying needs its payload
-    // to be deliverable.
-    const deliveries = this.sql
+    const steps = this.sql
       .prepare(
-        `UPDATE deliveries SET payload = '[redacted]'
-          WHERE state IN ('delivered', 'discarded')
-            AND payload != '[redacted]'
+        `UPDATE message_steps SET output = '[redacted]'
+          WHERE output IS NOT NULL AND output != '[redacted]'
             AND message_id IN (SELECT id FROM messages WHERE received_at < ?${where})`
       )
       .run(...(args as never[])).changes;
 
-    return { messages: Number(messages), deliveries: Number(deliveries) };
+    // Every settled state, dead included. A dead-lettered delivery sits in the
+    // queue indefinitely waiting for an operator, which makes the DLQ the
+    // longest-lived copy in the system and the last one that should be
+    // exempt. Only queued and inflight are spared, because those still have to
+    // be deliverable.
+    const deliveries = this.sql
+      .prepare(
+        `UPDATE deliveries
+            SET payload = '[redacted]', ack = CASE WHEN ack IS NULL THEN NULL ELSE '[redacted]' END,
+                last_error = CASE WHEN last_error IS NULL THEN NULL ELSE '[redacted]' END,
+                redacted_at = datetime('now')
+          WHERE state IN ('delivered', 'discarded', 'dead')
+            AND redacted_at IS NULL
+            AND message_id IN (SELECT id FROM messages WHERE received_at < ?${where})`
+      )
+      .run(...(args as never[])).changes;
+
+    return { messages: Number(messages), deliveries: Number(deliveries), steps: Number(steps) };
   }
 
   /**
@@ -701,14 +780,36 @@ export class Db {
       .all(...(args as never[])) as unknown as DeliveryRow[];
   }
 
-  replayDelivery(id: string): boolean {
+  /**
+   * Requeues a settled delivery so an operator can send it again.
+   *
+   * Refuses one whose payload retention has already emptied. The states replay
+   * accepts are exactly the states redaction empties, so without the check the
+   * tombstone goes out as though it were the message — a downstream clinical
+   * system receives `[redacted]` and has no way to tell it from real content.
+   * Failing loudly is the only safe answer: the payload is genuinely gone, and
+   * an operator asking for it is entitled to be told so rather than to have
+   * something plausible sent on their behalf.
+   */
+  replayDelivery(id: string): { ok: true } | { ok: false; reason: string } {
+    const row = this.sql.prepare("SELECT state, redacted_at FROM deliveries WHERE id = ?").get(id) as
+      | { state: string; redacted_at: string | null }
+      | undefined;
+    if (!row) return { ok: false, reason: "no such delivery" };
+    if (row.redacted_at) {
+      return {
+        ok: false,
+        reason: `payload was redacted at ${row.redacted_at} under the retention policy and cannot be replayed`,
+      };
+    }
+
     const r = this.sql
       .prepare(
         `UPDATE deliveries SET state = 'queued', attempts = 0, last_error = NULL, next_attempt_at = ?
          WHERE id = ? AND state IN ('dead', 'delivered', 'discarded')`
       )
       .run(Date.now(), id);
-    return r.changes > 0;
+    return r.changes > 0 ? { ok: true } : { ok: false, reason: `cannot replay a delivery in state '${row.state}'` };
   }
 
   discardDelivery(id: string): boolean {

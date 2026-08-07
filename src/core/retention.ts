@@ -8,12 +8,13 @@
  *
  * Two controls, and the difference matters:
  *
- *   Redaction replaces the stored payload with a tombstone. The message, its
- *   lineage, its pipeline steps and its deliveries all remain, and the hash
- *   chain still verifies in full, because the chain commits to a digest taken
- *   at ingest rather than to the payload. You keep the record that a message
- *   flowed, from where, and what it produced; you lose only the clinical
- *   content. This is almost always the right control.
+ *   Redaction replaces every stored copy of the payload with a tombstone. The
+ *   message, its lineage, its pipeline steps and its deliveries all remain as
+ *   rows, and the hash chain still verifies in full, because the chain commits
+ *   to a digest taken at ingest rather than to the payload. You keep the record
+ *   that a message flowed, from where, through which steps, and whether it was
+ *   delivered; you lose the clinical content wherever it was held. This is
+ *   almost always the right control.
  *
  *   Purging deletes the rows. It reclaims disk and it destroys the record that
  *   anything happened, so the chain can only be verified from the purge point
@@ -40,6 +41,7 @@ export interface RetentionPolicy {
 export interface RetentionResult {
   redactedMessages: number;
   redactedDeliveries: number;
+  redactedSteps: number;
   purgedMessages: number;
   purgedChannels: string[];
   redactCutoff?: string;
@@ -86,6 +88,7 @@ export class RetentionRunner {
     const result: RetentionResult = {
       redactedMessages: 0,
       redactedDeliveries: 0,
+      redactedSteps: 0,
       purgedMessages: 0,
       purgedChannels: [],
     };
@@ -103,6 +106,7 @@ export class RetentionRunner {
       const redacted = this.db.redactBefore(c);
       result.redactedMessages = redacted.messages;
       result.redactedDeliveries = redacted.deliveries;
+      result.redactedSteps = redacted.steps;
       result.redactCutoff = c;
     }
 
@@ -118,8 +122,8 @@ export class RetentionRunner {
         resourceType: "Message",
         count: result.redactedMessages + result.purgedMessages,
         detail:
-          `redacted ${result.redactedMessages} message(s) and ${result.redactedDeliveries} delivery payload(s); ` +
-          `purged ${result.purgedMessages} message(s)`,
+          `redacted ${result.redactedMessages} message(s), ${result.redactedSteps} pipeline step(s) and ` +
+          `${result.redactedDeliveries} delivery payload(s); purged ${result.purgedMessages} message(s)`,
       });
     }
 

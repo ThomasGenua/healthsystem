@@ -111,7 +111,7 @@ test("dead-letters after max attempts and replay recovers", async () => {
   assert.match(db.getDelivery(id)!.last_error ?? "", /HTTP 500/);
 
   broken = false;
-  assert.equal(db.replayDelivery(id), true);
+  assert.deepEqual(db.replayDelivery(id), { ok: true });
   await drain(worker, db, () => db.getDelivery(id)?.state === "delivered");
   assert.equal(c.bodies.length, 1);
   await c.close();
