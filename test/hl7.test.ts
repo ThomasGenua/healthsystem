@@ -85,17 +85,22 @@ test("hl7 date conversion", () => {
 });
 
 test("mllp frames and deframes including partials and coalesced frames", () => {
+  // deframe returns bytes, not text: MLLP is a byte transport and the
+  // character set is declared inside the message, so decoding here would be
+  // guessing. See test/charset.test.ts.
+  const text = (frames: Buffer[]) => frames.map((f) => f.toString("utf8"));
+
   const a = frame("MSG-A");
   const b = frame("MSG-B");
   const joined = Buffer.concat([a, b]);
   const { frames, rest } = deframe(joined);
-  assert.deepEqual(frames, ["MSG-A", "MSG-B"]);
+  assert.deepEqual(text(frames), ["MSG-A", "MSG-B"]);
   assert.equal(rest.length, 0);
 
   const partial = Buffer.concat([a, b.subarray(0, 3)]);
   const r1 = deframe(partial);
-  assert.deepEqual(r1.frames, ["MSG-A"]);
+  assert.deepEqual(text(r1.frames), ["MSG-A"]);
   const whole = Buffer.concat([r1.rest, b.subarray(3)]);
   const r2 = deframe(whole);
-  assert.deepEqual(r2.frames, ["MSG-B"]);
+  assert.deepEqual(text(r2.frames), ["MSG-B"]);
 });

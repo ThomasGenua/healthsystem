@@ -979,6 +979,7 @@ export class Db {
     inflight: number;
     stalledChannels: Array<{ channelId: string; oldestQueuedAgeSec: number; queued: number }>;
     lastDeliveryAt: string | null;
+    silentChannels: Array<{ channelId: string; lastMessageAgeSec: number | null; expectEverySec: number }>;
   } {
     const counts = this.sql
       .prepare("SELECT state, COUNT(*) AS n FROM deliveries GROUP BY state")
@@ -1017,7 +1018,63 @@ export class Db {
         queued: r.n,
       })),
       lastDeliveryAt: lastDelivery.t,
+      silentChannels: this.silentChannels(),
     };
+  }
+
+  /**
+   * Channels that have not received a message for longer than they should.
+   *
+   * Every other signal here is about things in the queue — depth, dead
+   * letters, the age of the oldest undelivered message. A feed that stops
+   * sending puts nothing in the queue, so all of them read healthy: a dead ADT
+   * interface and a quiet night are indistinguishable. At an unattended site
+   * that is the failure most likely to run for days, because the whole premise
+   * is that nobody is watching.
+   *
+   * A cadence has to be declared per channel rather than inferred. A nursing
+   * station that admits four patients a day and a regional lab pushing results
+   * every few minutes are both healthy, and no threshold fits both. Channels
+   * that declare nothing are not reported, so this stays silent until an
+   * operator says what silence would mean.
+   */
+  silentChannels(): Array<{ channelId: string; lastMessageAgeSec: number | null; expectEverySec: number }> {
+    const out: Array<{ channelId: string; lastMessageAgeSec: number | null; expectEverySec: number }> = [];
+    for (const row of this.listChannels()) {
+      if (!row.enabled) continue;
+      let expectEverySec: number | undefined;
+      try {
+        expectEverySec = (JSON.parse(row.config) as { expectMessageEverySec?: number }).expectMessageEverySec;
+      } catch {
+        // A channel whose config will not parse has larger problems, and this
+        // is a health check: it must not be the thing that throws.
+        continue;
+      }
+      if (typeof expectEverySec !== "number" || expectEverySec <= 0) continue;
+
+      const last = this.sql
+        .prepare(
+          "SELECT (julianday('now') - julianday(MAX(received_at))) * 86400.0 AS age FROM messages WHERE channel_id = ?"
+        )
+        .get(row.id) as { age: number | null };
+      // A channel that has never received anything is reported with a null
+      // age rather than skipped: never having started is as much an outage as
+      // having stopped, and it is the one an operator hits on the day they
+      // stand the feed up.
+      const ageSec = last.age === null ? null : Math.max(0, Math.round(last.age));
+      if (ageSec === null || ageSec > expectEverySec) out.push({ channelId: row.id, lastMessageAgeSec: ageSec, expectEverySec });
+    }
+    return out;
+  }
+
+  /** Seconds since a channel last received a message, or null if never. */
+  lastMessageAgeSec(channelId: string): number | null {
+    const r = this.sql
+      .prepare(
+        "SELECT (julianday('now') - julianday(MAX(received_at))) * 86400.0 AS age FROM messages WHERE channel_id = ?"
+      )
+      .get(channelId) as { age: number | null };
+    return r.age === null ? null : Math.max(0, Math.round(r.age));
   }
 
   /* -------------------------------- history ----------------------------- */

@@ -23,8 +23,10 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **In-place schema migration**, so upgrading an existing database does not take the node off the air.
 - **Truncation-resistant chains**, so deleting the most recent entries no longer verifies clean.
 - **Subscriptions behind `admin`**, so a push-only feed credential cannot arrange to receive the clinical record.
+- **Character sets honoured on the wire**, so an accented or syllabic name is not silently replaced with question marks.
+- **Silent-feed detection**, so an interface that stopped sending is not mistaken for a quiet night.
 
-177 tests. Backend first, tests before UI.
+197 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -75,7 +77,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 177 tests
+npm test          # 197 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -375,6 +377,20 @@ portage_channel_oldest_queued_age_seconds{channel="oru-to-fhir-observation"} 412
 
 Both are public alongside liveness — a scrape happens before any credential is configured, and neither carries patient data: counters, ages and channel ids only. Neither writes to the audit trail, or a 15-second scrape would bury the disclosures the trail exists to surface.
 
+### A feed that has gone quiet
+
+Every signal above reports on what is *in* the queue — depth, dead letters, the age of the oldest undelivered message, which channels are stalled. A feed that stops sending puts nothing in the queue, so all of them read healthy: a dead ADT interface and a quiet night are indistinguishable.
+
+A backlog is loud — it grows, it ages, it eventually dead-letters. Silence is not, and at an unattended site it is the failure most likely to run for days before anyone notices the records stopped arriving.
+
+```json
+{ "id": "adt", "name": "admissions", "expectMessageEverySec": 3600, "source": { "…": "…" } }
+```
+
+A channel that declares a cadence and exceeds it appears in `signals.silentChannels`, makes `/api/health` report `degraded`, and exports `portage_channel_silent{channel="adt"} 1`. `portage_channel_last_message_age_seconds` carries the age itself, so an alert is a threshold on a number rather than a special case.
+
+Off unless declared, deliberately. No threshold fits both a nursing station admitting four patients a day and a regional lab pushing results every few minutes, and an alert that fires constantly is one nobody reads — which is worse than the gap it was meant to close. A channel that has *never* received anything is reported too: never having started is as much an outage as having stopped, and it is the one an operator hits the day they stand a feed up.
+
 ## Throughput
 
 ```bash
@@ -547,6 +563,29 @@ Every polling source accepts `cron` instead of `pollMs` — a five-field express
 Pipeline steps: `filter.hl7Type` (MSH-9 allow list), `filter.hl7FieldEquals` (HL7 path equality), `filter.jsonEquals` (JSON path equality), `split.hl7Segment` (one output per instance of a repeating segment: an ORU with three OBX becomes three messages; zero instances filters the message), `split.hl7Group` (one output per anchor segment, each carrying the shared header plus everything up to the next anchor: a two-battery ORU becomes two messages that keep their own OBX and NTE children), `transform.mapping` (registered mapping id or inline document), `validate.profile` (validate JSON payloads against a conformance pack; reject fails the message, annotate records the issues and passes it through). Filtered messages are stored and acknowledged but produce no deliveries.
 
 Destinations: `http` (url, method, headers, contentType, timeoutMs, and `tls` for a client certificate), `mllp` (host, port, timeoutMs; a remote MSA AE or AR is treated as failure) and `fhirstore` (no endpoint: upserts into the local facade store, optionally gated by `validatePack` and `validateMode`). All take `maxAttempts`, `backoffBaseMs`, `backoffCapMs`, `ordered`, `skipOnDead`.
+
+## Character sets
+
+HL7 v2 carries bytes and declares what they mean in MSH-18. Decoding every frame as UTF-8 regardless — which is what this did — corrupts every message that is not UTF-8, permanently and without saying so:
+
+```
+family: "B�dard"     given: "Ren�ee"     second: "Th�r�se"
+```
+
+Those are `Bédard`, `Renée`, `Thérèse` in ISO-8859-1, which is what most older HL7 v2 interfaces emit. The replacement character is lossy, so the original bytes are gone; the sender is acknowledged `AA`, and the chain commits to the corrupted bytes and verifies clean forever. That is the same class of failure as acknowledging a message that was never stored, and worse in one respect, because the corrupted record still looks like a record. It is not an edge case here either — French names, Dene names and Inuktitut syllabics are most of the register in the north.
+
+Decoding is now strict and by declaration:
+
+- **MSH-18 wins.** The sender is stating a fact about the bytes it just sent. MSH is ASCII by construction, so the field is read with a byte-preserving pass before the rest of the frame is decoded.
+- **A channel's `charset` covers senders that declare nothing**, which is most of them. Set it to `8859/1` for a feed that speaks ISO-8859-1 silently.
+- **Undecodable is refused, never substituted.** A frame that is not valid in its character set gets an `MSA|AR` naming the message control id and the reason, and nothing is stored. A rejection is recoverable; a corrupted name in a chart is not.
+- **Acknowledgements go back in the character set the sender used**, so an accented name echoed in the ACK is the one they sent.
+
+```json
+{ "id": "adt", "source": { "type": "mllp", "port": 6661, "charset": "8859/1" } }
+```
+
+Supported: `ASCII`, `8859/1`, `8859/2`, `8859/15`, `UNICODE UTF-8`. Anything else is refused by name rather than guessed at. Outbound frames are fully supported in UTF-8 and ISO-8859-1; for `8859/2` and `8859/15` the high byte values do not line up with what Node can encode, so those decode inbound in full — the direction that carries patient data — and encode ASCII outbound, refusing anything else rather than mangling it.
 
 ## Mappings
 

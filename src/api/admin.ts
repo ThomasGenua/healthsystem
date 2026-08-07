@@ -207,7 +207,10 @@ async function route(
       // Degraded rather than unhealthy: the engine is working correctly by
       // holding a backlog through an outage. It is the operator's judgement
       // whether a backlog this old means something is wrong.
-      degraded: stalled.length > 0 || signals.deadLetters > 0,
+      // A silent feed counts too. It is the one failure that produces no
+      // backlog and no dead letters, so without it here a stopped interface
+      // reports a clean bill of health for as long as it stays stopped.
+      degraded: stalled.length > 0 || signals.deadLetters > 0 || signals.silentChannels.length > 0,
       stats: engine.db.stats(),
       signals: { ...signals, stalledChannels: stalled, stalledAfterSec: stalledAfter },
     });
@@ -259,6 +262,27 @@ async function route(
       signals.stalledChannels.map(
         (c) => [`{channel="${c.channelId.replace(/"/g, "")}"}`, c.oldestQueuedAgeSec] as [string, number]
       )
+    );
+
+    // Age since each channel last received anything. A gauge rather than a
+    // counter: the question is "how long has it been quiet", and an alert is a
+    // threshold on it. Only channels that declared a cadence appear, so this
+    // never invents an expectation an operator did not set.
+    metric(
+      "portage_channel_last_message_age_seconds",
+      "Seconds since a channel last received a message.",
+      "gauge",
+      engine
+        .listChannels()
+        .map((c) => [c.id, engine.db.lastMessageAgeSec(c.id)] as const)
+        .filter((e): e is readonly [string, number] => e[1] !== null)
+        .map(([id, age]) => [`{channel="${id.replace(/"/g, "")}"}`, age] as [string, number])
+    );
+    metric(
+      "portage_channel_silent",
+      "1 when a channel has gone longer than its declared cadence without a message.",
+      "gauge",
+      signals.silentChannels.map((c) => [`{channel="${c.channelId.replace(/"/g, "")}"}`, 1] as [string, number])
     );
 
     // Chain lengths, deliberately as counters.

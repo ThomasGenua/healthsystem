@@ -13,6 +13,13 @@ export interface MllpSourceConfig {
    * an unterminated frame must not be able to grow without limit.
    */
   maxFrameBytes?: number;
+  /**
+   * Character set to assume when a sender declares none in MSH-18, which is
+   * most of them. Defaults to UNICODE UTF-8. A feed that emits ISO-8859-1
+   * without saying so is configured here as "8859/1" — otherwise its accented
+   * characters are refused rather than being silently replaced.
+   */
+  charset?: string;
 }
 
 export interface HttpSourceConfig {
@@ -253,6 +260,17 @@ export interface ChannelConfig {
   source: SourceConfig;
   pipeline?: PipelineStep[];
   destinations: DestinationConfig[];
+  /**
+   * How long this channel may go without receiving a message before it counts
+   * as silent. Off unless set, because no threshold fits both a nursing
+   * station admitting four patients a day and a lab pushing results every few
+   * minutes — the cadence has to be declared, not guessed.
+   *
+   * Without it, a feed that stops sending is invisible: every other health
+   * signal reports on what is in the queue, and a stopped feed puts nothing
+   * there, so it reads exactly like a quiet night.
+   */
+  expectMessageEverySec?: number;
 }
 
 /** Declarative mapping document. */
