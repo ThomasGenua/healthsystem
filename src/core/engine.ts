@@ -135,6 +135,13 @@ export class Engine {
   }
 
   async start(): Promise<void> {
+    // Before anything else: a previous process may have died mid-delivery,
+    // leaving rows marked in flight that nothing will ever claim and that
+    // block every ordered message behind them.
+    const reclaimed = this.db.reclaimInflight();
+    if (reclaimed > 0) {
+      console.warn(`recovered ${reclaimed} delivery(ies) interrupted by an unclean shutdown; requeued`);
+    }
     this.worker.start();
     this.retention.start();
     this.subs.load();
