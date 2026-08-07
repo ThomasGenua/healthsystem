@@ -20,8 +20,17 @@ test("route scope map: public routes, admin surface, and read/write split", () =
   assert.equal(requiredScope("GET", "/fhir/Patient"), "read");
   assert.equal(requiredScope("GET", "/fhir/Patient/abc"), "read");
   assert.equal(requiredScope("POST", "/fhir/Patient"), "write");
-  assert.equal(requiredScope("DELETE", "/fhir/Subscription/x"), "write");
   assert.equal(requiredScope("POST", "/ingest/lab"), "write");
+
+  // Subscriptions are administration, not clinical traffic, in every verb.
+  // This line previously read `write`, which is what a feed is given — so the
+  // credential a lab uses to push results in could register a rest-hook of
+  // its own and receive the facade's contents. The assertion held the hole
+  // open rather than finding it.
+  assert.equal(requiredScope("GET", "/fhir/Subscription"), "admin");
+  assert.equal(requiredScope("POST", "/fhir/Subscription"), "admin");
+  assert.equal(requiredScope("DELETE", "/fhir/Subscription/x"), "admin");
+  assert.equal(requiredScope("GET", "/fhir/AuditEvent"), "admin");
 
   // An unrecognised path must default closed, not open.
   assert.equal(requiredScope("GET", "/something-new"), "admin");

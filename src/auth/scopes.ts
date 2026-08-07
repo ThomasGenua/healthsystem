@@ -101,6 +101,19 @@ export function requiredScope(method: string, path: string): Scope | null {
   // learn the access history of every patient in it.
   if (path === "/fhir/AuditEvent" || path.startsWith("/fhir/AuditEvent/")) return "admin";
 
+  // A Subscription is likewise not clinical data. It is a standing instruction
+  // to send patient records to an address, which is a routing decision of
+  // exactly the kind POST /api/channels makes — and that needs admin.
+  //
+  // Under the general rule below it needed only `write`, which is what a feed
+  // is given: a lab or an ADT sender that should be able to push messages in
+  // and nothing else. That credential could register a rest-hook of its own
+  // choosing and have the facade's contents delivered to it, turning push-only
+  // access into a continuous read of the clinical record. Reading the list is
+  // admin for the same reason the audit trail is — it enumerates every place
+  // patient data has been arranged to go.
+  if (path === "/fhir/Subscription" || path.startsWith("/fhir/Subscription/")) return "admin";
+
   if (path.startsWith("/fhir/")) return method === "GET" ? "read" : "write";
 
   // Anything unrouted falls through to a 404 handler, but make the default
