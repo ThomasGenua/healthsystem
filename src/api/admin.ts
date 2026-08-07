@@ -16,6 +16,8 @@
  * POST /api/deliveries/:id/replay        requeue a dead, delivered or discarded delivery
  * POST /api/deliveries/:id/discard       discard a dead delivery, releasing ordered flow
  * GET  /api/chain/verify?channel_id      verify the channel hash chain
+ * GET  /api/retention                    retention policy and what it would touch
+ * POST /api/retention/run                apply the policy now
  * GET  /api/audit?patient=&principal=&failures=  access trail (admin only)
  * GET  /api/audit/verify                 verify the audit hash chain
  * GET  /fhir/AuditEvent                  the same trail as R4 AuditEvent (admin only)
@@ -249,6 +251,19 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
       bucket,
       ...engine.db.history(num(url.searchParams.get("hours")) ?? 24, bucket),
     });
+  }
+
+  if (path === "/api/retention" && method === "GET") {
+    return send(res, 200, engine.retention.describe());
+  }
+  if (path === "/api/retention/run" && method === "POST") {
+    const result = engine.retention.run();
+    audit({
+      action: "E",
+      resourceType: "Retention",
+      detail: `manual sweep: ${result.redactedMessages} redacted, ${result.purgedMessages} purged`,
+    });
+    return send(res, 200, result);
   }
 
   if (path === "/api/audit" && method === "GET") {

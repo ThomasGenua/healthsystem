@@ -16,8 +16,9 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Packet loss and bandwidth shaping** in the link simulator.
 - **Admin UI second round**: channel designer, mapping editor with live fixtures, history dashboards, access audit.
 - **Hash-chained access audit**, answering who read whose record and who was refused.
+- **Retention**, redacting stored payloads on a policy while leaving the chain verifiable.
 
-95 tests. Backend first, tests before UI.
+103 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -68,7 +69,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 95 tests
+npm test          # 103 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -165,6 +166,8 @@ Outbound destinations can present a client certificate too, which routes that de
 | `PORTAGE_TLS_CERT` / `_KEY` | — | serve over TLS |
 | `PORTAGE_TLS_CLIENT_CA` | — | require a client certificate signed by this CA |
 | `PORTAGE_VALIDATE_PACK` / `_MODE` | — | conformance pack enforced on every facade write |
+| `PORTAGE_REDACT_AFTER_DAYS` | — | replace stored payloads older than this with a tombstone |
+| `PORTAGE_PURGE_AFTER_DAYS` | — | delete messages older than this outright |
 
 ## Audit trail
 
@@ -186,6 +189,37 @@ curl "localhost:8686/fhir/AuditEvent"            -H "Authorization: Bearer $KEY"
 **The trail carries identifiers and references, never payloads.** An audit log that copied the record it was protecting would double the exposure it exists to detect.
 
 **It is admin-scoped, including under `/fhir/`.** A consumer with `read` access to the facade must not also learn the access history of every patient in it — so `/fhir/AuditEvent` requires `admin`, unlike every other `/fhir/` read.
+
+## Retention
+
+The message log keeps every raw HL7 message it has ever received. Left alone that is both a disk problem and a liability: holding a patient's admission message for eight years because nothing deletes it is not a feature. Retention is off by default and configured in days.
+
+```bash
+PORTAGE_REDACT_AFTER_DAYS=30 PORTAGE_PURGE_AFTER_DAYS=365 npm start
+
+curl localhost:8686/api/retention      -H "Authorization: Bearer $KEY"   # policy, and what it would touch
+curl -X POST localhost:8686/api/retention/run -H "Authorization: Bearer $KEY"
+```
+
+Two controls, and the difference is the point:
+
+**Redaction** replaces the stored payload with a tombstone. The message, its lineage, its pipeline steps and its deliveries all remain, and **the hash chain still verifies in full** — because the chain commits to a digest taken at ingest rather than to the payload itself. You keep the record that a message arrived, from where, and what it produced; you lose only the clinical content. This is almost always the right control.
+
+**Purging** deletes the rows outright. It reclaims disk and destroys the record that anything happened, so the chain can only be verified from the purge point onward. The chain tip at the purge is retained, so the surviving chain still verifies and `verifiedFrom` reports where it now begins — rather than looking tampered with. Offered because operators sometimes genuinely need it, and deliberately not the default.
+
+`/api/chain/verify` reports both halves of the guarantee:
+
+```json
+{ "ok": true, "checked": 500, "payloadsChecked": 120, "redacted": 380 }
+```
+
+Every link verifies; 120 rows can still prove their payload is the one the chain committed to; 380 have been redacted and can no longer. A payload put back where a redacted one was will not match its recorded digest and is caught.
+
+In-flight deliveries are never redacted — a queued payload still has to be deliverable. Only settled ones are.
+
+**Retention does not touch the FHIR facade.** That store holds the current clinical record a consumer is reading, not a log of traffic. How long a territorial EHR keeps a Patient resource is a clinical governance decision, not something an interface engine should quietly make.
+
+A sweep that destroys data records itself on the audit trail, because that is an event worth being able to account for.
 
 ## Architecture
 
@@ -237,6 +271,7 @@ src/
   auth/jwt.ts         OAuth 2.0 / SMART bearer validation against a JWKS
   auth/gate.ts        the one check every request passes
   audit/store.ts      hash-chained access trail
+  core/retention.ts   payload redaction and purge under a retention policy
   connectors/sql.ts   Postgres and MySQL polling clients
   connectors/sftp.ts  SFTP polling client
   connectors/cron.ts  five-field cron schedules
@@ -316,6 +351,8 @@ POST   /api/deliveries/:id/discard          discard a dead delivery, releasing o
 GET    /api/chain/verify?channel_id=        walk and verify the hash chain
 GET    /api/audit?patient=&principal=&failures=  who accessed patient data
 GET    /api/audit/verify                    walk and verify the audit hash chain
+GET    /api/retention                       policy, and what a sweep would touch
+POST   /api/retention/run                   apply the retention policy now
 GET    /fhir/AuditEvent?patient=&_count=    the same trail as R4 AuditEvent (admin only)
 GET    /api/keys                            list API keys (metadata only, never the keys)
 POST   /api/keys                            issue a key; the response is the only time it is shown

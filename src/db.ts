@@ -28,8 +28,15 @@ CREATE TABLE IF NOT EXISTS messages (
   error TEXT,
   meta TEXT,
   hash TEXT NOT NULL,
-  prev_hash TEXT
+  prev_hash TEXT,
+  -- SHA-256 of the raw payload, recorded at ingest. The chain commits to this
+  -- rather than to the payload itself, so lineage stays verifiable after the
+  -- payload is redacted under a retention policy. NULL on rows written before
+  -- retention existed, which verify by the older formula.
+  raw_digest TEXT,
+  redacted_at TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at);
 CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel_id, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status);
 
@@ -218,20 +225,24 @@ export class Db {
   insertMessage(channelId: string, sourceType: string, contentType: string, raw: string, meta?: unknown): MessageRow {
     const ch = this.getChannel(channelId);
     const prev = ch?.last_hash ?? null;
+    const rawDigest = createHash("sha256").update(raw).digest("hex");
+    // The chain commits to the digest rather than the payload. It is the same
+    // commitment cryptographically, and it means a payload redacted under a
+    // retention policy leaves the chain fully verifiable instead of broken.
     const hash = createHash("sha256")
       .update(prev ?? "")
       .update("|")
       .update(channelId)
       .update("|")
-      .update(raw)
+      .update(rawDigest)
       .digest("hex");
     const id = randomUUID();
     this.sql
       .prepare(
-        `INSERT INTO messages (id, channel_id, source_type, content_type, raw, meta, hash, prev_hash)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO messages (id, channel_id, source_type, content_type, raw, meta, hash, prev_hash, raw_digest)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(id, channelId, sourceType, contentType, raw, meta ? JSON.stringify(meta) : null, hash, prev);
+      .run(id, channelId, sourceType, contentType, raw, meta ? JSON.stringify(meta) : null, hash, prev, rawDigest);
     this.sql.prepare("UPDATE channels SET last_hash = ? WHERE id = ?").run(hash, channelId);
     return this.getMessage(id)!;
   }
@@ -275,25 +286,168 @@ export class Db {
   }
 
   /** Walk a channel's chain and confirm every link. */
-  verifyChain(channelId: string): { ok: boolean; checked: number; brokenAt?: string } {
+  /**
+   * Walks a channel's hash chain.
+   *
+   * Three wrinkles, all of them honest rather than incidental:
+   *
+   *   Rows written before retention existed have no raw_digest and chain over
+   *   the payload directly; they verify by that older formula, so an existing
+   *   database keeps verifying across the upgrade.
+   *
+   *   A redacted row no longer holds the payload, but the chain commits to the
+   *   digest recorded at ingest, so the link still verifies in full. What is
+   *   lost is only the ability to re-derive that digest from the payload — so
+   *   `payloadsChecked` reports how many rows still prove their own content.
+   *
+   *   A purged prefix leaves the first surviving row pointing at a hash that
+   *   is gone. The tip at the time of the purge is kept, so linkage still
+   *   verifies, and `verifiedFrom` says where the chain now begins.
+   */
+  verifyChain(channelId: string): {
+    ok: boolean;
+    checked: number;
+    payloadsChecked: number;
+    redacted: number;
+    verifiedFrom?: string;
+    brokenAt?: string;
+  } {
     const rows = this.sql
-      .prepare("SELECT id, raw, hash, prev_hash FROM messages WHERE channel_id = ? ORDER BY seq")
-      .all(channelId) as Array<{ id: string; raw: string; hash: string; prev_hash: string | null }>;
-    let prev: string | null = null;
+      .prepare("SELECT id, raw, hash, prev_hash, raw_digest, redacted_at FROM messages WHERE channel_id = ? ORDER BY seq")
+      .all(channelId) as Array<{
+      id: string;
+      raw: string;
+      hash: string;
+      prev_hash: string | null;
+      raw_digest: string | null;
+      redacted_at: string | null;
+    }>;
+
+    const purgedTip = this.getChannelState(channelId, "purged_tip");
+    const purgedBefore = this.getChannelState(channelId, "purged_before");
+    let prev: string | null = purgedTip ?? null;
     let checked = 0;
+    let payloadsChecked = 0;
+    let redacted = 0;
+
     for (const r of rows) {
+      const committed = r.raw_digest ?? r.raw;
       const expect: string = createHash("sha256")
         .update(prev ?? "")
         .update("|")
         .update(channelId)
         .update("|")
-        .update(r.raw)
+        .update(committed)
         .digest("hex");
-      if (r.prev_hash !== prev || r.hash !== expect) return { ok: false, checked, brokenAt: r.id };
+      if (r.prev_hash !== prev || r.hash !== expect) {
+        return { ok: false, checked, payloadsChecked, redacted, brokenAt: r.id, ...(purgedBefore ? { verifiedFrom: purgedBefore } : {}) };
+      }
+      if (r.redacted_at) {
+        redacted++;
+      } else if (r.raw_digest) {
+        // The payload is still here, so it can be proved to be the one the
+        // chain committed to.
+        const actual = createHash("sha256").update(r.raw).digest("hex");
+        if (actual !== r.raw_digest) {
+          return { ok: false, checked, payloadsChecked, redacted, brokenAt: r.id };
+        }
+        payloadsChecked++;
+      } else {
+        payloadsChecked++;
+      }
       prev = r.hash;
       checked++;
     }
-    return { ok: true, checked };
+    return { ok: true, checked, payloadsChecked, redacted, ...(purgedBefore ? { verifiedFrom: purgedBefore } : {}) };
+  }
+
+  /* ------------------------------ retention ----------------------------- */
+
+  /**
+   * Replaces stored payloads older than the cutoff with a tombstone.
+   *
+   * This is the primary retention control: the message, its lineage, its
+   * steps and its deliveries all remain, and the chain still verifies, but the
+   * patient data is gone. Deliveries are covered too — a queued payload is the
+   * same clinical content as the message it came from.
+   */
+  redactBefore(cutoffIso: string, channelId?: string): { messages: number; deliveries: number } {
+    const where = channelId ? " AND channel_id = ?" : "";
+    const args = channelId ? [cutoffIso, channelId] : [cutoffIso];
+
+    const messages = this.sql
+      .prepare(
+        `UPDATE messages SET raw = '[redacted]', redacted_at = datetime('now')
+          WHERE received_at < ? AND redacted_at IS NULL AND raw_digest IS NOT NULL${where}`
+      )
+      .run(...(args as never[])).changes;
+
+    // Only settled deliveries: one still queued or retrying needs its payload
+    // to be deliverable.
+    const deliveries = this.sql
+      .prepare(
+        `UPDATE deliveries SET payload = '[redacted]'
+          WHERE state IN ('delivered', 'discarded')
+            AND payload != '[redacted]'
+            AND message_id IN (SELECT id FROM messages WHERE received_at < ?${where})`
+      )
+      .run(...(args as never[])).changes;
+
+    return { messages: Number(messages), deliveries: Number(deliveries) };
+  }
+
+  /**
+   * Deletes messages older than the cutoff outright, for reclaiming disk.
+   *
+   * Redaction is usually the better answer, since it keeps the record of what
+   * flowed and when. Where this is genuinely needed, the chain tip at the
+   * purge point is kept so the surviving chain still verifies and reports
+   * where it now begins, rather than looking tampered with.
+   */
+  purgeBefore(cutoffIso: string, channelId?: string): { messages: number; channels: string[] } {
+    const channels = channelId
+      ? [channelId]
+      : (this.sql.prepare("SELECT DISTINCT channel_id AS c FROM messages").all() as Array<{ c: string }>).map((r) => r.c);
+
+    let total = 0;
+    const touched: string[] = [];
+    for (const ch of channels) {
+      const last = this.sql
+        .prepare("SELECT id, hash, received_at FROM messages WHERE channel_id = ? AND received_at < ? ORDER BY seq DESC LIMIT 1")
+        .get(ch, cutoffIso) as { id: string; hash: string; received_at: string } | undefined;
+      if (!last) continue;
+
+      const ids = this.sql
+        .prepare("SELECT id FROM messages WHERE channel_id = ? AND received_at < ?")
+        .all(ch, cutoffIso) as Array<{ id: string }>;
+      const del = this.sql.prepare("DELETE FROM messages WHERE channel_id = ? AND received_at < ?").run(ch, cutoffIso);
+
+      // Steps and deliveries have no foreign key, so they are cleared here.
+      for (const { id } of ids) {
+        this.sql.prepare("DELETE FROM message_steps WHERE message_id = ?").run(id);
+        this.sql.prepare("DELETE FROM deliveries WHERE message_id = ?").run(id);
+      }
+
+      this.setChannelState(ch, "purged_tip", last.hash);
+      this.setChannelState(ch, "purged_before", last.received_at);
+      total += Number(del.changes);
+      touched.push(ch);
+    }
+    return { messages: total, channels: touched };
+  }
+
+  /** Counts what a retention run would touch, without touching it. */
+  retentionCounts(redactCutoff?: string, purgeCutoff?: string): { redactable: number; purgeable: number; oldest?: string } {
+    const oldest = this.sql.prepare("SELECT MIN(received_at) AS m FROM messages").get() as { m: string | null };
+    const redactable = redactCutoff
+      ? (this.sql
+          .prepare("SELECT COUNT(*) AS n FROM messages WHERE received_at < ? AND redacted_at IS NULL AND raw_digest IS NOT NULL")
+          .get(redactCutoff) as { n: number }).n
+      : 0;
+    const purgeable = purgeCutoff
+      ? (this.sql.prepare("SELECT COUNT(*) AS n FROM messages WHERE received_at < ?").get(purgeCutoff) as { n: number }).n
+      : 0;
+    return { redactable, purgeable, ...(oldest.m ? { oldest: oldest.m } : {}) };
   }
 
   /* ---------------------------- channel state --------------------------- */

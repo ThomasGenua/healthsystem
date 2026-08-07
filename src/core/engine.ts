@@ -18,6 +18,7 @@ import { TerminologyStore } from "../terminology/store.ts";
 import { ConformanceRegistry, validateResource } from "../conformance/validator.ts";
 import { ApiKeyStore } from "../auth/keys.ts";
 import { AuditStore } from "../audit/store.ts";
+import { RetentionRunner, type RetentionPolicy } from "./retention.ts";
 import { buildAck, getHl7, parseHl7, serializeHl7 } from "../hl7/parser.ts";
 import { startMllpServer, type MllpServerHandle } from "../hl7/mllp.ts";
 import { applyMapping, type MapperContext } from "../transform/mapper.ts";
@@ -64,6 +65,8 @@ export interface EngineOptions {
   validateMode?: "reject" | "annotate";
   /** Override connector constructors. Tests inject fakes here. */
   connectors?: ConnectorFactories;
+  /** How long stored patient data is kept. Off unless configured. */
+  retention?: RetentionPolicy;
 }
 
 export class Engine {
@@ -75,6 +78,7 @@ export class Engine {
   readonly subs: SubscriptionManager;
   readonly keys: ApiKeyStore;
   readonly audit: AuditStore;
+  readonly retention: RetentionRunner;
   readonly mappings = new Map<string, MappingDoc>();
   private channels = new Map<string, RuntimeChannel>();
   private mapperCtx: MapperContext;
@@ -97,6 +101,7 @@ export class Engine {
     this.subs = new SubscriptionManager(this.db, this.worker);
     this.keys = new ApiKeyStore(this.db);
     this.audit = new AuditStore(this.db);
+    this.retention = new RetentionRunner(this.db, opts.retention ?? {}, this.audit);
     this.connectors = {
       sql: opts.connectors?.sql ?? connectSql,
       sftp: opts.connectors?.sftp ?? connectSftp,
@@ -131,6 +136,7 @@ export class Engine {
 
   async start(): Promise<void> {
     this.worker.start();
+    this.retention.start();
     this.subs.load();
     for (const row of this.db.listChannels()) {
       if (!row.enabled) continue;
@@ -141,6 +147,7 @@ export class Engine {
 
   async stop(): Promise<void> {
     await this.worker.stop();
+    this.retention.stop();
     for (const rc of this.channels.values()) {
       if (rc.mllp) await rc.mllp.close();
       for (const t of rc.timers) clearInterval(t);
