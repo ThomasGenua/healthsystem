@@ -76,7 +76,7 @@ const j=async(url,opts={})=>{
 };
 const tag=(t,cls)=>`<span class="tag ${cls}">${esc(t)}</span>`;
 const stTag=s=>tag(s,{processed:"ok",delivered:"ok",filtered:"dim",queued:"warn",retrying:"warn",inflight:"warn",error:"bad",dead:"bad",discarded:"dim",active:"ok"}[s]||"dim");
-const TABS=["Dashboard","History","Channels","Designer","Mappings","Messages","Deliveries","FHIR","Subscriptions","Terminology","Conformance"];
+const TABS=["Dashboard","History","Audit","Channels","Designer","Mappings","Messages","Deliveries","FHIR","Subscriptions","Terminology","Conformance"];
 let tab="Dashboard",timer=null;
 
 function nav(){$("#nav").innerHTML=TABS.map(t=>`<button class="${t===tab?"on":""}" onclick="go('${t}')">${t}</button>`).join("")}
@@ -87,6 +87,7 @@ async function render(){
   try{
     if(tab==="Dashboard")await dash(m);
     else if(tab==="History")await history(m);
+    else if(tab==="Audit")await auditTab(m);
     else if(tab==="Designer")await designer(m);
     else if(tab==="Mappings")await mapEditor(m);
     else if(tab==="Channels")await channels(m);
@@ -176,6 +177,47 @@ async function history(m){
     <h2>deliveries completed</h2>${barChart(keys,delSeries)}
     <p class="sub" style="color:var(--dim)">Messages are bucketed by arrival, deliveries by completion. A message
       received during an outage and delivered hours later appears in both, at different times — which is the point.</p>`;
+}
+
+/* --------------------------------- audit -------------------------------- */
+
+const OUTCOME={0:["success","ok"],4:["denied","warn"],8:["refused","bad"]};
+
+async function auditTab(m){
+  const q={patient:m.dataset.apat||"",principal:m.dataset.aprin||"",failures:m.dataset.afail==="1"};
+  const params=new URLSearchParams({limit:"200"});
+  if(q.patient)params.set("patient",q.patient);
+  if(q.principal)params.set("principal",q.principal);
+  if(q.failures)params.set("failures","true");
+  const [{data:rows},{data:chain}]=await Promise.all([j("/api/audit?"+params),j("/api/audit/verify")]);
+
+  const denied=rows.filter(r=>r.outcome>0).length;
+  m.innerHTML=`<div class="bar">
+      <input placeholder="patient identifier" value="${esc(q.patient)}" style="width:220px"
+        onchange="$('#main').dataset.apat=this.value;render()">
+      <input placeholder="principal id" value="${esc(q.principal)}" style="width:280px"
+        onchange="$('#main').dataset.aprin=this.value;render()">
+      <label class="sub" style="color:var(--dim)"><input type="checkbox" ${q.failures?"checked":""}
+        onchange="$('#main').dataset.afail=this.checked?'1':'';render()"> refusals only</label>
+      <button class="act mini" onclick="render()">refresh</button></div>
+    <div class="cards">
+      <div class="card"><div class="n">${rows.length}</div><div class="l">events shown</div></div>
+      <div class="card"><div class="n"><span class="${denied?"err":""}">${denied}</span></div><div class="l">refusals</div></div>
+      <div class="card"><div class="n">${chain.ok?tag("intact "+chain.checked,"ok"):tag("BROKEN","bad")}</div><div class="l">chain</div></div>
+    </div>
+    <table><tr><th>recorded</th><th>principal</th><th>action</th><th>resource</th><th>patient</th><th>n</th><th>outcome</th><th>from</th></tr>
+      ${rows.map(r=>{const[label,cls]=OUTCOME[r.outcome]||["?","dim"];return `<tr>
+        <td>${esc(r.recorded_at)}</td>
+        <td>${esc(r.principal_id)} <span class="sub" style="color:var(--dim)">${esc(r.principal_kind)}</span></td>
+        <td>${esc(r.action)}</td>
+        <td>${esc(r.resource_type??"")}${r.resource_id?"/"+esc(r.resource_id):""}</td>
+        <td>${esc(r.patient??"")}</td>
+        <td>${r.count??""}</td>
+        <td>${tag(label,cls)}${r.detail?` <span class="sub" style="color:var(--dim)">${esc(r.detail)}</span>`:""}</td>
+        <td>${esc(r.source_ip??"")}</td></tr>`}).join("")||'<tr><td colspan="8" class="sub" style="color:var(--dim)">no access recorded yet</td></tr>'}
+    </table>
+    <p class="sub" style="color:var(--dim)">Every disclosure of patient data, and every refused attempt at one, hash-chained
+      so a row cannot be altered or removed without breaking verification. Identifiers only — never the record itself.</p>`;
 }
 
 /* ------------------------------- designer ------------------------------- */

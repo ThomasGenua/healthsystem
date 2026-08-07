@@ -138,6 +138,32 @@ CREATE TABLE IF NOT EXISTS api_keys (
   revoked_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(hash);
+
+-- Access audit trail, hash-chained like message lineage so a row cannot be
+-- altered or removed without breaking verification. Carries identifiers and
+-- references only, never payloads.
+CREATE TABLE IF NOT EXISTS audit_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
+  recorded_at TEXT NOT NULL,
+  action TEXT NOT NULL,
+  outcome INTEGER NOT NULL DEFAULT 0,
+  principal_id TEXT NOT NULL,
+  principal_kind TEXT NOT NULL,
+  method TEXT NOT NULL,
+  path TEXT NOT NULL,
+  resource_type TEXT,
+  resource_id TEXT,
+  patient TEXT,
+  count INTEGER,
+  source_ip TEXT,
+  detail TEXT,
+  hash TEXT NOT NULL,
+  prev_hash TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_recorded ON audit_events(recorded_at);
+CREATE INDEX IF NOT EXISTS idx_audit_principal ON audit_events(principal_id, recorded_at);
+CREATE INDEX IF NOT EXISTS idx_audit_patient ON audit_events(patient, recorded_at);
 `;
 
 export class Db {

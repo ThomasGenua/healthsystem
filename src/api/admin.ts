@@ -16,6 +16,9 @@
  * POST /api/deliveries/:id/replay        requeue a dead, delivered or discarded delivery
  * POST /api/deliveries/:id/discard       discard a dead delivery, releasing ordered flow
  * GET  /api/chain/verify?channel_id      verify the channel hash chain
+ * GET  /api/audit?patient=&principal=&failures=  access trail (admin only)
+ * GET  /api/audit/verify                 verify the audit hash chain
+ * GET  /fhir/AuditEvent                  the same trail as R4 AuditEvent (admin only)
  * GET  /api/keys                         list API keys (never the keys themselves)
  * POST /api/keys                         issue a key; the response is the only time it is shown
  * DELETE /api/keys/:id                   revoke a key
@@ -43,6 +46,7 @@ import { checkCapability, toOperationOutcome, validateResource } from "../confor
 import { applyMapping } from "../transform/mapper.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { VERSION } from "../version.ts";
+import type { AuditAction, AuditEntry } from "../audit/store.ts";
 import type { TlsConfig } from "./tls.ts";
 import type { ChannelConfig, MappingDoc, MessageRow } from "../types.ts";
 
@@ -109,7 +113,26 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
   // no middleware layer, so this is the only place a check cannot be
   // forgotten when a route is added.
   const auth = await gate.check(method, path, req.headers);
+
+  /** Records an access against the audit trail. */
+  const audit = (entry: Omit<AuditEntry, "principalId" | "principalKind" | "method" | "path">): void => {
+    engine.audit.record({
+      principalId: auth.ok ? auth.principal.id : (auth.principal?.id ?? "unauthenticated"),
+      principalKind: auth.ok ? auth.principal.kind : (auth.principal?.kind ?? "unknown"),
+      method,
+      path,
+      sourceIp: req.socket.remoteAddress ?? undefined,
+      ...entry,
+    });
+  };
+
   if (!auth.ok) {
+    // A refused attempt is exactly what an audit trail exists to surface, so
+    // it is recorded before the response goes out. Only for paths that reach
+    // patient data — a 401 on a dashboard poll is noise.
+    if (touchesPatientData(path)) {
+      audit({ action: verbToAction(method), outcome: auth.status === 401 ? 4 : 8, detail: auth.error });
+    }
     if (auth.status === 401) res.setHeader("www-authenticate", gate.challenge);
     return send(res, auth.status, { error: auth.error });
   }
@@ -153,6 +176,9 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
       status: url.searchParams.get("status") ?? undefined,
       limit: num(url.searchParams.get("limit")),
     });
+    // A raw ER7 message identifies a patient as surely as anything in the
+    // facade, so browsing the message log is a disclosure.
+    audit({ action: "R", resourceType: "Message", count: rows.length });
     return send(res, 200, rows.map(redactMessage));
   }
 
@@ -160,6 +186,7 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
   if (m && method === "GET") {
     const msg = engine.db.getMessage(m[1]);
     if (!msg) return send(res, 404, { error: "not found" });
+    audit({ action: "R", resourceType: "Message", resourceId: msg.id, count: 1 });
     return send(res, 200, {
       ...msg,
       steps: engine.db.getSteps(m[1]),
@@ -224,6 +251,37 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
     });
   }
 
+  if (path === "/api/audit" && method === "GET") {
+    const rows = engine.audit.list({
+      principal: url.searchParams.get("principal") ?? undefined,
+      patient: url.searchParams.get("patient") ?? undefined,
+      resourceType: url.searchParams.get("resource_type") ?? undefined,
+      since: url.searchParams.get("since") ?? undefined,
+      failuresOnly: url.searchParams.get("failures") === "true",
+      limit: num(url.searchParams.get("limit")),
+    });
+    return send(res, 200, rows);
+  }
+  if (path === "/api/audit/verify" && method === "GET") {
+    return send(res, 200, engine.audit.verifyChain());
+  }
+  if (path === "/fhir/AuditEvent" && method === "GET") {
+    const rows = engine.audit.list({
+      patient: url.searchParams.get("patient") ?? undefined,
+      since: url.searchParams.get("date") ?? undefined,
+      limit: num(url.searchParams.get("_count")),
+    });
+    return send(res, 200, {
+      resourceType: "Bundle",
+      type: "searchset",
+      total: rows.length,
+      entry: rows.map((r) => ({
+        fullUrl: `${baseUrl(req)}/fhir/AuditEvent/${r.id}`,
+        resource: engine.audit.toAuditEvent(r, baseUrl(req)),
+      })),
+    });
+  }
+
   if (path === "/api/keys" && method === "GET") {
     return send(res, 200, engine.keys.list());
   }
@@ -232,16 +290,18 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
     if (!body.name) return send(res, 400, { error: "name required" });
     try {
       // The plaintext key appears in this response and nowhere else, ever.
-      return send(res, 201, engine.keys.issue(body.name, body.scopes));
+      const issued = engine.keys.issue(body.name, body.scopes);
+      audit({ action: "C", resourceType: "ApiKey", resourceId: issued.id, detail: `scopes: ${issued.scopes.join(" ")}` });
+      return send(res, 201, issued);
     } catch (err) {
       return send(res, 400, { error: err instanceof Error ? err.message : "cannot issue key" });
     }
   }
   m = /^\/api\/keys\/([0-9a-f-]+)$/.exec(path);
   if (m && method === "DELETE") {
-    return engine.keys.revoke(m[1])
-      ? send(res, 200, { ok: true })
-      : send(res, 404, { error: "unknown or already revoked" });
+    const revoked = engine.keys.revoke(m[1]);
+    audit({ action: "D", resourceType: "ApiKey", resourceId: m[1], outcome: revoked ? 0 : 4 });
+    return revoked ? send(res, 200, { ok: true }) : send(res, 404, { error: "unknown or already revoked" });
   }
 
   if (method === "GET" && path === "/api/terminology/lookup") {
@@ -374,6 +434,13 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
     const body = await readBody(req);
     const ct = req.headers["content-type"] ?? "text/plain";
     const result = engine.ingest(channel.id, body, ct, "http");
+    audit({
+      action: "C",
+      resourceType: "Message",
+      resourceId: result.message.id,
+      outcome: result.status === "error" ? 8 : 0,
+      detail: result.error,
+    });
     return send(res, result.status === "error" ? 422 : 202, {
       messageId: result.message.id,
       status: result.status,
@@ -388,10 +455,9 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
   m = /^\/fhir\/([A-Z][A-Za-z]+)$/.exec(path);
   if (m && method === "GET") {
     const type = m[1];
-    const result = engine.fhir.search(type, {
-      identifier: url.searchParams.get("identifier") ?? undefined,
-      count: num(url.searchParams.get("_count")),
-    });
+    const identifier = url.searchParams.get("identifier") ?? undefined;
+    const result = engine.fhir.search(type, { identifier, count: num(url.searchParams.get("_count")) });
+    audit({ action: "R", resourceType: type, patient: identifier, count: result.total });
     return send(res, 200, {
       resourceType: "Bundle",
       type: "searchset",
@@ -407,11 +473,14 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
   if (m && method === "GET") {
     const resource = engine.fhir.get(m[1], m[2]);
     if (!resource) {
+      // A miss still says someone went looking for this record.
+      audit({ action: "R", resourceType: m[1], resourceId: m[2], outcome: 4, detail: "not found" });
       return send(res, 404, {
         resourceType: "OperationOutcome",
         issue: [{ severity: "error", code: "not-found", diagnostics: `${m[1]}/${m[2]} is not stored` }],
       });
     }
+    audit({ action: "R", resourceType: m[1], resourceId: m[2], patient: firstIdentifier(resource), count: 1 });
     return send(res, 200, resource);
   }
 
@@ -430,6 +499,13 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
     const channels = engine.fhirChannels(m[1]);
     if (channels.length === 0) return send(res, 404, { error: "no fhir channel accepts this resource type" });
     const results = channels.map((c) => engine.ingest(c.id, body, "application/fhir+json", "fhir"));
+    audit({
+      action: "C",
+      resourceType: m[1],
+      patient: firstIdentifier(parsed),
+      count: results.length,
+      outcome: results.some((r) => r.status === "error") ? 8 : 0,
+    });
     return send(res, 202, results.map((r) => ({ channelId: r.message.channel_id, messageId: r.message.id, status: r.status })));
   }
 
@@ -456,6 +532,34 @@ function listFixtures(): Array<{ name: string; content: string }> {
     }
   }
   return out;
+}
+
+/**
+ * Whether a path reaches patient data, deciding if a refused request is worth
+ * an audit row. A rejected dashboard poll is noise; a rejected reach for a
+ * patient record is the thing an audit trail exists to show.
+ */
+function touchesPatientData(path: string): boolean {
+  if (path.startsWith("/api/messages")) return true;
+  if (path.startsWith("/ingest/")) return true;
+  if (path === "/fhir/metadata" || path.startsWith("/fhir/AuditEvent")) return false;
+  return path.startsWith("/fhir/");
+}
+
+/** REST verb to FHIR AuditEvent action code. */
+function verbToAction(method: string): AuditAction {
+  if (method === "POST") return "C";
+  if (method === "PUT" || method === "PATCH") return "U";
+  if (method === "DELETE") return "D";
+  return "R";
+}
+
+/** The first identifier value on a resource, for the audit trail's patient column. */
+function firstIdentifier(resource: unknown): string | undefined {
+  const idents = (resource as { identifier?: unknown }).identifier;
+  const first = Array.isArray(idents) ? idents[0] : idents;
+  const value = (first as { value?: unknown })?.value;
+  return typeof value === "string" && value ? value : undefined;
 }
 
 function redactMessage(row: MessageRow): Record<string, unknown> {

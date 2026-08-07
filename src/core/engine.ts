@@ -17,6 +17,7 @@ import { SubscriptionManager } from "../fhir/subscriptions.ts";
 import { TerminologyStore } from "../terminology/store.ts";
 import { ConformanceRegistry, validateResource } from "../conformance/validator.ts";
 import { ApiKeyStore } from "../auth/keys.ts";
+import { AuditStore } from "../audit/store.ts";
 import { buildAck, getHl7, parseHl7, serializeHl7 } from "../hl7/parser.ts";
 import { startMllpServer, type MllpServerHandle } from "../hl7/mllp.ts";
 import { applyMapping, type MapperContext } from "../transform/mapper.ts";
@@ -73,6 +74,7 @@ export class Engine {
   readonly conformance: ConformanceRegistry;
   readonly subs: SubscriptionManager;
   readonly keys: ApiKeyStore;
+  readonly audit: AuditStore;
   readonly mappings = new Map<string, MappingDoc>();
   private channels = new Map<string, RuntimeChannel>();
   private mapperCtx: MapperContext;
@@ -94,6 +96,7 @@ export class Engine {
     this.worker = new DeliveryWorker(this.db, opts.tickMs ?? 250, 25, this.fhir);
     this.subs = new SubscriptionManager(this.db, this.worker);
     this.keys = new ApiKeyStore(this.db);
+    this.audit = new AuditStore(this.db);
     this.connectors = {
       sql: opts.connectors?.sql ?? connectSql,
       sftp: opts.connectors?.sftp ?? connectSftp,

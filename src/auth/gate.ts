@@ -24,7 +24,13 @@ export interface Principal {
 
 export type AuthOutcome =
   | { ok: true; principal: Principal }
-  | { ok: false; status: 401 | 403; error: string };
+  /**
+   * A denial still carries the principal when one was resolved. A scope
+   * violation by a known key is a different event from an anonymous probe,
+   * and the audit trail has to be able to name who overreached — that
+   * attribution is the whole point of recording refusals.
+   */
+  | { ok: false; status: 401 | 403; error: string; principal?: Principal };
 
 const ANONYMOUS: Principal = { kind: "anonymous", id: "anonymous", scopes: new Set(ALL_SCOPES) };
 
@@ -68,7 +74,7 @@ export class AuthGate {
     }
 
     if (!principal.scopes.has(need)) {
-      return { ok: false, status: 403, error: `scope '${need}' required` };
+      return { ok: false, status: 403, error: `scope '${need}' required`, principal };
     }
     return { ok: true, principal };
   }
