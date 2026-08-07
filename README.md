@@ -20,8 +20,9 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Rate limiting**, closing the flood-the-audit-trail vector the audit work opened.
 - **Verified online backup**, and health signals a monitor can alert on.
 - **One engine per database**, enforced, so an overlapping deploy cannot silently duplicate messages.
+- **In-place schema migration**, so upgrading an existing database does not take the node off the air.
 
-154 tests. Backend first, tests before UI.
+165 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -72,7 +73,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 154 tests
+npm test          # 165 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -226,7 +227,21 @@ curl -X POST localhost:8686/api/retention/run -H "Authorization: Bearer $KEY"
 
 Two controls, and the difference is the point:
 
-**Redaction** replaces the stored payload with a tombstone. The message, its lineage, its pipeline steps and its deliveries all remain, and **the hash chain still verifies in full** — because the chain commits to a digest taken at ingest rather than to the payload itself. You keep the record that a message arrived, from where, and what it produced; you lose only the clinical content. This is almost always the right control.
+**Redaction** replaces every stored copy of the payload with a tombstone. The message, its lineage, its pipeline steps and its deliveries all remain as rows, and **the hash chain still verifies in full** — because the chain commits to a digest taken at ingest rather than to the payload itself. You keep the record that a message arrived, from where, through which steps, and whether it was delivered; you lose the clinical content wherever it was held. This is almost always the right control.
+
+"Every copy" is the load-bearing part, because the engine keeps more than one:
+
+| where | what it holds |
+|---|---|
+| `messages.raw` | what arrived |
+| `message_steps.output` | what each transform made of it — the same patient, another encoding |
+| `deliveries.payload` | what was sent |
+| `deliveries.ack` | what the remote said back, which for a FHIR create is the resource itself |
+| `deliveries.last_error` | why it failed, which for a rejection quotes the value objected to |
+
+All five are covered, in every settled delivery state including **dead** — a dead-lettered delivery waits in the queue indefinitely for an operator, which makes the DLQ the longest-lived copy in the system and the last one that should be exempt. Freed database pages are zeroed as they are released (`PRAGMA secure_delete`), so a redacted payload is not merely detached and left legible in the file for anyone holding a backup, a decommissioned disk or a VM image.
+
+`test/retention-leak.test.ts` proves this by searching the database file for the patient's identifiers after a sweep, rather than by checking the columns the fix was written for — so a copy kept somewhere nobody thought of still fails the test.
 
 **Purging** deletes the rows outright. It reclaims disk and destroys the record that anything happened, so the chain can only be verified from the purge point onward. The chain tip at the purge is retained, so the surviving chain still verifies and `verifiedFrom` reports where it now begins — rather than looking tampered with. Offered because operators sometimes genuinely need it, and deliberately not the default.
 
@@ -238,11 +253,27 @@ Two controls, and the difference is the point:
 
 Every link verifies; 120 rows can still prove their payload is the one the chain committed to; 380 have been redacted and can no longer. A payload put back where a redacted one was will not match its recorded digest and is caught.
 
-In-flight deliveries are never redacted — a queued payload still has to be deliverable. Only settled ones are.
+In-flight and queued deliveries are never redacted — a payload that has not gone out still has to be deliverable, and emptying it would destroy a message the sender was told was safe.
+
+**A redacted delivery cannot be replayed.** The states replay accepts are exactly the states redaction empties, so the two features meet on the same rows; without a check between them an operator clicking replay would send the literal tombstone to a downstream clinical system, which has no way to tell it from content. The replay is refused and says why:
+
+```json
+{ "error": "payload was redacted at 2026-08-07 14:02:11 under the retention policy and cannot be replayed" }
+```
 
 **Retention does not touch the FHIR facade.** That store holds the current clinical record a consumer is reading, not a log of traffic. How long a territorial EHR keeps a Patient resource is a clinical governance decision, not something an interface engine should quietly make.
 
 A sweep that destroys data records itself on the audit trail, because that is an event worth being able to account for.
+
+## Upgrading
+
+An existing database is migrated in place on the first open. Columns added since it was created are added by `ALTER TABLE`; new tables and indexes come from the schema itself. Running the migration again finds nothing to do, so it costs one `PRAGMA` per tracked column at boot.
+
+This matters more than it sounds. `CREATE TABLE IF NOT EXISTS` does *nothing* to a table that already exists, so before this a column added to the schema never reached a database an earlier version had created — and the failure arrived on the first ingest rather than on open. A site that had been running fine went off the air at upgrade and stayed there, reporting itself healthy. Every test starts from an empty file, so no test could see it; `test/migration.test.ts` starts from the real v0.3.0 table definitions instead.
+
+A chain that spans the upgrade still verifies. Rows written before the digest column commit to the payload itself and rows after it commit to the digest, and `verifyChain` accepts both, so an upgrade does not read as tampering.
+
+One thing to do by hand, once, on a database that ran a version before this one: `sqlite3 data/portage.db 'VACUUM;'`. Freed pages are zeroed from now on, but pages freed under the old build may still hold legible content, and only a rebuild clears those.
 
 ## Backup
 

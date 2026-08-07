@@ -324,8 +324,14 @@ async function route(
 
   m = /^\/api\/deliveries\/([0-9a-f-]+)\/(replay|discard)$/.exec(path);
   if (m && method === "POST") {
-    const ok = m[2] === "replay" ? engine.db.replayDelivery(m[1]) : engine.db.discardDelivery(m[1]);
-    return send(res, ok ? 200 : 409, ok ? { ok: true } : { error: `cannot ${m[2]} in current state` });
+    // Replay says why it refused — "cannot replay in current state" is not
+    // actionable when the real reason is that retention took the payload.
+    if (m[2] === "replay") {
+      const r = engine.db.replayDelivery(m[1]);
+      return r.ok ? send(res, 200, { ok: true }) : send(res, 409, { error: r.reason });
+    }
+    const ok = engine.db.discardDelivery(m[1]);
+    return send(res, ok ? 200 : 409, ok ? { ok: true } : { error: "cannot discard in current state" });
   }
 
   if (path === "/api/chain/verify" && method === "GET") {
