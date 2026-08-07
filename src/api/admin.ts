@@ -47,6 +47,7 @@ import type { Engine } from "../core/engine.ts";
 import { checkCapability, toOperationOutcome, validateResource } from "../conformance/validator.ts";
 import { applyMapping } from "../transform/mapper.ts";
 import { AuthGate } from "../auth/gate.ts";
+import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
 import { VERSION } from "../version.ts";
 import type { AuditAction, AuditEntry } from "../audit/store.ts";
 import type { TlsConfig } from "./tls.ts";
@@ -70,6 +71,7 @@ export interface ApiHandle {
   server: Server;
   port: number;
   tls: boolean;
+  limiter: RateLimiter;
   close(): Promise<void>;
 }
 
@@ -81,12 +83,18 @@ export interface ApiOptions {
    */
   auth?: AuthGate;
   tls?: TlsConfig;
+  /** Request rate limits. Defaults apply unless disabled explicitly. */
+  rateLimit?: RateLimitPolicy;
 }
 
 export function startApi(engine: Engine, port: number, host = "0.0.0.0", options: ApiOptions = {}): Promise<ApiHandle> {
   const gate = options.auth ?? new AuthGate();
+  // Per listener rather than per process: two engines in one test run must not
+  // share a budget, and an operator running two listeners means them to be
+  // independent.
+  const limiter = new RateLimiter(options.rateLimit);
   const handler = (req: IncomingMessage, res: ServerResponse): void => {
-    void route(engine, req, res, gate).catch((err) => {
+    void route(engine, req, res, gate, limiter).catch((err) => {
       send(res, 500, { error: err instanceof Error ? err.message : "internal error" });
     });
   };
@@ -100,13 +108,20 @@ export function startApi(engine: Engine, port: number, host = "0.0.0.0", options
         server,
         port: actual,
         tls: Boolean(options.tls),
+        limiter,
         close: () => new Promise<void>((r) => server.close(() => r())),
       });
     });
   });
 }
 
-async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, gate: AuthGate): Promise<void> {
+async function route(
+  engine: Engine,
+  req: IncomingMessage,
+  res: ServerResponse,
+  gate: AuthGate,
+  limiter: RateLimiter
+): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname.replace(/\/+$/, "") || "/";
   const method = req.method ?? "GET";
@@ -127,6 +142,37 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
       ...entry,
     });
   };
+
+  // Rate limiting sits between authentication and everything else, including
+  // the refusal audit below. A caller over the limit is turned away without
+  // writing a row, which is what stops a flood of refused requests from
+  // growing the audit trail without bound.
+  const sourceIp = req.socket.remoteAddress ?? "unknown";
+  // Count against a principal only when a real credential was presented.
+  // Requests on public routes, and every request when authentication is
+  // switched off, resolve to one synthetic anonymous principal — keying on
+  // that would put unrelated callers in a single shared bucket and hand them
+  // the credentialed rate. Those are counted per source address instead.
+  const credentialed = auth.ok && auth.principal.kind !== "anonymous";
+  const limit = limiter.check(credentialed ? `principal:${auth.principal.id}` : `ip:${sourceIp}`, credentialed);
+  if (!limit.allowed) {
+    // One row per episode, on the request that crosses the threshold, so the
+    // trail records that a flood happened without being the flood.
+    if (limit.firstRefusal) {
+      engine.audit.record({
+        action: verbToAction(method),
+        outcome: 8,
+        principalId: auth.ok ? auth.principal.id : "unauthenticated",
+        principalKind: auth.ok ? auth.principal.kind : "unknown",
+        method,
+        path,
+        sourceIp,
+        detail: "rate limit exceeded",
+      });
+    }
+    res.setHeader("retry-after", String(limit.retryAfterSec));
+    return send(res, 429, { error: "rate limit exceeded", retryAfterSec: limit.retryAfterSec });
+  }
 
   if (!auth.ok) {
     // A refused attempt is exactly what an audit trail exists to surface, so
