@@ -20,13 +20,13 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Rate limiting**, closing the flood-the-audit-trail vector the audit work opened.
 - **Verified online backup**, and health signals a monitor can alert on.
 
-131 tests. Backend first, tests before UI.
+138 tests. Backend first, tests before UI.
 
 ### What this is not
 
 Honest limits, so nobody discovers them in production:
 
-- **MLLP sources are unauthenticated.** The protocol has no authentication to hook into. Those ports are a network-layer concern — put them behind a VPN, a private APN, or mutual TLS at the transport, not behind Portage.
+- **MLLP sources are unauthenticated.** The protocol has no authentication to hook into. Those ports are a network-layer concern — put them behind a VPN, a private APN, or mutual TLS at the transport, not behind Portage. Being unauthenticated does not mean being fragile: frames are size-capped (16 MB, `maxFrameBytes` per channel) so a sender that never terminates one cannot exhaust memory, and malformed input is answered per message rather than taking the listener down.
 - **`node:sqlite` is still flagged experimental on Node 22.** Durability rests on it, so run Node 24+ in production, where it is stable. The engine warns at boot when it is running below 24; the supported floor stays at 22.18 so an upgrade breaks nobody. CI covers both.
 - **The shipped terminology pack is a labelled demo subset.** SNOMED CT CA, LOINC, pCLOCD, ICD-10-CA and CCI are licensed distributions; the loaders are here, the content is not.
 - **The conformance packs are not certified.** They encode the published profiles as data and pass the shipped fixtures, but no projectathon has scored them.
@@ -71,7 +71,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 131 tests
+npm test          # 138 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -428,7 +428,7 @@ A channel is JSON: a source, an optional pipeline, and one or more destinations.
 }
 ```
 
-Sources: `mllp` (port, host; port 0 binds ephemeral), `http` (POST /ingest/:path), `fhir` (POST /fhir/:resourceType with resource type validation), `filedrop` (poll a landing directory: dir, pattern, pollMs, archiveDir; files ingest in name order), `dbpoll` (poll a SQLite database: query with a single ? bound to the persisted cursor, cursorColumn, pollMs), `sqlpoll` (the same against Postgres or MySQL: driver, dsn, query, cursorColumn, initialCursor), `sftp` (poll a remote directory: host, port, username, password or privateKeyPath, dir, pattern, archiveDir).
+Sources: `mllp` (port, host, maxFrameBytes; port 0 binds ephemeral), `http` (POST /ingest/:path), `fhir` (POST /fhir/:resourceType with resource type validation), `filedrop` (poll a landing directory: dir, pattern, pollMs, archiveDir; files ingest in name order), `dbpoll` (poll a SQLite database: query with a single ? bound to the persisted cursor, cursorColumn, pollMs), `sqlpoll` (the same against Postgres or MySQL: driver, dsn, query, cursorColumn, initialCursor), `sftp` (poll a remote directory: host, port, username, password or privateKeyPath, dir, pattern, archiveDir).
 
 Every polling source accepts `cron` instead of `pollMs` — a five-field expression, evaluated to the minute.
 

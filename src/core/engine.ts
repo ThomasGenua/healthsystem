@@ -236,7 +236,7 @@ export class Engine {
             throw err;
           }
         }
-      });
+      }, src.maxFrameBytes);
     }
 
     if (config.source.type === "filedrop") {

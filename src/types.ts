@@ -7,6 +7,12 @@ export interface MllpSourceConfig {
   /** TCP port to listen on. 0 selects an ephemeral port. */
   port: number;
   host?: string;
+  /**
+   * Largest frame accepted, in bytes. Defaults to 16 MB. A sender that
+   * exceeds it has its connection dropped — the port is unauthenticated, so
+   * an unterminated frame must not be able to grow without limit.
+   */
+  maxFrameBytes?: number;
 }
 
 export interface HttpSourceConfig {
