@@ -23,6 +23,26 @@ const CONFORMANCE_DIR = process.env.PORTAGE_CONFORMANCE ?? join(process.cwd(), "
  */
 const AUTH_MODE = (process.env.PORTAGE_AUTH_MODE ?? "apikey").toLowerCase();
 
+/**
+ * node:sqlite is still flagged experimental below Node 24, and durable
+ * store-and-forward rests entirely on it — an acknowledgement here means the
+ * message is committed to that database.
+ *
+ * The floor stays at 22.18 rather than being raised, so nobody's deployment
+ * breaks on an upgrade. But an operator should not discover this from a
+ * footnote after the fact, so it is said out loud, once, at the moment it
+ * becomes their problem.
+ */
+function warnIfSqliteExperimental(): void {
+  const major = Number(process.versions.node.split(".")[0]);
+  if (Number.isFinite(major) && major < 24) {
+    console.warn(
+      `WARNING: node ${process.versions.node} ships node:sqlite as experimental, and durability rests on it. ` +
+        `Node 24+ is recommended for production, where it is stable.`
+    );
+  }
+}
+
 function buildAuthGate(engine: Engine): AuthGate {
   if (AUTH_MODE === "off") {
     console.warn("WARNING: PORTAGE_AUTH_MODE=off — the API is unauthenticated and open to anyone who can reach it");
@@ -69,6 +89,8 @@ function buildAuthGate(engine: Engine): AuthGate {
 }
 
 async function main(): Promise<void> {
+  warnIfSqliteExperimental();
+
   const days = (v: string | undefined): number | undefined => {
     if (v === undefined) return undefined;
     const n = Number(v);
@@ -129,13 +151,32 @@ async function main(): Promise<void> {
     requireClientCert: process.env.PORTAGE_TLS_CLIENT_CA !== undefined,
   });
 
-  const api = await startApi(engine, PORT, "0.0.0.0", { auth: buildAuthGate(engine), tls: tls ?? undefined });
+  const rate = (v: string | undefined): number | undefined => {
+    if (v === undefined) return undefined;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) throw new Error(`rate limit must be a positive number, got: ${v}`);
+    return n;
+  };
+
+  const api = await startApi(engine, PORT, "0.0.0.0", {
+    auth: buildAuthGate(engine),
+    tls: tls ?? undefined,
+    rateLimit: {
+      enabled: process.env.PORTAGE_RATE_LIMIT !== "off",
+      authenticatedPerMinute: rate(process.env.PORTAGE_RATE_AUTHENTICATED),
+      anonymousPerMinute: rate(process.env.PORTAGE_RATE_ANONYMOUS),
+    },
+  });
   console.log(
     `Portage listening on :${api.port} (${api.tls ? (tls?.mutual ? "mutual TLS" : "TLS") : "plain HTTP"}, auth ${AUTH_MODE})`
   );
   for (const ch of engine.listChannels()) {
     const port = ch.mllpPort ? ` mllp:${ch.mllpPort}` : "";
     console.log(`  channel ${ch.id} [${ch.source}]${port} ${ch.running ? "running" : "stopped"}`);
+  }
+
+  if (!api.limiter.enabled) {
+    console.warn("WARNING: PORTAGE_RATE_LIMIT=off — a single client can saturate this node");
   }
 
   if (engine.retention.enabled) {

@@ -17,15 +17,16 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Admin UI second round**: channel designer, mapping editor with live fixtures, history dashboards, access audit.
 - **Hash-chained access audit**, answering who read whose record and who was refused.
 - **Retention**, redacting stored payloads on a policy while leaving the chain verifiable.
+- **Rate limiting**, closing the flood-the-audit-trail vector the audit work opened.
 
-103 tests. Backend first, tests before UI.
+114 tests. Backend first, tests before UI.
 
 ### What this is not
 
 Honest limits, so nobody discovers them in production:
 
 - **MLLP sources are unauthenticated.** The protocol has no authentication to hook into. Those ports are a network-layer concern — put them behind a VPN, a private APN, or mutual TLS at the transport, not behind Portage.
-- **`node:sqlite` is still flagged experimental on Node 22.** Durability rests on it, so run Node 24+ in production, where it is stable. CI covers both.
+- **`node:sqlite` is still flagged experimental on Node 22.** Durability rests on it, so run Node 24+ in production, where it is stable. The engine warns at boot when it is running below 24; the supported floor stays at 22.18 so an upgrade breaks nobody. CI covers both.
 - **The shipped terminology pack is a labelled demo subset.** SNOMED CT CA, LOINC, pCLOCD, ICD-10-CA and CCI are licensed distributions; the loaders are here, the content is not.
 - **The conformance packs are not certified.** They encode the published profiles as data and pass the shipped fixtures, but no projectathon has scored them.
 
@@ -69,7 +70,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 103 tests
+npm test          # 114 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -154,6 +155,24 @@ Outbound destinations can present a client certificate too, which routes that de
            "caPath": "/etc/portage/ca.crt" } }
 ```
 
+### Rate limiting
+
+On by default. Two reasons, and the second is the sharper one:
+
+An engine on a 5 Mbps satellite tail has very little headroom, and a client retrying in a tight loop can saturate the link the queue is trying to drain through — turning one misbehaving consumer into an outage for a whole community site.
+
+And every refused request to a patient-data path writes a row to the audit trail. That is the right behaviour, but it means an unauthenticated caller could grow the database by hammering the facade. Without a limit, the control that records intrusion attempts becomes the way to exhaust the disk. Measured: 80 anonymous requests against a 20/min limit produce 41 audit rows, of which exactly **one** records the flood — not 80.
+
+A token bucket, so a real client's burst is admitted and a sustained flood is not. Counted per principal for a credentialed caller and per source address otherwise, so one noisy anonymous client cannot spend a credentialed feed's budget. Requests on public routes, and every request when authentication is off, count per source — they all resolve to the same synthetic anonymous principal, and pooling them would be no protection at all.
+
+| variable | default | meaning |
+|---|---|---|
+| `PORTAGE_RATE_AUTHENTICATED` | 1200/min | sustained rate for a credentialed caller |
+| `PORTAGE_RATE_ANONYMOUS` | 120/min | sustained rate per source address |
+| `PORTAGE_RATE_LIMIT=off` | — | disable entirely; warns at boot |
+
+A refusal returns `429` with `Retry-After`. Counters are in memory, matching the single-writer design: a Portage node is one process, and sharing limits across nodes would need shared state.
+
 ### Environment
 
 | variable | default | meaning |
@@ -168,6 +187,7 @@ Outbound destinations can present a client certificate too, which routes that de
 | `PORTAGE_VALIDATE_PACK` / `_MODE` | — | conformance pack enforced on every facade write |
 | `PORTAGE_REDACT_AFTER_DAYS` | — | replace stored payloads older than this with a tombstone |
 | `PORTAGE_PURGE_AFTER_DAYS` | — | delete messages older than this outright |
+| `PORTAGE_RATE_AUTHENTICATED` / `_ANONYMOUS` / `PORTAGE_RATE_LIMIT` | 1200 / 120 / on | request rate limits |
 
 ## Audit trail
 
@@ -265,6 +285,7 @@ src/
   fhir/subscriptions.ts    rest-hook subscriptions on the durable queue
   api/admin.ts        admin, ingest, terminology, conformance and FHIR API
   api/tls.ts          TLS and mutual TLS for the listener
+  api/ratelimit.ts    per-principal and per-source token buckets
   api/ui.html         single-file admin UI served at GET /
   auth/scopes.ts      the scope model and the route-to-scope map
   auth/keys.ts        API key issue, verify, revoke
