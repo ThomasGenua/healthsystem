@@ -15,6 +15,7 @@
     "backup": "node scripts/backup.ts",
     "loadtest": "node scripts/loadtest.ts",
     "crashtest": "node scripts/crashtest.ts",
+    "diskfulltest": "node scripts/diskfulltest.ts",
     "terminology:import": "node scripts/import-terminology.ts",
     "typecheck": "tsc --noEmit"
   },
