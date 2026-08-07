@@ -20,7 +20,7 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Rate limiting**, closing the flood-the-audit-trail vector the audit work opened.
 - **Verified online backup**, and health signals a monitor can alert on.
 
-125 tests. Backend first, tests before UI.
+131 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -71,7 +71,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 125 tests
+npm test          # 131 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -311,6 +311,28 @@ portage_channel_oldest_queued_age_seconds{channel="oru-to-fhir-observation"} 412
 
 Both are public alongside liveness — a scrape happens before any credential is configured, and neither carries patient data: counters, ages and channel ids only. Neither writes to the audit trail, or a 15-second scrape would bury the disclosures the trail exists to surface.
 
+## Throughput
+
+```bash
+npm run loadtest -- --messages 10000
+```
+
+Measured on one core, ten thousand ADT messages through a filter, a mapping and an ordered destination:
+
+| | rate |
+|---|---|
+| ingest | ~1,100/s |
+| ordered drain | ~200/s |
+| chain verify, 10,000 messages | 57ms |
+| backup and verify, 33 MB | 184ms |
+| every admin and FHIR endpoint | under 30ms |
+
+About 3.5 KB of database per message, with the raw payload, its lineage, its pipeline steps and its delivery rows all retained.
+
+**Ingest is deliberately bounded by durability, not by speed.** Each message commits as one transaction, and a commit is an fsync, because an MLLP AA promises the message is on disk rather than merely received. That ceiling is the guarantee working; raising it would mean weakening the promise, so it stays.
+
+The drain rate is a property worth watching in particular, because it is what a satellite outage exercises. An ordered destination sends strictly one message at a time — each only after the previous succeeded — but in a loop rather than one per timer tick. Before that distinction was drawn, an ordered channel released a single message per tick regardless of how fast the far end answered, and the rate *fell* as the backlog grew because the gating query could not use an index. A ten thousand message backlog took hours. `test/throughput.test.ts` pins the property: one pass must drain the backlog, and it must still arrive in order.
+
 ## Architecture
 
 ```
@@ -375,7 +397,7 @@ terminology/          terminology packs loaded at boot (labelled demo subset shi
 conformance/          conformance packs registered at boot (ps-ca, ca-fex, ca-erec)
 fixtures/             synthetic HL7 test messages and conformance fixtures
 demo/                 satellite link simulator, Meridian endpoint simulator, scripted demo
-scripts/              dev certificate generation, terminology release import, backup
+scripts/              dev certificate generation, terminology release import, backup, load test
 test/                 node:test suites
 ```
 

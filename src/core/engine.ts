@@ -451,6 +451,11 @@ export class Engine {
    * Ingest one message into a channel. Synchronous by design: the store,
    * pipeline and enqueue all commit before the source is acknowledged, so an
    * MLLP AA means every resulting payload is durably queued, not merely seen.
+   *
+   * The whole of that commits as one transaction, so the guarantee holds
+   * literally. Writing the message, its steps and its deliveries separately
+   * left a window where a crash produced a stored message with no deliveries
+   * — durable, visible, and never sent.
    */
   ingest(
     channelId: string,
@@ -461,7 +466,17 @@ export class Engine {
   ): { message: MessageRow; status: "processed" | "filtered" | "error"; error?: string; payloads: number } {
     const config = this.getChannelConfig(channelId);
     if (!config) throw new Error(`Unknown channel: ${channelId}`);
+    return this.db.transaction(() => this.ingestWithin(config, channelId, raw, contentType, sourceType, meta));
+  }
 
+  private ingestWithin(
+    config: ChannelConfig,
+    channelId: string,
+    raw: string,
+    contentType: string,
+    sourceType: string,
+    meta?: unknown
+  ): { message: MessageRow; status: "processed" | "filtered" | "error"; error?: string; payloads: number } {
     const message = this.db.insertMessage(channelId, sourceType, contentType, raw, meta);
 
     let payloads: string[] = [raw];

@@ -28,12 +28,16 @@ export class DeliveryWorker {
   private tickMs: number;
   private batch: number;
   private fhir?: FhirStore;
+  /** Messages one ordered key may send per pass, so no key starves the rest. */
+  private drainLimit: number;
+  private stopping = false;
 
-  constructor(db: Db, tickMs = 250, batch = 25, fhir?: FhirStore) {
+  constructor(db: Db, tickMs = 250, batch = 25, fhir?: FhirStore, drainLimit = 500) {
     this.db = db;
     this.tickMs = tickMs;
     this.batch = batch;
     this.fhir = fhir;
+    this.drainLimit = drainLimit;
   }
 
   registerDestination(channelId: string, dest: DestinationConfig, index: number): string {
@@ -64,20 +68,79 @@ export class DeliveryWorker {
   async stop(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    // Signals an in-progress drain loop to finish its current message and
+    // stop, rather than working through a whole backlog on the way out.
+    this.stopping = true;
     while (this.running) await new Promise((r) => setTimeout(r, 5));
+    this.stopping = false;
   }
 
-  /** One scheduling pass. Exposed for deterministic tests. */
+  /**
+   * One scheduling pass. Exposed for deterministic tests.
+   *
+   * Deliveries are grouped by ordering key and each group is drained on its
+   * own, so unrelated destinations never wait for each other.
+   *
+   * Within an ordered group the messages are sent strictly one at a time,
+   * each only after the previous has succeeded — but in a loop, not one per
+   * timer tick. That distinction is the difference between draining a backlog
+   * and not: an ordered destination previously released a single message per
+   * tick, because every later candidate was blocked by its predecessor still
+   * being queued, capping throughput at 1/tickMs no matter how fast the
+   * remote endpoint answered. A satellite outage produces thousands of queued
+   * messages, so that ceiling turned a minutes-long drain into hours.
+   */
   async tick(): Promise<number> {
     if (this.running) return 0;
     this.running = true;
     try {
       const due = this.db.dueDeliveries(Date.now(), this.batch);
-      await Promise.all(due.map((d) => this.attempt(d)));
-      return due.length;
+      if (due.length === 0) return 0;
+
+      const groups = new Map<string, DeliveryRow[]>();
+      for (const d of due) {
+        const list = groups.get(d.ordering_key);
+        if (list) list.push(d);
+        else groups.set(d.ordering_key, [d]);
+      }
+
+      const counts = await Promise.all(
+        [...groups.values()].map((rows) => (rows[0].ordered ? this.drainOrdered(rows[0]) : this.drainUnordered(rows)))
+      );
+      return counts.reduce((a, b) => a + b, 0);
     } finally {
       this.running = false;
     }
+  }
+
+  /**
+   * Sends one ordering key's backlog sequentially, stopping at the first
+   * failure so a retry cannot overtake the message it is behind.
+   *
+   * Bounded per pass so one busy channel cannot starve the others, and so
+   * stop() is never left waiting on an unbounded loop.
+   */
+  private async drainOrdered(head: DeliveryRow): Promise<number> {
+    let sent = 0;
+    let next: DeliveryRow | undefined = head;
+    while (next && sent < this.drainLimit) {
+      const before = next.id;
+      await this.attempt(next);
+      sent++;
+      // Only continue while the message actually left; anything else means
+      // this key is blocked and must wait for its backoff.
+      const settled = this.db.getDelivery(before);
+      if (!settled || settled.state !== "delivered") break;
+      if (this.stopping) break;
+      next = this.db.nextDueForKey(head.ordering_key, Date.now());
+    }
+    return sent;
+  }
+
+  /** Unordered destinations have no constraint between messages. */
+  private async drainUnordered(rows: DeliveryRow[]): Promise<number> {
+    await Promise.all(rows.map((d) => this.attempt(d)));
+    return rows.length;
   }
 
   private async attempt(d: DeliveryRow): Promise<void> {
