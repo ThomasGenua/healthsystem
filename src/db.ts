@@ -70,6 +70,13 @@ CREATE TABLE IF NOT EXISTS deliveries (
 );
 CREATE INDEX IF NOT EXISTS idx_deliveries_due ON deliveries(state, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_deliveries_order ON deliveries(ordering_key, seq);
+-- The ordered-delivery gate asks "is any earlier delivery for this key still
+-- undelivered". Without this it scans every row sharing the key, which grows
+-- with the backlog — exactly when draining matters most.
+-- rowid cannot be named in an index, and does not need to be: index entries
+-- for a given (ordering_key, state) are already ordered by rowid, so MIN(rowid)
+-- is the first entry of the range.
+CREATE INDEX IF NOT EXISTS idx_deliveries_gate ON deliveries(ordering_key, state);
 CREATE INDEX IF NOT EXISTS idx_deliveries_message ON deliveries(message_id);
 
 CREATE TABLE IF NOT EXISTS fhir_resources (
@@ -198,6 +205,35 @@ export class Db {
 
   close(): void {
     this.sql.close();
+  }
+
+  /**
+   * Runs fn as one transaction: it commits on return, rolls back on throw.
+   *
+   * Two reasons ingest needs this. Correctness first — the pipeline writes a
+   * message, its steps and its delivery rows separately, so without a
+   * transaction a crash partway leaves a stored message that will never be
+   * delivered and that nothing retries. And speed: each statement would
+   * otherwise be its own commit, and a commit is an fsync, so a single ingest
+   * paid for half a dozen of them.
+   *
+   * Not reentrant, which is safe here because everything inside is
+   * synchronous — no other JavaScript can run partway through.
+   */
+  transaction<T>(fn: () => T): T {
+    this.sql.exec("BEGIN");
+    try {
+      const out = fn();
+      this.sql.exec("COMMIT");
+      return out;
+    } catch (err) {
+      try {
+        this.sql.exec("ROLLBACK");
+      } catch {
+        // A rollback that fails leaves the original error the useful one.
+      }
+      throw err;
+    }
   }
 
   /* ------------------------------ channels ------------------------------ */
@@ -542,6 +578,17 @@ export class Db {
    * on the same ordering key is still queued or in flight, and, unless
    * skip_on_dead is set, while an earlier one sits in the dead letter queue.
    */
+  /**
+   * Deliveries ready to attempt now.
+   *
+   * An ordered destination releases a message only when nothing earlier for
+   * that destination is still queued, in flight, or dead-lettered. Expressed
+   * as "this row is at or before the earliest blocking row", which is an
+   * index seek on (ordering_key, state, rowid), rather than as a NOT EXISTS
+   * over every predecessor — that form could not use an index, because it
+   * filtered on rowid while the only index was on seq, so its cost grew with
+   * the backlog exactly when draining mattered most.
+   */
   dueDeliveries(now: number, limit: number): DeliveryRow[] {
     return this.sql
       .prepare(
@@ -549,17 +596,44 @@ export class Db {
          WHERE d.state = 'queued' AND d.next_attempt_at <= ?
            AND (
              d.ordered = 0
-             OR NOT EXISTS (
-               SELECT 1 FROM deliveries p
-               WHERE p.ordering_key = d.ordering_key AND p.rowid < d.rowid
-                 AND (p.state IN ('queued', 'inflight')
-                      OR (p.state = 'dead' AND d.skip_on_dead = 0))
-             )
+             OR d.rowid <= COALESCE(
+                  (SELECT MIN(p.rowid) FROM deliveries p
+                    WHERE p.ordering_key = d.ordering_key
+                      AND p.state IN ('queued', 'inflight')),
+                  d.rowid)
+             AND d.rowid <= COALESCE(
+                  (SELECT MIN(p.rowid) FROM deliveries p
+                    WHERE p.ordering_key = d.ordering_key
+                      AND p.state = 'dead' AND d.skip_on_dead = 0),
+                  d.rowid)
            )
          ORDER BY d.rowid
          LIMIT ?`
       )
       .all(now, limit) as unknown as DeliveryRow[];
+  }
+
+  /**
+   * The next deliverable message for one ordering key.
+   *
+   * Lets the worker drain a key in a tight sequential loop instead of one
+   * message per timer tick. Strict ordering is preserved because the caller
+   * only asks for the next one after the previous has succeeded.
+   */
+  nextDueForKey(orderingKey: string, now: number): DeliveryRow | undefined {
+    return this.sql
+      .prepare(
+        `SELECT * FROM deliveries d
+         WHERE d.ordering_key = ? AND d.state = 'queued' AND d.next_attempt_at <= ?
+           AND d.rowid <= COALESCE(
+                (SELECT MIN(p.rowid) FROM deliveries p
+                  WHERE p.ordering_key = d.ordering_key
+                    AND p.state = 'dead' AND d.skip_on_dead = 0),
+                d.rowid)
+         ORDER BY d.rowid
+         LIMIT 1`
+      )
+      .get(orderingKey, now) as unknown as DeliveryRow | undefined;
   }
 
   markInflight(id: string): void {

@@ -13,6 +13,7 @@
     "test": "node --test \"test/**/*.test.ts\"",
     "demo": "node demo/run-demo.ts",
     "backup": "node scripts/backup.ts",
+    "loadtest": "node scripts/loadtest.ts",
     "terminology:import": "node scripts/import-terminology.ts",
     "typecheck": "tsc --noEmit"
   },
