@@ -90,6 +90,13 @@ export function requiredScope(method: string, path: string): Scope | null {
 
   if (path.startsWith("/api/")) return "admin";
   if (path.startsWith("/ingest/")) return "write";
+
+  // The audit trail is served under /fhir/ for consumers that expect the
+  // standard AuditEvent shape, but it is not clinical data: it records who
+  // looked at whom. A consumer with read access to the facade must not also
+  // learn the access history of every patient in it.
+  if (path === "/fhir/AuditEvent" || path.startsWith("/fhir/AuditEvent/")) return "admin";
+
   if (path.startsWith("/fhir/")) return method === "GET" ? "read" : "write";
 
   // Anything unrouted falls through to a 404 handler, but make the default

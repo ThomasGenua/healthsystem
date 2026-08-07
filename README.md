@@ -14,9 +14,11 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Native SFTP, Postgres and MySQL sources**, and cron scheduling for any polling source.
 - **Terminology release loaders** for SNOMED CT RF2, LOINC CSV and the classification tables.
 - **Packet loss and bandwidth shaping** in the link simulator.
-- **Admin UI second round**: channel designer, mapping editor with live fixtures, history dashboards.
+- **Admin UI second round**: channel designer, mapping editor with live fixtures, history dashboards, access audit.
+- **Hash-chained access audit**, answering who read whose record and who was refused.
+- **Retention**, redacting stored payloads on a policy while leaving the chain verifiable.
 
-83 tests. Backend first, tests before UI.
+103 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -67,7 +69,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 83 tests
+npm test          # 103 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -88,7 +90,7 @@ Three scopes, deliberately coarse — the API has three kinds of caller, and fin
 | scope | reaches |
 |---|---|
 | `admin` | `/api/*`: channels, messages, the delivery queue, keys. Implies the other two. |
-| `read` | `GET /fhir/*` and the terminology and conformance lookups |
+| `read` | `GET /fhir/*` and the terminology and conformance lookups, except `/fhir/AuditEvent` |
 | `write` | `POST /ingest/:path`, `POST /fhir/:resourceType` |
 
 Open without credentials, by design: the admin UI shell, `GET /api/health`, and `GET /fhir/metadata` — a CapabilityStatement is a discovery document, and a client has to read it to learn how to authenticate against everything else. Any unrecognised path defaults to requiring `admin`, so a route added later fails closed.
@@ -164,6 +166,60 @@ Outbound destinations can present a client certificate too, which routes that de
 | `PORTAGE_TLS_CERT` / `_KEY` | — | serve over TLS |
 | `PORTAGE_TLS_CLIENT_CA` | — | require a client certificate signed by this CA |
 | `PORTAGE_VALIDATE_PACK` / `_MODE` | — | conformance pack enforced on every facade write |
+| `PORTAGE_REDACT_AFTER_DAYS` | — | replace stored payloads older than this with a tombstone |
+| `PORTAGE_PURGE_AFTER_DAYS` | — | delete messages older than this outright |
+
+## Audit trail
+
+Canadian health privacy law — PHIPA in Ontario, HIA in Alberta, the Health Information Act in the territories — obliges a custodian to know who looked at whose record. Portage holds patient data in the facade and raw HL7 in the message log, so it answers that question.
+
+```bash
+curl "localhost:8686/api/audit?patient=NT123456" -H "Authorization: Bearer $KEY"   # who read this record
+curl "localhost:8686/api/audit?failures=true"    -H "Authorization: Bearer $KEY"   # who was turned away
+curl "localhost:8686/api/audit/verify"           -H "Authorization: Bearer $KEY"   # has the trail been altered
+curl "localhost:8686/fhir/AuditEvent"            -H "Authorization: Bearer $KEY"   # the same, as R4 AuditEvent
+```
+
+**What is recorded.** Disclosure is the event that matters, so every read of patient data is: a facade read or search, and any look at a raw message, since an ER7 message identifies a patient as surely as anything in the facade. A search records how many records it returned — one that discloses nine hundred is not a read. Refused attempts are recorded too, because a trail that shows only successes cannot show someone trying doors. Key issue and revocation are recorded because they change who can open them.
+
+**What is not.** Internal writes are not duplicated here. Every message already carries hash-chained lineage with its pipeline steps and deliveries, which is a stronger record than an audit line, and repeating it would bury the disclosures in routine traffic.
+
+**Tamper evidence.** The trail is hash-chained exactly as message lineage is, so a row cannot be edited or deleted without breaking `/api/audit/verify`. That is the property that makes an audit log worth keeping rather than merely worth having.
+
+**The trail carries identifiers and references, never payloads.** An audit log that copied the record it was protecting would double the exposure it exists to detect.
+
+**It is admin-scoped, including under `/fhir/`.** A consumer with `read` access to the facade must not also learn the access history of every patient in it — so `/fhir/AuditEvent` requires `admin`, unlike every other `/fhir/` read.
+
+## Retention
+
+The message log keeps every raw HL7 message it has ever received. Left alone that is both a disk problem and a liability: holding a patient's admission message for eight years because nothing deletes it is not a feature. Retention is off by default and configured in days.
+
+```bash
+PORTAGE_REDACT_AFTER_DAYS=30 PORTAGE_PURGE_AFTER_DAYS=365 npm start
+
+curl localhost:8686/api/retention      -H "Authorization: Bearer $KEY"   # policy, and what it would touch
+curl -X POST localhost:8686/api/retention/run -H "Authorization: Bearer $KEY"
+```
+
+Two controls, and the difference is the point:
+
+**Redaction** replaces the stored payload with a tombstone. The message, its lineage, its pipeline steps and its deliveries all remain, and **the hash chain still verifies in full** — because the chain commits to a digest taken at ingest rather than to the payload itself. You keep the record that a message arrived, from where, and what it produced; you lose only the clinical content. This is almost always the right control.
+
+**Purging** deletes the rows outright. It reclaims disk and destroys the record that anything happened, so the chain can only be verified from the purge point onward. The chain tip at the purge is retained, so the surviving chain still verifies and `verifiedFrom` reports where it now begins — rather than looking tampered with. Offered because operators sometimes genuinely need it, and deliberately not the default.
+
+`/api/chain/verify` reports both halves of the guarantee:
+
+```json
+{ "ok": true, "checked": 500, "payloadsChecked": 120, "redacted": 380 }
+```
+
+Every link verifies; 120 rows can still prove their payload is the one the chain committed to; 380 have been redacted and can no longer. A payload put back where a redacted one was will not match its recorded digest and is caught.
+
+In-flight deliveries are never redacted — a queued payload still has to be deliverable. Only settled ones are.
+
+**Retention does not touch the FHIR facade.** That store holds the current clinical record a consumer is reading, not a log of traffic. How long a territorial EHR keeps a Patient resource is a clinical governance decision, not something an interface engine should quietly make.
+
+A sweep that destroys data records itself on the audit trail, because that is an event worth being able to account for.
 
 ## Architecture
 
@@ -214,6 +270,8 @@ src/
   auth/keys.ts        API key issue, verify, revoke
   auth/jwt.ts         OAuth 2.0 / SMART bearer validation against a JWKS
   auth/gate.ts        the one check every request passes
+  audit/store.ts      hash-chained access trail
+  core/retention.ts   payload redaction and purge under a retention policy
   connectors/sql.ts   Postgres and MySQL polling clients
   connectors/sftp.ts  SFTP polling client
   connectors/cron.ts  five-field cron schedules
@@ -291,6 +349,11 @@ GET    /api/deliveries?channel_id=&state=   browse; state=dead is the DLQ
 POST   /api/deliveries/:id/replay           requeue a dead, delivered or discarded delivery
 POST   /api/deliveries/:id/discard          discard a dead delivery, releasing ordered flow
 GET    /api/chain/verify?channel_id=        walk and verify the hash chain
+GET    /api/audit?patient=&principal=&failures=  who accessed patient data
+GET    /api/audit/verify                    walk and verify the audit hash chain
+GET    /api/retention                       policy, and what a sweep would touch
+POST   /api/retention/run                   apply the retention policy now
+GET    /fhir/AuditEvent?patient=&_count=    the same trail as R4 AuditEvent (admin only)
 GET    /api/keys                            list API keys (metadata only, never the keys)
 POST   /api/keys                            issue a key; the response is the only time it is shown
 DELETE /api/keys/:id                        revoke a key
@@ -402,7 +465,7 @@ All of these are engine sources, so everything downstream — pipeline, lineage,
 
 ## Admin UI
 
-`GET /` serves a single-file, no-build UI over the public API: a dashboard with live counts, history charts, channels with hash-chain verification, a channel designer, a mapping editor with live fixtures, a message browser with per-step lineage, the delivery queue with dead-letter replay and discard, a FHIR facade browser, subscription management, terminology lookups and a conformance validator. It is deliberately thin; anything it does, curl does.
+`GET /` serves a single-file, no-build UI over the public API: a dashboard with live counts, history charts, an access audit view, channels with hash-chain verification, a channel designer, a mapping editor with live fixtures, a message browser with per-step lineage, the delivery queue with dead-letter replay and discard, a FHIR facade browser, subscription management, terminology lookups and a conformance validator. It is deliberately thin; anything it does, curl does.
 
 Paste an API key into the box in the header and it is attached to every request; it is held in browser local storage and sent nowhere else.
 
@@ -438,5 +501,4 @@ Everything streams and loads in batches, because a SNOMED snapshot runs to milli
 - Projectathon readiness: pack tightening against the published PS-CA, CA:FeX and CA:eReC test scripts
 - Terminology: ValueSet and ConceptMap import from release formats (concepts land today; memberships and mappings are still pack JSON)
 - Subscription topics and the R5 backport, alongside today's R4 rest-hook criteria
-- Structured audit: who read which resource, on the same durable chain as message lineage
 - Horizontal operation: today a Portage node is a single writer, which suits a community site but not a territorial hub

@@ -69,10 +69,21 @@ function buildAuthGate(engine: Engine): AuthGate {
 }
 
 async function main(): Promise<void> {
+  const days = (v: string | undefined): number | undefined => {
+    if (v === undefined) return undefined;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) throw new Error(`retention must be a non-negative number of days, got: ${v}`);
+    return n;
+  };
+
   const engine = new Engine({
     dbPath: join(DATA_DIR, "portage.db"),
     validatePack: process.env.PORTAGE_VALIDATE_PACK,
     validateMode: process.env.PORTAGE_VALIDATE_MODE === "annotate" ? "annotate" : "reject",
+    retention: {
+      redactAfterDays: days(process.env.PORTAGE_REDACT_AFTER_DAYS),
+      purgeAfterDays: days(process.env.PORTAGE_PURGE_AFTER_DAYS),
+    },
   });
 
   if (existsSync(MAPPINGS_DIR)) {
@@ -125,6 +136,14 @@ async function main(): Promise<void> {
   for (const ch of engine.listChannels()) {
     const port = ch.mllpPort ? ` mllp:${ch.mllpPort}` : "";
     console.log(`  channel ${ch.id} [${ch.source}]${port} ${ch.running ? "running" : "stopped"}`);
+  }
+
+  if (engine.retention.enabled) {
+    const p = engine.retention.describe();
+    console.log(
+      `retention: ${p.redactAfterDays !== undefined ? `redact after ${p.redactAfterDays}d` : "no redaction"}` +
+        `, ${p.purgeAfterDays !== undefined ? `purge after ${p.purgeAfterDays}d` : "no purge"}`
+    );
   }
 
   const shutdown = async () => {

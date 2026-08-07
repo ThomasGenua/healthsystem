@@ -214,11 +214,14 @@ test("hash chain verifies and detects tampering", () => {
   db.insertMessage("ch", "test", "text/plain", "one");
   db.insertMessage("ch", "test", "text/plain", "two");
   db.insertMessage("ch", "test", "text/plain", "three");
-  assert.deepEqual(db.verifyChain("ch"), { ok: true, checked: 3 });
+  assert.deepEqual(db.verifyChain("ch"), { ok: true, checked: 3, payloadsChecked: 3, redacted: 0 });
 
   db.sql.prepare("UPDATE messages SET raw = 'tampered' WHERE raw = 'two'").run();
   const v = db.verifyChain("ch");
   assert.equal(v.ok, false);
   assert.equal(v.checked, 1);
+  // The payload digest recorded at ingest is what catches this: the chain
+  // links still line up, but the row no longer matches what it committed to.
+  assert.equal(v.payloadsChecked, 1);
   db.close();
 });
