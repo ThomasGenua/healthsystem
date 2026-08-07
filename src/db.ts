@@ -396,6 +396,17 @@ export class Db {
       .all(...(args as never[])) as unknown as MessageRow[];
   }
 
+  /**
+   * How many messages a channel holds. Served by idx_messages_channel, so it
+   * stays cheap as the log grows — which matters because /metrics asks on
+   * every scrape.
+   */
+  countMessages(channelId: string): number {
+    return (
+      this.sql.prepare("SELECT COUNT(*) AS n FROM messages WHERE channel_id = ?").get(channelId) as { n: number }
+    ).n;
+  }
+
   addStep(messageId: string, index: number, name: string, output: string | null): void {
     this.sql
       .prepare("INSERT INTO message_steps (message_id, step_index, name, output) VALUES (?, ?, ?, ?)")
@@ -408,11 +419,23 @@ export class Db {
       .all(messageId) as Array<{ step_index: number; name: string; output: string | null; at: string }>;
   }
 
-  /** Walk a channel's chain and confirm every link. */
   /**
    * Walks a channel's hash chain.
    *
-   * Three wrinkles, all of them honest rather than incidental:
+   * Linkage alone is not enough, and this is the part that is easy to get
+   * wrong. Walking forward from the beginning catches an edited row and a row
+   * removed from the middle — the next row's back-pointer stops matching — but
+   * it cannot catch rows removed from the *end*, because nothing after them
+   * survives to point at them. A truncated chain is a shorter chain that
+   * verifies perfectly. Since deleting the most recent entries is precisely
+   * what someone covering their tracks would do, that is the case worth
+   * catching.
+   *
+   * So the walk ends by comparing where it arrived against the tip the channel
+   * has been carrying all along, which is written on every insert and is not
+   * derivable from the surviving rows.
+   *
+   * Three further wrinkles, all honest rather than incidental:
    *
    *   Rows written before retention existed have no raw_digest and chain over
    *   the payload directly; they verify by that older formula, so an existing
@@ -425,15 +448,19 @@ export class Db {
    *
    *   A purged prefix leaves the first surviving row pointing at a hash that
    *   is gone. The tip at the time of the purge is kept, so linkage still
-   *   verifies, and `verifiedFrom` says where the chain now begins.
+   *   verifies, and `verifiedFrom` says where the chain now begins. A purge
+   *   removes a prefix and never the tip, so it does not disturb the check
+   *   above — and a channel purged in its entirety keeps the tip it ended on.
    */
   verifyChain(channelId: string): {
     ok: boolean;
     checked: number;
     payloadsChecked: number;
     redacted: number;
+    tip?: string;
     verifiedFrom?: string;
     brokenAt?: string;
+    truncated?: { expectedTip: string; foundTip: string | null };
   } {
     const rows = this.sql
       .prepare("SELECT id, raw, hash, prev_hash, raw_digest, redacted_at FROM messages WHERE channel_id = ? ORDER BY seq")
@@ -481,7 +508,24 @@ export class Db {
       prev = r.hash;
       checked++;
     }
-    return { ok: true, checked, payloadsChecked, redacted, ...(purgedBefore ? { verifiedFrom: purgedBefore } : {}) };
+
+    // Where the walk arrived has to be where the channel says it should be.
+    // Nothing among the surviving rows can supply this, which is what makes it
+    // worth checking: an attacker who deletes the tail has to know to move the
+    // tip as well.
+    const expectedTip = this.getChannel(channelId)?.last_hash ?? null;
+    const from = purgedBefore ? { verifiedFrom: purgedBefore } : {};
+    if (expectedTip !== null && prev !== expectedTip) {
+      return {
+        ok: false,
+        checked,
+        payloadsChecked,
+        redacted,
+        truncated: { expectedTip, foundTip: prev },
+        ...from,
+      };
+    }
+    return { ok: true, checked, payloadsChecked, redacted, ...(prev ? { tip: prev } : {}), ...from };
   }
 
   /* ------------------------------ retention ----------------------------- */

@@ -214,7 +214,12 @@ test("hash chain verifies and detects tampering", () => {
   db.insertMessage("ch", "test", "text/plain", "one");
   db.insertMessage("ch", "test", "text/plain", "two");
   db.insertMessage("ch", "test", "text/plain", "three");
-  assert.deepEqual(db.verifyChain("ch"), { ok: true, checked: 3, payloadsChecked: 3, redacted: 0 });
+  const clean = db.verifyChain("ch");
+  assert.deepEqual(
+    { ok: clean.ok, checked: clean.checked, payloadsChecked: clean.payloadsChecked, redacted: clean.redacted },
+    { ok: true, checked: 3, payloadsChecked: 3, redacted: 0 }
+  );
+  assert.equal(clean.tip, db.getChannel("ch")!.last_hash, "a clean walk reports the tip it arrived at");
 
   db.sql.prepare("UPDATE messages SET raw = 'tampered' WHERE raw = 'two'").run();
   const v = db.verifyChain("ch");

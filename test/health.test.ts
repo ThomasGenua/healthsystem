@@ -149,6 +149,8 @@ test("metrics are exposed in Prometheus text format", async () => {
       "portage_fhir_resources",
       "portage_dead_letters",
       "portage_oldest_queued_age_seconds",
+      "portage_audit_events_total",
+      "portage_chain_length",
     ]) {
       assert.match(text, new RegExp(`^# HELP ${name} `, "m"), `${name} needs a HELP line`);
       assert.match(text, new RegExp(`^# TYPE ${name} `, "m"), `${name} needs a TYPE line`);
@@ -158,6 +160,14 @@ test("metrics are exposed in Prometheus text format", async () => {
     assert.match(text, /^portage_messages_total\{status="processed"\} 1$/m);
     assert.match(text, /^portage_fhir_resources\{resource_type="Patient"\} 1$/m);
     assert.match(text, /^portage_dead_letters 0$/m);
+    assert.match(text, /^portage_chain_length\{channel="healthy"\} 1$/m);
+
+    // Chain lengths are counters on purpose. A chain that loses rows reads as
+    // a counter reset in whatever scrapes this — which is the one record of
+    // the chain's history that lives outside the database, and so outside the
+    // reach of anyone who can rewrite it.
+    assert.match(text, /^# TYPE portage_chain_length counter$/m);
+    assert.match(text, /^# TYPE portage_audit_events_total counter$/m);
 
     // Every non-comment line must be `name value` or `name{labels} value`, or
     // a scraper rejects the whole payload.

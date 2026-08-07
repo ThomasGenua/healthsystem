@@ -261,6 +261,30 @@ async function route(
       )
     );
 
+    // Chain lengths, deliberately as counters.
+    //
+    // A hash chain kept in the same database as the data it attests to cannot
+    // prove anything against someone who can write to that database — they can
+    // re-link it. What they cannot reach is a scrape that already happened.
+    // Exported as counters, a chain that loses rows reads as a counter reset
+    // in whatever is scraping this, which is off-box and outside the engine's
+    // control, and every monitoring system alerts on that for free.
+    // Counted rather than verified. A scrape runs every few seconds forever,
+    // and walking every chain each time would cost more as the log grew —
+    // worst exactly where the log is largest. The length is the signal; the
+    // walk belongs on /api/chain/verify, where an operator asks for it.
+    metric("portage_audit_events_total", "Entries on the access audit chain.", "counter", [
+      ["", engine.audit.count()],
+    ]);
+    metric(
+      "portage_chain_length",
+      "Messages on each channel's hash chain.",
+      "counter",
+      engine
+        .listChannels()
+        .map((c) => [`{channel="${c.id.replace(/"/g, "")}"}`, engine.db.countMessages(c.id)] as [string, number])
+    );
+
     const body = lines.join("\n") + "\n";
     res.writeHead(200, { "content-type": "text/plain; version=0.0.4", "content-length": Buffer.byteLength(body) });
     res.end(body);
