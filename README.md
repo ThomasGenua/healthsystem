@@ -22,8 +22,9 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **One engine per database**, enforced, so an overlapping deploy cannot silently duplicate messages.
 - **In-place schema migration**, so upgrading an existing database does not take the node off the air.
 - **Truncation-resistant chains**, so deleting the most recent entries no longer verifies clean.
+- **Subscriptions behind `admin`**, so a push-only feed credential cannot arrange to receive the clinical record.
 
-172 tests. Backend first, tests before UI.
+177 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -74,7 +75,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 172 tests
+npm test          # 177 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -94,9 +95,11 @@ Three scopes, deliberately coarse — the API has three kinds of caller, and fin
 
 | scope | reaches |
 |---|---|
-| `admin` | `/api/*`: channels, messages, the delivery queue, keys. Implies the other two. |
-| `read` | `GET /fhir/*` and the terminology and conformance lookups, except `/fhir/AuditEvent` |
+| `admin` | `/api/*`: channels, messages, the delivery queue, keys. Also `/fhir/AuditEvent` and `/fhir/Subscription`. Implies the other two. |
+| `read` | `GET /fhir/*` and the terminology and conformance lookups, except `/fhir/AuditEvent` and `/fhir/Subscription` |
 | `write` | `POST /ingest/:path`, `POST /fhir/:resourceType` |
+
+Two things under `/fhir/` are not clinical traffic and sit with the operator rather than the consumer. `AuditEvent` records who looked at whom, so read access to the facade must not also disclose the access history of everyone in it. `Subscription` is a standing instruction to send patient records to an address — a routing decision of the same kind `POST /api/channels` makes. Left under the general `/fhir/` rule it needed only `write`, which is exactly what a feed is given, so the credential a lab uses to file results could have registered a rest-hook of its own and turned push-only access into a continuous read of the record. See [Subscriptions](#subscriptions).
 
 Open without credentials, by design: the admin UI shell, `GET /api/health`, and `GET /fhir/metadata` — a CapabilityStatement is a discovery document, and a client has to read it to learn how to authenticate against everything else. Any unrecognised path defaults to requiring `admin`, so a route added later fails closed.
 
@@ -667,7 +670,11 @@ The two checks are not deduplicated, on purpose. A pipeline `validate.profile` r
 
 ## Subscriptions
 
-`POST /fhir/Subscription` with a rest-hook channel registers a consumer. A change in the facade store (created or updated; an unchanged upsert never notifies, because versioning is content-addressed) enqueues one delivery per matching active subscription on the same durable queue as everything else, so notifications get retry with backoff, dead-lettering, replay and strict per-subscription ordering, and they survive a restart. Criteria is a resource type with an optional identifier token: `Observation`, `Patient?identifier=NT123456`, or `Patient?identifier=system|value`.
+`POST /fhir/Subscription` with a rest-hook channel registers a consumer. **This needs `admin`**, not `write` — see [Security](#security) for why. A change in the facade store (created or updated; an unchanged upsert never notifies, because versioning is content-addressed) enqueues one delivery per matching active subscription on the same durable queue as everything else, so notifications get retry with backoff, dead-lettering, replay and strict per-subscription ordering, and they survive a restart. Criteria is a resource type with an optional identifier token: `Observation`, `Patient?identifier=NT123456`, or `Patient?identifier=system|value`.
+
+Registering and removing one are both recorded on the audit trail, with the endpoint and criteria. A subscription is the largest disclosure decision the API offers — every matching record, to that address, indefinitely — and it was previously the only one that left no mark, while a single record read left one. A refused attempt is recorded too, since someone trying to arrange an exfiltration is exactly what an audit trail is for.
+
+The endpoint an operator configures is trusted, the same way a channel's HTTP destination URL is: an operator who can rewrite a channel can already route anything anywhere, so there is no boundary left to enforce at that point. That is the reason subscription management belongs behind `admin` in the first place.
 
 ## Connectors
 

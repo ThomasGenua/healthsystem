@@ -586,8 +586,25 @@ async function route(
   if (path === "/fhir/Subscription" && method === "POST") {
     try {
       const row = engine.subs.create(JSON.parse(await readBody(req)) as Record<string, unknown>);
+      // A subscription is a standing disclosure: every record matching its
+      // criteria, sent to that endpoint, indefinitely. That is a larger act
+      // than any single read on this trail, and until now it was the only one
+      // that left no mark. The endpoint is recorded because "who arranged for
+      // patient data to go where" is the question an operator will be asked.
+      audit({
+        action: "C",
+        resourceType: "Subscription",
+        resourceId: row.id,
+        detail: `rest-hook to ${row.endpoint} on criteria ${row.criteria}`,
+      });
       return send(res, 201, engine.subs.toResource(row));
     } catch (err) {
+      audit({
+        action: "C",
+        resourceType: "Subscription",
+        outcome: 4,
+        detail: err instanceof Error ? err.message : "invalid subscription",
+      });
       return send(res, 400, {
         resourceType: "OperationOutcome",
         issue: [{ severity: "error", code: "invalid", diagnostics: err instanceof Error ? err.message : "invalid subscription" }],
@@ -606,7 +623,19 @@ async function route(
     return send(res, 200, engine.subs.toResource(row));
   }
   if (m && method === "DELETE") {
-    return engine.subs.remove(m[1]) ? send(res, 200, { ok: true }) : send(res, 404, { error: "not found" });
+    // Recorded too. Ending a disclosure is as much a part of the account of
+    // where patient data went as starting one, and a trail that only shows
+    // live subscriptions cannot answer what was running last month.
+    const existing = engine.subs.get(m[1]);
+    const removed = engine.subs.remove(m[1]);
+    audit({
+      action: "D",
+      resourceType: "Subscription",
+      resourceId: m[1],
+      outcome: removed ? 0 : 4,
+      ...(existing ? { detail: `rest-hook to ${existing.endpoint} on criteria ${existing.criteria}` } : {}),
+    });
+    return removed ? send(res, 200, { ok: true }) : send(res, 404, { error: "not found" });
   }
 
   m = /^\/ingest\/([a-z0-9-]+)$/.exec(path);

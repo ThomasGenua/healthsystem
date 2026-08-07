@@ -60,7 +60,12 @@ svg text{fill:var(--dim);font-size:10px}
 <main id="main"></main>
 <script>
 const $=(s,el=document)=>el.querySelector(s);
-const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+/* Escapes apostrophes as well as the usual four. Every id rendered into an
+   onclick sits inside a single-quoted attribute, and today they all happen to
+   be uuids or charset-validated — which is a property of the current callers,
+   not of this function, and not something the next row added here should have
+   to know. */
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 // The key lives in this browser and is attached to every request. Nothing is
 // sent anywhere else, and the server never returns a stored key.
 const KEY="portage.apikey";
@@ -380,9 +385,9 @@ window.mpRun=async()=>{
 async function channels(m){
   const {data}=await j("/api/channels");
   m.innerHTML=`<table><tr><th>id</th><th>name</th><th>source</th><th>state</th><th>chain</th></tr>
-    ${data.map(c=>`<tr class="row" onclick="chanDetail('${c.id}')"><td>${esc(c.id)}</td><td>${esc(c.name)}</td><td>${esc(c.source)}${c.mllpPort?` :${c.mllpPort}`:""}</td>
+    ${data.map(c=>`<tr class="row" onclick="chanDetail('${esc(c.id)}')"><td>${esc(c.id)}</td><td>${esc(c.name)}</td><td>${esc(c.source)}${c.mllpPort?` :${c.mllpPort}`:""}</td>
       <td>${c.running?tag("running","ok"):c.enabled?tag("stopped","warn"):tag("disabled","dim")}</td>
-      <td><button class="act mini" onclick="event.stopPropagation();verifyChain('${c.id}',this)">verify</button></td></tr>`).join("")}
+      <td><button class="act mini" onclick="event.stopPropagation();verifyChain('${esc(c.id)}',this)">verify</button></td></tr>`).join("")}
   </table><div id="detail"></div>`;
 }
 window.chanDetail=async id=>{const {data}=await j("/api/channels/"+id);$("#detail").innerHTML=`<h2>${esc(id)}</h2><pre>${esc(JSON.stringify(data,null,2))}</pre>`};
@@ -393,11 +398,11 @@ async function messages(m){
   const cur={ch:m.dataset.ch||"",st:m.dataset.st||""};
   const {data}=await j(`/api/messages?limit=50${cur.ch?"&channel_id="+cur.ch:""}${cur.st?"&status="+cur.st:""}`);
   m.innerHTML=`<div class="bar">
-    <select onchange="$('#main').dataset.ch=this.value;render()"><option value="">all channels</option>${chans.map(c=>`<option ${c.id===cur.ch?"selected":""}>${c.id}</option>`).join("")}</select>
+    <select onchange="$('#main').dataset.ch=this.value;render()"><option value="">all channels</option>${chans.map(c=>`<option ${c.id===cur.ch?"selected":""}>${esc(c.id)}</option>`).join("")}</select>
     <select onchange="$('#main').dataset.st=this.value;render()"><option value="">all statuses</option>${["processed","filtered","error"].map(s=>`<option ${s===cur.st?"selected":""}>${s}</option>`).join("")}</select>
     <button class="act mini" onclick="render()">refresh</button></div>
   <table><tr><th>seq</th><th>channel</th><th>received</th><th>source</th><th>status</th></tr>
-    ${data.map(r=>`<tr class="row" onclick="msgDetail('${r.id}')"><td>${r.seq}</td><td>${esc(r.channel_id)}</td><td>${esc(r.received_at)}</td><td>${esc(r.source_type)}</td><td>${stTag(r.status)}${r.error?` <span class="err">${esc(r.error)}</span>`:""}</td></tr>`).join("")}
+    ${data.map(r=>`<tr class="row" onclick="msgDetail('${esc(r.id)}')"><td>${r.seq}</td><td>${esc(r.channel_id)}</td><td>${esc(r.received_at)}</td><td>${esc(r.source_type)}</td><td>${stTag(r.status)}${r.error?` <span class="err">${esc(r.error)}</span>`:""}</td></tr>`).join("")}
   </table><div id="detail"></div>`;
 }
 window.msgDetail=async id=>{
@@ -415,7 +420,7 @@ async function deliveries(m){
     <button class="act mini" onclick="render()">refresh</button></div>
   <table><tr><th>channel</th><th>destination</th><th>seq</th><th>state</th><th>attempts</th><th>next attempt</th><th>last error</th><th></th></tr>
     ${data.map(d=>`<tr><td>${esc(d.channel_id)}</td><td>${esc(d.destination_id)}</td><td>${d.seq}</td><td>${stTag(d.state)}</td><td>${d.attempts}/${d.max_attempts}</td><td>${esc(d.next_attempt_at??"")}</td><td class="err">${esc((d.last_error??"").slice(0,80))}</td>
-      <td>${d.state==="dead"?`<button class="act mini" onclick="act('${d.id}','replay')">replay</button> <button class="act mini" onclick="act('${d.id}','discard')">discard</button>`:""}</td></tr>`).join("")}
+      <td>${d.state==="dead"?`<button class="act mini" onclick="act('${esc(d.id)}','replay')">replay</button> <button class="act mini" onclick="act('${esc(d.id)}','discard')">discard</button>`:""}</td></tr>`).join("")}
   </table>`;
 }
 window.act=async(id,what)=>{await j(`/api/deliveries/${id}/${what}`,{method:"POST"});render()};
@@ -430,7 +435,7 @@ async function fhirTab(m){
     <button class="act mini" onclick="render()">search</button></div><div id="list"></div><div id="detail"></div>`;
   const {data}=await j(`/fhir/${cur.t}?_count=25${cur.q?"&identifier="+encodeURIComponent(cur.q):""}`);
   $("#list").innerHTML=`<p class="sub" style="color:var(--dim)">${data.total??0} match(es)</p><table><tr><th>id</th><th>version</th><th>updated</th></tr>
-    ${(data.entry||[]).map(e=>`<tr class="row" onclick="readRes('${cur.t}','${e.resource.id}')"><td>${esc(e.resource.id)}</td><td>${esc(e.resource.meta?.versionId??"")}</td><td>${esc(e.resource.meta?.lastUpdated??"")}</td></tr>`).join("")}</table>`;
+    ${(data.entry||[]).map(e=>`<tr class="row" onclick="readRes('${esc(cur.t)}','${esc(e.resource.id)}')"><td>${esc(e.resource.id)}</td><td>${esc(e.resource.meta?.versionId??"")}</td><td>${esc(e.resource.meta?.lastUpdated??"")}</td></tr>`).join("")}</table>`;
 }
 window.readRes=async(t,id)=>{const {data}=await j(`/fhir/${t}/${id}`);$("#detail").innerHTML=`<h2>${t}/${esc(id)}</h2><pre>${esc(JSON.stringify(data,null,2))}</pre>`};
 
@@ -438,7 +443,7 @@ async function subsTab(m){
   const {data}=await j("/fhir/Subscription");
   m.innerHTML=`<table><tr><th>id</th><th>status</th><th>criteria</th><th>endpoint</th><th></th></tr>
     ${(data.entry||[]).map(e=>{const r=e.resource;return`<tr><td>${esc(r.id)}</td><td>${stTag(r.status)}</td><td>${esc(r.criteria)}</td><td>${esc(r.channel?.endpoint)}</td>
-      <td><button class="act mini" onclick="delSub('${r.id}')">delete</button></td></tr>`}).join("")}
+      <td><button class="act mini" onclick="delSub('${esc(r.id)}')">delete</button></td></tr>`}).join("")}
   </table>
   <h2>create rest-hook subscription</h2>
   <div class="bar"><input id="s-crit" placeholder='criteria, e.g. Patient or Observation?identifier=NT123456' style="width:340px">
