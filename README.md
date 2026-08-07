@@ -20,7 +20,7 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Rate limiting**, closing the flood-the-audit-trail vector the audit work opened.
 - **Verified online backup**, and health signals a monitor can alert on.
 
-142 tests. Backend first, tests before UI.
+146 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -71,7 +71,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 142 tests
+npm test          # 146 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -333,6 +333,21 @@ About 3.5 KB of database per message, with the raw payload, its lineage, its pip
 
 The drain rate is a property worth watching in particular, because it is what a satellite outage exercises. An ordered destination sends strictly one message at a time — each only after the previous succeeded — but in a loop rather than one per timer tick. Before that distinction was drawn, an ordered channel released a single message per tick regardless of how fast the far end answered, and the rate *fell* as the backlog grew because the gating query could not use an index. A ten thousand message backlog took hours. `test/throughput.test.ts` pins the property: one pass must drain the backlog, and it must still arrive in order.
 
+## Durability under failure
+
+Three things the acknowledgement contract depends on, each tested rather than assumed.
+
+**Every commit is flushed.** WAL with `synchronous=NORMAL` survives a process crash but can lose recent transactions to a power cut. Community sites lose power, and an AA has already promised the message is safe, so the engine runs `synchronous=FULL` and a test pins it — this is what the ~1,100/s ingest ceiling buys, and it should not be quietly traded for throughput.
+
+**A failed write is never acknowledged AA.** If the store cannot accept a message, the sender is told AE, or gets no answer. The dangerous outcome is a positive acknowledgement for a message that was never stored: the sender believes it is safe, drops it, and it is gone.
+
+```bash
+sudo mount -t tmpfs -o size=1M tmpfs /mnt/portage-tiny
+npm run diskfulltest -- --dir /mnt/portage-tiny
+```
+
+Against a genuinely full filesystem: ten messages, ten AEs, no false AA, and only the messages that were acknowledged are stored. **The feed resumes on its own once space is freed** — no restart needed. A full disk is not hypothetical here: the message log grows with every message, and a community site is not somewhere anyone notices a disk filling up. See [Retention](#retention).
+
 ## Crash recovery
 
 ```bash
@@ -413,7 +428,7 @@ terminology/          terminology packs loaded at boot (labelled demo subset shi
 conformance/          conformance packs registered at boot (ps-ca, ca-fex, ca-erec)
 fixtures/             synthetic HL7 test messages and conformance fixtures
 demo/                 satellite link simulator, Meridian endpoint simulator, scripted demo
-scripts/              dev certificate generation, terminology release import, backup, load and crash tests
+scripts/              dev certificate generation, terminology import, backup, load/crash/disk-full tests
 test/                 node:test suites
 ```
 
