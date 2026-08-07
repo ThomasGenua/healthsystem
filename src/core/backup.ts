@@ -62,11 +62,26 @@ export function verifyBackup(path: string): BackupResult["verified"] {
 
     // Walking the chains is the real check: it touches every row and proves
     // the copy is internally consistent, not merely that the file parses.
+    // A chain can fail two ways, and they call for different reactions: a
+    // broken link names the row, while a short chain names no row at all
+    // because the missing ones are the point. Reporting "broken at undefined"
+    // for the second would send an operator looking for a row that is gone.
     for (const { id } of channels) {
       const chain = db.verifyChain(id);
+      if (chain.truncated) {
+        throw new Error(
+          `snapshot for channel ${id} is missing rows from the end of its chain ` +
+            `(ends at ${chain.truncated.foundTip?.slice(0, 12) ?? "nothing"}, should end at ${chain.truncated.expectedTip.slice(0, 12)})`
+        );
+      }
       if (!chain.ok) throw new Error(`snapshot lineage broken for channel ${id} at ${chain.brokenAt}`);
     }
     const audit = new AuditStore(db).verifyChain();
+    if (audit.missing) {
+      throw new Error(
+        `snapshot audit trail is missing ${audit.missing.expected - audit.missing.found} of ${audit.missing.expected} entries`
+      );
+    }
     if (!audit.ok) throw new Error(`snapshot audit trail broken at ${audit.brokenAt}`);
 
     return { channels: channels.length, messages, auditEvents };

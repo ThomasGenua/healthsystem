@@ -200,8 +200,40 @@ export class AuditStore {
     return this.db.sql.prepare(sql).all(...(args as never[])) as unknown as AuditRow[];
   }
 
-  /** Walks the chain from the beginning. A removed or edited row breaks it. */
-  verifyChain(): { ok: boolean; checked: number; brokenAt?: string } {
+  /**
+   * Walks the chain from the beginning.
+   *
+   * An edited row and a row removed from the middle both break linkage: the
+   * next row's back-pointer stops matching. Rows removed from the *end* do
+   * not, because nothing survives that pointed at them — a truncated chain is
+   * a shorter chain that verifies perfectly. Deleting an entire trail this way
+   * used to report `ok`, which is the one answer it must never give: the
+   * adversary this exists for is someone who read records they should not have
+   * and would like that not to be knowable, and removing the most recent
+   * entries is exactly the move.
+   *
+   * Nothing here is ever deleted legitimately — a retention sweep purges
+   * messages, never the record of who read them — so the row count is a fact
+   * the chain can be held to. `seq` is AUTOINCREMENT, which means SQLite keeps
+   * the highest value ever issued in `sqlite_sequence` and never lowers it on
+   * delete. Comparing the two catches removal from anywhere, including the end
+   * and including every row at once, and it costs nothing to maintain because
+   * SQLite is already keeping the number.
+   *
+   * On its own that is a bar, not a proof: someone with write access to this
+   * database can edit `sqlite_sequence` as easily as `audit_events`. A chain
+   * kept beside the data it attests to cannot do better, and the README says
+   * so rather than implying otherwise. What closes it is anchoring the tip
+   * somewhere the engine does not control, which is why the tip is returned
+   * here and exported on /metrics.
+   */
+  verifyChain(): {
+    ok: boolean;
+    checked: number;
+    tip?: string;
+    brokenAt?: string;
+    missing?: { expected: number; found: number };
+  } {
     const rows = this.db.sql
       .prepare("SELECT * FROM audit_events ORDER BY seq")
       .all() as unknown as AuditRow[];
@@ -229,7 +261,17 @@ export class AuditStore {
       prev = r.hash;
       checked++;
     }
-    return { ok: true, checked };
+
+    // How many rows were ever written, according to the counter SQLite keeps
+    // for us and does not decrement.
+    const issued = this.db.sql.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'audit_events'").get() as
+      | { seq: number }
+      | undefined;
+    if (issued && issued.seq !== checked) {
+      return { ok: false, checked, missing: { expected: issued.seq, found: checked } };
+    }
+
+    return { ok: true, checked, ...(prev ? { tip: prev } : {}) };
   }
 
   count(): number {

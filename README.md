@@ -21,8 +21,9 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Verified online backup**, and health signals a monitor can alert on.
 - **One engine per database**, enforced, so an overlapping deploy cannot silently duplicate messages.
 - **In-place schema migration**, so upgrading an existing database does not take the node off the air.
+- **Truncation-resistant chains**, so deleting the most recent entries no longer verifies clean.
 
-165 tests. Backend first, tests before UI.
+172 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -73,7 +74,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 165 tests
+npm test          # 172 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -208,7 +209,7 @@ curl "localhost:8686/fhir/AuditEvent"            -H "Authorization: Bearer $KEY"
 
 **What is not.** Internal writes are not duplicated here. Every message already carries hash-chained lineage with its pipeline steps and deliveries, which is a stronger record than an audit line, and repeating it would bury the disclosures in routine traffic.
 
-**Tamper evidence.** The trail is hash-chained exactly as message lineage is, so a row cannot be edited or deleted without breaking `/api/audit/verify`. That is the property that makes an audit log worth keeping rather than merely worth having.
+**Tamper evidence.** The trail is hash-chained exactly as message lineage is, so a row cannot be edited or deleted without breaking `/api/audit/verify` — including a row deleted from the end, which is the case a naive chain misses. See [What the chains prove](#what-the-chains-prove) for what that is and is not worth.
 
 **The trail carries identifiers and references, never payloads.** An audit log that copied the record it was protecting would double the exposure it exists to detect.
 
@@ -253,6 +254,27 @@ All five are covered, in every settled delivery state including **dead** — a d
 
 Every link verifies; 120 rows can still prove their payload is the one the chain committed to; 380 have been redacted and can no longer. A payload put back where a redacted one was will not match its recorded digest and is caught.
 
+## What the chains prove
+
+Worth being exact about, because "hash-chained" is easy to read as more than it is.
+
+**Walking the links is not enough on its own.** Verifying forward from the beginning catches an edited row, and catches a row removed from the middle, because the next row's back-pointer stops resolving. It cannot catch rows removed from the *end* — nothing survives that pointed at them, so a truncated chain is a shorter chain that verifies perfectly. This mattered: deleting an entire audit trail used to report `{ "ok": true, "checked": 0 }`, which is the one answer it must never give. Someone covering their tracks deletes the most recent entries; that is the whole shape of the attack.
+
+Two anchors close it, neither of which the surviving rows can supply:
+
+- **Message chains** end by comparing where the walk arrived against the tip the channel has been carrying since the last insert. A truncation reports `truncated` with both hashes, rather than a clean bill.
+- **The audit trail** is append-only — a retention sweep purges messages, never the record of who read them — so its length is a fact it can be held to. `seq` is `AUTOINCREMENT`, so SQLite keeps the highest value ever issued and never lowers it on delete. Removal from anywhere, including every row at once, shows up as `missing: { expected, found }`.
+
+A purge is not mistaken for either. It removes a prefix and never the tip, and a channel purged in its entirety keeps the tip it ended on, so a legitimately emptied channel does not read as tampered with.
+
+**What none of this proves.** A hash chain kept in the same database as the data it attests to cannot be evidence against someone who can write to that database. They can recompute the links, move the tip, and edit `sqlite_sequence` — it is all just rows. Anyone claiming otherwise is selling something. What the chain actually buys is this:
+
+- Accidental loss is caught. A partial restore, a truncated backup, a botched purge, a half-copied file — these are far more common than malice and every one of them shows up.
+- Removal now takes more than a `DELETE`. It takes knowing the design.
+- The evidence is already off the box. `/metrics` exports `portage_audit_events_total` and `portage_chain_length` as **counters**, so a chain that loses rows reads as a counter reset in whatever is scraping — which is the one record of the chain's history the engine does not control.
+
+That last one is the control that survives an adversary with database access, and it is the reason to point a monitoring system at this rather than to trust `ok: true`. Alert on the reset.
+
 In-flight and queued deliveries are never redacted — a payload that has not gone out still has to be deliverable, and emptying it would destroy a message the sender was told was safe.
 
 **A redacted delivery cannot be replayed.** The states replay accepts are exactly the states redaction empties, so the two features meet on the same rows; without a check between them an operator clicking replay would send the literal tombstone to a downstream clinical system, which has no way to tell it from content. The replay is refused and says why:
@@ -291,7 +313,14 @@ curl -X POST localhost:8686/api/backup -H "Authorization: Bearer $KEY"
 
 Safe against a live engine: this uses SQLite's online backup API, which takes a consistent snapshot without stopping writes.
 
-**A snapshot nobody has opened is not a backup either.** Every snapshot is reopened and its hash chains walked before success is reported, so a backup that says it worked has been read back. A tampered or truncated snapshot fails here rather than on the day it is restored.
+**A snapshot nobody has opened is not a backup either.** Every snapshot is reopened and its hash chains walked before success is reported, so a backup that says it worked has been read back. A tampered or truncated snapshot fails here rather than on the day it is restored — including one shortened at the end, which passed until the tip check went in:
+
+```
+snapshot for channel adt is missing rows from the end of its chain
+  (ends at 88963239b741, should end at ef0cc4c56d05)
+```
+
+A short chain names no row, because the missing rows are the point; saying "broken at undefined" would send an operator looking for something that is gone.
 
 Each snapshot is exactly one file — the `-wal` and `-shm` sidecars left by verification are removed, because a restore that copies a `.db` while leaving a stale `-wal` beside it would apply a write-ahead log belonging to a different database.
 
