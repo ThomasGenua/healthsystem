@@ -28,6 +28,7 @@ import { TaskStore } from "../work/tasks.ts";
 import { Workspace } from "../workspace/summary.ts";
 import { Schedule } from "../schedule/store.ts";
 import { Registry } from "../population/registry.ts";
+import { ConsentDirectives } from "../patient/consent.ts";
 import { RetentionRunner, type RetentionPolicy } from "./retention.ts";
 import { buildAck, getHl7, parseHl7, serializeHl7 } from "../hl7/parser.ts";
 import { startMllpServer, type MllpServerHandle } from "../hl7/mllp.ts";
@@ -80,6 +81,7 @@ export interface TenantView {
   tasks: TaskStore;
   schedule: Schedule;
   registry: Registry;
+  consent: ConsentDirectives;
   /** The assembled chart, over exactly the stores above. */
   workspace: Workspace;
 }
@@ -223,6 +225,7 @@ export class Engine {
       tasks,
       schedule: new Schedule(db),
       registry: new Registry(db),
+      consent: new ConsentDirectives(db),
       workspace: new Workspace({ record: clinical, notes, meds, orders, referrals, tasks }),
     };
     this.views.set(tenantId, view);

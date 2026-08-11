@@ -41,7 +41,7 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Double-booking refused by the database**, not by a check that a second clerk can race past.
 - **Break-glass that is loud**: declared, reasoned in words, notified to the patient, and queued for review — because a quiet override makes the lockbox theatre.
 
-382 tests. Backend first, tests before UI.
+386 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -92,7 +92,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 382 tests
+npm test          # 386 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -525,6 +525,21 @@ The allergy endpoint returns the three-valued status beside the list rather than
 Read scope is not enough for any of it. A credential that may read the FHIR facade is not thereby licensed to open charts, and a refused reach for a patient record is itself recorded — that refusal is among the things an audit trail exists to show.
 
 The guarantee proved itself during this work: wiring the schedule and registry endpoints in, the structural test failed on the new routes before they had cases, which is precisely the moment it is supposed to fire.
+
+### Directives are enforced here, not merely stored
+
+The consent work above would be decoration if the chart API did not consult it, and worse than decoration — the system would claim to honour patient directives while serving the record anyway.
+
+So the check lives **inside `phi()`**, not in each route. Every route that names a patient goes through it, which means a lockbox cannot be missed by a route that forgot to ask, and `test/clinical-api.test.ts` reads the source to require that a patient-scoped route goes through `phi()` at all.
+
+A refusal is audited like any other access — a directive that stopped somebody is exactly what a privacy office wants to see — and the 403 says how to declare an emergency:
+
+```json
+{ "error": "this record is withheld by a patient directive",
+  "breakGlass": "POST /api/clinical/break-glass" }
+```
+
+Declaring is itself an event on the trail, written before any record is read under it. And `GET /api/clinical/directives` is deliberately **outside** the withholding check: refusing to show somebody the directive that stopped them would leave them unable to tell a lockbox from an empty chart, which is exactly the ambiguity the rest of this refuses.
 
 ### What is deliberately not on this API
 

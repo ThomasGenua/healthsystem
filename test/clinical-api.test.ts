@@ -245,7 +245,7 @@ test("every clinical route leaves an audit row, including ones added later", asy
   // 200 without recording anything, this fails.
   const source = readFileSync(new URL("../src/api/admin.ts", import.meta.url), "utf8");
   const paths = [...new Set([...source.matchAll(/path === "(\/api\/clinical\/[a-z-]+)"/g)].map((m) => m[1]))];
-  assert.ok(paths.length >= 14, `expected the clinical routes to be found by scanning, got ${paths.length}`);
+  assert.ok(paths.length >= 16, `expected the clinical routes to be found by scanning, got ${paths.length}`);
 
   const s = await boot();
   try {
@@ -265,7 +265,9 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/notes": `?patient=${P}`,
       "/api/clinical/appointments": `?patient=${P}`,
       "/api/clinical/missed": "",
+      "/api/clinical/directives": `?patient=${P}`,
       "/api/clinical/safety-check": "POST",
+      "/api/clinical/break-glass": "POST",
       "/api/clinical/gaps": "POST",
       "/api/clinical/measure": "POST",
     };
@@ -273,6 +275,10 @@ test("every clinical route leaves an audit row, including ones added later", asy
     /** The body each POST route needs to do real work. */
     const bodies: Record<string, unknown> = {
       "/api/clinical/safety-check": { patient: P, ingredient: "amoxicillin" },
+      "/api/clinical/break-glass": {
+        patient: P,
+        reason: "unconscious, no collateral history, need allergy status before induction",
+      },
       "/api/clinical/gaps": {
         cohort: { id: "dm", name: "Diabetes", conditionCodes: ["diabetes"] },
         gap: { id: "hba1c", name: "HbA1c yearly", withinDays: 365, satisfiedByResultCodes: ["4548-4"] },
@@ -297,7 +303,7 @@ test("every clinical route leaves an audit row, including ones added later", asy
             })
           : await s.get(`${p}${args[p]}`);
 
-      assert.equal(res.status, 200, `${p} did not serve: ${res.status} ${await res.text()}`);
+      assert.ok(res.ok, `${p} did not serve: ${res.status} ${await res.text()}`);
       assert.equal(s.trail().length, before + 1, `${p} served patient data without leaving an audit row`);
       const row = s.trail()[0];
       assert.equal(row.path, p);
@@ -305,5 +311,146 @@ test("every clinical route leaves an audit row, including ones added later", asy
     }
   } finally {
     await s.close();
+  }
+});
+
+test("a patient directive stops the chart at the API, and the refusal is on the trail", () => {
+  // A lockbox the chart API ignores is worse than no lockbox, because the
+  // system now claims to honour patient directives. This is what makes the
+  // claim true: the check is inside phi(), so it covers every route that
+  // names a patient rather than the ones somebody remembered.
+  return (async () => {
+    const s = await boot();
+    try {
+      const t = s.engine.forTenant("default");
+      t.consent.record({
+        patientId: P,
+        kind: "withhold-all",
+        by: { actorId: "privacy-office", actorKind: "practitioner" },
+        reason: "patient asked",
+      });
+
+      const before = s.trail().length;
+      const res = await s.get(`/api/clinical/chart?patient=${P}`);
+      assert.equal(res.status, 403);
+      const body = (await res.json()) as { error: string; breakGlass: string };
+      assert.match(body.error, /withheld by a patient directive/);
+      assert.ok(!body.error.includes("patient asked"), "the caller learns that, not why");
+      assert.match(body.breakGlass, /break-glass/, "and is told how to declare an emergency");
+
+      const row = s.trail()[0];
+      assert.equal(s.trail().length, before + 1, "a directive that stopped somebody is what a privacy office wants to see");
+      assert.equal(row.patient, P);
+      assert.notEqual(row.outcome, 0);
+      assert.match(row.detail ?? "", /withheld by patient directive/);
+
+      // Every patient-scoped route, not just the chart.
+      for (const p of ["medications", "allergies", "orders", "notes", "appointments"]) {
+        assert.equal((await s.get(`/api/clinical/${p}?patient=${P}`)).status, 403, `${p} honoured the directive`);
+      }
+    } finally {
+      await s.close();
+    }
+  })();
+});
+
+test("declaring an emergency opens the record, and everything about it is recorded", () => {
+  return (async () => {
+    const s = await boot();
+    try {
+      const t = s.engine.forTenant("default");
+      t.consent.record({ patientId: P, kind: "withhold-all", by: { actorId: "privacy-office", actorKind: "practitioner" } });
+      assert.equal((await s.get(`/api/clinical/chart?patient=${P}`)).status, 403);
+
+      // A word is not a reason, over the wire as much as in the store.
+      const thin = await fetch(`${s.base}/api/clinical/break-glass`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${s.admin}`, "content-type": "application/json" },
+        body: JSON.stringify({ patient: P, reason: "emergency" }),
+      });
+      assert.equal(thin.status, 400);
+      assert.equal((await s.get(`/api/clinical/chart?patient=${P}`)).status, 403, "and it opened nothing");
+
+      const declared = await fetch(`${s.base}/api/clinical/break-glass`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${s.admin}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          patient: P,
+          reason: "unconscious, no collateral history, need allergy status before induction",
+        }),
+      });
+      assert.equal(declared.status, 201);
+
+      const opened = await s.get(`/api/clinical/chart?patient=${P}`);
+      assert.equal(opened.status, 200, "the lockbox is survivable, which is the point of it being one");
+
+      // Declared, reasoned, queued for notification, queued for review.
+      const pending = t.consent.pendingReview();
+      assert.equal(pending.length, 1);
+      assert.match(pending[0].reason, /before induction/);
+      assert.equal(pending[0].subject_id, s.adminId);
+      assert.equal(t.consent.pendingNotification().length, 1, "and the patient has not been told yet");
+
+      // The declaration is on the trail before anything was read under it.
+      const trail = t.audit.list({ limit: 50 });
+      const declaration = trail.find((r) => (r.detail ?? "").startsWith("break-glass declared"));
+      assert.ok(declaration, "declaring is itself an event, not just a precondition");
+      assert.equal(declaration.patient, P);
+    } finally {
+      await s.close();
+    }
+  })();
+});
+
+test("a patient can always see the directives standing on their own record", () => {
+  // Deliberately outside the withholding check. Refusing to show somebody the
+  // directive that stopped them leaves them unable to tell a lockbox from an
+  // empty chart, which is the ambiguity the whole design refuses elsewhere.
+  return (async () => {
+    const s = await boot();
+    try {
+      const t = s.engine.forTenant("default");
+      t.consent.record({
+        patientId: P,
+        kind: "withhold-from-provider",
+        targetId: s.adminId,
+        by: { actorId: "privacy-office", actorKind: "practitioner" },
+      });
+
+      assert.equal((await s.get(`/api/clinical/chart?patient=${P}`)).status, 403);
+      const res = await s.get(`/api/clinical/directives?patient=${P}`);
+      assert.equal(res.status, 200, "the directive itself is visible to the person it withholds from");
+      const rows = (await res.json()) as Array<{ kind: string }>;
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].kind, "withhold-from-provider");
+    } finally {
+      await s.close();
+    }
+  })();
+});
+
+test("every patient-scoped clinical route consults the directive check", () => {
+  // The structural half. phi() is where the check lives, so a route that
+  // serves one patient's data without going through phi() has bypassed it —
+  // and would work, and serve the record, and say nothing.
+  const source = readFileSync(new URL("../src/api/admin.ts", import.meta.url), "utf8");
+  const clinical = source.slice(source.indexOf('path.startsWith("/api/clinical/")'));
+  const end = clinical.indexOf('return send(res, 404, { error: "not found" });');
+  const block = clinical.slice(0, end);
+
+  // Routes that require a patient, found by reading the guard each one uses.
+  const patientScoped = [...block.matchAll(/path === "(\/api\/clinical\/[a-z-]+)"[\s\S]{0,200}?patient required/g)].map(
+    (m) => m[1]
+  );
+  assert.ok(patientScoped.length >= 6, `expected patient-scoped routes to be found, got ${patientScoped.length}`);
+
+  for (const route of patientScoped) {
+    const i = block.indexOf(`path === "${route}"`);
+    const next = block.indexOf('if (path === "', i + 10);
+    const body = block.slice(i, next === -1 ? undefined : next);
+    assert.ok(
+      /\bphi\(/.test(body) || /consent\./.test(body),
+      `${route} serves one patient's data without going through phi() or consulting consent directly`
+    );
   }
 });

@@ -516,8 +516,43 @@ async function route(
   if (path.startsWith("/api/clinical/")) {
     const patient = url.searchParams.get("patient") ?? undefined;
 
+    /**
+     * Whether a patient directive stands between this caller and this record.
+     *
+     * Consulted by `phi` for every route that names a patient, so a lockbox
+     * cannot be ignored by a route that forgot to ask. A refusal is audited
+     * like any other access — a directive that stopped somebody is exactly
+     * what a privacy office wants to see — and it says that a directive
+     * exists without saying what it says.
+     */
+    const withheld = (forPatient: string): { id: string } | undefined => {
+      const decision = tenant.consent.mayRead({
+        subjectId: auth.ok ? auth.principal.id : "unauthenticated",
+        patientId: forPatient,
+      });
+      return decision.allowed ? undefined : { id: decision.withheldBy!.id };
+    };
+
     /** Audits the access, then sends. In that order, deliberately. */
     const phi = <T,>(resourceType: string, produce: () => T, count?: (v: T) => number): void => {
+      if (patient) {
+        const block = withheld(patient);
+        if (block) {
+          audit({
+            action: verbToAction(method),
+            outcome: 4,
+            resourceType,
+            patient,
+            detail: `withheld by patient directive ${block.id}`,
+          });
+          return send(res, 403, {
+            error: "this record is withheld by a patient directive",
+            // Named so a caller can declare an emergency against it, which is
+            // the whole reason a lockbox is survivable in a clinical setting.
+            breakGlass: "POST /api/clinical/break-glass",
+          });
+        }
+      }
       let value: T;
       try {
         value = produce();
@@ -628,6 +663,40 @@ async function route(
       // Missed appointments that mattered and that nobody has picked up. A
       // read of patient data like any other, and audited as one.
       return phi("Appointment", () => tenant.schedule.unresolvedNonAttendance(), (rows) => rows.length);
+    }
+    if (path === "/api/clinical/break-glass" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { patient?: string; reason?: string };
+      if (!body.patient || !body.reason) return send(res, 400, { error: "patient and reason required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      try {
+        const declared = tenant.consent.breakGlass({
+          patientId: body.patient,
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+          reason: body.reason,
+          ...(auth.ok && auth.principal.purposeOfUse ? { purposeOfUse: auth.principal.purposeOfUse } : {}),
+        });
+        // Declaring an emergency is itself an event on the trail, before any
+        // record is read under it.
+        audit({
+          action: "E",
+          outcome: 0,
+          resourceType: "Consent",
+          patient: body.patient,
+          detail: `break-glass declared: ${body.reason}`,
+        });
+        return send(res, 201, declared);
+      } catch (err) {
+        audit({ action: "E", outcome: 8, resourceType: "Consent", patient: body.patient, detail: (err as Error).message });
+        return send(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (path === "/api/clinical/directives" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      // Deliberately not behind `phi`: a directive is the patient's own
+      // instruction, and refusing to show it to somebody it withholds from
+      // would leave them unable to see that a lockbox is what stopped them.
+      audit({ action: "R", outcome: 0, resourceType: "Consent", patient });
+      return send(res, 200, tenant.consent.directivesFor(patient));
     }
     if (path === "/api/clinical/gaps" && method === "POST") {
       // A cohort definition and a gap rule come in the body because they are
