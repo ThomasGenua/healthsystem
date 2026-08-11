@@ -53,6 +53,9 @@ export const TENANT_SCOPED_TABLES = [
   "med_reconciliations",
   "med_reconciliation_items",
   "medication_events",
+  "patient_authority",
+  "result_release",
+  "patient_access_log",
 ] as const;
 
 /**
@@ -675,6 +678,94 @@ CREATE TABLE IF NOT EXISTS medication_events (
   overrides TEXT
 );
 
+-- Who may see a patient's record besides the patient.
+--
+-- Delegated authority is the part of patient access that goes wrong quietly.
+-- A parent's access to a child's chart is correct until a birthday and wrong
+-- afterwards, and nothing about that day generates an event: the grant simply
+-- keeps working. A substitute decision-maker's authority ends when capacity
+-- returns, and an ex-spouse's should have ended at a date somebody wrote down
+-- once and nobody enforced.
+--
+-- So authority is time-bounded by construction: expires_at is set at grant
+-- rather than reviewed later, and the check is against the clock rather than
+-- against a status somebody has to remember to change.
+CREATE TABLE IF NOT EXISTS patient_authority (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  -- The person exercising the access: the patient themselves, or a proxy.
+  subject_id TEXT NOT NULL,
+  -- self | parent-guardian | substitute-decision-maker | representative
+  relationship TEXT NOT NULL,
+  -- full | summary. A proxy is often entitled to less than the patient is.
+  extent TEXT NOT NULL DEFAULT 'full',
+  -- Null only for the patient's own access. Every delegated grant has an end,
+  -- because the failure being guarded against is one that never ends.
+  expires_at TEXT,
+  -- Set when withdrawn early, with who and why.
+  revoked_at TEXT,
+  revoked_by TEXT,
+  revoke_reason TEXT,
+  granted_by TEXT NOT NULL,
+  granted_at TEXT NOT NULL,
+  reason TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- When a result may be shown to the patient, and why it is being held.
+--
+-- Immediate release is the default and the right one: a patient waiting a week
+-- for a normal result while their clinician's inbox fills is the harm the
+-- information-blocking rules exist to stop. But "immediate" applied without
+-- exception means a person can learn they have cancer from a phone at 11pm
+-- with nobody to ask, and a system that cannot express that has not solved the
+-- problem, it has picked the other side of it.
+--
+-- So a hold is possible, bounded, reasoned, attributed, and visible. It is not
+-- a silent delay: the patient sees that something is being held and when it
+-- will lift, because a portal that shows nothing is indistinguishable from one
+-- where nothing has come back.
+CREATE TABLE IF NOT EXISTS result_release (
+  tenant_id TEXT NOT NULL,
+  result_id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  -- immediate | held
+  state TEXT NOT NULL DEFAULT 'immediate',
+  -- Required for a hold, and shown to the patient as a category rather than as
+  -- free text: "your clinician will discuss this with you" is honest and does
+  -- not require the patient to read a clinical justification about themselves.
+  hold_reason TEXT,
+  hold_category TEXT,
+  -- Every hold ends. A hold with no end is a result withheld indefinitely,
+  -- which is the practice the release rules were written against.
+  release_at TEXT,
+  held_by TEXT,
+  held_at TEXT,
+  released_by TEXT,
+  released_at TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, result_id)
+);
+
+-- Everything a patient or their proxy did, kept apart from the clinical trail.
+--
+-- The same events reach audit_events; this is the patient-facing view of their
+-- own access history, which section 11 requires them to be able to see.
+CREATE TABLE IF NOT EXISTS patient_access_log (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  relationship TEXT NOT NULL,
+  at TEXT NOT NULL,
+  action TEXT NOT NULL,
+  resource TEXT,
+  outcome TEXT NOT NULL,
+  detail TEXT
+);
+
 -- Lookup index over the charts.
 --
 -- Derived, not authoritative. Every column here is recoverable from the
@@ -771,6 +862,10 @@ CREATE INDEX IF NOT EXISTS idx_allergies_supersedes ON allergies(tenant_id, supe
 CREATE INDEX IF NOT EXISTS idx_medrec_patient ON med_reconciliations(tenant_id, patient_id, status);
 CREATE INDEX IF NOT EXISTS idx_medrec_items ON med_reconciliation_items(tenant_id, reconciliation_id);
 CREATE INDEX IF NOT EXISTS idx_med_events ON medication_events(tenant_id, patient_id, seq);
+CREATE INDEX IF NOT EXISTS idx_authority_subject ON patient_authority(tenant_id, subject_id, patient_id);
+CREATE INDEX IF NOT EXISTS idx_authority_patient ON patient_authority(tenant_id, patient_id);
+CREATE INDEX IF NOT EXISTS idx_release_patient ON result_release(tenant_id, patient_id, state);
+CREATE INDEX IF NOT EXISTS idx_patient_access ON patient_access_log(tenant_id, patient_id, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at);
 CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(tenant_id, channel_id, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status);

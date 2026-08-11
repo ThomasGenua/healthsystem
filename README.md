@@ -36,8 +36,9 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A medication list that says what the patient is taking**, and an allergy check that reports "nobody asked" rather than "no contraindications".
 - **A chart summary that declares what it could not include**, because a summary is read as complete and an empty panel is not the same as none.
 - **A clinical API that cannot serve patient data unaudited**, checked by reading the routing source rather than by remembering.
+- **Proxy access that lapses on the day it was set to**, because nothing about a child's sixteenth birthday generates an event.
 
-333 tests. Backend first, tests before UI.
+344 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -88,7 +89,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 333 tests
+npm test          # 344 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -519,6 +520,43 @@ A search that finds nobody is still an access. "Who did you look for" is a quest
 The allergy endpoint returns the three-valued status beside the list rather than the list alone, because an empty array on the wire is the same ambiguity an empty panel is on a screen.
 
 Read scope is not enough for any of it. A credential that may read the FHIR facade is not thereby licensed to open charts, and a refused reach for a patient record is itself recorded — that refusal is among the things an audit trail exists to show.
+
+## Patient access
+
+Section 11 has two failures that nothing else in this system has, and they pull in opposite directions.
+
+### Delegated authority that never ends
+
+A parent's access to a child's chart is correct until a birthday and wrong afterwards — and **nothing about that day generates an event**. No message arrives, no status changes, no queue fills up. The grant simply keeps working, and a sixteen-year-old's mental health notes stay readable by somebody no longer entitled to them, for years, with nobody doing anything wrong.
+
+The same shape covers a substitute decision-maker whose authority ended when capacity returned, and a representative named during an admission that finished in 2019.
+
+So authority is time-bounded by construction:
+
+- **A delegated grant without an expiry is refused, not defaulted.** A default would be this module's guess written into the record as somebody's decision — and the decision, *when does this end*, is the entire safeguard. For a parent it is the age of majority in the jurisdiction; for a substitute decision-maker it is a review date. Neither is something a library should choose.
+- **The check is against the clock, not a status.** A grant that expired yesterday is not authority, whether or not any sweep has run.
+- **`expiring()` surfaces grants about to lapse**, so a renewal is a decision somebody makes rather than a lapse somebody discovers. A parent who still needs access to a disabled adult child's chart should be asked; one who should not have it should stop, on the day.
+
+The expired grant row stays. Who was entitled when is not something to delete — it simply stops being authority.
+
+### Release timing
+
+Immediate release is the default and it is right: a patient waiting a week for a normal result while their clinician's inbox fills is the harm the information-blocking rules were written against.
+
+But "immediate, no exceptions" means a person can learn they have cancer from a phone at eleven at night with nobody to ask. A system that cannot express that has not solved the problem — it has picked the other side of it.
+
+So a hold is possible and deliberately hard to abuse. It is **bounded** (a hold with no end is a result withheld indefinitely, which is the practice being legislated against), **reasoned**, **attributed**, and above all **visible**:
+
+> **Biopsy report** — reported 14 March
+> Your clinician will discuss this result with you. Available from 17 March.
+
+A held result appears in the patient's list, saying that it is held and when it lifts. It is never simply absent, because an absent result is indistinguishable from one that never came back — and the patient then has no idea there is anything to ask about, which is the failure the whole regime exists to prevent.
+
+What the patient is shown is a **category**, not the clinical justification. "Your clinician will discuss this result with you" is honest and does not require somebody to read a note about themselves written for someone else. The hold lifts by the clock; nothing has to run.
+
+### The patient's own access log
+
+Section 11 requires a patient be able to see who looked at their record, and a proxy's accesses are in it under the proxy's own name. *"My ex-husband opened my chart four times last month"* is exactly what a patient has a right to find out, and it is unanswerable if a proxy's reads are recorded as the patient's own. Refused attempts are in it too.
 
 ## Tenancy
 
