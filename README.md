@@ -28,8 +28,10 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Multi-tenant end to end**: structural isolation in storage, checked by reading the source, and every request confined to its credential's custodian.
 - **Purpose of use** on the audit trail, inside the hash chain.
 - **An append-only clinical record**, where a correction cannot destroy what it corrects.
+- **A patient index** derived from the log and rebuildable from it, surfacing duplicates rather than merging them.
+- **Clinical documentation** where a signature fixes the text and only an addendum may follow.
 
-239 tests. Backend first, tests before UI.
+257 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -80,7 +82,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 239 tests
+npm test          # 257 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -338,6 +340,39 @@ Three outcomes, and the middle one carries the weight: an unknown record is a fi
 An entry whose patient cannot be determined is **dead-lettered, not filed against a guess** — guessing is how a result reaches the wrong chart. And a record a clinician retracted is left alone by the next routine message from the system that produced it: an interface must not be able to reinstate a clinical judgement.
 
 Every version carries where it came from: author and kind, the interface message that produced it, when it was written down and when it was clinically true. A vital sign filed an hour late belongs at the time it was taken, and a result that cannot name its source message cannot be reconciled against the feed that delivered it.
+
+### Finding a patient
+
+A chart nobody can look up is not a chart, and lookup is where a health record is most likely to go wrong: the wrong Marie Beaulieu, one person under two numbers, two people under one.
+
+```ts
+index.search({ family: "Beaulieu", birthDate: "1984-03-17" });
+index.search({ identifier: "urn:jhn|NT123456" });
+```
+
+Every criterion given must match — a search that widened as the clinician supplied more would return more wrong Maries the better they knew which one they meant. Identifiers are added and never removed, so a message arriving under last year's interim number still reaches the same chart.
+
+**The index is derived, and `rebuild()` proves it.** Every column is recoverable from the Patient entries in the log, and rebuilding reproduces it exactly — which is what keeps the log the record and this a convenience. An index that could not be rebuilt would have quietly become a second source of truth about who a patient is, and two of those do not stay in agreement.
+
+**Duplicates are surfaced, never merged.** A shared identifier is close to conclusive: one health number should not name two charts. A matching name and birth date is a prompt rather than a finding — twins exist, and so do fathers and sons with one name between them. Both are reported with their evidence, and a human decides. Automatic merging is how a chart acquires someone else's allergies, and there is no honest way to unmerge afterwards.
+
+### Documentation, signatures and addenda
+
+Section 3 turns on the difference between a draft and an attestation. A draft is working text. A signature says: this is what I found, this is what I decided, my name is on it.
+
+```ts
+const note = notes.draft({ patientId, encounterId, noteType: "SOAP", sections, author });
+notes.revise(note.record_id, { …sections, assessment: "…" }, author);   // drafts only
+notes.sign(note.record_id, resident);
+notes.cosign(note.record_id, attending);
+notes.addendum({ recordId: note.record_id, sections: { note: "Film reported later…" }, author });
+```
+
+**A signed note cannot be revised.** A refusal rather than a warning, because a signed note that can be edited is indistinguishable, afterwards, from one that was always what it now says — and the moment that matters is always months later, in a review of a decision somebody now regrets. The only way to say something further is an addendum, which is its own record, separately attested and linked to the note it follows, so a reader can always tell what was known at the time from what was added after.
+
+A co-signature must come from someone other than the signer. One signature counted twice is not two people taking responsibility. `awaitingCosignature` is the supervisor's queue.
+
+The signed text is covered by the chart chain too, so the refusal stops the API changing a note and verification catches anything that goes around it.
 
 ## Tenancy
 

@@ -32,6 +32,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import type { Db } from "../db.ts";
+import { PatientIndex } from "./patients.ts";
 
 /**
  * What an entry is. FHIR R4 resource names where one fits, so the facade and
@@ -133,9 +134,11 @@ function digest(prev: string | null, e: Omit<ClinicalEntry, "seq" | "hash" | "pr
 
 export class ClinicalRecord {
   private db: Db;
+  private index: PatientIndex;
 
   constructor(db: Db) {
     this.db = db;
+    this.index = new PatientIndex(db);
   }
 
   /** States something new about a patient. Returns the version written. */
@@ -364,6 +367,11 @@ export class ClinicalRecord {
     return { ok: true, checked, ...(prev ? { tip: prev } : {}) };
   }
 
+  /** The lookup index over these charts. */
+  get patientIndex(): PatientIndex {
+    return this.index;
+  }
+
   /** Patients with at least one entry, for a chart index. */
   patients(): Array<{ patientId: string; entries: number; lastRecordedAt: string }> {
     return this.db.sql
@@ -454,6 +462,13 @@ export class ClinicalRecord {
            ON CONFLICT(tenant_id, patient_id) DO UPDATE SET issued = issued + 1`
         )
         .run(this.db.tenantId, input.patientId);
+
+      // The lookup index follows the log, in the same transaction, so the two
+      // cannot disagree across a crash. It is still derived: rebuild() from
+      // the log reproduces it exactly, which is what keeps the log the record.
+      if (input.entryType === "Patient" && input.status !== "entered-in-error") {
+        this.index.index(input.patientId, input.content);
+      }
 
       return this.db.sql
         .prepare("SELECT * FROM clinical_entries WHERE tenant_id = ? AND version_id = ?")

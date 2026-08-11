@@ -39,6 +39,8 @@ export const TENANT_SCOPED_TABLES = [
   "api_keys",
   "audit_events",
   "clinical_entries",
+  "patient_index",
+  "patient_identifiers",
 ] as const;
 
 /**
@@ -317,6 +319,35 @@ CREATE TABLE IF NOT EXISTS clinical_entries (
   prev_hash TEXT
 );
 
+-- Lookup index over the charts.
+--
+-- Derived, not authoritative. Every column here is recoverable from the
+-- Patient entries in clinical_entries, and rebuildIndex() does exactly that —
+-- which is the property that keeps the log the record and this a convenience.
+-- An index that could not be rebuilt would quietly become a second source of
+-- truth, and the two would drift.
+CREATE TABLE IF NOT EXISTS patient_index (
+  tenant_id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  family TEXT,
+  given TEXT,
+  birth_date TEXT,
+  gender TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, patient_id)
+);
+
+-- Every identifier a chart is known by. A patient reaches a clinic with a
+-- provincial health number, a hospital MRN and sometimes an interim number
+-- issued the night they arrived; all three have to find the same chart.
+CREATE TABLE IF NOT EXISTS patient_identifiers (
+  tenant_id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  system TEXT NOT NULL DEFAULT '',
+  value TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, patient_id, system, value)
+);
+
 -- How many versions each patient's chart has ever been issued. Only ever
 -- increases, so a chart that has lost entries disagrees with it — the same
 -- reason the audit trail keeps one.
@@ -357,6 +388,8 @@ CREATE INDEX IF NOT EXISTS idx_clinical_record ON clinical_entries(tenant_id, re
 CREATE INDEX IF NOT EXISTS idx_clinical_type ON clinical_entries(tenant_id, patient_id, entry_type, seq);
 CREATE INDEX IF NOT EXISTS idx_clinical_encounter ON clinical_entries(tenant_id, encounter_id, seq);
 CREATE INDEX IF NOT EXISTS idx_clinical_key ON clinical_entries(tenant_id, record_key, version);
+CREATE INDEX IF NOT EXISTS idx_patient_name ON patient_index(tenant_id, family, given, birth_date);
+CREATE INDEX IF NOT EXISTS idx_patient_ident ON patient_identifiers(tenant_id, value, system);
 CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at);
 CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(tenant_id, channel_id, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status);
