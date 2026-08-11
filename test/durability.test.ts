@@ -146,3 +146,49 @@ test("a rejected message leaves the chain intact for the ones that follow", asyn
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a nested transaction joins the outer one rather than starting a second", () => {
+  // Composite operations are built from atomic ones — redirecting a referral
+  // closes one and creates another, and each of those is itself atomic. SQLite
+  // refuses a second BEGIN outright, so without this the composite either
+  // crashes or has to be written non-atomically, and a half-applied composite
+  // is precisely the state these stores exist to prevent.
+  const dir = mkdtempSync(join(tmpdir(), "portage-tx-"));
+  try {
+    const db = new Db(join(dir, "portage.db"));
+    db.upsertChannel("c", "c", true, "{}");
+
+    const out = db.transaction(() => {
+      db.insertMessage("c", "test", "text/plain", "outer");
+      return db.transaction(() => {
+        db.insertMessage("c", "test", "text/plain", "inner");
+        return "done";
+      });
+    });
+    assert.equal(out, "done");
+    assert.equal(db.listMessages({ channelId: "c" }).length, 2);
+
+    // A throw anywhere inside rolls back everything, since only the outermost
+    // call commits. A partially applied composite would be worse than a
+    // failed one: it looks like success.
+    assert.throws(() =>
+      db.transaction(() => {
+        db.insertMessage("c", "test", "text/plain", "outer-2");
+        db.transaction(() => {
+          db.insertMessage("c", "test", "text/plain", "inner-2");
+          throw new Error("something went wrong deep inside");
+        });
+      })
+    );
+    assert.equal(db.listMessages({ channelId: "c" }).length, 2, "neither write survives");
+    assert.equal(db.verifyChain("c").ok, true, "and the chain is not left mid-extension");
+
+    // And the connection is usable afterwards, rather than stuck in a
+    // transaction nobody closed.
+    db.insertMessage("c", "test", "text/plain", "after");
+    assert.equal(db.listMessages({ channelId: "c" }).length, 3);
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

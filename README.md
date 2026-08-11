@@ -31,8 +31,9 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A patient index** derived from the log and rebuildable from it, surfacing duplicates rather than merging them.
 - **Clinical documentation** where a signature fixes the text and only an addendum may follow.
 - **A unified inbox** where work cannot be closed without evidence or left belonging to nobody unseen.
+- **Closed-loop referrals**, where a deadline passes with nothing happening and the referral appears on a chase list rather than going quiet.
 
-270 tests. Backend first, tests before UI.
+287 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -83,7 +84,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 270 tests
+npm test          # 287 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -390,6 +391,31 @@ Every transition is appended with an actor and a reason, so delegation history i
 **Inboxes are ordered by urgency and deadline, never by arrival.** A chronological inbox buries the one item that mattered under the forty that did not, which is the mechanism by which a critical result is missed with nobody doing anything wrong.
 
 Items carry a correlation identifier, so a referral raised here and the consult report that answers it months later are recognisable as two items and one question — which is what closing a loop requires.
+
+## Closing referral loops
+
+Section 9 asks for closed-loop referral management, and the loop is the whole of it. Sending a referral is easy and every system does it. What is hard is knowing, eight months later, that one was sent and nothing has happened since — because nothing happening produces no error, no message and no alert. Nobody did anything wrong and the patient was not seen.
+
+A referral here therefore always owes something to somebody, and the deadline is the record of what:
+
+| Status | Who is waiting, and on what |
+| --- | --- |
+| `sent` | the referrer, on an acknowledgement |
+| `acknowledged` | the referrer, on a triage decision |
+| `accepted` | the patient, on an appointment |
+| `booked` | everyone, on the appointment happening |
+| `seen` | the referrer, on the consultation report |
+| `reported` | the referrer, on reading it and closing |
+
+Each transition sets what is expected next and by when, so `stalled()` — the query the rest of the module exists to serve — returns the referrals where a deadline passed with nothing happening, oldest first, which is the order they should be chased in.
+
+Three decisions are worth stating, because each is a way a loop is quietly lost:
+
+- **A redirect keeps the correlation, and carries the documents.** When a service passes a patient on, the new referral joins the same loop rather than starting one. Redirecting by cancelling and re-referring resets the clock, and the wait-time report then says the system is performing well while the patient waits from the beginning again. `waitDays()` measures from the first referral in the loop, which is what the patient experienced. The imaging already gathered travels with it too: making the next clinic re-request the same films is how a redirect costs a week.
+- **Closing requires an outcome, cancelling requires a reason.** A referral closed with nothing recorded is indistinguishable afterwards from one abandoned, and that difference is usually the entire question. Both are refused, not warned about.
+- **A referral is refused at send if the receiving service's required documents are missing.** A rejection three weeks later for a missing referral form is the same delay as never sending it, arrived at more slowly.
+
+Nothing is deleted. Cancellation and decline are statuses with reasons, the full path is on `referral_events` with the actor who moved it, and a report arriving against a loop already closed is refused rather than backdated into looking like normal completion — a consultation nobody was expecting is a discrepancy worth a person's attention, and the findings themselves belong in the chart, which needs no live referral to hold them.
 
 ## Tenancy
 

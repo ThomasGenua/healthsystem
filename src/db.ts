@@ -43,6 +43,8 @@ export const TENANT_SCOPED_TABLES = [
   "patient_identifiers",
   "tasks",
   "task_events",
+  "referrals",
+  "referral_events",
 ] as const;
 
 /**
@@ -375,6 +377,60 @@ CREATE TABLE IF NOT EXISTS task_events (
   evidence TEXT
 );
 
+-- Referrals, as a loop rather than a message.
+--
+-- Section 9 asks for closed-loop completion reporting, and the failure it
+-- guards against is silence: a referral sent to a service that never
+-- acknowledged it, or accepted and never reported back, looks exactly like one
+-- proceeding normally. Nobody did anything wrong and the patient is not seen.
+--
+-- So a referral carries an expectation of when the next thing should happen,
+-- and anything past it is stalled — a list, not a silence. The lifecycle is
+-- here; every transition is appended to referral_events.
+CREATE TABLE IF NOT EXISTS referrals (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  -- draft | sent | acknowledged | accepted | declined | booked | seen
+  -- | reported | closed | cancelled. Declined and cancelled are terminal;
+  -- everything else is still owed something.
+  status TEXT NOT NULL DEFAULT 'draft',
+  priority TEXT NOT NULL DEFAULT 'routine',
+  from_service TEXT NOT NULL,
+  to_service TEXT NOT NULL,
+  -- Why the patient is being referred. A referral without an indication is
+  -- one the receiving service cannot triage.
+  indication TEXT NOT NULL,
+  -- Documents the receiving service requires before it will triage, and what
+  -- has actually been attached.
+  required_documents TEXT,
+  attached_documents TEXT,
+  -- When the next step is expected by. Exceeding it is what "stalled" means.
+  expected_by TEXT,
+  appointment_at TEXT,
+  -- Set at close: what came of it. A referral closed with no outcome is
+  -- indistinguishable from one abandoned.
+  outcome TEXT,
+  correlation_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  closed_at TEXT,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS referral_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  referral_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  event TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_kind TEXT NOT NULL,
+  from_status TEXT,
+  to_status TEXT,
+  detail TEXT
+);
+
 -- Lookup index over the charts.
 --
 -- Derived, not authoritative. Every column here is recoverable from the
@@ -451,6 +507,10 @@ CREATE INDEX IF NOT EXISTS idx_tasks_open ON tasks(tenant_id, status, due_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_patient ON tasks(tenant_id, patient_id, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_correlation ON tasks(tenant_id, correlation_id);
 CREATE INDEX IF NOT EXISTS idx_task_events ON task_events(tenant_id, task_id, seq);
+CREATE INDEX IF NOT EXISTS idx_referrals_open ON referrals(tenant_id, status, expected_by);
+CREATE INDEX IF NOT EXISTS idx_referrals_patient ON referrals(tenant_id, patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_referrals_corr ON referrals(tenant_id, correlation_id);
+CREATE INDEX IF NOT EXISTS idx_referral_events ON referral_events(tenant_id, referral_id, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at);
 CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(tenant_id, channel_id, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status);
@@ -597,6 +657,9 @@ const REBUILT_TABLES: Array<{ table: string; columns: string[]; ddl: string }> =
 
 export class Db {
   readonly sql: DatabaseSync;
+
+  /** Nesting depth, so only the outermost call begins and commits. */
+  private txDepth = 0;
 
   /**
    * The tenant this handle speaks for.
@@ -782,11 +845,30 @@ export class Db {
    * otherwise be its own commit, and a commit is an fsync, so a single ingest
    * paid for half a dozen of them.
    *
-   * Not reentrant, which is safe here because everything inside is
-   * synchronous — no other JavaScript can run partway through.
+   * Reentrant. A nested call joins the transaction already open rather than
+   * starting a second one, which SQLite refuses outright. This matters as soon
+   * as an operation is built from others: redirecting a referral closes one
+   * and creates another, and each of those is itself atomic. Without this the
+   * composite either crashes or has to be written non-atomically — and a
+   * redirect that closed the original without creating its successor is
+   * exactly the lost loop the referral store exists to prevent.
+   *
+   * A throw anywhere inside rolls the whole thing back, since only the
+   * outermost call commits. Safe because everything within is synchronous: no
+   * other JavaScript can interleave and find a half-finished transaction.
    */
   transaction<T>(fn: () => T): T {
+    if (this.txDepth > 0) {
+      this.txDepth++;
+      try {
+        return fn();
+      } finally {
+        this.txDepth--;
+      }
+    }
+
     this.sql.exec("BEGIN");
+    this.txDepth = 1;
     try {
       const out = fn();
       this.sql.exec("COMMIT");
@@ -798,6 +880,8 @@ export class Db {
         // A rollback that fails leaves the original error the useful one.
       }
       throw err;
+    } finally {
+      this.txDepth = 0;
     }
   }
 
