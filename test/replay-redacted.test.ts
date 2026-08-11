@@ -60,7 +60,12 @@ test("a redacted delivery is refused, and no tombstone reaches the remote", asyn
       ],
     });
     engine.ingest("r", JSON.stringify({ family: "Beaulieu" }), "application/fhir+json", "test");
-    await until(() => s.got.length === 1);
+    // Wait for the delivery to be settled, not merely for the sink to have
+    // seen the request. The remote receives it before the engine records the
+    // outcome, so a wait on the sink can leave the row inflight — and
+    // redaction skips inflight rows by design, which made this pass locally
+    // and fail on a differently-timed machine.
+    await until(() => engine.db.listDeliveries({ channelId: "r", state: "delivered" }).length === 1);
 
     engine.db.redactBefore("2099-01-01T00:00:00Z");
     const id = engine.db.listDeliveries({ channelId: "r" })[0].id;
@@ -110,7 +115,8 @@ test("an unredacted delivery still replays, so the refusal is narrow", async () 
       ],
     });
     engine.ingest("r", "still here", "text/plain", "test");
-    await until(() => s.got.length === 1);
+    // Settled, not just received: replay refuses an inflight row, correctly.
+    await until(() => engine.db.listDeliveries({ channelId: "r", state: "delivered" }).length === 1);
 
     const id = engine.db.listDeliveries({ channelId: "r" })[0].id;
     assert.deepEqual(engine.db.replayDelivery(id), { ok: true });

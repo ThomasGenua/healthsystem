@@ -25,7 +25,7 @@ test("a frame that never terminates is cut off rather than accumulated forever",
   const server = await startMllpServer(0, "127.0.0.1", async (raw) => {
     received.push(raw);
     return "ACK";
-  }, 64 * 1024);
+  }, { maxFrameBytes: 64 * 1024 });
 
   try {
     const socket = connect(server.port, "127.0.0.1");
@@ -55,7 +55,7 @@ test("the listener keeps working after refusing an oversized sender", async () =
   const server = await startMllpServer(0, "127.0.0.1", async (raw) => {
     received.push(raw);
     return "MSH|^~\\&|ACK\rMSA|AA|1\r";
-  }, 32 * 1024);
+  }, { maxFrameBytes: 32 * 1024 });
 
   try {
     const bad = connect(server.port, "127.0.0.1");
@@ -83,7 +83,7 @@ test("a message right up to the limit still gets through", async () => {
   const server = await startMllpServer(0, "127.0.0.1", async (raw) => {
     got = raw;
     return "MSH|^~\\&|ACK\rMSA|AA|1\r";
-  }, limit);
+  }, { maxFrameBytes: limit });
 
   try {
     const filler = "X".repeat(limit - 4_096);

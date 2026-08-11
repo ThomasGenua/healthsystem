@@ -57,6 +57,8 @@ export function verifyBackup(path: string): BackupResult["verified"] {
   const db = new Db(path, { readOnly: true });
   try {
     const channels = db.listChannels();
+    // crosses-tenants: a snapshot covers the database file, not one tenant's
+    // slice of it, so the count it reports is deliberately the whole node's.
     const messages = (db.sql.prepare("SELECT COUNT(*) AS n FROM messages").get() as { n: number }).n;
     const auditEvents = new AuditStore(db).count();
 

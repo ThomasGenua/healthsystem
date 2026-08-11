@@ -18,6 +18,7 @@ import { TerminologyStore } from "../terminology/store.ts";
 import { ConformanceRegistry, validateResource } from "../conformance/validator.ts";
 import { ApiKeyStore } from "../auth/keys.ts";
 import { AuditStore } from "../audit/store.ts";
+import { ClinicalRecord } from "../clinical/record.ts";
 import { RetentionRunner, type RetentionPolicy } from "./retention.ts";
 import { buildAck, getHl7, parseHl7, serializeHl7 } from "../hl7/parser.ts";
 import { startMllpServer, type MllpServerHandle } from "../hl7/mllp.ts";
@@ -52,6 +53,17 @@ const CRON_TICK_MS = 20_000;
 export interface ConnectorFactories {
   sql?: (driver: SqlDriver, dsn: string) => Promise<SqlClient>;
   sftp?: (opts: SftpConnectOptions) => Promise<SftpClient>;
+}
+
+/** One custodian's view of the engine's stores. See Engine.forTenant. */
+export interface TenantView {
+  tenantId: string;
+  db: Db;
+  fhir: FhirStore;
+  subs: SubscriptionManager;
+  keys: ApiKeyStore;
+  audit: AuditStore;
+  clinical: ClinicalRecord;
 }
 
 export interface EngineOptions {
@@ -89,6 +101,8 @@ export class Engine {
   private channels = new Map<string, RuntimeChannel>();
   private mapperCtx: MapperContext;
   private connectors: Required<ConnectorFactories>;
+  private validation: ConstructorParameters<typeof FhirStore>[1];
+  private views = new Map<string, TenantView>();
   private lockTimer: NodeJS.Timeout | null = null;
   private lockStaleMs: number;
   private lockHeartbeatMs: number;
@@ -101,13 +115,15 @@ export class Engine {
     // they exist.
     this.terminology = new TerminologyStore(this.db);
     this.conformance = new ConformanceRegistry();
-    this.fhir = new FhirStore(this.db, {
+    this.validation = {
       conformance: this.conformance,
       terminology: this.terminology,
       defaultPack: opts.validatePack,
       defaultMode: opts.validateMode,
-    });
-    this.worker = new DeliveryWorker(this.db, opts.tickMs ?? 250, 25, this.fhir);
+    };
+    this.fhir = new FhirStore(this.db, this.validation);
+    // Resolved per delivery, since one worker drains every tenant on the node.
+    this.worker = new DeliveryWorker(this.db, opts.tickMs ?? 250, 25, (tenantId) => this.forTenant(tenantId));
     this.subs = new SubscriptionManager(this.db, this.worker);
     this.keys = new ApiKeyStore(this.db);
     this.audit = new AuditStore(this.db);
@@ -134,6 +150,41 @@ export class Engine {
         return args.result === "display" ? (m.display ?? "") : m.code;
       },
     };
+  }
+
+  /**
+   * The engine as one custodian sees it.
+   *
+   * Every store is rebuilt against a tenant-bound database handle and wired
+   * exactly as the default one is — a per-tenant FHIR facade whose changes
+   * notify that tenant's subscriptions, and no one else's. Built once and
+   * cached, because the subscription wiring is stateful and reconstructing it
+   * per request would drop listeners.
+   *
+   * The delivery worker and the database connection are shared, which is what
+   * makes this one node serving many organizations rather than many nodes:
+   * isolation is in the data each view can address, not in duplicated
+   * machinery.
+   */
+  forTenant(tenantId: string): TenantView {
+    const existing = this.views.get(tenantId);
+    if (existing) return existing;
+
+    const db = this.db.forTenant(tenantId);
+    const fhir = new FhirStore(db, this.validation);
+    const subs = new SubscriptionManager(db, this.worker);
+    fhir.onChange((result, resource) => subs.notify(result, resource));
+    const view: TenantView = {
+      tenantId,
+      db,
+      fhir,
+      subs,
+      keys: new ApiKeyStore(db),
+      audit: new AuditStore(db),
+      clinical: new ClinicalRecord(db),
+    };
+    this.views.set(tenantId, view);
+    return view;
   }
 
   registerMapping(doc: MappingDoc): void {
@@ -269,7 +320,9 @@ export class Engine {
   }
 
   private async activate(config: ChannelConfig): Promise<void> {
-    const destinationIds = config.destinations.map((d, i) => this.worker.registerDestination(config.id, d, i));
+    const destinationIds = config.destinations.map((d, i) =>
+      this.worker.registerDestination(this.db.tenantId, config.id, d, i)
+    );
     const rc: RuntimeChannel = { config, destinationIds, timers: [], polling: false };
 
     if (config.source.type === "mllp") {
@@ -287,7 +340,7 @@ export class Engine {
             throw err;
           }
         }
-      }, src.maxFrameBytes);
+      }, { maxFrameBytes: src.maxFrameBytes, charset: src.charset });
     }
 
     if (config.source.type === "filedrop") {
@@ -494,7 +547,7 @@ export class Engine {
     rc.pollDb?.close();
     await this.dropSqlClient(rc);
     await this.dropSftpClient(rc);
-    this.worker.unregisterChannel(id);
+    this.worker.unregisterChannel(this.db.tenantId, id);
     this.channels.delete(id);
   }
 
@@ -716,6 +769,13 @@ export function validateChannel(config: ChannelConfig): void {
   for (const d of config.destinations) {
     if (d.type === "http" && !d.url) throw new Error("HTTP destination requires url");
     if (d.type === "mllp" && (!d.host || !d.port)) throw new Error("MLLP destination requires host and port");
+    // Refused at configuration rather than at the first message. A clinical
+    // destination that cannot say whose chart an entry belongs on has nowhere
+    // to put it, and discovering that per message means a dead-letter queue
+    // full of entries nobody can file.
+    if (d.type === "clinical" && !d.patientPath) {
+      throw new Error("clinical destination requires patientPath, so an entry can be filed against a patient");
+    }
   }
 }
 

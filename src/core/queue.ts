@@ -8,7 +8,8 @@
  */
 import { request as httpsRequest } from "node:https";
 import { readFileSync } from "node:fs";
-import type { Db } from "../db.ts";
+import { orderingKey, type Db } from "../db.ts";
+import type { ClinicalRecord, EntryType } from "../clinical/record.ts";
 import type { DeliveryRow, DestinationConfig, DestinationTlsConfig } from "../types.ts";
 import type { FhirStore } from "../fhir/store.ts";
 import { mllpSend } from "../hl7/mllp.ts";
@@ -20,6 +21,28 @@ const DEFAULTS = {
   timeoutMs: 15_000,
 };
 
+/** Where a delivery for a given tenant should be written. */
+export type StoreResolver = (tenantId: string) => { fhir: FhirStore; clinical: ClinicalRecord };
+
+/**
+ * Reads a dotted path with array indexes, e.g. "identifier[0].value".
+ * Returns a string or undefined; anything that is not a scalar at the end of
+ * the path is treated as absent rather than coerced.
+ */
+function readPath(obj: unknown, path: string): string | undefined {
+  let cur: unknown = obj;
+  for (const part of path.split(".")) {
+    const m = /^([^[]+)((\[\d+\])*)$/.exec(part);
+    if (!m || cur === null || typeof cur !== "object") return undefined;
+    cur = (cur as Record<string, unknown>)[m[1]];
+    for (const idx of m[2].match(/\d+/g) ?? []) {
+      if (!Array.isArray(cur)) return undefined;
+      cur = cur[Number(idx)];
+    }
+  }
+  return typeof cur === "string" || typeof cur === "number" ? String(cur) : undefined;
+}
+
 export class DeliveryWorker {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
@@ -27,32 +50,43 @@ export class DeliveryWorker {
   private db: Db;
   private tickMs: number;
   private batch: number;
-  private fhir?: FhirStore;
+  /**
+   * Resolves the stores a delivery should be written into, by tenant.
+   *
+   * A resolver rather than a store, because one worker drains the whole node
+   * and a delivery belongs to whichever custodian enqueued it. Holding a
+   * single facade meant every tenant's resources were written into the
+   * default one's — the delivery reported success, and the patient landed
+   * under the wrong custodian. The structural scoping check could not see it:
+   * the SQL underneath does name a tenant, it was simply bound to the wrong
+   * handle when the store was constructed.
+   */
+  private stores?: StoreResolver;
   /** Messages one ordered key may send per pass, so no key starves the rest. */
   private drainLimit: number;
   private stopping = false;
 
-  constructor(db: Db, tickMs = 250, batch = 25, fhir?: FhirStore, drainLimit = 500) {
+  constructor(db: Db, tickMs = 250, batch = 25, stores?: StoreResolver, drainLimit = 500) {
     this.db = db;
     this.tickMs = tickMs;
     this.batch = batch;
-    this.fhir = fhir;
+    this.stores = stores;
     this.drainLimit = drainLimit;
   }
 
-  registerDestination(channelId: string, dest: DestinationConfig, index: number): string {
+  registerDestination(tenantId: string, channelId: string, dest: DestinationConfig, index: number): string {
     const id = dest.id ?? `${dest.type}-${index}`;
-    this.destinations.set(`${channelId}:${id}`, dest);
+    this.destinations.set(orderingKey(tenantId, channelId, id), dest);
     return id;
   }
 
-  unregisterDestination(channelId: string, destId: string): void {
-    this.destinations.delete(`${channelId}:${destId}`);
+  unregisterDestination(tenantId: string, channelId: string, destId: string): void {
+    this.destinations.delete(orderingKey(tenantId, channelId, destId));
   }
 
-  unregisterChannel(channelId: string): void {
+  unregisterChannel(tenantId: string, channelId: string): void {
     for (const key of this.destinations.keys()) {
-      if (key.startsWith(`${channelId}:`)) this.destinations.delete(key);
+      if (key.startsWith(`${tenantId}:${channelId}:`)) this.destinations.delete(key);
     }
   }
 
@@ -152,7 +186,7 @@ export class DeliveryWorker {
     this.db.markInflight(d.id);
     const attempts = d.attempts + 1;
     try {
-      const ack = await this.deliver(dest, d.payload, d.content_type);
+      const ack = await this.deliver(dest, d.payload, d.content_type, d.tenant_id, d.message_id);
       this.db.markDelivered(d.id, ack);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -165,17 +199,52 @@ export class DeliveryWorker {
     }
   }
 
-  private async deliver(dest: DestinationConfig, payload: string, contentType: string): Promise<string | null> {
+  private async deliver(
+    dest: DestinationConfig,
+    payload: string,
+    contentType: string,
+    tenantId: string,
+    messageId: string
+  ): Promise<string | null> {
     if (dest.type === "fhirstore") {
-      if (!this.fhir) throw new Error("FHIR store not attached to this worker");
+      if (!this.stores) throw new Error("FHIR store not attached to this worker");
       const resource = JSON.parse(payload) as Record<string, unknown>;
       // A conformance failure throws, so the delivery retries and eventually
       // dead-letters with the reason attached, exactly like a rejected HTTP
       // POST. Nothing reaches the facade.
-      const r = this.fhir.upsert(resource, { pack: dest.validatePack, mode: dest.validateMode });
+      const r = this.stores(tenantId).fhir.upsert(resource, { pack: dest.validatePack, mode: dest.validateMode });
       const verb = r.created ? "created" : r.changed ? "updated" : "unchanged";
       const annotated = r.issues?.length ? ` [${r.issues.length} conformance issue(s): ${r.issues[0].message}]` : "";
       return `${r.resourceType}/${r.id} v${r.versionId} ${verb}${annotated}`;
+    }
+
+    if (dest.type === "clinical") {
+      if (!this.stores) throw new Error("clinical record not attached to this worker");
+      const resource = JSON.parse(payload) as Record<string, unknown>;
+      const patientId = readPath(resource, dest.patientPath);
+      // Refused rather than filed somewhere convenient. An entry whose patient
+      // cannot be determined has no chart to belong to, and guessing is how a
+      // result ends up on the wrong one.
+      if (!patientId) {
+        throw new Error(`no patient identifier at ${dest.patientPath}; the entry has no chart to go on`);
+      }
+      const entryType = typeof resource.resourceType === "string" ? resource.resourceType : "Observation";
+      const identity = dest.identity?.length ? dest.identity : [dest.patientPath];
+      const key = `${entryType}|${identity.map((p) => readPath(resource, p) ?? "").join("|")}`;
+
+      const r = this.stores(tenantId).clinical.ingest({
+        entryType: entryType as EntryType,
+        patientId,
+        content: resource,
+        authorId: dest.id ?? "interface",
+        authorKind: "device",
+        source: contentType,
+        sourceMessageId: messageId,
+        recordKey: key,
+        ...(dest.encounterPath ? { encounterId: readPath(resource, dest.encounterPath) ?? undefined } : {}),
+        ...(dest.effectivePath ? { effectiveAt: readPath(resource, dest.effectivePath) ?? undefined } : {}),
+      });
+      return `${entryType} ${r.outcome}${r.entry ? ` v${r.entry.version}` : ""}`;
     }
 
     if (dest.type === "http") {

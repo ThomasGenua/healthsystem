@@ -13,6 +13,13 @@ export interface MllpSourceConfig {
    * an unterminated frame must not be able to grow without limit.
    */
   maxFrameBytes?: number;
+  /**
+   * Character set to assume when a sender declares none in MSH-18, which is
+   * most of them. Defaults to UNICODE UTF-8. A feed that emits ISO-8859-1
+   * without saying so is configured here as "8859/1" — otherwise its accented
+   * characters are refused rather than being silently replaced.
+   */
+  charset?: string;
 }
 
 export interface HttpSourceConfig {
@@ -244,7 +251,46 @@ export interface FhirStoreDestinationConfig {
   skipOnDead?: boolean;
 }
 
-export type DestinationConfig = HttpDestinationConfig | MllpDestinationConfig | FhirStoreDestinationConfig;
+/**
+ * Write into the longitudinal clinical record.
+ *
+ * The chart is append-only, so this never overwrites: a message about a record
+ * already held either says the same thing, in which case nothing is written,
+ * or says something different, in which case it amends and the earlier version
+ * stays readable with the message that changed it recorded against it.
+ */
+export interface ClinicalDestinationConfig {
+  id?: string;
+  type: "clinical";
+  /**
+   * Where the patient identifier is in the payload, e.g.
+   * "identifier[0].value" on a Patient, "subject.identifier.value" elsewhere.
+   * A chart entry that cannot say whose it is has nowhere to go.
+   */
+  patientPath: string;
+  /**
+   * Paths whose values together identify the logical record, so a repeat or
+   * an update lands on the record it is about rather than beside it. Defaults
+   * to the patient path, which is right for a Patient and wrong for anything
+   * that repeats per patient — an Observation needs its filler order number.
+   */
+  identity?: string[];
+  /** Where an encounter identifier sits, when the payload carries one. */
+  encounterPath?: string;
+  /** Where the clinically effective time sits, when it differs from arrival. */
+  effectivePath?: string;
+  ordered?: boolean;
+  skipOnDead?: boolean;
+  maxAttempts?: number;
+  backoffBaseMs?: number;
+  backoffCapMs?: number;
+}
+
+export type DestinationConfig =
+  | HttpDestinationConfig
+  | MllpDestinationConfig
+  | FhirStoreDestinationConfig
+  | ClinicalDestinationConfig;
 
 export interface ChannelConfig {
   id: string;
@@ -253,6 +299,17 @@ export interface ChannelConfig {
   source: SourceConfig;
   pipeline?: PipelineStep[];
   destinations: DestinationConfig[];
+  /**
+   * How long this channel may go without receiving a message before it counts
+   * as silent. Off unless set, because no threshold fits both a nursing
+   * station admitting four patients a day and a lab pushing results every few
+   * minutes — the cadence has to be declared, not guessed.
+   *
+   * Without it, a feed that stops sending is invisible: every other health
+   * signal reports on what is in the queue, and a stopped feed puts nothing
+   * there, so it reads exactly like a quiet night.
+   */
+  expectMessageEverySec?: number;
 }
 
 /** Declarative mapping document. */
@@ -299,6 +356,8 @@ export interface MessageRow {
 
 export interface DeliveryRow {
   id: string;
+  /** The custodian this delivery belongs to, so it is written into theirs. */
+  tenant_id: string;
   message_id: string;
   channel_id: string;
   destination_id: string;
@@ -328,6 +387,8 @@ export interface SubscriptionRow {
 
 export interface ApiKeyRow {
   id: string;
+  /** The custodian this credential belongs to. */
+  tenant_id: string;
   name: string;
   /** SHA-256 of the key. The key itself is never stored. */
   hash: string;

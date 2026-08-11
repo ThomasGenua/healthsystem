@@ -23,8 +23,16 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **In-place schema migration**, so upgrading an existing database does not take the node off the air.
 - **Truncation-resistant chains**, so deleting the most recent entries no longer verifies clean.
 - **Subscriptions behind `admin`**, so a push-only feed credential cannot arrange to receive the clinical record.
+- **Character sets honoured on the wire**, so an accented or syllabic name is not silently replaced with question marks.
+- **Silent-feed detection**, so an interface that stopped sending is not mistaken for a quiet night.
+- **Multi-tenant end to end**: structural isolation in storage, checked by reading the source, and every request confined to its credential's custodian.
+- **Purpose of use** on the audit trail, inside the hash chain.
+- **An append-only clinical record**, where a correction cannot destroy what it corrects.
+- **A patient index** derived from the log and rebuildable from it, surfacing duplicates rather than merging them.
+- **Clinical documentation** where a signature fixes the text and only an addendum may follow.
+- **A unified inbox** where work cannot be closed without evidence or left belonging to nobody unseen.
 
-177 tests. Backend first, tests before UI.
+270 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -75,7 +83,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 177 tests
+npm test          # 270 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -290,6 +298,142 @@ In-flight and queued deliveries are never redacted — a payload that has not go
 
 A sweep that destroys data records itself on the audit trail, because that is an event worth being able to account for.
 
+## The clinical record
+
+Section 1 of the requirements asks that nothing clinically material is silently overwritten, and that a correction retains the original with its full history. That is a constraint on storage, not a matter of discipline — a table you `UPDATE` cannot satisfy it however carefully it is used.
+
+So the clinical store has no update path. Three verbs, all writes:
+
+```ts
+const rec = new ClinicalRecord(db);
+const dx = rec.record({ entryType: "Condition", patientId: "NT123456",
+                        content: { code: "E11" }, authorId: "dr-tetso", authorKind: "practitioner" });
+
+rec.amend(dx.record_id, { code: "E10" }, { …, reason: "coded from the wrong line of the referral" });
+rec.retract(dx.record_id, { …, reason: "recorded against the wrong patient" });
+```
+
+An amendment writes a new version pointing at the one it supersedes; the superseded version stays exactly as it was. A reason is required, because "corrected" with no explanation is what tidying up looks like and is precisely what a reviewer needs to tell from a real correction.
+
+**A retraction is not a deletion.** "This was recorded against the wrong patient" and "this never happened" are different claims, and only the first is true. The content is carried forward unchanged: a decision taken on the strength of the original cannot be reviewed against a blank. Retracted records leave the working chart and stay reachable for the review that needs them.
+
+**One table, not fifteen.** Problems, allergies, vitals, notes, encounters and consents differ in their content, not in what must be true about them — an author, a time, a status, a supersession link, a place on the chain. A table per resource type would be a chance per resource type to leave one of those out.
+
+**Charts are hash-chained per patient**, the same construction as message lineage and the access trail, and for the same reason: an amendment history that can be quietly rewritten is not a history. The chain commits to the clinical text itself, not to metadata about it — a chain over metadata alone would leave the diagnosis rewritable under an intact-looking history. Removal from the end is caught by a per-patient version counter, since linkage cannot see it.
+
+**There is no `UPDATE` anywhere in the store.** An earlier version of this marked the replaced row as amended, which meant a correction wrote to a version a clinician had already signed — the one thing an append-only record exists to prevent — and, because the chain commits to every field, broke the chart's own verification. Whether a version was superseded is derived from a later one existing, never written back.
+
+### Interfaces write to the chart
+
+A `clinical` destination files a mapped payload onto the record it is about:
+
+```json
+{ "id": "chart", "type": "clinical",
+  "patientPath": "subject.identifier.value",
+  "identity": ["subject.identifier.value", "code.coding[0].code"],
+  "effectivePath": "effectiveDateTime" }
+```
+
+Three outcomes, and the middle one carries the weight: an unknown record is a first version, **identical content writes nothing**, and changed content amends, naming the message that changed it. The no-op is not an optimisation. Interfaces resend — on reconnect, on replay from the DLQ, on a nightly repeat of the day's admissions — and a chart that grew a version per resend would bury the two amendments that mattered under four hundred that said nothing.
+
+`identity` is what stops a chart holding exactly one observation forever. With the patient as the only key every result amends the last one, which looks like working software until someone asks for a trend; a result needs its analyte, an order needs its filler number.
+
+An entry whose patient cannot be determined is **dead-lettered, not filed against a guess** — guessing is how a result reaches the wrong chart. And a record a clinician retracted is left alone by the next routine message from the system that produced it: an interface must not be able to reinstate a clinical judgement.
+
+Every version carries where it came from: author and kind, the interface message that produced it, when it was written down and when it was clinically true. A vital sign filed an hour late belongs at the time it was taken, and a result that cannot name its source message cannot be reconciled against the feed that delivered it.
+
+### Finding a patient
+
+A chart nobody can look up is not a chart, and lookup is where a health record is most likely to go wrong: the wrong Marie Beaulieu, one person under two numbers, two people under one.
+
+```ts
+index.search({ family: "Beaulieu", birthDate: "1984-03-17" });
+index.search({ identifier: "urn:jhn|NT123456" });
+```
+
+Every criterion given must match — a search that widened as the clinician supplied more would return more wrong Maries the better they knew which one they meant. Identifiers are added and never removed, so a message arriving under last year's interim number still reaches the same chart.
+
+**The index is derived, and `rebuild()` proves it.** Every column is recoverable from the Patient entries in the log, and rebuilding reproduces it exactly — which is what keeps the log the record and this a convenience. An index that could not be rebuilt would have quietly become a second source of truth about who a patient is, and two of those do not stay in agreement.
+
+**Duplicates are surfaced, never merged.** A shared identifier is close to conclusive: one health number should not name two charts. A matching name and birth date is a prompt rather than a finding — twins exist, and so do fathers and sons with one name between them. Both are reported with their evidence, and a human decides. Automatic merging is how a chart acquires someone else's allergies, and there is no honest way to unmerge afterwards.
+
+### Documentation, signatures and addenda
+
+Section 3 turns on the difference between a draft and an attestation. A draft is working text. A signature says: this is what I found, this is what I decided, my name is on it.
+
+```ts
+const note = notes.draft({ patientId, encounterId, noteType: "SOAP", sections, author });
+notes.revise(note.record_id, { …sections, assessment: "…" }, author);   // drafts only
+notes.sign(note.record_id, resident);
+notes.cosign(note.record_id, attending);
+notes.addendum({ recordId: note.record_id, sections: { note: "Film reported later…" }, author });
+```
+
+**A signed note cannot be revised.** A refusal rather than a warning, because a signed note that can be edited is indistinguishable, afterwards, from one that was always what it now says — and the moment that matters is always months later, in a review of a decision somebody now regrets. The only way to say something further is an addendum, which is its own record, separately attested and linked to the note it follows, so a reader can always tell what was known at the time from what was added after.
+
+A co-signature must come from someone other than the signer. One signature counted twice is not two people taking responsibility. `awaitingCosignature` is the supervisor's queue.
+
+The signed text is covered by the chart chain too, so the refusal stops the API changing a note and verification catches anything that goes around it.
+
+## The inbox
+
+Section 8 asks for one guarantee, and it is not a feature: clinically important work must not disappear between people or organizations. Work is rarely lost by being deleted. It is lost by being handed to somebody who has left, closed with nothing to show for it, or owned by nobody — which means it is on nobody's list and is invisible in exactly the way that matters.
+
+Three things are therefore structural:
+
+- **Nothing is ever removed.** `cancel` is a status with a reason, distinct from `complete`, because "we decided not to" and "we did it" are different answers to an audit and only one of them is aftercare. A closed item is still there and can be reopened.
+- **Completion requires evidence.** A task closed with an empty hand is indistinguishable, afterwards, from one abandoned — and "the result was acknowledged" versus "the result was marked acknowledged" is the distinction a review of a missed diagnosis turns on.
+- **An unowned item is a list, not a silence.** `unassigned()` exists so that "belongs to nobody" is somewhere a person looks. Releasing an item is an action with a reason rather than a side effect of somebody leaving.
+
+Every transition is appended with an actor and a reason, so delegation history is a record rather than a reconstruction. An owner column knows who has it now; "who had this when it went wrong" is the question actually asked.
+
+**Inboxes are ordered by urgency and deadline, never by arrival.** A chronological inbox buries the one item that mattered under the forty that did not, which is the mechanism by which a critical result is missed with nobody doing anything wrong.
+
+Items carry a correlation identifier, so a referral raised here and the consult report that answers it months later are recognisable as two items and one question — which is what closing a loop requires.
+
+## Tenancy
+
+One platform, many health information custodians, and no code fork per clinic. A tenant is a custodian's boundary: organizations, providers, channels, messages, deliveries, keys, audit and facade records all live inside one.
+
+**Isolation is structural, not conventional.** The tenant is part of the database handle's identity rather than a parameter on every method:
+
+```ts
+const db = new Db(path);                 // the default tenant
+const north = db.forTenant("moh-north"); // same connection, different boundary
+```
+
+A `tenantId` argument is one a caller can forget, and the cost of forgetting it once is a query that reads across custodians — silently, returning plausible results. Here there is nothing to forget: every statement binds the handle's tenant, and reaching another custodian's data means naming them in a `forTenant` call, which is greppable and reviewable.
+
+Isolation is verified two ways, because neither is sufficient alone. `test/tenant-isolation.test.ts` seeds two custodians with **deliberately colliding identifiers** — the same channel id, the same patient id, the same health number — and asks every accessor whether it leaks. Colliding is the normal case, not an edge one, and it is the only case where a forgotten scope returns the *wrong* patient rather than no patient; a test using distinct ids everywhere would pass against code with no isolation at all.
+
+**And the property is checked structurally, not just asserted behaviourally.** `test/tenant-scoping.test.ts` reads the source and requires every statement naming a tenant-scoped table to name `tenant_id`. Behavioural tests only prove the queries someone thought to test are scoped; they say nothing about the fiftieth method or the one added next month. A statement that genuinely spans tenants — the delivery worker's queue sweep, startup reclaim, authentication by key hash — declares itself with a `crosses-tenants:` comment giving the reason, so crossing a boundary is always a visible act rather than an omission.
+
+Terminology is deliberately **not** tenant-scoped. SNOMED CT CA, LOINC and the classification tables are the shared provincial baseline; copying them per tenant would mean a code meaning one thing in one clinic and another elsewhere.
+
+Ids chosen by a caller are unique per tenant, not per platform: `channels.id` because "adt" is what every site calls its admissions feed, and `fhir_subscriptions.id` because a client may supply one. Ids the engine generates — messages, deliveries, keys — stay globally unique, since a UUID cannot collide and the delivery worker needs to address a row without knowing whose it is.
+
+Three things this changed that were not obvious:
+
+- **The ordering key now leads with the tenant.** It was `channel:destination`, and channel ids are only unique within a tenant — so two custodians who both named a channel `adt` would have shared one ordered queue, and a message stuck at one organization's head would have blocked the other's feed entirely. Strict ordering is a per-destination promise, not a promise to serialise the province.
+- **A second custodian could not create a channel a first had named.** With a platform-wide key on `channels.id`, the second `upsertChannel("adt")` hit the conflict and did nothing — silently. Not a leak, but a worse shape of failure: a feed that reports success and does not exist. Found by the isolation tests, not by review.
+- **The audit truncation check no longer uses SQLite's `AUTOINCREMENT` mark.** That mark counts rows across the whole table, which was exact with one tenant and meaningless with two — every tenant would have reported most of its trail missing. Each tenant now carries its own issued counter, backfilled on upgrade from the old mark so nothing is lost in the transition.
+
+### Requests are confined to the credential's tenant
+
+A key is issued by a custodian and carries that custodian on the stored row. The gate resolves it there and nowhere else — a caller who could name their own tenant on the request would be naming their own authorisation — and every store a route touches comes from that tenant's view of the engine. Scope says what a caller may do; the tenant says whose records they may do it to, so an `admin` key in one organization cannot revoke a key, read a message or replay a delivery in another.
+
+An OIDC token carries its tenant in a `tenant` (or `portage_tenant`) claim the identity provider controls. Without one the caller lands in the default tenant rather than in whichever one they would have preferred.
+
+**Suspension takes effect immediately.** `setTenantStatus(id, "suspended")` stops that custodian's credentials at the gate, before scopes are consulted, and touches nobody else — suspending an organization whose keys keep working until the next restart is not suspending it.
+
+### Purpose of use
+
+Every request may declare why it is reaching for the record, as an HL7 ActReason code in `X-Purpose-Of-Use`: `TREAT`, `HPAYMT`, `HOPERAT`, `HRESCH`, `PATRQT`, `PUBHLTH`, `HLEGAL`. It is recorded on the audit row and **covered by the hash chain**, so it cannot be revised afterwards into something more defensible.
+
+A closed set on purpose. Free text is a box people type "work" into, and it cannot be reported on. An unrecognised value is dropped rather than stored as typed, and declining to say is recorded as declining to say — "who looked at this chart" is a much weaker question than "who looked, and said they were treating the patient".
+
+Existing databases migrate in place; see [Upgrading](#upgrading). Rows written before tenancy land in the `default` tenant, and a deployment that never configures a second one behaves exactly as before.
+
 ## Upgrading
 
 An existing database is migrated in place on the first open. Columns added since it was created are added by `ALTER TABLE`; new tables and indexes come from the schema itself. Running the migration again finds nothing to do, so it costs one `PRAGMA` per tracked column at boot.
@@ -297,6 +441,8 @@ An existing database is migrated in place on the first open. Columns added since
 This matters more than it sounds. `CREATE TABLE IF NOT EXISTS` does *nothing* to a table that already exists, so before this a column added to the schema never reached a database an earlier version had created — and the failure arrived on the first ingest rather than on open. A site that had been running fine went off the air at upgrade and stayed there, reporting itself healthy. Every test starts from an empty file, so no test could see it; `test/migration.test.ts` starts from the real v0.3.0 table definitions instead.
 
 A chain that spans the upgrade still verifies. Rows written before the digest column commit to the payload itself and rows after it commit to the digest, and `verifyChain` accepts both, so an upgrade does not read as tampering.
+
+Tenancy needs more than added columns. `fhir_resources`, `fhir_identifiers` and `channel_state` had primary keys that were unique across the whole database, and `ALTER TABLE` cannot change a primary key — so those three are rebuilt (create, copy, drop, rename, in one transaction). Without it, the first time a second custodian stored `Patient/p1` it would overwrite the first custodian's patient of that id, which is a silent cross-tenant write and exactly what tenancy exists to prevent. Indexes are applied after the migration rather than with the tables, because an index naming a column the migration is about to add cannot be created before it exists.
 
 One thing to do by hand, once, on a database that ran a version before this one: `sqlite3 data/portage.db 'VACUUM;'`. Freed pages are zeroed from now on, but pages freed under the old build may still hold legible content, and only a rebuild clears those.
 
@@ -374,6 +520,20 @@ portage_channel_oldest_queued_age_seconds{channel="oru-to-fhir-observation"} 412
 ```
 
 Both are public alongside liveness — a scrape happens before any credential is configured, and neither carries patient data: counters, ages and channel ids only. Neither writes to the audit trail, or a 15-second scrape would bury the disclosures the trail exists to surface.
+
+### A feed that has gone quiet
+
+Every signal above reports on what is *in* the queue — depth, dead letters, the age of the oldest undelivered message, which channels are stalled. A feed that stops sending puts nothing in the queue, so all of them read healthy: a dead ADT interface and a quiet night are indistinguishable.
+
+A backlog is loud — it grows, it ages, it eventually dead-letters. Silence is not, and at an unattended site it is the failure most likely to run for days before anyone notices the records stopped arriving.
+
+```json
+{ "id": "adt", "name": "admissions", "expectMessageEverySec": 3600, "source": { "…": "…" } }
+```
+
+A channel that declares a cadence and exceeds it appears in `signals.silentChannels`, makes `/api/health` report `degraded`, and exports `portage_channel_silent{channel="adt"} 1`. `portage_channel_last_message_age_seconds` carries the age itself, so an alert is a threshold on a number rather than a special case.
+
+Off unless declared, deliberately. No threshold fits both a nursing station admitting four patients a day and a regional lab pushing results every few minutes, and an alert that fires constantly is one nobody reads — which is worse than the gap it was meant to close. A channel that has *never* received anything is reported too: never having started is as much an outage as having stopped, and it is the one an operator hits the day they stand a feed up.
 
 ## Throughput
 
@@ -547,6 +707,29 @@ Every polling source accepts `cron` instead of `pollMs` — a five-field express
 Pipeline steps: `filter.hl7Type` (MSH-9 allow list), `filter.hl7FieldEquals` (HL7 path equality), `filter.jsonEquals` (JSON path equality), `split.hl7Segment` (one output per instance of a repeating segment: an ORU with three OBX becomes three messages; zero instances filters the message), `split.hl7Group` (one output per anchor segment, each carrying the shared header plus everything up to the next anchor: a two-battery ORU becomes two messages that keep their own OBX and NTE children), `transform.mapping` (registered mapping id or inline document), `validate.profile` (validate JSON payloads against a conformance pack; reject fails the message, annotate records the issues and passes it through). Filtered messages are stored and acknowledged but produce no deliveries.
 
 Destinations: `http` (url, method, headers, contentType, timeoutMs, and `tls` for a client certificate), `mllp` (host, port, timeoutMs; a remote MSA AE or AR is treated as failure) and `fhirstore` (no endpoint: upserts into the local facade store, optionally gated by `validatePack` and `validateMode`). All take `maxAttempts`, `backoffBaseMs`, `backoffCapMs`, `ordered`, `skipOnDead`.
+
+## Character sets
+
+HL7 v2 carries bytes and declares what they mean in MSH-18. Decoding every frame as UTF-8 regardless — which is what this did — corrupts every message that is not UTF-8, permanently and without saying so:
+
+```
+family: "B�dard"     given: "Ren�ee"     second: "Th�r�se"
+```
+
+Those are `Bédard`, `Renée`, `Thérèse` in ISO-8859-1, which is what most older HL7 v2 interfaces emit. The replacement character is lossy, so the original bytes are gone; the sender is acknowledged `AA`, and the chain commits to the corrupted bytes and verifies clean forever. That is the same class of failure as acknowledging a message that was never stored, and worse in one respect, because the corrupted record still looks like a record. It is not an edge case here either — French names, Dene names and Inuktitut syllabics are most of the register in the north.
+
+Decoding is now strict and by declaration:
+
+- **MSH-18 wins.** The sender is stating a fact about the bytes it just sent. MSH is ASCII by construction, so the field is read with a byte-preserving pass before the rest of the frame is decoded.
+- **A channel's `charset` covers senders that declare nothing**, which is most of them. Set it to `8859/1` for a feed that speaks ISO-8859-1 silently.
+- **Undecodable is refused, never substituted.** A frame that is not valid in its character set gets an `MSA|AR` naming the message control id and the reason, and nothing is stored. A rejection is recoverable; a corrupted name in a chart is not.
+- **Acknowledgements go back in the character set the sender used**, so an accented name echoed in the ACK is the one they sent.
+
+```json
+{ "id": "adt", "source": { "type": "mllp", "port": 6661, "charset": "8859/1" } }
+```
+
+Supported: `ASCII`, `8859/1`, `8859/2`, `8859/15`, `UNICODE UTF-8`. Anything else is refused by name rather than guessed at. Outbound frames are fully supported in UTF-8 and ISO-8859-1; for `8859/2` and `8859/15` the high byte values do not line up with what Node can encode, so those decode inbound in full — the direction that carries patient data — and encode ASCII outbound, refusing anything else rather than mangling it.
 
 ## Mappings
 

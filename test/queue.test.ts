@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { Db } from "../src/db.ts";
+import { Db, DEFAULT_TENANT } from "../src/db.ts";
 import { DeliveryWorker } from "../src/core/queue.ts";
 import type { HttpDestinationConfig } from "../src/types.ts";
 
@@ -58,7 +58,7 @@ test("retries with backoff then delivers", async () => {
     backoffBaseMs: 5,
     backoffCapMs: 20,
   };
-  worker.registerDestination("ch", dest, 0);
+  worker.registerDestination(DEFAULT_TENANT, "ch", dest, 0);
 
   const msg = db.insertMessage("ch", "test", "text/plain", "payload-1");
   const id = db.enqueueDelivery({
@@ -88,8 +88,7 @@ test("dead-letters after max attempts and replay recovers", async () => {
   let broken = true;
   const c = await collector(() => (broken ? 500 : 200));
   const worker = new DeliveryWorker(db, 10);
-  worker.registerDestination(
-    "ch",
+  worker.registerDestination(DEFAULT_TENANT, "ch",
     { id: "d1", type: "http", url: `http://127.0.0.1:${c.port}/x`, maxAttempts: 2, backoffBaseMs: 5, backoffCapMs: 10 },
     0
   );
@@ -127,8 +126,7 @@ test("ordered destination holds later messages behind a failing head", async () 
     return 200;
   });
   const worker = new DeliveryWorker(db, 10);
-  worker.registerDestination(
-    "ch",
+  worker.registerDestination(DEFAULT_TENANT, "ch",
     { id: "d1", type: "http", url: `http://127.0.0.1:${c.port}/x`, maxAttempts: 6, backoffBaseMs: 5, backoffCapMs: 15, ordered: true },
     0
   );
@@ -165,8 +163,7 @@ test("ordered flow blocks on a dead head until discarded", async () => {
   seedChannel(db, "ch");
   const c = await collector((_p, body) => (body === "bad" ? 500 : 200));
   const worker = new DeliveryWorker(db, 10);
-  worker.registerDestination(
-    "ch",
+  worker.registerDestination(DEFAULT_TENANT, "ch",
     { id: "d1", type: "http", url: `http://127.0.0.1:${c.port}/x`, maxAttempts: 2, backoffBaseMs: 5, backoffCapMs: 10, ordered: true },
     0
   );

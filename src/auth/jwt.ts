@@ -64,6 +64,13 @@ export interface VerifiedToken {
   subject: string;
   scopes: Set<Scope>;
   claims: Record<string, unknown>;
+  /**
+   * The custodian the token was issued for, from a claim the identity provider
+   * controls — never from anything the caller can set on the request. Absent
+   * when the provider does not assert one, which leaves the caller in the
+   * default tenant rather than in whichever one they would have preferred.
+   */
+  tenantId?: string;
 }
 
 export class JwtVerifier {
@@ -170,10 +177,15 @@ export class JwtVerifier {
       if (!ok) throw new Error("audience mismatch");
     }
 
+    // The tenant claim the provider asserts. `tenant` is what most issuers
+    // call it; `portage_tenant` is the escape hatch for one that already uses
+    // `tenant` for something else.
+    const tenantClaim = [claims.portage_tenant, claims.tenant].find((c) => typeof c === "string" && c.length > 0);
     return {
       subject: typeof claims.sub === "string" ? claims.sub : "unknown",
       scopes: scopesFromSmart(rawScopes(claims)),
       claims,
+      ...(typeof tenantClaim === "string" ? { tenantId: tenantClaim } : {}),
     };
   }
 }

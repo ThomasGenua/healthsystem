@@ -12,6 +12,7 @@
  * cap has its connection dropped.
  */
 import { createServer, Socket, type Server } from "node:net";
+import { CharsetError, DEFAULT_CHARSET, decodeFrame, encodeFrame } from "./charset.ts";
 
 const VT = 0x0b;
 const FS = 0x1c;
@@ -24,28 +25,56 @@ const CR = 0x0d;
  */
 export const DEFAULT_MAX_FRAME_BYTES = 16 * 1024 * 1024;
 
-export function frame(payload: string): Buffer {
-  return Buffer.concat([Buffer.from([VT]), Buffer.from(payload, "utf8"), Buffer.from([FS, CR])]);
+export function frame(payload: string, charset: string = DEFAULT_CHARSET): Buffer {
+  return Buffer.concat([Buffer.from([VT]), encodeFrame(payload, charset), Buffer.from([FS, CR])]);
 }
 
-/** Extract complete frames from a buffer. Returns frames and the remainder. */
-export function deframe(buf: Buffer): { frames: string[]; rest: Buffer } {
-  const frames: string[] = [];
+/**
+ * Extract complete frames from a buffer.
+ *
+ * Frames come back as bytes, not text. MLLP is a byte transport and the
+ * character set is declared inside the message it carries, so decoding here
+ * would mean guessing — and guessing UTF-8 is what silently replaced every
+ * accented character in an ISO-8859-1 message with U+FFFD. The decision belongs
+ * one layer up, where MSH-18 and the channel's configuration can be consulted.
+ */
+export function deframe(buf: Buffer): { frames: Buffer[]; rest: Buffer } {
+  const frames: Buffer[] = [];
   let cursor = 0;
   for (;;) {
     const start = buf.indexOf(VT, cursor);
     if (start === -1) break;
     const end = buf.indexOf(FS, start + 1);
-    if (end === -1 || end + 1 >= buf.length + 1) {
-      if (end === -1) break;
-    }
     if (end === -1) break;
     // Tolerate a missing trailing CR from lax senders.
     const next = buf[end + 1] === CR ? end + 2 : end + 1;
-    frames.push(buf.subarray(start + 1, end).toString("utf8"));
+    frames.push(buf.subarray(start + 1, end));
     cursor = next;
   }
   return { frames, rest: buf.subarray(cursor) };
+}
+
+/**
+ * A NAK for a frame that could not be decoded.
+ *
+ * MSH is ASCII by construction — delimiters, field names and every Table 0211
+ * value — so a byte-preserving latin1 read of it yields the sending
+ * application and the message control id correctly even when the rest of the
+ * frame is in a character set we could not read. That is exactly what the
+ * sender needs to match the rejection to the message it sent.
+ */
+function nakFor(bytes: Buffer, reason: string): string {
+  const crAt = bytes.indexOf(CR);
+  const msh = bytes.subarray(0, crAt === -1 ? bytes.length : crAt).toString("latin1");
+  const fields = msh.split(msh[3] ?? "|");
+  const controlId = fields[9] ?? "";
+  const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
+  return (
+    [
+      `MSH|^~\\&|PORTAGE|GNWT|${fields[2] ?? ""}|${fields[3] ?? ""}|${stamp}||ACK|${controlId}|P|2.5.1|||||||${DEFAULT_CHARSET}`,
+      `MSA|AR|${controlId}|${reason.replace(/[|^~\\&\r\n]/g, " ").slice(0, 180)}`,
+    ].join("\r") + "\r"
+  );
 }
 
 export interface MllpServerHandle {
@@ -54,12 +83,24 @@ export interface MllpServerHandle {
   close(): Promise<void>;
 }
 
+export interface MllpServerOptions {
+  maxFrameBytes?: number;
+  /**
+   * Character set to assume when the sender declares none in MSH-18, which is
+   * most senders. Defaults to UTF-8, so an existing deployment is unaffected;
+   * a feed that speaks ISO-8859-1 without saying so is configured here.
+   */
+  charset?: string;
+}
+
 export function startMllpServer(
   port: number,
   host: string,
   onMessage: (raw: string) => Promise<string>,
-  maxFrameBytes = DEFAULT_MAX_FRAME_BYTES
+  opts: MllpServerOptions = {}
 ): Promise<MllpServerHandle> {
+  const maxFrameBytes = opts.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES;
+  const configuredCharset = opts.charset ?? DEFAULT_CHARSET;
   return new Promise((resolve, reject) => {
     const server = createServer((socket: Socket) => {
       // Chunks are held in a list and joined only when a frame could actually
@@ -94,10 +135,26 @@ export function startMllpServer(
         // trailing CR, so the next chunk must trigger another attempt.
         mightComplete = rest.includes(FS);
 
-        for (const raw of frames) {
-          onMessage(raw)
+        for (const bytes of frames) {
+          let decoded: { text: string; charset: string };
+          try {
+            decoded = decodeFrame(bytes, configuredCharset);
+          } catch (err) {
+            if (!(err instanceof CharsetError)) throw err;
+            // Refused, and the sender is told which message and why. Storing
+            // it with replacement characters would hand a clinician a name
+            // that is not the patient's, under an AA saying it was received
+            // correctly. A NAK is recoverable; that is not.
+            const why = err.message;
+            console.error(`mllp: ${why} from ${socket.remoteAddress ?? "unknown"}`);
+            if (!socket.destroyed) socket.write(frame(nakFor(bytes, why), DEFAULT_CHARSET));
+            continue;
+          }
+          onMessage(decoded.text)
             .then((ack) => {
-              if (!socket.destroyed) socket.write(frame(ack));
+              // Answered in the character set the sender used, so an accented
+              // name echoed back in the ACK is the one they sent.
+              if (!socket.destroyed) socket.write(frame(ack, decoded.charset));
             })
             .catch(() => {
               if (!socket.destroyed) socket.destroy();
@@ -123,7 +180,13 @@ export function startMllpServer(
 }
 
 /** Send one message and wait for the ACK payload. */
-export function mllpSend(host: string, port: number, payload: string, timeoutMs = 10_000): Promise<string> {
+export function mllpSend(
+  host: string,
+  port: number,
+  payload: string,
+  timeoutMs = 10_000,
+  charset: string = DEFAULT_CHARSET
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const socket = new Socket();
     let buffer: Buffer = Buffer.alloc(0);
@@ -149,11 +212,23 @@ export function mllpSend(host: string, port: number, payload: string, timeoutMs 
       const { frames } = deframe(buffer);
       if (frames.length > 0) {
         clearTimeout(timer);
-        finish(null, frames[0]);
+        // The remote answers in whatever it answers in; MSH-18 on the ACK is
+        // what says which. A NAK that cannot be decoded is still worth
+        // surfacing, so that falls back to a byte-preserving read rather than
+        // becoming a timeout.
+        try {
+          finish(null, decodeFrame(frames[0], charset).text);
+        } catch {
+          finish(null, frames[0].toString("latin1"));
+        }
       }
     });
     socket.connect(port, host, () => {
-      socket.write(frame(payload));
+      try {
+        socket.write(frame(payload, charset));
+      } catch (err) {
+        finish(err instanceof Error ? err : new Error(String(err)));
+      }
     });
   });
 }

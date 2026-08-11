@@ -111,12 +111,26 @@ test(
         "--remote-debugging-port=0",
         "--no-sandbox",
         "--disable-gpu",
+        // Containers give /dev/shm 64 MB, which Chromium outgrows on startup
+        // and then dies without printing an endpoint. This is the difference
+        // between the test running on a CI runner and timing out on one.
+        "--disable-dev-shm-usage",
         `--user-data-dir=${profile}`,
         "about:blank",
       ]);
       const wsUrl = await new Promise<string>((resolve, reject) => {
         let buf = "";
-        const timer = setTimeout(() => reject(new Error("chromium did not report a devtools endpoint")), 30_000);
+        let exited = "";
+        const timer = setTimeout(
+          // Chromium's own output, not just "it didn't start". A browser that
+          // will not launch has always said why, and swallowing that turns a
+          // five-minute fix into a guess.
+          () => reject(new Error(`chromium did not report a devtools endpoint${exited}\n${buf.slice(-800)}`)),
+          45_000
+        );
+        chrome!.once("exit", (code, signal) => {
+          exited = ` (process exited: code ${code}, signal ${signal})`;
+        });
         chrome!.stderr!.on("data", (d: Buffer) => {
           buf += d.toString();
           const m = /ws:\/\/[^\s]+/.exec(buf);
