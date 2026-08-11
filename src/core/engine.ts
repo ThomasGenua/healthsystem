@@ -18,6 +18,7 @@ import { TerminologyStore } from "../terminology/store.ts";
 import { ConformanceRegistry, validateResource } from "../conformance/validator.ts";
 import { ApiKeyStore } from "../auth/keys.ts";
 import { AuditStore } from "../audit/store.ts";
+import { ClinicalRecord } from "../clinical/record.ts";
 import { RetentionRunner, type RetentionPolicy } from "./retention.ts";
 import { buildAck, getHl7, parseHl7, serializeHl7 } from "../hl7/parser.ts";
 import { startMllpServer, type MllpServerHandle } from "../hl7/mllp.ts";
@@ -62,6 +63,7 @@ export interface TenantView {
   subs: SubscriptionManager;
   keys: ApiKeyStore;
   audit: AuditStore;
+  clinical: ClinicalRecord;
 }
 
 export interface EngineOptions {
@@ -120,7 +122,8 @@ export class Engine {
       defaultMode: opts.validateMode,
     };
     this.fhir = new FhirStore(this.db, this.validation);
-    this.worker = new DeliveryWorker(this.db, opts.tickMs ?? 250, 25, this.fhir);
+    // Resolved per delivery, since one worker drains every tenant on the node.
+    this.worker = new DeliveryWorker(this.db, opts.tickMs ?? 250, 25, (tenantId) => this.forTenant(tenantId));
     this.subs = new SubscriptionManager(this.db, this.worker);
     this.keys = new ApiKeyStore(this.db);
     this.audit = new AuditStore(this.db);
@@ -178,6 +181,7 @@ export class Engine {
       subs,
       keys: new ApiKeyStore(db),
       audit: new AuditStore(db),
+      clinical: new ClinicalRecord(db),
     };
     this.views.set(tenantId, view);
     return view;
@@ -765,6 +769,13 @@ export function validateChannel(config: ChannelConfig): void {
   for (const d of config.destinations) {
     if (d.type === "http" && !d.url) throw new Error("HTTP destination requires url");
     if (d.type === "mllp" && (!d.host || !d.port)) throw new Error("MLLP destination requires host and port");
+    // Refused at configuration rather than at the first message. A clinical
+    // destination that cannot say whose chart an entry belongs on has nowhere
+    // to put it, and discovering that per message means a dead-letter queue
+    // full of entries nobody can file.
+    if (d.type === "clinical" && !d.patientPath) {
+      throw new Error("clinical destination requires patientPath, so an entry can be filed against a patient");
+    }
   }
 }
 

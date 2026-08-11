@@ -55,8 +55,9 @@ test("an amendment keeps the version it replaces, and says why", () => {
     const history = rec.history(first.record_id);
     assert.equal(history.length, 2, "the original is a row, not a memory");
     assert.equal(JSON.parse(history[0].content).code, "E11", "and it still says what it said");
-    assert.equal(history[0].status, "amended");
-    assert.equal(history[1].status, "active");
+    assert.equal(history[0].superseded, true, "superseded is derived from a later version, never written back");
+    assert.equal(history[0].status, "active", "and the version a clinician signed is untouched");
+    assert.equal(history[1].superseded, false);
     assert.equal(history[1].supersedes, history[0].version_id, "the correction points at what it corrected");
     assert.match(history[1].amendment_reason ?? "", /wrong line of the referral/);
 

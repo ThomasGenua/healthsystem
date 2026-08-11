@@ -308,6 +308,11 @@ CREATE TABLE IF NOT EXISTS clinical_entries (
   effective_at TEXT,
   supersedes TEXT,
   amendment_reason TEXT,
+  -- What makes two messages about the same thing the same record: a business
+  -- key derived from the payload's own identifiers. An interface retransmits
+  -- constantly, and without this every retransmission would be a new record
+  -- rather than the same one said again.
+  record_key TEXT,
   hash TEXT NOT NULL,
   prev_hash TEXT
 );
@@ -351,6 +356,7 @@ CREATE INDEX IF NOT EXISTS idx_clinical_patient ON clinical_entries(tenant_id, p
 CREATE INDEX IF NOT EXISTS idx_clinical_record ON clinical_entries(tenant_id, record_id, version);
 CREATE INDEX IF NOT EXISTS idx_clinical_type ON clinical_entries(tenant_id, patient_id, entry_type, seq);
 CREATE INDEX IF NOT EXISTS idx_clinical_encounter ON clinical_entries(tenant_id, encounter_id, seq);
+CREATE INDEX IF NOT EXISTS idx_clinical_key ON clinical_entries(tenant_id, record_key, version);
 CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at);
 CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(tenant_id, channel_id, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status);

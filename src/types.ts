@@ -251,7 +251,46 @@ export interface FhirStoreDestinationConfig {
   skipOnDead?: boolean;
 }
 
-export type DestinationConfig = HttpDestinationConfig | MllpDestinationConfig | FhirStoreDestinationConfig;
+/**
+ * Write into the longitudinal clinical record.
+ *
+ * The chart is append-only, so this never overwrites: a message about a record
+ * already held either says the same thing, in which case nothing is written,
+ * or says something different, in which case it amends and the earlier version
+ * stays readable with the message that changed it recorded against it.
+ */
+export interface ClinicalDestinationConfig {
+  id?: string;
+  type: "clinical";
+  /**
+   * Where the patient identifier is in the payload, e.g.
+   * "identifier[0].value" on a Patient, "subject.identifier.value" elsewhere.
+   * A chart entry that cannot say whose it is has nowhere to go.
+   */
+  patientPath: string;
+  /**
+   * Paths whose values together identify the logical record, so a repeat or
+   * an update lands on the record it is about rather than beside it. Defaults
+   * to the patient path, which is right for a Patient and wrong for anything
+   * that repeats per patient — an Observation needs its filler order number.
+   */
+  identity?: string[];
+  /** Where an encounter identifier sits, when the payload carries one. */
+  encounterPath?: string;
+  /** Where the clinically effective time sits, when it differs from arrival. */
+  effectivePath?: string;
+  ordered?: boolean;
+  skipOnDead?: boolean;
+  maxAttempts?: number;
+  backoffBaseMs?: number;
+  backoffCapMs?: number;
+}
+
+export type DestinationConfig =
+  | HttpDestinationConfig
+  | MllpDestinationConfig
+  | FhirStoreDestinationConfig
+  | ClinicalDestinationConfig;
 
 export interface ChannelConfig {
   id: string;
@@ -317,6 +356,8 @@ export interface MessageRow {
 
 export interface DeliveryRow {
   id: string;
+  /** The custodian this delivery belongs to, so it is written into theirs. */
+  tenant_id: string;
   message_id: string;
   channel_id: string;
   destination_id: string;

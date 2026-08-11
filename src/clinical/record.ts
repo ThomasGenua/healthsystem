@@ -52,7 +52,12 @@ export type EntryType =
   | "ServiceRequest"
   | "Task";
 
-export type EntryStatus = "active" | "amended" | "entered-in-error";
+/**
+ * What a version asserted when it was written. Not "amended" — that is a fact
+ * about a later version existing, derived rather than stored, so nothing ever
+ * has to go back and change a row that a clinician wrote.
+ */
+export type EntryStatus = "active" | "entered-in-error";
 
 export interface ClinicalEntry {
   seq: number;
@@ -73,6 +78,7 @@ export interface ClinicalEntry {
   effective_at: string | null;
   supersedes: string | null;
   amendment_reason: string | null;
+  record_key: string | null;
   hash: string;
   prev_hash: string | null;
 }
@@ -90,6 +96,11 @@ export interface RecordInput {
   effectiveAt?: string;
   /** Supply to make a record's id predictable; otherwise one is generated. */
   recordId?: string;
+  /**
+   * Business key identifying the logical record across messages, so a
+   * retransmission or an update lands on the record it is about.
+   */
+  recordKey?: string;
 }
 
 /** The fields the chain commits to: everything that could be falsified. */
@@ -113,6 +124,7 @@ function digest(prev: string | null, e: Omit<ClinicalEntry, "seq" | "hash" | "pr
     e.effective_at ?? "",
     e.supersedes ?? "",
     e.amendment_reason ?? "",
+    e.record_key ?? "",
   ]) {
     h.update("|").update(part);
   }
@@ -159,7 +171,6 @@ export class ClinicalRecord {
       throw new Error("a record marked entered-in-error cannot be amended; record a new one");
     }
 
-    this.markSuperseded(current.version_id, "amended");
     return this.append({
       entryType: current.entry_type,
       patientId: current.patient_id,
@@ -170,6 +181,7 @@ export class ClinicalRecord {
       ...(by.effectiveAt ? { effectiveAt: by.effectiveAt } : {}),
       ...(current.source ? { source: current.source } : {}),
       recordId,
+      ...(current.record_key ? { recordKey: current.record_key } : {}),
       version: current.version + 1,
       status: "active",
       supersedes: current.version_id,
@@ -188,7 +200,6 @@ export class ClinicalRecord {
     const current = this.current(recordId);
     if (!current) throw new Error(`no clinical record ${recordId}`);
 
-    this.markSuperseded(current.version_id, "amended");
     return this.append({
       entryType: current.entry_type,
       patientId: current.patient_id,
@@ -198,11 +209,57 @@ export class ClinicalRecord {
       authorKind: by.authorKind,
       ...(current.source ? { source: current.source } : {}),
       recordId,
+      ...(current.record_key ? { recordKey: current.record_key } : {}),
       version: current.version + 1,
       status: "entered-in-error",
       supersedes: current.version_id,
       amendmentReason: by.reason,
     });
+  }
+
+  /**
+   * Files what an interface said, onto the record it is about.
+   *
+   * Three outcomes, and the middle one carries the weight:
+   *
+   *   unknown record  -> a first version
+   *   same content    -> nothing written
+   *   changed content -> an amendment, naming the message that changed it
+   *
+   * The no-op is not an optimisation. Interfaces retransmit — on reconnect,
+   * on replay, on a nightly resend of the day's admissions — and a chart that
+   * grew a version per retransmission would bury the two amendments that
+   * mattered under four hundred that said nothing. Compared on content rather
+   * than on arrival, the same way the FHIR facade decides whether a write
+   * changed anything.
+   *
+   * A retracted record is left alone. Something a clinician marked as entered
+   * in error must not be quietly reinstated by the next routine message from
+   * the system that produced it.
+   */
+  ingest(input: RecordInput & { recordKey: string }): { entry?: ClinicalEntry; outcome: "created" | "amended" | "unchanged" | "retracted" } {
+    const existing = this.byKey(input.recordKey);
+    if (!existing) return { entry: this.record(input), outcome: "created" };
+    if (existing.status === "entered-in-error") return { outcome: "retracted" };
+
+    if (existing.content === JSON.stringify(input.content)) return { entry: existing, outcome: "unchanged" };
+
+    return {
+      entry: this.amend(existing.record_id, input.content, {
+        authorId: input.authorId,
+        authorKind: input.authorKind,
+        ...(input.effectiveAt ? { effectiveAt: input.effectiveAt } : {}),
+        reason: input.sourceMessageId ? `updated by message ${input.sourceMessageId}` : "updated by interface",
+      }),
+      outcome: "amended",
+    };
+  }
+
+  /** The latest version of the record a business key identifies. */
+  byKey(recordKey: string): ClinicalEntry | undefined {
+    return this.db.sql
+      .prepare("SELECT * FROM clinical_entries WHERE tenant_id = ? AND record_key = ? ORDER BY version DESC LIMIT 1")
+      .get(this.db.tenantId, recordKey) as unknown as ClinicalEntry | undefined;
   }
 
   /** The latest version of a record, whatever its status. */
@@ -214,11 +271,21 @@ export class ClinicalRecord {
       .get(this.db.tenantId, recordId) as unknown as ClinicalEntry | undefined;
   }
 
-  /** Every version of a record, oldest first. The amendment history. */
-  history(recordId: string): ClinicalEntry[] {
-    return this.db.sql
+  /**
+   * Every version of a record, oldest first. The amendment history.
+   *
+   * `superseded` is computed from a later version existing, never stored. An
+   * earlier design marked the replaced row instead, which meant an amendment
+   * wrote to a version a clinician had already signed — the one thing an
+   * append-only record exists to prevent — and, because the chain commits to
+   * every field including status, broke the chart's own verification. There is
+   * now no statement anywhere in this store that updates an entry.
+   */
+  history(recordId: string): Array<ClinicalEntry & { superseded: boolean }> {
+    const rows = this.db.sql
       .prepare("SELECT * FROM clinical_entries WHERE tenant_id = ? AND record_id = ? ORDER BY version")
       .all(this.db.tenantId, recordId) as unknown as ClinicalEntry[];
+    return rows.map((r, i) => ({ ...r, superseded: i < rows.length - 1 }));
   }
 
   /**
@@ -316,22 +383,6 @@ export class ClinicalRecord {
     return row?.hash ?? null;
   }
 
-  /**
-   * Marks the version an amendment replaces.
-   *
-   * The one statement here that changes an existing row, and deliberately
-   * narrow: it moves a status from active to amended and touches nothing a
-   * clinician wrote. The chain does not commit to it for exactly that reason —
-   * the superseding version records what happened, and re-hashing history to
-   * record that it was superseded would mean every amendment rewrote the
-   * chart's past.
-   */
-  private markSuperseded(versionId: string, status: EntryStatus): void {
-    this.db.sql
-      .prepare("UPDATE clinical_entries SET status = ? WHERE tenant_id = ? AND version_id = ? AND status = 'active'")
-      .run(status, this.db.tenantId, versionId);
-  }
-
   private append(
     input: RecordInput & {
       recordId: string;
@@ -361,6 +412,7 @@ export class ClinicalRecord {
         effective_at: input.effectiveAt ?? null,
         supersedes: input.supersedes,
         amendment_reason: input.amendmentReason,
+        record_key: input.recordKey ?? null,
       };
       const prev = this.tip(input.patientId);
       const hash = digest(prev, row);
@@ -370,8 +422,8 @@ export class ClinicalRecord {
           `INSERT INTO clinical_entries
              (tenant_id, version_id, record_id, version, entry_type, patient_id, encounter_id, content,
               status, author_id, author_kind, source, source_message_id, recorded_at, effective_at,
-              supersedes, amendment_reason, hash, prev_hash)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              supersedes, amendment_reason, record_key, hash, prev_hash)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           row.tenant_id,
@@ -391,6 +443,7 @@ export class ClinicalRecord {
           row.effective_at,
           row.supersedes,
           row.amendment_reason,
+          row.record_key,
           hash,
           prev
         );

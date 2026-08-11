@@ -29,7 +29,7 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Purpose of use** on the audit trail, inside the hash chain.
 - **An append-only clinical record**, where a correction cannot destroy what it corrects.
 
-232 tests. Backend first, tests before UI.
+239 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -80,7 +80,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 232 tests
+npm test          # 239 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -317,6 +317,25 @@ An amendment writes a new version pointing at the one it supersedes; the superse
 **One table, not fifteen.** Problems, allergies, vitals, notes, encounters and consents differ in their content, not in what must be true about them — an author, a time, a status, a supersession link, a place on the chain. A table per resource type would be a chance per resource type to leave one of those out.
 
 **Charts are hash-chained per patient**, the same construction as message lineage and the access trail, and for the same reason: an amendment history that can be quietly rewritten is not a history. The chain commits to the clinical text itself, not to metadata about it — a chain over metadata alone would leave the diagnosis rewritable under an intact-looking history. Removal from the end is caught by a per-patient version counter, since linkage cannot see it.
+
+**There is no `UPDATE` anywhere in the store.** An earlier version of this marked the replaced row as amended, which meant a correction wrote to a version a clinician had already signed — the one thing an append-only record exists to prevent — and, because the chain commits to every field, broke the chart's own verification. Whether a version was superseded is derived from a later one existing, never written back.
+
+### Interfaces write to the chart
+
+A `clinical` destination files a mapped payload onto the record it is about:
+
+```json
+{ "id": "chart", "type": "clinical",
+  "patientPath": "subject.identifier.value",
+  "identity": ["subject.identifier.value", "code.coding[0].code"],
+  "effectivePath": "effectiveDateTime" }
+```
+
+Three outcomes, and the middle one carries the weight: an unknown record is a first version, **identical content writes nothing**, and changed content amends, naming the message that changed it. The no-op is not an optimisation. Interfaces resend — on reconnect, on replay from the DLQ, on a nightly repeat of the day's admissions — and a chart that grew a version per resend would bury the two amendments that mattered under four hundred that said nothing.
+
+`identity` is what stops a chart holding exactly one observation forever. With the patient as the only key every result amends the last one, which looks like working software until someone asks for a trend; a result needs its analyte, an order needs its filler number.
+
+An entry whose patient cannot be determined is **dead-lettered, not filed against a guess** — guessing is how a result reaches the wrong chart. And a record a clinician retracted is left alone by the next routine message from the system that produced it: an interface must not be able to reinstate a clinical judgement.
 
 Every version carries where it came from: author and kind, the interface message that produced it, when it was written down and when it was clinically true. A vital sign filed an hour late belongs at the time it was taken, and a result that cannot name its source message cannot be reconciled against the feed that delivered it.
 
