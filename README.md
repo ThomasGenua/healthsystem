@@ -32,8 +32,9 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Clinical documentation** where a signature fixes the text and only an addendum may follow.
 - **A unified inbox** where work cannot be closed without evidence or left belonging to nobody unseen.
 - **Closed-loop referrals**, where a deadline passes with nothing happening and the referral appears on a chase list rather than going quiet.
+- **Results whose acknowledgement cannot be inherited**, so a corrected value never arrives already signed off by somebody who read the old one.
 
-287 tests. Backend first, tests before UI.
+302 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -84,7 +85,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 287 tests
+npm test          # 302 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -416,6 +417,26 @@ Three decisions are worth stating, because each is a way a loop is quietly lost:
 - **A referral is refused at send if the receiving service's required documents are missing.** A rejection three weeks later for a missing referral form is the same delay as never sending it, arrived at more slowly.
 
 Nothing is deleted. Cancellation and decline are statuses with reasons, the full path is on `referral_events` with the actor who moved it, and a report arriving against a loop already closed is refused rather than backdated into looking like normal completion — a consultation nobody was expecting is a discrepancy worth a person's attention, and the findings themselves belong in the chart, which needs no live referral to hold them.
+
+## Orders and results
+
+Section 4 is about two silences, and they are different failures. An order placed and never resulted is the lab never reporting. A result reported and never read is the report arriving and landing on nobody. Both end with a clinician believing the question was answered, and neither raises an error.
+
+The module is built around the second, because of a specific way it goes wrong.
+
+**A correction does not inherit the acknowledgement of the value it replaced.** Laboratories correct results — a specimen is rerun, a transcription is fixed, a preliminary becomes final — and a correction can turn a value nobody needed to act on into one somebody urgently does. If acknowledgement is recorded against the order, or against a result identity that a correction reuses, the corrected value silently inherits the sign-off given to the old one. The chart then shows a potassium of 7.1 marked reviewed, and no one has ever seen it.
+
+So results are appended, never updated. A correction is a new row superseding an earlier one, exactly as the chart works, and acknowledgement lives on the row. There is no mechanism by which it could carry over, because carrying over would mean writing it onto a row nobody wrote it onto. The superseded row keeps its own acknowledgement, because that part is true — that clinician did read that value; what is false is that anyone has read this one. Signing off a superseded result is refused, so the queue cannot be cleared with a number that is no longer current.
+
+Three more decisions:
+
+- **Acknowledgement says what was done.** "Acknowledged" alone records that a screen was clicked, and the question a review asks is what happened next. "Patient telephoned, attending this afternoon" is an answer; a timestamp is not.
+- **Unsolicited results are kept, and matched by a person.** A result from another facility, or against an order placed on paper, is a real result about a real patient — refusing it would lose it, so it lands in `unmatched()`. Matching is an action somebody takes rather than an inference from code and date: two potassiums on one morning are not interchangeable, and a wrong automatic match reads afterwards as a result filed correctly.
+- **Responsibility is a column, not an inference from who ordered.** Residents rotate and locums leave, so a result routed to whoever typed the order three weeks ago goes to an inbox nobody opens. `handover` moves it with a reason and refuses to leave it belonging to nobody.
+
+Queues are ordered by how abnormal the value is, then by age, and the acknowledgement window comes from the same place: an hour for a panic value, a day for an abnormal one, three days for a normal one. Normal results are on the list too — "it was normal" is known after reading it, not before, and the results most often missed are the ones assumed unremarkable.
+
+`awaitingResult()` covers the other silence. A preliminary result does not answer an order: a blood culture reporting "gram-positive cocci" at 24 hours and never speciating is precisely the wait worth chasing, and an earlier version of that query dropped it from the list. Whether an order has been answered is now decided in exactly one place, and the query reads that decision rather than making it a second time.
 
 ## Tenancy
 

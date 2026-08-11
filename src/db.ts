@@ -45,6 +45,9 @@ export const TENANT_SCOPED_TABLES = [
   "task_events",
   "referrals",
   "referral_events",
+  "orders",
+  "order_results",
+  "order_events",
 ] as const;
 
 /**
@@ -431,6 +434,100 @@ CREATE TABLE IF NOT EXISTS referral_events (
   detail TEXT
 );
 
+-- Orders placed, and the results that answer them.
+--
+-- An order that was never resulted and a result nobody acknowledged are the
+-- two silences section 4 is about, and they are separate rows because they are
+-- separate failures: the first is the lab never reporting, the second is the
+-- report arriving and being read by nobody.
+CREATE TABLE IF NOT EXISTS orders (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  encounter_id TEXT,
+  -- lab | imaging | procedure | referral | other
+  category TEXT NOT NULL,
+  code TEXT NOT NULL,
+  code_system TEXT,
+  display TEXT NOT NULL,
+  -- draft | placed | in-progress | completed | cancelled
+  status TEXT NOT NULL DEFAULT 'draft',
+  priority TEXT NOT NULL DEFAULT 'routine',
+  -- Why it was ordered. An order with no indication cannot be interpreted by
+  -- whoever performs it, and cannot be judged appropriate afterwards.
+  indication TEXT NOT NULL,
+  ordered_by TEXT NOT NULL,
+  ordered_at TEXT,
+  -- Who reads the result. Not necessarily who ordered it: residents rotate,
+  -- and a result routed to somebody who left the service is a result nobody
+  -- sees. Nullable only before the order is placed.
+  responsible_id TEXT,
+  -- When a result is expected. Exceeding it is what "never came back" means.
+  expected_by TEXT,
+  correlation_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  closed_at TEXT,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Results, appended and never updated.
+--
+-- A correction is a new row superseding an earlier one, exactly as the chart
+-- works, and this is what makes acknowledgement safe. Acknowledgement is
+-- recorded on the row, so it belongs to one reported value and cannot be
+-- inherited by a value that replaces it. A potassium of 7.1 correcting a 4.1
+-- somebody already signed off arrives unacknowledged, which is the only
+-- honest state for it to arrive in.
+CREATE TABLE IF NOT EXISTS order_results (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  -- Null for an unsolicited result: one from another facility, or against an
+  -- order placed on paper. Common enough that refusing them would lose real
+  -- results, so they are kept and queued for matching instead.
+  order_id TEXT,
+  patient_id TEXT NOT NULL,
+  code TEXT NOT NULL,
+  code_system TEXT,
+  display TEXT NOT NULL,
+  value TEXT NOT NULL,
+  unit TEXT,
+  reference_range TEXT,
+  -- normal | low | high | critical-low | critical-high | abnormal
+  abnormal_flag TEXT NOT NULL DEFAULT 'normal',
+  -- preliminary | final | corrected | cancelled
+  result_status TEXT NOT NULL DEFAULT 'final',
+  -- The result row this one replaces, if any.
+  supersedes TEXT,
+  observed_at TEXT,
+  reported_at TEXT NOT NULL,
+  reported_by TEXT NOT NULL,
+  source_message_id TEXT,
+  -- Who read it, when, and what they did about it. Null until a person says
+  -- so; nothing sets these on anybody's behalf.
+  acknowledged_by TEXT,
+  acknowledged_at TEXT,
+  acknowledgement_action TEXT,
+  -- When acknowledgement is owed by, derived from how abnormal it is. A
+  -- critical result is on a different clock from a normal one.
+  ack_due_by TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS order_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  order_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  event TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_kind TEXT NOT NULL,
+  from_status TEXT,
+  to_status TEXT,
+  detail TEXT
+);
+
 -- Lookup index over the charts.
 --
 -- Derived, not authoritative. Every column here is recoverable from the
@@ -511,6 +608,14 @@ CREATE INDEX IF NOT EXISTS idx_referrals_open ON referrals(tenant_id, status, ex
 CREATE INDEX IF NOT EXISTS idx_referrals_patient ON referrals(tenant_id, patient_id, status);
 CREATE INDEX IF NOT EXISTS idx_referrals_corr ON referrals(tenant_id, correlation_id);
 CREATE INDEX IF NOT EXISTS idx_referral_events ON referral_events(tenant_id, referral_id, seq);
+CREATE INDEX IF NOT EXISTS idx_orders_open ON orders(tenant_id, status, expected_by);
+CREATE INDEX IF NOT EXISTS idx_orders_patient ON orders(tenant_id, patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_orders_responsible ON orders(tenant_id, responsible_id, status);
+CREATE INDEX IF NOT EXISTS idx_results_order ON order_results(tenant_id, order_id);
+CREATE INDEX IF NOT EXISTS idx_results_patient ON order_results(tenant_id, patient_id, reported_at);
+CREATE INDEX IF NOT EXISTS idx_results_unack ON order_results(tenant_id, acknowledged_at, ack_due_by);
+CREATE INDEX IF NOT EXISTS idx_results_supersedes ON order_results(tenant_id, supersedes);
+CREATE INDEX IF NOT EXISTS idx_order_events ON order_events(tenant_id, order_id, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at);
 CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(tenant_id, channel_id, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status);
