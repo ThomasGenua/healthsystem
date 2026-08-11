@@ -346,6 +346,8 @@ export interface SubscriptionRow {
 
 export interface ApiKeyRow {
   id: string;
+  /** The custodian this credential belongs to. */
+  tenant_id: string;
   name: string;
   /** SHA-256 of the key. The key itself is never stored. */
   hash: string;

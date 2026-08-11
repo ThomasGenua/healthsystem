@@ -13,6 +13,7 @@
  */
 import type { IncomingHttpHeaders } from "node:http";
 import { ALL_SCOPES, requiredScope, type Scope } from "./scopes.ts";
+import { DEFAULT_TENANT } from "../db.ts";
 import { looksLikeApiKey, type ApiKeyStore } from "./keys.ts";
 import { looksLikeJwt, type JwtVerifier } from "./jwt.ts";
 
@@ -20,6 +21,23 @@ export interface Principal {
   kind: "apikey" | "oauth" | "anonymous";
   id: string;
   scopes: Set<Scope>;
+  /**
+   * The custodian this caller acts within. Every request is confined to it —
+   * a credential is issued by a tenant and cannot reach outside the one that
+   * issued it, which is what makes many organizations on one platform safe
+   * rather than merely tidy.
+   */
+  tenantId: string;
+  /**
+   * Why the caller is reaching for the record, as a purpose-of-use code.
+   *
+   * Required by section 17 and recorded on every audit row, because "who
+   * looked" without "why" cannot distinguish treatment from curiosity — which
+   * is the distinction a privacy office actually investigates. Taken from a
+   * header or a token claim; absent means the caller declined to say, which is
+   * itself worth recording rather than guessing at.
+   */
+  purposeOfUse?: string;
 }
 
 export type AuthOutcome =
@@ -32,11 +50,29 @@ export type AuthOutcome =
    */
   | { ok: false; status: 401 | 403; error: string; principal?: Principal };
 
-const ANONYMOUS: Principal = { kind: "anonymous", id: "anonymous", scopes: new Set(ALL_SCOPES) };
+const ANONYMOUS: Principal = {
+  kind: "anonymous",
+  id: "anonymous",
+  scopes: new Set(ALL_SCOPES),
+  tenantId: DEFAULT_TENANT,
+};
+
+/**
+ * Purpose-of-use codes, from HL7 v3 ActReason, which is what FHIR AuditEvent
+ * expects. Deliberately a closed set: a free-text purpose is a box people type
+ * "work" into, and it cannot be reported on.
+ */
+export const PURPOSES = ["TREAT", "HPAYMT", "HOPERAT", "HRESCH", "PATRQT", "PUBHLTH", "HLEGAL"] as const;
 
 export interface AuthGateOptions {
   keys?: ApiKeyStore;
   jwt?: JwtVerifier;
+  /**
+   * Looks a tenant up, so the gate can refuse a credential belonging to one
+   * that has been suspended. Section 13 requires suspending a tenant without
+   * touching anyone else; that is worth nothing if its keys keep working.
+   */
+  tenants?: { getTenant(id: string): { status: string } | undefined };
 }
 
 export class AuthGate {
@@ -73,24 +109,55 @@ export class AuthGate {
       return { ok: false, status: 401, error: err instanceof Error ? err.message : "invalid credentials" };
     }
 
+    // A suspended custodian's credentials stop working immediately, before
+    // scopes are even consulted: suspension is about the organization, not
+    // about what any one key was allowed to do.
+    const tenant = this.opts.tenants?.getTenant(principal.tenantId);
+    if (this.opts.tenants && principal.kind !== "anonymous") {
+      if (!tenant) {
+        return { ok: false, status: 403, error: "credential belongs to no known tenant", principal };
+      }
+      if (tenant.status !== "active") {
+        return { ok: false, status: 403, error: `tenant '${principal.tenantId}' is ${tenant.status}`, principal };
+      }
+    }
+
     if (!principal.scopes.has(need)) {
       return { ok: false, status: 403, error: `scope '${need}' required`, principal };
     }
-    return { ok: true, principal };
+    return { ok: true, principal: { ...principal, purposeOfUse: purposeOfUse(headers) } };
   }
 
   private async resolve(token: string): Promise<Principal | null> {
     if (looksLikeApiKey(token)) {
       if (!this.opts.keys) return null;
       const hit = this.opts.keys.verify(token);
-      return hit ? { kind: "apikey", id: hit.row.id, scopes: hit.scopes } : null;
+      // The tenant comes from the stored row, never from the request. A caller
+      // naming their own tenant would be naming their own authorisation.
+      return hit
+        ? { kind: "apikey", id: hit.row.id, scopes: hit.scopes, tenantId: hit.row.tenant_id ?? DEFAULT_TENANT }
+        : null;
     }
     if (this.opts.jwt && looksLikeJwt(token)) {
       const v = await this.opts.jwt.verify(token);
-      return { kind: "oauth", id: v.subject, scopes: v.scopes };
+      return { kind: "oauth", id: v.subject, scopes: v.scopes, tenantId: v.tenantId ?? DEFAULT_TENANT };
     }
     return null;
   }
+}
+
+/**
+ * The declared purpose of use, if the caller gave one this engine recognises.
+ *
+ * An unrecognised value is dropped rather than recorded, so the audit trail
+ * carries codes a report can group by instead of whatever a client happened to
+ * send. Declining to say is recorded as declining to say.
+ */
+function purposeOfUse(headers: IncomingHttpHeaders): string | undefined {
+  const raw = headers["x-purpose-of-use"];
+  if (typeof raw !== "string") return undefined;
+  const code = raw.trim().toUpperCase();
+  return (PURPOSES as readonly string[]).includes(code) ? code : undefined;
 }
 
 function bearerToken(headers: IncomingHttpHeaders): string | null {

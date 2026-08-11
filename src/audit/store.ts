@@ -52,6 +52,13 @@ export interface AuditEntry {
   count?: number;
   sourceIp?: string;
   detail?: string;
+  /**
+   * Why the record was reached, as an HL7 ActReason code. Section 17 requires
+   * purpose-of-use to be enforced and section 18 requires it on the trail:
+   * "who looked at this chart" is a much weaker question than "who looked at
+   * this chart, and said they were treating the patient".
+   */
+  purposeOfUse?: string;
 }
 
 export interface AuditRow {
@@ -70,6 +77,7 @@ export interface AuditRow {
   count: number | null;
   source_ip: string | null;
   detail: string | null;
+  purpose_of_use: string | null;
   hash: string;
   prev_hash: string | null;
 }
@@ -113,6 +121,10 @@ function digest(prev: string | null, e: AuditEntry, id: string, recordedAt: stri
     .update(e.patient ?? "")
     .update("|")
     .update(e.count === undefined ? "" : String(e.count))
+    .update("|")
+    // Covered by the chain like everything else that could be falsified. A
+    // purpose that could be edited after the fact is worse than none.
+    .update(e.purposeOfUse ?? "")
     .digest("hex");
 }
 
@@ -145,8 +157,8 @@ export class AuditStore {
       .prepare(
         `INSERT INTO audit_events
            (tenant_id, id, recorded_at, action, outcome, principal_id, principal_kind, method, path,
-            resource_type, resource_id, patient, count, source_ip, detail, hash, prev_hash)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            resource_type, resource_id, patient, count, source_ip, detail, purpose_of_use, hash, prev_hash)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         this.db.tenantId,
@@ -164,6 +176,7 @@ export class AuditStore {
         entry.count ?? null,
         entry.sourceIp ?? null,
         entry.detail ?? null,
+        entry.purposeOfUse ?? null,
         hash,
         prev
       );
@@ -263,6 +276,7 @@ export class AuditStore {
           resourceId: r.resource_id ?? undefined,
           patient: r.patient ?? undefined,
           count: r.count ?? undefined,
+          purposeOfUse: r.purpose_of_use ?? undefined,
         },
         r.id,
         r.recorded_at

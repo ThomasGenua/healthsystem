@@ -54,6 +54,16 @@ export interface ConnectorFactories {
   sftp?: (opts: SftpConnectOptions) => Promise<SftpClient>;
 }
 
+/** One custodian's view of the engine's stores. See Engine.forTenant. */
+export interface TenantView {
+  tenantId: string;
+  db: Db;
+  fhir: FhirStore;
+  subs: SubscriptionManager;
+  keys: ApiKeyStore;
+  audit: AuditStore;
+}
+
 export interface EngineOptions {
   dbPath: string;
   tickMs?: number;
@@ -89,6 +99,8 @@ export class Engine {
   private channels = new Map<string, RuntimeChannel>();
   private mapperCtx: MapperContext;
   private connectors: Required<ConnectorFactories>;
+  private validation: ConstructorParameters<typeof FhirStore>[1];
+  private views = new Map<string, TenantView>();
   private lockTimer: NodeJS.Timeout | null = null;
   private lockStaleMs: number;
   private lockHeartbeatMs: number;
@@ -101,12 +113,13 @@ export class Engine {
     // they exist.
     this.terminology = new TerminologyStore(this.db);
     this.conformance = new ConformanceRegistry();
-    this.fhir = new FhirStore(this.db, {
+    this.validation = {
       conformance: this.conformance,
       terminology: this.terminology,
       defaultPack: opts.validatePack,
       defaultMode: opts.validateMode,
-    });
+    };
+    this.fhir = new FhirStore(this.db, this.validation);
     this.worker = new DeliveryWorker(this.db, opts.tickMs ?? 250, 25, this.fhir);
     this.subs = new SubscriptionManager(this.db, this.worker);
     this.keys = new ApiKeyStore(this.db);
@@ -134,6 +147,40 @@ export class Engine {
         return args.result === "display" ? (m.display ?? "") : m.code;
       },
     };
+  }
+
+  /**
+   * The engine as one custodian sees it.
+   *
+   * Every store is rebuilt against a tenant-bound database handle and wired
+   * exactly as the default one is — a per-tenant FHIR facade whose changes
+   * notify that tenant's subscriptions, and no one else's. Built once and
+   * cached, because the subscription wiring is stateful and reconstructing it
+   * per request would drop listeners.
+   *
+   * The delivery worker and the database connection are shared, which is what
+   * makes this one node serving many organizations rather than many nodes:
+   * isolation is in the data each view can address, not in duplicated
+   * machinery.
+   */
+  forTenant(tenantId: string): TenantView {
+    const existing = this.views.get(tenantId);
+    if (existing) return existing;
+
+    const db = this.db.forTenant(tenantId);
+    const fhir = new FhirStore(db, this.validation);
+    const subs = new SubscriptionManager(db, this.worker);
+    fhir.onChange((result, resource) => subs.notify(result, resource));
+    const view: TenantView = {
+      tenantId,
+      db,
+      fhir,
+      subs,
+      keys: new ApiKeyStore(db),
+      audit: new AuditStore(db),
+    };
+    this.views.set(tenantId, view);
+    return view;
   }
 
   registerMapping(doc: MappingDoc): void {

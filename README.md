@@ -25,9 +25,10 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Subscriptions behind `admin`**, so a push-only feed credential cannot arrange to receive the clinical record.
 - **Character sets honoured on the wire**, so an accented or syllabic name is not silently replaced with question marks.
 - **Silent-feed detection**, so an interface that stopped sending is not mistaken for a quiet night.
-- **Structural tenant isolation** at the persistence layer, checked by reading the source rather than by trusting it.
+- **Multi-tenant end to end**: structural isolation in storage, checked by reading the source, and every request confined to its credential's custodian.
+- **Purpose of use** on the audit trail, inside the hash chain.
 
-213 tests. Backend first, tests before UI.
+221 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -78,7 +79,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 213 tests
+npm test          # 221 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -319,6 +320,20 @@ Three things this changed that were not obvious:
 - **The ordering key now leads with the tenant.** It was `channel:destination`, and channel ids are only unique within a tenant — so two custodians who both named a channel `adt` would have shared one ordered queue, and a message stuck at one organization's head would have blocked the other's feed entirely. Strict ordering is a per-destination promise, not a promise to serialise the province.
 - **A second custodian could not create a channel a first had named.** With a platform-wide key on `channels.id`, the second `upsertChannel("adt")` hit the conflict and did nothing — silently. Not a leak, but a worse shape of failure: a feed that reports success and does not exist. Found by the isolation tests, not by review.
 - **The audit truncation check no longer uses SQLite's `AUTOINCREMENT` mark.** That mark counts rows across the whole table, which was exact with one tenant and meaningless with two — every tenant would have reported most of its trail missing. Each tenant now carries its own issued counter, backfilled on upgrade from the old mark so nothing is lost in the transition.
+
+### Requests are confined to the credential's tenant
+
+A key is issued by a custodian and carries that custodian on the stored row. The gate resolves it there and nowhere else — a caller who could name their own tenant on the request would be naming their own authorisation — and every store a route touches comes from that tenant's view of the engine. Scope says what a caller may do; the tenant says whose records they may do it to, so an `admin` key in one organization cannot revoke a key, read a message or replay a delivery in another.
+
+An OIDC token carries its tenant in a `tenant` (or `portage_tenant`) claim the identity provider controls. Without one the caller lands in the default tenant rather than in whichever one they would have preferred.
+
+**Suspension takes effect immediately.** `setTenantStatus(id, "suspended")` stops that custodian's credentials at the gate, before scopes are consulted, and touches nobody else — suspending an organization whose keys keep working until the next restart is not suspending it.
+
+### Purpose of use
+
+Every request may declare why it is reaching for the record, as an HL7 ActReason code in `X-Purpose-Of-Use`: `TREAT`, `HPAYMT`, `HOPERAT`, `HRESCH`, `PATRQT`, `PUBHLTH`, `HLEGAL`. It is recorded on the audit row and **covered by the hash chain**, so it cannot be revised afterwards into something more defensible.
+
+A closed set on purpose. Free text is a box people type "work" into, and it cannot be reported on. An unrecognised value is dropped rather than stored as typed, and declining to say is recorded as declining to say — "who looked at this chart" is a much weaker question than "who looked, and said they were treating the patient".
 
 Existing databases migrate in place; see [Upgrading](#upgrading). Rows written before tenancy land in the `default` tenant, and a deployment that never configures a second one behaves exactly as before.
 

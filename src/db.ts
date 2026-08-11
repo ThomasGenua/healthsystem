@@ -253,6 +253,9 @@ CREATE TABLE IF NOT EXISTS audit_events (
   count INTEGER,
   source_ip TEXT,
   detail TEXT,
+  -- HL7 ActReason code the caller declared. NULL means they declined to say,
+  -- which is recorded as such rather than assumed to be treatment.
+  purpose_of_use TEXT,
   hash TEXT NOT NULL,
   prev_hash TEXT
 );
@@ -330,6 +333,7 @@ const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
   { table: "messages", column: "raw_digest", type: "TEXT" },
   { table: "messages", column: "redacted_at", type: "TEXT" },
   { table: "deliveries", column: "redacted_at", type: "TEXT" },
+  { table: "audit_events", column: "purpose_of_use", type: "TEXT" },
   // Tenancy. NOT NULL with a default, so existing rows land in the default
   // tenant rather than becoming unreachable, and a deployment that never
   // configures a second tenant is unaffected.

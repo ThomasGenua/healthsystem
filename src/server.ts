@@ -53,7 +53,11 @@ function buildAuthGate(engine: Engine): AuthGate {
   const unknown = [...modes].filter((m) => m !== "apikey" && m !== "oauth");
   if (unknown.length) throw new Error(`unknown PORTAGE_AUTH_MODE value(s): ${unknown.join(", ")}`);
 
-  const gate: { keys?: Engine["keys"]; jwt?: JwtVerifier } = {};
+  // The tenant directory, so a suspended custodian's credentials stop working
+  // at once rather than at the next restart.
+  const gate: { keys?: Engine["keys"]; jwt?: JwtVerifier; tenants?: { getTenant(id: string): { status: string } | undefined } } = {
+    tenants: engine.db,
+  };
 
   if (modes.has("apikey")) {
     gate.keys = engine.keys;

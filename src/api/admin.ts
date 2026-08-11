@@ -46,6 +46,7 @@ import { createServer as createSecureServer } from "node:https";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Engine } from "../core/engine.ts";
+import { DEFAULT_TENANT } from "../db.ts";
 import { checkCapability, toOperationOutcome, validateResource } from "../conformance/validator.ts";
 import { applyMapping } from "../transform/mapper.ts";
 import { takeBackup } from "../core/backup.ts";
@@ -134,14 +135,26 @@ async function route(
   // forgotten when a route is added.
   const auth = await gate.check(method, path, req.headers);
 
+  // Every store this request touches comes from the caller's tenant, resolved
+  // from the credential and never from anything on the request itself — a
+  // caller who could name their tenant would be naming their own
+  // authorisation. `db`, `fhir`, `subs` and `keys` below are the tenant-bound
+  // ones; the engine-wide originals are deliberately not in scope in a route.
+  const principalTenant = auth.ok ? auth.principal.tenantId : (auth.principal?.tenantId ?? DEFAULT_TENANT);
+  const tenant = engine.forTenant(principalTenant);
+  const { db, fhir, subs, keys } = tenant;
+
   /** Records an access against the audit trail. */
   const audit = (entry: Omit<AuditEntry, "principalId" | "principalKind" | "method" | "path">): void => {
-    engine.audit.record({
+    tenant.audit.record({
       principalId: auth.ok ? auth.principal.id : (auth.principal?.id ?? "unauthenticated"),
       principalKind: auth.ok ? auth.principal.kind : (auth.principal?.kind ?? "unknown"),
       method,
       path,
       sourceIp: req.socket.remoteAddress ?? undefined,
+      // Why, not just who. A trail that cannot separate treatment from
+      // curiosity cannot answer the question a privacy office actually asks.
+      ...(auth.ok && auth.principal.purposeOfUse ? { purposeOfUse: auth.principal.purposeOfUse } : {}),
       ...entry,
     });
   };
@@ -162,7 +175,7 @@ async function route(
     // One row per episode, on the request that crosses the threshold, so the
     // trail records that a flood happened without being the flood.
     if (limit.firstRefusal) {
-      engine.audit.record({
+      tenant.audit.record({
         action: verbToAction(method),
         outcome: 8,
         principalId: auth.ok ? auth.principal.id : "unauthenticated",
@@ -196,7 +209,7 @@ async function route(
   }
 
   if (method === "GET" && path === "/api/health") {
-    const signals = engine.db.healthSignals();
+    const signals = db.healthSignals();
     const stalledAfter = num(url.searchParams.get("stalled_after_sec")) ?? 3600;
     // A stalled channel is one holding work that has sat longer than the
     // threshold. Reported rather than merely counted, because "which feed"
@@ -211,7 +224,7 @@ async function route(
       // backlog and no dead letters, so without it here a stopped interface
       // reports a clean bill of health for as long as it stays stopped.
       degraded: stalled.length > 0 || signals.deadLetters > 0 || signals.silentChannels.length > 0,
-      stats: engine.db.stats(),
+      stats: db.stats(),
       signals: { ...signals, stalledChannels: stalled, stalledAfterSec: stalledAfter },
     });
   }
@@ -219,8 +232,8 @@ async function route(
   if (method === "GET" && path === "/metrics") {
     // Prometheus text exposition. Public alongside /api/health, and carrying
     // no patient data: counters, ages and channel ids only.
-    const signals = engine.db.healthSignals();
-    const stats = engine.db.stats() as {
+    const signals = db.healthSignals();
+    const stats = db.stats() as {
       channels: number;
       messages: Record<string, number>;
       deliveries: Record<string, number>;
@@ -274,7 +287,7 @@ async function route(
       "gauge",
       engine
         .listChannels()
-        .map((c) => [c.id, engine.db.lastMessageAgeSec(c.id)] as const)
+        .map((c) => [c.id, db.lastMessageAgeSec(c.id)] as const)
         .filter((e): e is readonly [string, number] => e[1] !== null)
         .map(([id, age]) => [`{channel="${id.replace(/"/g, "")}"}`, age] as [string, number])
     );
@@ -298,7 +311,7 @@ async function route(
     // worst exactly where the log is largest. The length is the signal; the
     // walk belongs on /api/chain/verify, where an operator asks for it.
     metric("portage_audit_events_total", "Entries on the access audit chain.", "counter", [
-      ["", engine.audit.count()],
+      ["", tenant.audit.count()],
     ]);
     metric(
       "portage_chain_length",
@@ -306,7 +319,7 @@ async function route(
       "counter",
       engine
         .listChannels()
-        .map((c) => [`{channel="${c.id.replace(/"/g, "")}"}`, engine.db.countMessages(c.id)] as [string, number])
+        .map((c) => [`{channel="${c.id.replace(/"/g, "")}"}`, db.countMessages(c.id)] as [string, number])
     );
 
     const body = lines.join("\n") + "\n";
@@ -338,7 +351,7 @@ async function route(
   }
 
   if (path === "/api/messages" && method === "GET") {
-    const rows = engine.db.listMessages({
+    const rows = db.listMessages({
       channelId: url.searchParams.get("channel_id") ?? undefined,
       status: url.searchParams.get("status") ?? undefined,
       limit: num(url.searchParams.get("limit")),
@@ -351,18 +364,18 @@ async function route(
 
   m = /^\/api\/messages\/([0-9a-f-]+)$/.exec(path);
   if (m && method === "GET") {
-    const msg = engine.db.getMessage(m[1]);
+    const msg = db.getMessage(m[1]);
     if (!msg) return send(res, 404, { error: "not found" });
     audit({ action: "R", resourceType: "Message", resourceId: msg.id, count: 1 });
     return send(res, 200, {
       ...msg,
-      steps: engine.db.getSteps(m[1]),
-      deliveries: engine.db.deliveriesForMessage(m[1]),
+      steps: db.getSteps(m[1]),
+      deliveries: db.deliveriesForMessage(m[1]),
     });
   }
 
   if (path === "/api/deliveries" && method === "GET") {
-    const rows = engine.db.listDeliveries({
+    const rows = db.listDeliveries({
       channelId: url.searchParams.get("channel_id") ?? undefined,
       state: url.searchParams.get("state") ?? undefined,
       limit: num(url.searchParams.get("limit")),
@@ -375,17 +388,17 @@ async function route(
     // Replay says why it refused — "cannot replay in current state" is not
     // actionable when the real reason is that retention took the payload.
     if (m[2] === "replay") {
-      const r = engine.db.replayDelivery(m[1]);
+      const r = db.replayDelivery(m[1]);
       return r.ok ? send(res, 200, { ok: true }) : send(res, 409, { error: r.reason });
     }
-    const ok = engine.db.discardDelivery(m[1]);
+    const ok = db.discardDelivery(m[1]);
     return send(res, ok ? 200 : 409, ok ? { ok: true } : { error: "cannot discard in current state" });
   }
 
   if (path === "/api/chain/verify" && method === "GET") {
     const channelId = url.searchParams.get("channel_id");
     if (!channelId) return send(res, 400, { error: "channel_id required" });
-    return send(res, 200, engine.db.verifyChain(channelId));
+    return send(res, 200, db.verifyChain(channelId));
   }
 
   if (path === "/api/mappings" && method === "GET") {
@@ -420,7 +433,7 @@ async function route(
     const bucket = url.searchParams.get("bucket") === "day" ? "day" : "hour";
     return send(res, 200, {
       bucket,
-      ...engine.db.history(num(url.searchParams.get("hours")) ?? 24, bucket),
+      ...db.history(num(url.searchParams.get("hours")) ?? 24, bucket),
     });
   }
 
@@ -428,7 +441,7 @@ async function route(
     const dir = process.env.PORTAGE_BACKUP_DIR ?? join(process.cwd(), "backups");
     const keep = Number(process.env.PORTAGE_BACKUP_KEEP ?? "7");
     try {
-      const result = await takeBackup(engine.db, { dir, keep: Number.isInteger(keep) && keep > 0 ? keep : undefined });
+      const result = await takeBackup(db, { dir, keep: Number.isInteger(keep) && keep > 0 ? keep : undefined });
       audit({
         action: "E",
         resourceType: "Backup",
@@ -458,7 +471,7 @@ async function route(
   }
 
   if (path === "/api/audit" && method === "GET") {
-    const rows = engine.audit.list({
+    const rows = tenant.audit.list({
       principal: url.searchParams.get("principal") ?? undefined,
       patient: url.searchParams.get("patient") ?? undefined,
       resourceType: url.searchParams.get("resource_type") ?? undefined,
@@ -469,10 +482,10 @@ async function route(
     return send(res, 200, rows);
   }
   if (path === "/api/audit/verify" && method === "GET") {
-    return send(res, 200, engine.audit.verifyChain());
+    return send(res, 200, tenant.audit.verifyChain());
   }
   if (path === "/fhir/AuditEvent" && method === "GET") {
-    const rows = engine.audit.list({
+    const rows = tenant.audit.list({
       patient: url.searchParams.get("patient") ?? undefined,
       since: url.searchParams.get("date") ?? undefined,
       limit: num(url.searchParams.get("_count")),
@@ -483,20 +496,20 @@ async function route(
       total: rows.length,
       entry: rows.map((r) => ({
         fullUrl: `${baseUrl(req)}/fhir/AuditEvent/${r.id}`,
-        resource: engine.audit.toAuditEvent(r, baseUrl(req)),
+        resource: tenant.audit.toAuditEvent(r, baseUrl(req)),
       })),
     });
   }
 
   if (path === "/api/keys" && method === "GET") {
-    return send(res, 200, engine.keys.list());
+    return send(res, 200, keys.list());
   }
   if (path === "/api/keys" && method === "POST") {
     const body = JSON.parse(await readBody(req)) as { name?: string; scopes?: string[] };
     if (!body.name) return send(res, 400, { error: "name required" });
     try {
       // The plaintext key appears in this response and nowhere else, ever.
-      const issued = engine.keys.issue(body.name, body.scopes);
+      const issued = keys.issue(body.name, body.scopes);
       audit({ action: "C", resourceType: "ApiKey", resourceId: issued.id, detail: `scopes: ${issued.scopes.join(" ")}` });
       return send(res, 201, issued);
     } catch (err) {
@@ -505,7 +518,7 @@ async function route(
   }
   m = /^\/api\/keys\/([0-9a-f-]+)$/.exec(path);
   if (m && method === "DELETE") {
-    const revoked = engine.keys.revoke(m[1]);
+    const revoked = keys.revoke(m[1]);
     audit({ action: "D", resourceType: "ApiKey", resourceId: m[1], outcome: revoked ? 0 : 4 });
     return revoked ? send(res, 200, { ok: true }) : send(res, 404, { error: "unknown or already revoked" });
   }
@@ -548,7 +561,7 @@ async function route(
   if (method === "GET" && path === "/api/conformance/capability") {
     const pack = engine.conformance.get(url.searchParams.get("pack") ?? "");
     if (!pack) return send(res, 404, { error: "unknown pack" });
-    return send(res, 200, checkCapability(pack, engine.fhir.capability(baseUrl(req), VERSION)));
+    return send(res, 200, checkCapability(pack, fhir.capability(baseUrl(req), VERSION)));
   }
 
   if (method === "GET" && path === "/fhir/CodeSystem/$lookup") {
@@ -599,17 +612,17 @@ async function route(
   }
 
   if (path === "/fhir/Subscription" && method === "GET") {
-    const rows = engine.subs.list();
+    const rows = subs.list();
     return send(res, 200, {
       resourceType: "Bundle",
       type: "searchset",
       total: rows.length,
-      entry: rows.map((r) => ({ fullUrl: `${baseUrl(req)}/fhir/Subscription/${r.id}`, resource: engine.subs.toResource(r) })),
+      entry: rows.map((r) => ({ fullUrl: `${baseUrl(req)}/fhir/Subscription/${r.id}`, resource: subs.toResource(r) })),
     });
   }
   if (path === "/fhir/Subscription" && method === "POST") {
     try {
-      const row = engine.subs.create(JSON.parse(await readBody(req)) as Record<string, unknown>);
+      const row = subs.create(JSON.parse(await readBody(req)) as Record<string, unknown>);
       // A subscription is a standing disclosure: every record matching its
       // criteria, sent to that endpoint, indefinitely. That is a larger act
       // than any single read on this trail, and until now it was the only one
@@ -621,7 +634,7 @@ async function route(
         resourceId: row.id,
         detail: `rest-hook to ${row.endpoint} on criteria ${row.criteria}`,
       });
-      return send(res, 201, engine.subs.toResource(row));
+      return send(res, 201, subs.toResource(row));
     } catch (err) {
       audit({
         action: "C",
@@ -637,21 +650,21 @@ async function route(
   }
   m = /^\/fhir\/Subscription\/([A-Za-z0-9.-]{1,64})$/.exec(path);
   if (m && method === "GET") {
-    const row = engine.subs.get(m[1]);
+    const row = subs.get(m[1]);
     if (!row) {
       return send(res, 404, {
         resourceType: "OperationOutcome",
         issue: [{ severity: "error", code: "not-found", diagnostics: `Subscription/${m[1]} is not stored` }],
       });
     }
-    return send(res, 200, engine.subs.toResource(row));
+    return send(res, 200, subs.toResource(row));
   }
   if (m && method === "DELETE") {
     // Recorded too. Ending a disclosure is as much a part of the account of
     // where patient data went as starting one, and a trail that only shows
     // live subscriptions cannot answer what was running last month.
-    const existing = engine.subs.get(m[1]);
-    const removed = engine.subs.remove(m[1]);
+    const existing = subs.get(m[1]);
+    const removed = subs.remove(m[1]);
     audit({
       action: "D",
       resourceType: "Subscription",
@@ -684,14 +697,14 @@ async function route(
   }
 
   if (path === "/fhir/metadata" && method === "GET") {
-    return send(res, 200, engine.fhir.capability(baseUrl(req), VERSION));
+    return send(res, 200, fhir.capability(baseUrl(req), VERSION));
   }
 
   m = /^\/fhir\/([A-Z][A-Za-z]+)$/.exec(path);
   if (m && method === "GET") {
     const type = m[1];
     const identifier = url.searchParams.get("identifier") ?? undefined;
-    const result = engine.fhir.search(type, { identifier, count: num(url.searchParams.get("_count")) });
+    const result = fhir.search(type, { identifier, count: num(url.searchParams.get("_count")) });
     audit({ action: "R", resourceType: type, patient: identifier, count: result.total });
     return send(res, 200, {
       resourceType: "Bundle",
@@ -706,7 +719,7 @@ async function route(
 
   m = /^\/fhir\/([A-Z][A-Za-z]+)\/([A-Za-z0-9.-]{1,64})$/.exec(path);
   if (m && method === "GET") {
-    const resource = engine.fhir.get(m[1], m[2]);
+    const resource = fhir.get(m[1], m[2]);
     if (!resource) {
       // A miss still says someone went looking for this record.
       audit({ action: "R", resourceType: m[1], resourceId: m[2], outcome: 4, detail: "not found" });
