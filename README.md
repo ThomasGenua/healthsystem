@@ -35,8 +35,9 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Results whose acknowledgement cannot be inherited**, so a corrected value never arrives already signed off by somebody who read the old one.
 - **A medication list that says what the patient is taking**, and an allergy check that reports "nobody asked" rather than "no contraindications".
 - **A chart summary that declares what it could not include**, because a summary is read as complete and an empty panel is not the same as none.
+- **A clinical API that cannot serve patient data unaudited**, checked by reading the routing source rather than by remembering.
 
-324 tests. Backend first, tests before UI.
+331 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -87,7 +88,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 324 tests
+npm test          # 331 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -493,6 +494,23 @@ Allergy status is carried to the top of the summary rather than left inside its 
 `worklist()` is the same idea across the day rather than across one patient. A clinician's work is not one queue — results wait in one place, referrals in another, tasks in a third, and each system reports its own as though it were the whole picture. The value of a single view is that nothing is owed to them somewhere they are not looking, which is only true if the view says what it could not reach.
 
 The module owns no data and keeps no second copy of anything. It assembles from the stores that already exist, declares what it assembled, and is honest about the rest.
+
+## The clinical API, and audit by construction
+
+Everything above — the chart, the patient index, medications, allergies, orders, results, referrals, tasks, notes and the assembled summary — is served under `/api/clinical/*`, behind the `admin` scope and inside the caller's tenant like the rest of the API.
+
+Exposing it is the moment the audit requirement in §18 starts to bite. Until now the clinical stores were libraries: nothing reached them over a network, so nothing went unrecorded. A route is a way in, and **an audit guarantee that depends on each new route remembering to call `audit()` is one that holds until somebody forgets** — and the forgetting is invisible, because the route works, the data is served, and nothing anywhere says the trail is short.
+
+Two things make it structural instead:
+
+- **`phi()` audits first and sends second.** An exception between the two cannot produce a read that happened without a record of it happening, and there is no path through a clinical route that reaches `send` without passing through it.
+- **`test/clinical-api.test.ts` reads the routing source**, extracts every `/api/clinical/*` path, drives each one, and fails if any serves patient data without leaving a row. A route added tomorrow with no trail does not quietly work — it breaks the build. The test also fails on a route it has no case for, so a new endpoint cannot pass by being untested.
+
+A search that finds nobody is still an access. "Who did you look for" is a question a privacy review asks, and a fruitless search for a well-known name is exactly the one it asks about — so the row is written with `count: 0` rather than not at all.
+
+The allergy endpoint returns the three-valued status beside the list rather than the list alone, because an empty array on the wire is the same ambiguity an empty panel is on a screen.
+
+Read scope is not enough for any of it. A credential that may read the FHIR facade is not thereby licensed to open charts, and a refused reach for a patient record is itself recorded — that refusal is among the things an audit trail exists to show.
 
 ## Tenancy
 

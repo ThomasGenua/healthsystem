@@ -19,6 +19,13 @@ import { ConformanceRegistry, validateResource } from "../conformance/validator.
 import { ApiKeyStore } from "../auth/keys.ts";
 import { AuditStore } from "../audit/store.ts";
 import { ClinicalRecord } from "../clinical/record.ts";
+import { ClinicalNotes } from "../clinical/notes.ts";
+import { MedicationStore } from "../meds/store.ts";
+import type { InteractionSource } from "../meds/safety.ts";
+import { OrderStore } from "../orders/store.ts";
+import { ReferralStore } from "../work/referrals.ts";
+import { TaskStore } from "../work/tasks.ts";
+import { Workspace } from "../workspace/summary.ts";
 import { RetentionRunner, type RetentionPolicy } from "./retention.ts";
 import { buildAck, getHl7, parseHl7, serializeHl7 } from "../hl7/parser.ts";
 import { startMllpServer, type MllpServerHandle } from "../hl7/mllp.ts";
@@ -64,6 +71,13 @@ export interface TenantView {
   keys: ApiKeyStore;
   audit: AuditStore;
   clinical: ClinicalRecord;
+  notes: ClinicalNotes;
+  meds: MedicationStore;
+  orders: OrderStore;
+  referrals: ReferralStore;
+  tasks: TaskStore;
+  /** The assembled chart, over exactly the stores above. */
+  workspace: Workspace;
 }
 
 export interface EngineOptions {
@@ -77,6 +91,11 @@ export interface EngineOptions {
   validateMode?: "reject" | "annotate";
   /** Override connector constructors. Tests inject fakes here. */
   connectors?: ConnectorFactories;
+  /**
+   * A licensed drug interaction database. Absent by default, and absence is
+   * reported as "interactions unchecked" rather than as a clean check.
+   */
+  interactions?: InteractionSource;
   /** How long stored patient data is kept. Off unless configured. */
   retention?: RetentionPolicy;
   /**
@@ -104,6 +123,7 @@ export class Engine {
   private validation: ConstructorParameters<typeof FhirStore>[1];
   private views = new Map<string, TenantView>();
   private lockTimer: NodeJS.Timeout | null = null;
+  private interactions: InteractionSource | null;
   private lockStaleMs: number;
   private lockHeartbeatMs: number;
   private holdsLock = false;
@@ -132,6 +152,7 @@ export class Engine {
       sql: opts.connectors?.sql ?? connectSql,
       sftp: opts.connectors?.sftp ?? connectSftp,
     };
+    this.interactions = opts.interactions ?? null;
     this.lockStaleMs = opts.lockStaleMs ?? 20_000;
     // Comfortably inside the staleness window, so a slow moment never costs a
     // running engine its own claim.
@@ -172,6 +193,15 @@ export class Engine {
 
     const db = this.db.forTenant(tenantId);
     const fhir = new FhirStore(db, this.validation);
+    const clinical = new ClinicalRecord(db);
+    const notes = new ClinicalNotes(clinical);
+    // No interaction database unless a deployment supplies one. The safety
+    // check reports interactions as unchecked rather than clear, which is the
+    // honest answer and the one src/meds/safety.ts is built to give.
+    const meds = new MedicationStore(db, this.interactions);
+    const orders = new OrderStore(db);
+    const referrals = new ReferralStore(db);
+    const tasks = new TaskStore(db);
     const subs = new SubscriptionManager(db, this.worker);
     fhir.onChange((result, resource) => subs.notify(result, resource));
     const view: TenantView = {
@@ -181,7 +211,13 @@ export class Engine {
       subs,
       keys: new ApiKeyStore(db),
       audit: new AuditStore(db),
-      clinical: new ClinicalRecord(db),
+      clinical,
+      notes,
+      meds,
+      orders,
+      referrals,
+      tasks,
+      workspace: new Workspace({ record: clinical, notes, meds, orders, referrals, tasks }),
     };
     this.views.set(tenantId, view);
     return view;

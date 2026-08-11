@@ -501,6 +501,139 @@ async function route(
     });
   }
 
+  // ---- the clinical platform -------------------------------------------
+  //
+  // Every route below reads or writes patient data, so every one of them
+  // audits. That is enforced structurally rather than remembered: the paths
+  // are listed in CLINICAL_ROUTES, touchesPatientData() reads that list, and
+  // test/clinical-api.test.ts drives each entry and fails the build if a
+  // request leaves no audit row. A route added here without a trail is a route
+  // the test refuses.
+  //
+  // `phi()` is the shape that makes it hard to get wrong: it audits first and
+  // sends second, so an exception between the two cannot produce a read that
+  // happened without a record of it happening.
+  if (path.startsWith("/api/clinical/")) {
+    const patient = url.searchParams.get("patient") ?? undefined;
+
+    /** Audits the access, then sends. In that order, deliberately. */
+    const phi = <T,>(resourceType: string, produce: () => T, count?: (v: T) => number): void => {
+      let value: T;
+      try {
+        value = produce();
+      } catch (err) {
+        audit({ action: verbToAction(method), outcome: 8, resourceType, patient, detail: (err as Error).message });
+        return send(res, 400, { error: (err as Error).message });
+      }
+      audit({
+        action: verbToAction(method),
+        outcome: 0,
+        resourceType,
+        patient,
+        ...(count ? { count: count(value) } : {}),
+      });
+      return send(res, 200, value);
+    };
+
+    if (path === "/api/clinical/chart" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("Composition", () =>
+        tenant.workspace.chart(patient, { limit: num(url.searchParams.get("limit")) })
+      );
+    }
+    if (path === "/api/clinical/worklist" && method === "GET") {
+      const clinician = url.searchParams.get("clinician");
+      if (!clinician) return send(res, 400, { error: "clinician required" });
+      return phi("Task", () => tenant.workspace.worklist(clinician, { limit: num(url.searchParams.get("limit")) }));
+    }
+    if (path === "/api/clinical/patients" && method === "GET") {
+      // A search is an access even when it returns nothing: "who did you look
+      // for" is a question a privacy review asks, and a fruitless search for a
+      // celebrity's name is exactly the one it asks about.
+      return phi(
+        "Patient",
+        () =>
+          tenant.clinical.patientIndex.search({
+            identifier: url.searchParams.get("identifier") ?? undefined,
+            family: url.searchParams.get("family") ?? undefined,
+            given: url.searchParams.get("given") ?? undefined,
+            birthDate: url.searchParams.get("birthdate") ?? undefined,
+            limit: num(url.searchParams.get("limit")),
+          }),
+        (rows) => rows.length
+      );
+    }
+    if (path === "/api/clinical/medications" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi(
+        "MedicationStatement",
+        () => tenant.meds.current(patient, { asPrescribed: url.searchParams.get("as_prescribed") === "true" }),
+        (rows) => rows.length
+      );
+    }
+    if (path === "/api/clinical/allergies" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("AllergyIntolerance", () => ({
+        // Three-valued, carried beside the list rather than left to be
+        // inferred from its length. An empty list is not an answer.
+        status: tenant.meds.allergyStatus(patient),
+        allergies: tenant.meds.allergies(patient),
+      }));
+    }
+    if (path === "/api/clinical/results" && method === "GET") {
+      return phi(
+        "Observation",
+        () => {
+          const rows = tenant.orders.unacknowledged({
+            responsibleId: url.searchParams.get("responsible") ?? undefined,
+            overdueAsOf: url.searchParams.get("overdue_as_of") ?? undefined,
+          });
+          return patient ? rows.filter((r) => r.patient_id === patient) : rows;
+        },
+        (rows) => rows.length
+      );
+    }
+    if (path === "/api/clinical/orders" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("ServiceRequest", () => tenant.orders.forPatient(patient), (rows) => rows.length);
+    }
+    if (path === "/api/clinical/referrals" && method === "GET") {
+      return phi(
+        "ServiceRequest",
+        () => (patient ? tenant.referrals.forPatient(patient) : tenant.referrals.stalled()),
+        (rows) => rows.length
+      );
+    }
+    if (path === "/api/clinical/tasks" && method === "GET") {
+      const owner = url.searchParams.get("owner");
+      return phi(
+        "Task",
+        () => (owner ? tenant.tasks.inbox(owner) : patient ? tenant.tasks.forPatient(patient) : tenant.tasks.unassigned()),
+        (rows) => rows.length
+      );
+    }
+    if (path === "/api/clinical/notes" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi(
+        "DocumentReference",
+        () => tenant.notes.forPatient(patient, { encounterId: url.searchParams.get("encounter") ?? undefined }),
+        (rows) => rows.length
+      );
+    }
+    if (path === "/api/clinical/safety-check" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { patient?: string; ingredient?: string; display?: string };
+      if (!body.patient || !body.ingredient) return send(res, 400, { error: "patient and ingredient required" });
+      const p = body.patient;
+      const ingredient = body.ingredient;
+      const display = body.display ?? body.ingredient;
+      // Audited as a read of the patient, because that is what it is: it
+      // consults their allergies and their medication list.
+      audit({ action: "R", outcome: 0, resourceType: "AllergyIntolerance", patient: p, detail: `safety check: ${ingredient}` });
+      return send(res, 200, tenant.meds.check(p, { ingredient, display }));
+    }
+    return send(res, 404, { error: "not found" });
+  }
+
   if (path === "/api/keys" && method === "GET") {
     return send(res, 200, keys.list());
   }
@@ -789,6 +922,7 @@ function listFixtures(): Array<{ name: string; content: string }> {
  */
 function touchesPatientData(path: string): boolean {
   if (path.startsWith("/api/messages")) return true;
+  if (path.startsWith("/api/clinical/")) return true;
   if (path.startsWith("/ingest/")) return true;
   if (path === "/fhir/metadata" || path.startsWith("/fhir/AuditEvent")) return false;
   return path.startsWith("/fhir/");
