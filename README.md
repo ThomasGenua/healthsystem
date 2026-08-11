@@ -53,7 +53,7 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Double-booking refused by the database**, not by a check that a second clerk can race past.
 - **Break-glass that is loud**: declared, reasoned in words, notified to the patient, and queued for review — because a quiet override makes the lockbox theatre.
 
-386 tests. Backend first, tests before UI.
+388 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -108,7 +108,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 386 tests
+npm test          # 388 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -556,6 +556,14 @@ A refusal is audited like any other access — a directive that stopped somebody
 ```
 
 Declaring is itself an event on the trail, written before any record is read under it. And `GET /api/clinical/directives` is deliberately **outside** the withholding check: refusing to show somebody the directive that stopped them would leave them unable to tell a lockbox from an empty chart, which is exactly the ambiguity the rest of this refuses.
+
+**Lists are a different problem from single records.** Refusing an entire worklist because one patient on it has a directive would take a clinician's day away, so withheld rows are omitted — but not silently:
+
+```json
+{ "rows": [ … ], "withheldCount": 1 }
+```
+
+A short list that looks complete is what this system refuses everywhere, and here it is worse than usual: a result withheld from the clinician responsible for reading it is a result now owed to **nobody**, which is the exact silence §4 exists to prevent. The count is reported so somebody can act on it; who they are is not, which is what the directive asked for. A task with no patient on it is not about anybody, so no directive withholds it.
 
 ### What is deliberately not on this API
 

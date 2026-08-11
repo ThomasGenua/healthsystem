@@ -132,7 +132,7 @@ test("a search that finds nobody is still an access", async () => {
     const before = s.trail().length;
     const res = await s.get("/api/clinical/patients?family=Trudeau");
     assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), []);
+    assert.deepEqual(await res.json(), { rows: [], withheldCount: 0 });
 
     const rows = s.trail();
     assert.equal(rows.length, before + 1, "nothing found, and the looking is recorded");
@@ -453,4 +453,110 @@ test("every patient-scoped clinical route consults the directive check", () => {
       `${route} serves one patient's data without going through phi() or consulting consent directly`
     );
   }
+});
+
+test("a directive keeps a patient off a worklist, and the list says it is short", () => {
+  // The hole the single-patient check leaves. Refusing a whole worklist
+  // because one patient on it has a directive would take a clinician's day
+  // away, so withheld rows are omitted — but not silently.
+  //
+  // A short list that looks complete is what this system refuses everywhere,
+  // and here it is worse than usual: a result withheld from the clinician
+  // responsible for reading it is a result now owed to nobody, which is the
+  // exact silence the orders module exists to prevent. The count is reported
+  // so somebody can act on it; who they are is not, which is what the
+  // directive asked for.
+  return (async () => {
+    const s = await boot();
+    try {
+      const t = s.engine.forTenant("default");
+
+      // A second patient with an unread result, so the list has two rows.
+      const other = t.orders.create({
+        patientId: "NT-other",
+        category: "lab",
+        code: "2823-3",
+        display: "Potassium",
+        indication: "Check",
+        by: GP,
+      });
+      t.orders.place(other.id, { ...GP, responsibleId: "dr-tetso" });
+      t.orders.report({
+        patientId: "NT-other",
+        orderId: other.id,
+        code: "2823-3",
+        display: "Potassium",
+        value: "4.0",
+        reportedBy: "analyser",
+      });
+
+      const before = (await (await s.get("/api/clinical/results")).json()) as { rows: unknown[]; withheldCount: number };
+      assert.equal(before.rows.length, 2);
+      assert.equal(before.withheldCount, 0);
+
+      t.consent.record({
+        patientId: P,
+        kind: "withhold-all",
+        by: { actorId: "privacy-office", actorKind: "practitioner" },
+      });
+
+      const after = (await (await s.get("/api/clinical/results")).json()) as {
+        rows: Array<{ patient_id: string }>;
+        withheldCount: number;
+      };
+      assert.equal(after.rows.length, 1, "the withheld patient is off the list");
+      assert.equal(after.rows[0].patient_id, "NT-other");
+      assert.equal(after.withheldCount, 1, "and the list does not pretend to be whole");
+      assert.ok(!JSON.stringify(after).includes(P), "without naming who, which is what the directive asked for");
+
+      // The same on every list that spans patients.
+      for (const p of ["referrals", "missed"]) {
+        const body = (await (await s.get(`/api/clinical/${p}`)).json()) as { withheldCount: number };
+        assert.equal(typeof body.withheldCount, "number", `${p} does not report what it dropped`);
+      }
+      const tasks = (await (await s.get("/api/clinical/tasks?owner=dr-tetso")).json()) as {
+        rows: unknown[];
+        withheldCount: number;
+      };
+      assert.equal(tasks.withheldCount, 1);
+      assert.equal(tasks.rows.length, 0);
+
+      // And a search does not surface them either.
+      const found = (await (await s.get("/api/clinical/patients?family=Beaulieu")).json()) as {
+        rows: unknown[];
+        withheldCount: number;
+      };
+      assert.equal(found.rows.length, 0);
+      assert.equal(found.withheldCount, 1);
+    } finally {
+      await s.close();
+    }
+  })();
+});
+
+test("a task about nobody in particular is not withheld by anyone's directive", () => {
+  // A directive is about a patient. An administrative task with no patient on
+  // it is not about anybody, and dropping it would be the filter overreaching.
+  return (async () => {
+    const s = await boot();
+    try {
+      const t = s.engine.forTenant("default");
+      t.tasks.create({ kind: "administrative", title: "Reconcile the fax log", by: GP, ownerId: "dr-tetso" });
+      t.consent.record({
+        patientId: P,
+        kind: "withhold-all",
+        by: { actorId: "privacy-office", actorKind: "practitioner" },
+      });
+
+      const body = (await (await s.get("/api/clinical/tasks?owner=dr-tetso")).json()) as {
+        rows: Array<{ title: string }>;
+        withheldCount: number;
+      };
+      assert.equal(body.rows.length, 1);
+      assert.equal(body.rows[0].title, "Reconcile the fax log");
+      assert.equal(body.withheldCount, 1, "the patient-bearing one was withheld, this one was not");
+    } finally {
+      await s.close();
+    }
+  })();
 });

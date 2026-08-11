@@ -533,6 +533,32 @@ async function route(
       return decision.allowed ? undefined : { id: decision.withheldBy!.id };
     };
 
+    /**
+     * Filters a list of rows by directive, and says how many it dropped.
+     *
+     * A single-patient route refuses outright, because the caller asked about
+     * one person and needs to know a lockbox is why they cannot see. A list
+     * cannot do that — refusing the whole worklist because one patient on it
+     * has a directive would take a clinician's day away — so withheld rows are
+     * omitted.
+     *
+     * But not silently. A short list that looks complete is the failure this
+     * system refuses everywhere else, and here it is worse than usual: a
+     * result withheld from the clinician responsible for reading it is a
+     * result now owed to nobody, which is the exact silence the orders module
+     * exists to prevent. The count is reported so somebody can act on it; who
+     * they are is not, which is what the directive asked for.
+     */
+    const filterByDirective = <T extends { patient_id: string }>(rows: T[]): { rows: T[]; withheldCount: number } => {
+      const kept: T[] = [];
+      const blocked = new Set<string>();
+      for (const row of rows) {
+        if (withheld(row.patient_id)) blocked.add(row.patient_id);
+        else kept.push(row);
+      }
+      return { rows: kept, withheldCount: rows.length - kept.length };
+    };
+
     /** Audits the access, then sends. In that order, deliberately. */
     const phi = <T,>(resourceType: string, produce: () => T, count?: (v: T) => number): void => {
       if (patient) {
@@ -588,14 +614,19 @@ async function route(
       return phi(
         "Patient",
         () =>
-          tenant.clinical.patientIndex.search({
-            identifier: url.searchParams.get("identifier") ?? undefined,
-            family: url.searchParams.get("family") ?? undefined,
-            given: url.searchParams.get("given") ?? undefined,
-            birthDate: url.searchParams.get("birthdate") ?? undefined,
-            limit: num(url.searchParams.get("limit")),
-          }),
-        (rows) => rows.length
+          filterByDirective(
+            tenant.clinical.patientIndex
+              .search({
+                identifier: url.searchParams.get("identifier") ?? undefined,
+                family: url.searchParams.get("family") ?? undefined,
+                given: url.searchParams.get("given") ?? undefined,
+                birthDate: url.searchParams.get("birthdate") ?? undefined,
+                limit: num(url.searchParams.get("limit")),
+              })
+              // The index speaks patientId; the filter speaks patient_id.
+              .map((p) => ({ ...p, patient_id: p.patientId }))
+          ),
+        (r) => r.rows.length
       );
     }
     if (path === "/api/clinical/medications" && method === "GET") {
@@ -619,13 +650,13 @@ async function route(
       return phi(
         "Observation",
         () => {
-          const rows = tenant.orders.unacknowledged({
+          const all = tenant.orders.unacknowledged({
             responsibleId: url.searchParams.get("responsible") ?? undefined,
             overdueAsOf: url.searchParams.get("overdue_as_of") ?? undefined,
           });
-          return patient ? rows.filter((r) => r.patient_id === patient) : rows;
+          return filterByDirective(patient ? all.filter((r) => r.patient_id === patient) : all);
         },
-        (rows) => rows.length
+        (r) => r.rows.length
       );
     }
     if (path === "/api/clinical/orders" && method === "GET") {
@@ -635,16 +666,23 @@ async function route(
     if (path === "/api/clinical/referrals" && method === "GET") {
       return phi(
         "ServiceRequest",
-        () => (patient ? tenant.referrals.forPatient(patient) : tenant.referrals.stalled()),
-        (rows) => rows.length
+        () => filterByDirective(patient ? tenant.referrals.forPatient(patient) : tenant.referrals.stalled()),
+        (r) => r.rows.length
       );
     }
     if (path === "/api/clinical/tasks" && method === "GET") {
       const owner = url.searchParams.get("owner");
       return phi(
         "Task",
-        () => (owner ? tenant.tasks.inbox(owner) : patient ? tenant.tasks.forPatient(patient) : tenant.tasks.unassigned()),
-        (rows) => rows.length
+        () => {
+          const all = owner ? tenant.tasks.inbox(owner) : patient ? tenant.tasks.forPatient(patient) : tenant.tasks.unassigned();
+          // A task with no patient on it is not about anybody, so no directive
+          // can withhold it; those pass through untouched.
+          const withPatient = all.filter((t): t is typeof t & { patient_id: string } => t.patient_id !== null);
+          const filtered = filterByDirective(withPatient);
+          return { rows: [...all.filter((t) => t.patient_id === null), ...filtered.rows], withheldCount: filtered.withheldCount };
+        },
+        (r) => r.rows.length
       );
     }
     if (path === "/api/clinical/notes" && method === "GET") {
@@ -662,7 +700,7 @@ async function route(
     if (path === "/api/clinical/missed" && method === "GET") {
       // Missed appointments that mattered and that nobody has picked up. A
       // read of patient data like any other, and audited as one.
-      return phi("Appointment", () => tenant.schedule.unresolvedNonAttendance(), (rows) => rows.length);
+      return phi("Appointment", () => filterByDirective(tenant.schedule.unresolvedNonAttendance()), (r) => r.rows.length);
     }
     if (path === "/api/clinical/break-glass" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as { patient?: string; reason?: string };
