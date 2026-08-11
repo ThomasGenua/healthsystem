@@ -28,6 +28,7 @@ const SQL_SOURCES = [
   "../src/terminology/store.ts",
   "../src/auth/keys.ts",
   "../src/core/backup.ts",
+  "../src/clinical/record.ts",
 ];
 
 /**

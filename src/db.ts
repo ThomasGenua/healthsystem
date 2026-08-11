@@ -38,6 +38,7 @@ export const TENANT_SCOPED_TABLES = [
   "fhir_subscriptions",
   "api_keys",
   "audit_events",
+  "clinical_entries",
 ] as const;
 
 /**
@@ -260,6 +261,67 @@ CREATE TABLE IF NOT EXISTS audit_events (
   prev_hash TEXT
 );
 
+-- The clinical record.
+--
+-- Append-only, one row per version. Section 1 requires that nothing clinically
+-- material is silently overwritten and that a correction retains the original
+-- with its full history — which is a statement about storage, not about
+-- discipline. An UPDATE-in-place table cannot satisfy it no matter how
+-- carefully it is used, so there is no UPDATE path: an amendment writes a new
+-- version pointing at the one it supersedes, and a retraction writes a version
+-- marked entered-in-error. The earlier text stays readable, because "what did
+-- this chart say when the decision was made" is the question a review asks.
+--
+-- One table for every kind of entry rather than one per resource type.
+-- Problems, allergies, vitals, notes and encounters differ in their content,
+-- not in what has to be true about them: each needs an author, a time, a
+-- status, a supersession link and a place on the chain. Fifteen tables would
+-- be fifteen chances to omit one of those.
+--
+-- Chained per patient, so a chart is tamper-evident as a whole rather than
+-- row by row: removing an entry breaks the next one's back-pointer, and
+-- removing the most recent ones is caught by the version counter below.
+CREATE TABLE IF NOT EXISTS clinical_entries (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL DEFAULT 'default',
+  -- Identity of the version.
+  version_id TEXT NOT NULL,
+  -- Identity of the record across all its versions. Stable under amendment.
+  record_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  entry_type TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  encounter_id TEXT,
+  content TEXT NOT NULL,
+  -- active | amended | entered-in-error. A superseded version keeps its own
+  -- status so history reads as it was, not as it was later judged to be.
+  status TEXT NOT NULL DEFAULT 'active',
+  -- Who asserted it, and on whose behalf the system was acting.
+  author_id TEXT NOT NULL,
+  author_kind TEXT NOT NULL,
+  -- Where it came from: an interface message id, a clinician, a patient.
+  source TEXT,
+  source_message_id TEXT,
+  -- When it was written down, and when it was clinically true. A vital sign
+  -- recorded an hour late belongs at the time it was taken.
+  recorded_at TEXT NOT NULL,
+  effective_at TEXT,
+  supersedes TEXT,
+  amendment_reason TEXT,
+  hash TEXT NOT NULL,
+  prev_hash TEXT
+);
+
+-- How many versions each patient's chart has ever been issued. Only ever
+-- increases, so a chart that has lost entries disagrees with it — the same
+-- reason the audit trail keeps one.
+CREATE TABLE IF NOT EXISTS clinical_counters (
+  tenant_id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  issued INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (tenant_id, patient_id)
+);
+
 -- How many audit rows each tenant has ever been issued. Only ever increases,
 -- so a trail that has lost rows disagrees with it — the truncation check that
 -- SQLite's own AUTOINCREMENT mark used to serve before the trail became
@@ -282,6 +344,13 @@ CREATE TABLE IF NOT EXISTS instance_lock (
 `;
 
 const INDEXES = `
+CREATE UNIQUE INDEX IF NOT EXISTS idx_clinical_version ON clinical_entries(tenant_id, version_id);
+-- The chart read: every version of every record for one patient, in order.
+CREATE INDEX IF NOT EXISTS idx_clinical_patient ON clinical_entries(tenant_id, patient_id, seq);
+-- The current view: latest version of one record.
+CREATE INDEX IF NOT EXISTS idx_clinical_record ON clinical_entries(tenant_id, record_id, version);
+CREATE INDEX IF NOT EXISTS idx_clinical_type ON clinical_entries(tenant_id, patient_id, entry_type, seq);
+CREATE INDEX IF NOT EXISTS idx_clinical_encounter ON clinical_entries(tenant_id, encounter_id, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at);
 CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(tenant_id, channel_id, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status);

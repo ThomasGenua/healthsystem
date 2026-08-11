@@ -27,8 +27,9 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Silent-feed detection**, so an interface that stopped sending is not mistaken for a quiet night.
 - **Multi-tenant end to end**: structural isolation in storage, checked by reading the source, and every request confined to its credential's custodian.
 - **Purpose of use** on the audit trail, inside the hash chain.
+- **An append-only clinical record**, where a correction cannot destroy what it corrects.
 
-221 tests. Backend first, tests before UI.
+232 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -79,7 +80,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 221 tests
+npm test          # 232 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -293,6 +294,31 @@ In-flight and queued deliveries are never redacted — a payload that has not go
 **Retention does not touch the FHIR facade.** That store holds the current clinical record a consumer is reading, not a log of traffic. How long a territorial EHR keeps a Patient resource is a clinical governance decision, not something an interface engine should quietly make.
 
 A sweep that destroys data records itself on the audit trail, because that is an event worth being able to account for.
+
+## The clinical record
+
+Section 1 of the requirements asks that nothing clinically material is silently overwritten, and that a correction retains the original with its full history. That is a constraint on storage, not a matter of discipline — a table you `UPDATE` cannot satisfy it however carefully it is used.
+
+So the clinical store has no update path. Three verbs, all writes:
+
+```ts
+const rec = new ClinicalRecord(db);
+const dx = rec.record({ entryType: "Condition", patientId: "NT123456",
+                        content: { code: "E11" }, authorId: "dr-tetso", authorKind: "practitioner" });
+
+rec.amend(dx.record_id, { code: "E10" }, { …, reason: "coded from the wrong line of the referral" });
+rec.retract(dx.record_id, { …, reason: "recorded against the wrong patient" });
+```
+
+An amendment writes a new version pointing at the one it supersedes; the superseded version stays exactly as it was. A reason is required, because "corrected" with no explanation is what tidying up looks like and is precisely what a reviewer needs to tell from a real correction.
+
+**A retraction is not a deletion.** "This was recorded against the wrong patient" and "this never happened" are different claims, and only the first is true. The content is carried forward unchanged: a decision taken on the strength of the original cannot be reviewed against a blank. Retracted records leave the working chart and stay reachable for the review that needs them.
+
+**One table, not fifteen.** Problems, allergies, vitals, notes, encounters and consents differ in their content, not in what must be true about them — an author, a time, a status, a supersession link, a place on the chain. A table per resource type would be a chance per resource type to leave one of those out.
+
+**Charts are hash-chained per patient**, the same construction as message lineage and the access trail, and for the same reason: an amendment history that can be quietly rewritten is not a history. The chain commits to the clinical text itself, not to metadata about it — a chain over metadata alone would leave the diagnosis rewritable under an intact-looking history. Removal from the end is caught by a per-patient version counter, since linkage cannot see it.
+
+Every version carries where it came from: author and kind, the interface message that produced it, when it was written down and when it was clinically true. A vital sign filed an hour late belongs at the time it was taken, and a result that cannot name its source message cannot be reconciled against the feed that delivered it.
 
 ## Tenancy
 
