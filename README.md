@@ -523,6 +523,14 @@ The allergy endpoint returns the three-valued status beside the list rather than
 
 Read scope is not enough for any of it. A credential that may read the FHIR facade is not thereby licensed to open charts, and a refused reach for a patient record is itself recorded — that refusal is among the things an audit trail exists to show.
 
+The guarantee proved itself during this work: wiring the schedule and registry endpoints in, the structural test failed on the new routes before they had cases, which is precisely the moment it is supposed to fire.
+
+### What is deliberately not on this API
+
+**The patient-facing surface.** `src/patient/access.ts` is built and tested, and it is not mounted here, because a patient portal is a different trust boundary — a patient authenticating as themselves, and a proxy authenticating as somebody entitled to act for them, neither of which is an operator holding an `admin` key. Bolting those endpoints onto an admin-scoped API would make the scope model say something false about who is calling.
+
+That surface needs its own authentication (patient identity, not an issued operator credential), its own scope vocabulary, and `PatientAccess.may()` consulted on every request rather than a scope check. It is the next thing to build, not something already here under a different name.
+
 ## Patient access
 
 Section 11 has two failures that nothing else in this system has, and they pull in opposite directions.

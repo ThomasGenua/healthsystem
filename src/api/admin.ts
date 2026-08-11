@@ -620,6 +620,29 @@ async function route(
         (rows) => rows.length
       );
     }
+    if (path === "/api/clinical/appointments" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("Appointment", () => tenant.schedule.forPatient(patient), (rows) => rows.length);
+    }
+    if (path === "/api/clinical/missed" && method === "GET") {
+      // Missed appointments that mattered and that nobody has picked up. A
+      // read of patient data like any other, and audited as one.
+      return phi("Appointment", () => tenant.schedule.unresolvedNonAttendance(), (rows) => rows.length);
+    }
+    if (path === "/api/clinical/gaps" && method === "POST") {
+      // A cohort definition and a gap rule come in the body because they are
+      // structured, not because this writes anything: it reads a population.
+      const body = JSON.parse(await readBody(req)) as { cohort?: unknown; gap?: unknown; asOf?: string };
+      if (!body.cohort || !body.gap) return send(res, 400, { error: "cohort and gap required" });
+      audit({ action: "R", outcome: 0, resourceType: "MeasureReport", detail: "care gap query" });
+      return send(res, 200, tenant.registry.gaps(body.cohort as never, body.gap as never, body.asOf));
+    }
+    if (path === "/api/clinical/measure" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { cohort?: unknown; measure?: unknown; asOf?: string };
+      if (!body.cohort || !body.measure) return send(res, 400, { error: "cohort and measure required" });
+      audit({ action: "R", outcome: 0, resourceType: "MeasureReport", detail: "quality measure" });
+      return send(res, 200, tenant.registry.measure(body.cohort as never, body.measure as never, body.asOf));
+    }
     if (path === "/api/clinical/safety-check" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as { patient?: string; ingredient?: string; display?: string };
       if (!body.patient || !body.ingredient) return send(res, 400, { error: "patient and ingredient required" });

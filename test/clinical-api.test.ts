@@ -245,7 +245,7 @@ test("every clinical route leaves an audit row, including ones added later", asy
   // 200 without recording anything, this fails.
   const source = readFileSync(new URL("../src/api/admin.ts", import.meta.url), "utf8");
   const paths = [...new Set([...source.matchAll(/path === "(\/api\/clinical\/[a-z-]+)"/g)].map((m) => m[1]))];
-  assert.ok(paths.length >= 10, `expected the clinical routes to be found by scanning, got ${paths.length}`);
+  assert.ok(paths.length >= 14, `expected the clinical routes to be found by scanning, got ${paths.length}`);
 
   const s = await boot();
   try {
@@ -263,7 +263,24 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/referrals": "",
       "/api/clinical/tasks": "?owner=dr-tetso",
       "/api/clinical/notes": `?patient=${P}`,
+      "/api/clinical/appointments": `?patient=${P}`,
+      "/api/clinical/missed": "",
       "/api/clinical/safety-check": "POST",
+      "/api/clinical/gaps": "POST",
+      "/api/clinical/measure": "POST",
+    };
+
+    /** The body each POST route needs to do real work. */
+    const bodies: Record<string, unknown> = {
+      "/api/clinical/safety-check": { patient: P, ingredient: "amoxicillin" },
+      "/api/clinical/gaps": {
+        cohort: { id: "dm", name: "Diabetes", conditionCodes: ["diabetes"] },
+        gap: { id: "hba1c", name: "HbA1c yearly", withinDays: 365, satisfiedByResultCodes: ["4548-4"] },
+      },
+      "/api/clinical/measure": {
+        cohort: { id: "dm", name: "Diabetes", conditionCodes: ["diabetes"] },
+        measure: { id: "hba1c-8", name: "HbA1c under 8", withinDays: 365, target: { code: "4548-4", below: 8 } },
+      },
     };
 
     const unlisted = paths.filter((p) => !(p in args));
@@ -276,7 +293,7 @@ test("every clinical route leaves an audit row, including ones added later", asy
           ? await fetch(`${s.base}${p}`, {
               method: "POST",
               headers: { authorization: `Bearer ${s.admin}`, "content-type": "application/json" },
-              body: JSON.stringify({ patient: P, ingredient: "amoxicillin" }),
+              body: JSON.stringify(bodies[p]),
             })
           : await s.get(`${p}${args[p]}`);
 
