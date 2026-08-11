@@ -38,8 +38,9 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A clinical API that cannot serve patient data unaudited**, checked by reading the routing source rather than by remembering.
 - **Proxy access that lapses on the day it was set to**, because nothing about a child's sixteenth birthday generates an event.
 - **Quality measures that refuse a rate they cannot stand behind**, because the patients a measure cannot assess are the ones nobody managed.
+- **Double-booking refused by the database**, not by a check that a second clerk can race past.
 
-357 tests. Backend first, tests before UI.
+368 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -90,7 +91,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 357 tests
+npm test          # 368 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -582,6 +583,42 @@ An empty cohort reports `null` rather than `0%`. Zero over zero is not zero per 
 Cohort membership carries **why** — `condition diabetes`, `taking metformin, aged 54` — so a clinician can disagree with one patient rather than with the registry. A list nobody can argue with in detail is one they dismiss wholesale. A condition a clinician retracted takes the patient off the register, and a drug the patient has stopped taking does not keep them on it: the register is of people, not of prescriptions.
 
 Care gaps distinguish **never done** from **overdue**, never-done first. They are different conversations — one patient has never been offered the test, the other has been and did not come back. A gap can be satisfied by a medication rather than a result, because "diabetic patients on a statin" is closed by a prescription, and a rule engine that only understood results would recall every patient already treated.
+
+## Scheduling
+
+Two failures carry this, unrelated except that both are ways a schedule quietly breaks.
+
+### A slot belongs to one patient, and the database says so
+
+The one thing a scheduler must never do is give one slot to two people, and **check-then-insert cannot promise that**. Between reading "free" and writing "booked" another booking fits, and the window is exactly as wide as the gap between two statements. Under a real clinic — two clerks, a patient portal and an inbound SIU feed on one diary — that window is hit, and the failure is discovered in the waiting room.
+
+So the promise is a uniqueness constraint, not a code path:
+
+```sql
+CREATE UNIQUE INDEX idx_booking_seat
+  ON schedule_bookings(tenant_id, slot_id, seat) WHERE status != 'cancelled';
+```
+
+`book()` still checks, because a clear refusal beats a constraint violation — but the check is a courtesy and the index is the guarantee. The test that matters therefore **bypasses `book()` entirely** and writes the row a racing second process would write, because a guarantee that only holds when callers behave is not a guarantee.
+
+The index is partial so that cancelling frees the seat while keeping the row. A slot freed by *deleting* its booking loses the fact that somebody cancelled — and a pattern of cancellations is made of exactly those facts, for the clinic and sometimes for the patient, whose repeated cancellations are a clinical signal rather than an administrative one.
+
+**Overbooking is a number somebody chose**, declared as slot capacity, rather than a constraint defeated. Making overbooking impossible is how a scheduler gets routed around, and a clinic overbooking in a paper diary is worse off than one overbooking here.
+
+Blocking takes a slot out of use without deleting it — leave, a meeting, a scanner down for service. A slot that exists and must not be booked is different from one that does not exist: deleting it loses the fact that the clinic was supposed to be running, which is what a capacity report is made of. A slot with a patient already in it cannot be blocked out from under them.
+
+### A missed appointment is a clinical event
+
+Marking did-not-attend and closing the record is the administrative reading, and for a routine review it is right. For the patient who missed the appointment answering an urgent referral it is a catastrophe with no error attached: the referral reads booked, the clinic's list is clear, and nobody is waiting for anything.
+
+So `didNotAttend()` returns **what is owed**, not just a status:
+
+```ts
+{ booking, followUpRequired: true,
+  because: "this appointment answers a referral, which is still open and now has nothing booked against it" }
+```
+
+`unresolvedNonAttendance()` holds them until somebody says what they did about it — worst first, because a missed urgent appointment gets less recoverable with every week. Clearing one requires an action in words, for the same reason completing a task requires evidence.
 
 ## Tenancy
 

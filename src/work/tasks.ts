@@ -26,6 +26,7 @@
  * delegation history is a record rather than a reconstruction.
  */
 import { randomUUID } from "node:crypto";
+import { an } from "../core/text.ts";
 import type { Db } from "../db.ts";
 
 /** What the item is, which is also which queue it belongs in. */
@@ -144,7 +145,7 @@ export class TaskStore {
   assign(taskId: string, ownerId: string, by: Actor & { reason?: string }): TaskRow {
     const task = this.require(taskId);
     if (task.status === "completed" || task.status === "cancelled") {
-      throw new Error(`a ${task.status} task cannot be reassigned; reopen it or raise a new one`);
+      throw new Error(`${an(task.status)} task cannot be reassigned; reopen it or raise a new one`);
     }
     return this.db.transaction(() => {
       this.db.sql
@@ -180,7 +181,7 @@ export class TaskStore {
 
   start(taskId: string, by: Actor): TaskRow {
     const task = this.require(taskId);
-    if (task.status !== "open") throw new Error(`a ${task.status} task cannot be started`);
+    if (task.status !== "open") throw new Error(`${an(task.status)} task cannot be started`);
     return this.setStatus(taskId, "in-progress", by, {});
   }
 

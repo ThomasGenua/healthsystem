@@ -24,6 +24,7 @@
  * for opposite responses from the next prescriber to read it.
  */
 import { randomUUID } from "node:crypto";
+import { an } from "../core/text.ts";
 import type { Db } from "../db.ts";
 import { assess, normalise, type AllergyStatus, type Finding, type InteractionSource, type SafetyCheck } from "./safety.ts";
 
@@ -171,7 +172,7 @@ export class MedicationStore {
     if (!prior) throw new Error(`no medication statement ${statementId}`);
     if (this.supersededBy(statementId)) throw new Error("that statement has already been revised");
     if (prior.status === "stopped" || prior.status === "entered-in-error") {
-      throw new Error(`a ${prior.status} medication cannot be revised; record a new one`);
+      throw new Error(`${an(prior.status)} medication cannot be revised; record a new one`);
     }
     return this.db.transaction(() =>
       this.insert(
@@ -475,7 +476,7 @@ export class MedicationStore {
   /** Adds a medication the patient turned out to be taking. */
   addToReconciliation(reconciliationId: string, display: string, proposed: string | null, by: Actor): ReconciliationItem {
     const rec = this.requireReconciliation(reconciliationId);
-    if (rec.status !== "open") throw new Error(`a ${rec.status} reconciliation cannot be added to`);
+    if (rec.status !== "open") throw new Error(`${an(rec.status)} reconciliation cannot be added to`);
     const id = randomUUID();
     this.db.sql
       .prepare(
@@ -494,10 +495,10 @@ export class MedicationStore {
     if (!item) throw new Error(`no reconciliation item ${itemId}`);
     if (decision === "unresolved") throw new Error("a decision cannot be to leave it undecided");
     if ((decision === "stop" || decision === "modify") && !by.reason?.trim()) {
-      throw new Error(`a ${decision} decision needs a reason`);
+      throw new Error(`${an(decision)} decision needs a reason`);
     }
     const rec = this.requireReconciliation(item.reconciliation_id);
-    if (rec.status !== "open") throw new Error(`a ${rec.status} reconciliation cannot be changed`);
+    if (rec.status !== "open") throw new Error(`${an(rec.status)} reconciliation cannot be changed`);
     this.db.sql
       .prepare(
         `UPDATE med_reconciliation_items SET decision = ?, reason = ?, decided_by = ?, decided_at = ?

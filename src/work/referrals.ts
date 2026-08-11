@@ -24,6 +24,7 @@
  *   indistinguishable, afterwards, from one abandoned.
  */
 import { randomUUID } from "node:crypto";
+import { an } from "../core/text.ts";
 import type { Db } from "../db.ts";
 
 export type ReferralStatus =
@@ -163,7 +164,7 @@ export class ReferralStore {
    */
   send(referralId: string, by: Actor & { respondBy: string }): ReferralRow {
     const r = this.require(referralId);
-    if (r.status !== "draft") throw new Error(`a ${r.status} referral cannot be sent again`);
+    if (r.status !== "draft") throw new Error(`${an(r.status)} referral cannot be sent again`);
 
     const missing = list(r.required_documents).filter((d) => !list(r.attached_documents).includes(d));
     if (missing.length) {
@@ -178,7 +179,7 @@ export class ReferralStore {
   /** The receiving service confirms it arrived. */
   acknowledge(referralId: string, by: Actor & { triageBy: string }): ReferralRow {
     const r = this.require(referralId);
-    if (r.status !== "sent") throw new Error(`only a sent referral can be acknowledged, not a ${r.status} one`);
+    if (r.status !== "sent") throw new Error(`only a sent referral can be acknowledged, not ${an(r.status)} one`);
     return this.transition(referralId, "acknowledged", by, { expectedBy: by.triageBy });
   }
 
@@ -196,7 +197,7 @@ export class ReferralStore {
   ): ReferralRow {
     const r = this.require(referralId);
     if (r.status !== "sent" && r.status !== "acknowledged") {
-      throw new Error(`a ${r.status} referral is past triage`);
+      throw new Error(`${an(r.status)} referral is past triage`);
     }
     if (!decision.accept) {
       if (!decision.reason.trim()) throw new Error("declining a referral needs a reason the sender can act on");
@@ -215,7 +216,7 @@ export class ReferralStore {
   /** An appointment exists. The expectation becomes the appointment itself. */
   book(referralId: string, appointmentAt: string, by: Actor): ReferralRow {
     const r = this.require(referralId);
-    if (r.status !== "accepted") throw new Error(`a ${r.status} referral cannot be booked`);
+    if (r.status !== "accepted") throw new Error(`${an(r.status)} referral cannot be booked`);
     return this.db.transaction(() => {
       this.db.sql
         .prepare("UPDATE referrals SET appointment_at = ? WHERE tenant_id = ? AND id = ?")
@@ -227,14 +228,14 @@ export class ReferralStore {
   /** The patient attended. A report is now owed. */
   seen(referralId: string, by: Actor & { reportBy: string }): ReferralRow {
     const r = this.require(referralId);
-    if (r.status !== "booked") throw new Error(`a ${r.status} referral cannot be marked seen`);
+    if (r.status !== "booked") throw new Error(`${an(r.status)} referral cannot be marked seen`);
     return this.transition(referralId, "seen", by, { expectedBy: by.reportBy });
   }
 
   /** The consultation report came back. */
   report(referralId: string, by: Actor & { reference: string }): ReferralRow {
     const r = this.require(referralId);
-    if (TERMINAL.includes(r.status)) throw new Error(`a ${r.status} referral cannot receive a report`);
+    if (TERMINAL.includes(r.status)) throw new Error(`${an(r.status)} referral cannot receive a report`);
     return this.transition(referralId, "reported", by, { detail: by.reference });
   }
 
@@ -275,7 +276,7 @@ export class ReferralStore {
   redirect(referralId: string, toService: string, by: Actor & { reason: string; respondBy: string }): ReferralRow {
     if (!by.reason.trim()) throw new Error("redirecting a referral needs a reason");
     const original = this.require(referralId);
-    if (TERMINAL.includes(original.status)) throw new Error(`a ${original.status} referral cannot be redirected`);
+    if (TERMINAL.includes(original.status)) throw new Error(`${an(original.status)} referral cannot be redirected`);
 
     return this.db.transaction(() => {
       this.transition(referralId, "closed", by, { detail: `redirected to ${toService}: ${by.reason}`, closing: true });

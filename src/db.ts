@@ -56,6 +56,9 @@ export const TENANT_SCOPED_TABLES = [
   "patient_authority",
   "result_release",
   "patient_access_log",
+  "schedule_slots",
+  "schedule_bookings",
+  "schedule_events",
 ] as const;
 
 /**
@@ -766,6 +769,83 @@ CREATE TABLE IF NOT EXISTS patient_access_log (
   detail TEXT
 );
 
+-- Appointment slots, and the bookings that hold them.
+--
+-- The one thing a scheduler must never do is give the same slot to two
+-- patients, and check-then-insert cannot promise that: between reading "free"
+-- and writing "booked" another booking fits, and the window is exactly as wide
+-- as the gap between two statements. Under a real clinic — two clerks, a
+-- portal and an inbound HL7 SIU feed — that window is hit.
+--
+-- So the promise is a uniqueness constraint rather than a code path. The
+-- partial index below permits many cancelled bookings against a slot and
+-- exactly one live booking, which means a double-book is refused by the
+-- database whatever the caller does. Deliberate overbooking is expressed by
+-- declaring a slot with capacity, not by defeating the constraint: making
+-- overbooking impossible is how a scheduler gets routed around, and a clinic
+-- that overbooks in a paper diary is worse off than one that overbooks here.
+CREATE TABLE IF NOT EXISTS schedule_slots (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  -- Whose diary. A clinician, a room, a scanner.
+  resource_id TEXT NOT NULL,
+  resource_kind TEXT NOT NULL DEFAULT 'practitioner',
+  service TEXT NOT NULL,
+  starts_at TEXT NOT NULL,
+  ends_at TEXT NOT NULL,
+  -- How many bookings this slot admits. One unless a clinic has decided
+  -- otherwise, in the open and with a number.
+  capacity INTEGER NOT NULL DEFAULT 1,
+  -- open | blocked. Blocked is leave, a meeting, a machine down for service:
+  -- a slot that exists and must not be booked, which is different from one
+  -- that does not exist.
+  status TEXT NOT NULL DEFAULT 'open',
+  block_reason TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS schedule_bookings (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  slot_id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  -- Which position in the slot this booking holds: 0 for a normal slot, and
+  -- 0..capacity-1 where a clinic has chosen to overbook. Part of the unique
+  -- index, so the constraint counts rather than merely forbids.
+  seat INTEGER NOT NULL DEFAULT 0,
+  -- booked | attended | did-not-attend | cancelled
+  status TEXT NOT NULL DEFAULT 'booked',
+  -- Why the patient is coming. A booking with no reason cannot be triaged if
+  -- the clinic has to cut the list.
+  reason TEXT NOT NULL,
+  priority TEXT NOT NULL DEFAULT 'routine',
+  -- The referral or order this appointment answers, so a missed appointment
+  -- reaches the loop that is waiting on it.
+  correlation_id TEXT,
+  referral_id TEXT,
+  booked_by TEXT NOT NULL,
+  booked_at TEXT NOT NULL,
+  cancelled_by TEXT,
+  cancelled_at TEXT,
+  cancel_reason TEXT,
+  outcome_at TEXT,
+  outcome_by TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS schedule_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  booking_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  event TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_kind TEXT NOT NULL,
+  detail TEXT
+);
+
 -- Lookup index over the charts.
 --
 -- Derived, not authoritative. Every column here is recoverable from the
@@ -866,6 +946,17 @@ CREATE INDEX IF NOT EXISTS idx_authority_subject ON patient_authority(tenant_id,
 CREATE INDEX IF NOT EXISTS idx_authority_patient ON patient_authority(tenant_id, patient_id);
 CREATE INDEX IF NOT EXISTS idx_release_patient ON result_release(tenant_id, patient_id, state);
 CREATE INDEX IF NOT EXISTS idx_patient_access ON patient_access_log(tenant_id, patient_id, seq);
+-- The double-booking constraint. Partial, so a cancelled booking releases its
+-- seat while remaining on the record — a slot freed by deleting its booking
+-- would lose the fact that somebody cancelled, which is what a pattern of
+-- cancellations is made of.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_booking_seat
+  ON schedule_bookings(tenant_id, slot_id, seat) WHERE status != 'cancelled';
+CREATE INDEX IF NOT EXISTS idx_slots_when ON schedule_slots(tenant_id, resource_id, starts_at);
+CREATE INDEX IF NOT EXISTS idx_slots_service ON schedule_slots(tenant_id, service, starts_at);
+CREATE INDEX IF NOT EXISTS idx_bookings_patient ON schedule_bookings(tenant_id, patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_bookings_slot ON schedule_bookings(tenant_id, slot_id, status);
+CREATE INDEX IF NOT EXISTS idx_schedule_events ON schedule_events(tenant_id, booking_id, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at);
 CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(tenant_id, channel_id, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status);

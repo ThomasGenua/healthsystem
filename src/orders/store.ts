@@ -34,6 +34,7 @@
  * reason, and refuses to leave it belonging to nobody.
  */
 import { randomUUID } from "node:crypto";
+import { an } from "../core/text.ts";
 import type { Db } from "../db.ts";
 
 export type OrderCategory = "lab" | "imaging" | "procedure" | "referral" | "other";
@@ -218,7 +219,7 @@ export class OrderStore {
       throw new Error("an order needs somebody responsible for reading the result");
     }
     const o = this.require(orderId);
-    if (o.status !== "draft") throw new Error(`a ${o.status} order cannot be placed again`);
+    if (o.status !== "draft") throw new Error(`${an(o.status)} order cannot be placed again`);
     return this.db.transaction(() => {
       const now = new Date().toISOString();
       this.db.sql
@@ -261,7 +262,7 @@ export class OrderStore {
   /** The lab picked up the specimen, the department scheduled the scan. */
   start(orderId: string, by: Actor, detail?: string): OrderRow {
     const o = this.require(orderId);
-    if (o.status !== "placed") throw new Error(`a ${o.status} order cannot be started`);
+    if (o.status !== "placed") throw new Error(`${an(o.status)} order cannot be started`);
     return this.transition(orderId, "in-progress", by, detail);
   }
 
