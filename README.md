@@ -34,8 +34,9 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Closed-loop referrals**, where a deadline passes with nothing happening and the referral appears on a chase list rather than going quiet.
 - **Results whose acknowledgement cannot be inherited**, so a corrected value never arrives already signed off by somebody who read the old one.
 - **A medication list that says what the patient is taking**, and an allergy check that reports "nobody asked" rather than "no contraindications".
+- **A chart summary that declares what it could not include**, because a summary is read as complete and an empty panel is not the same as none.
 
-315 tests. Backend first, tests before UI.
+324 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -86,7 +87,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 315 tests
+npm test          # 324 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -470,6 +471,28 @@ That refusal is the point. A reconciliation marked done with lines nobody resolv
 ### What is deliberately not here
 
 The mechanism is here; the clinical content is not. A drug interaction table that is 80% complete is one a prescriber learns to trust, and the missing 20% is then invisible — worse than the gap it was meant to close. Portage ships a deliberately small cross-reactivity set covering the classes with the clearest consensus, and takes a licensed interaction database through the `InteractionSource` seam for anything more. Same posture as the terminology loaders: build the seam, do not fake the content.
+
+## The clinician workspace
+
+Section 2 asks for a longitudinal view a clinician can open and act from. The temptation is to treat that as presentation — join the tables, render the panels — and the reason it is not is what the module is built around.
+
+**A summary is read as complete.** That is its entire clinical function: a clinician opens it precisely so they do not have to go looking, and having looked, they proceed on the basis that what is there is what there is.
+
+So the dangerous failure is not an error. It is a section that came back short — a store that threw and was caught, a list truncated at fifty, a category nobody wired in — rendering as an empty panel that means "none" when it actually means "not asked". An empty allergy panel is the same lie as an empty allergy list, and the same one §5 refuses to tell.
+
+Every section therefore carries its own completeness, and the summary carries `complete` and `omissions`:
+
+- a section that **could not be loaded** says so, and its omission text says the panel is empty because it failed rather than because there is nothing;
+- a section that was **cut short** says how many it dropped;
+- a store that is **not configured** in this deployment is an omission, not a blank.
+
+A failing store does not take the chart down — six panels beat an error page — but the panel it leaves behind never passes for "none". `complete === false` is the flag a renderer must surface, not a detail it may ignore.
+
+Allergy status is carried to the top of the summary rather than left inside its panel, and read from the store rather than inferred from the panel's contents. Inferring it would undo the distinction §5 exists for: a clinician scanning a chart has to see "never asked" without interpreting an empty box.
+
+`worklist()` is the same idea across the day rather than across one patient. A clinician's work is not one queue — results wait in one place, referrals in another, tasks in a third, and each system reports its own as though it were the whole picture. The value of a single view is that nothing is owed to them somewhere they are not looking, which is only true if the view says what it could not reach.
+
+The module owns no data and keeps no second copy of anything. It assembles from the stores that already exist, declares what it assembled, and is honest about the rest.
 
 ## Tenancy
 
