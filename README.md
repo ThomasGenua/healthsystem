@@ -37,7 +37,7 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A chart summary that declares what it could not include**, because a summary is read as complete and an empty panel is not the same as none.
 - **A clinical API that cannot serve patient data unaudited**, checked by reading the routing source rather than by remembering.
 
-331 tests. Backend first, tests before UI.
+333 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -88,7 +88,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 331 tests
+npm test          # 333 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -261,6 +261,14 @@ All five are covered, in every settled delivery state including **dead** — a d
 `test/retention-leak.test.ts` proves this by searching the database file for the patient's identifiers after a sweep, rather than by checking the columns the fix was written for — so a copy kept somewhere nobody thought of still fails the test.
 
 **Purging** deletes the rows outright. It reclaims disk and destroys the record that anything happened, so the chain can only be verified from the purge point onward. The chain tip at the purge is retained, so the surviving chain still verifies and `verifiedFrom` reports where it now begins — rather than looking tampered with. Offered because operators sometimes genuinely need it, and deliberately not the default.
+
+### What retention does not touch
+
+Neither control reaches the FHIR facade, and neither reaches the clinical stores — the chart, medications, allergies, orders, results, referrals or tasks. Those hold **the record**, not a log of traffic, and how long a territorial EHR keeps a patient's chart is a clinical governance question, not something an interface engine should answer on a timer.
+
+Worth stating outright, because the alternative reading is available and would be a catastrophe: *"retention is configured"* must not be heard as *"patient data ages out everywhere"*. It ages out of the message log. A patient's allergy to penicillin recorded four years ago is not stale data, and a sweep that deleted it because a number in a config file said `1095` would be destroying the record while reporting success — and it would report success, because deleting rows is exactly what it was asked to do.
+
+`test/retention-boundary.test.ts` pins the line from both sides: it runs the most aggressive policy anyone would write over a fully populated chart and requires every record table to come out unchanged, and it reads the purge path's source and fails if a clinical table is ever named in a `DELETE`. Moving the boundary is then a deliberate act with a failing test attached, in either direction.
 
 `/api/chain/verify` reports both halves of the guarantee:
 
