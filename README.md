@@ -27,7 +27,7 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Silent-feed detection**, so an interface that stopped sending is not mistaken for a quiet night.
 - **Structural tenant isolation** at the persistence layer, checked by reading the source rather than by trusting it.
 
-200 tests. Backend first, tests before UI.
+213 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -78,7 +78,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 200 tests
+npm test          # 213 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -306,13 +306,18 @@ const north = db.forTenant("moh-north"); // same connection, different boundary
 
 A `tenantId` argument is one a caller can forget, and the cost of forgetting it once is a query that reads across custodians — silently, returning plausible results. Here there is nothing to forget: every statement binds the handle's tenant, and reaching another custodian's data means naming them in a `forTenant` call, which is greppable and reviewable.
 
-**That property is checked, not asserted.** `test/tenant-scoping.test.ts` reads the source and requires every statement naming a tenant-scoped table to name `tenant_id`. Behavioural tests only prove the queries someone thought to test are scoped; they say nothing about the fiftieth method or the one added next month. A statement that genuinely spans tenants — the delivery worker's queue sweep, startup reclaim, authentication by key hash — declares itself with a `crosses-tenants:` comment giving the reason, so crossing a boundary is always a visible act rather than an omission.
+Isolation is verified two ways, because neither is sufficient alone. `test/tenant-isolation.test.ts` seeds two custodians with **deliberately colliding identifiers** — the same channel id, the same patient id, the same health number — and asks every accessor whether it leaks. Colliding is the normal case, not an edge one, and it is the only case where a forgotten scope returns the *wrong* patient rather than no patient; a test using distinct ids everywhere would pass against code with no isolation at all.
+
+**And the property is checked structurally, not just asserted behaviourally.** `test/tenant-scoping.test.ts` reads the source and requires every statement naming a tenant-scoped table to name `tenant_id`. Behavioural tests only prove the queries someone thought to test are scoped; they say nothing about the fiftieth method or the one added next month. A statement that genuinely spans tenants — the delivery worker's queue sweep, startup reclaim, authentication by key hash — declares itself with a `crosses-tenants:` comment giving the reason, so crossing a boundary is always a visible act rather than an omission.
 
 Terminology is deliberately **not** tenant-scoped. SNOMED CT CA, LOINC and the classification tables are the shared provincial baseline; copying them per tenant would mean a code meaning one thing in one clinic and another elsewhere.
 
-Two things this changed that were not obvious:
+Ids chosen by a caller are unique per tenant, not per platform: `channels.id` because "adt" is what every site calls its admissions feed, and `fhir_subscriptions.id` because a client may supply one. Ids the engine generates — messages, deliveries, keys — stay globally unique, since a UUID cannot collide and the delivery worker needs to address a row without knowing whose it is.
+
+Three things this changed that were not obvious:
 
 - **The ordering key now leads with the tenant.** It was `channel:destination`, and channel ids are only unique within a tenant — so two custodians who both named a channel `adt` would have shared one ordered queue, and a message stuck at one organization's head would have blocked the other's feed entirely. Strict ordering is a per-destination promise, not a promise to serialise the province.
+- **A second custodian could not create a channel a first had named.** With a platform-wide key on `channels.id`, the second `upsertChannel("adt")` hit the conflict and did nothing — silently. Not a leak, but a worse shape of failure: a feed that reports success and does not exist. Found by the isolation tests, not by review.
 - **The audit truncation check no longer uses SQLite's `AUTOINCREMENT` mark.** That mark counts rows across the whole table, which was exact with one tenant and meaningless with two — every tenant would have reported most of its trail missing. Each tenant now carries its own issued counter, backfilled on upgrade from the old mark so nothing is lost in the transition.
 
 Existing databases migrate in place; see [Upgrading](#upgrading). Rows written before tenancy land in the `default` tenant, and a deployment that never configures a second one behaves exactly as before.

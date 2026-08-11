@@ -82,13 +82,17 @@ CREATE TABLE IF NOT EXISTS tenants (
 
 CREATE TABLE IF NOT EXISTS channels (
   tenant_id TEXT NOT NULL DEFAULT 'default',
-  id TEXT PRIMARY KEY,
+  id TEXT NOT NULL,
   name TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
   config TEXT NOT NULL,
   last_hash TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Per tenant. A channel id is chosen by an operator, and "adt" is what
+  -- every site calls its admissions feed; a key unique across the platform
+  -- would mean the first custodian to use a name took it from everyone else.
+  PRIMARY KEY (tenant_id, id)
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -206,12 +210,14 @@ CREATE TABLE IF NOT EXISTS term_map_entries (
 
 CREATE TABLE IF NOT EXISTS fhir_subscriptions (
   tenant_id TEXT NOT NULL DEFAULT 'default',
-  id TEXT PRIMARY KEY,
+  -- Per tenant, because a client may supply the id on a Subscription.
+  id TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'active',
   criteria TEXT NOT NULL,
   endpoint TEXT NOT NULL,
   payload TEXT NOT NULL DEFAULT 'application/fhir+json',
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (tenant_id, id)
 );
 
 -- Only the SHA-256 of a key is stored. The key itself is shown once, at issue
@@ -372,6 +378,35 @@ const REBUILT_TABLES: Array<{ table: string; columns: string[]; ddl: string }> =
       system TEXT NOT NULL DEFAULT '',
       value TEXT NOT NULL,
       PRIMARY KEY (tenant_id, resource_type, id, system, value)
+    )`,
+  },
+  {
+    table: "channels",
+    columns: ["tenant_id", "id", "name", "enabled", "config", "last_hash", "created_at", "updated_at"],
+    ddl: `CREATE TABLE channels__new (
+      tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+      id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      config TEXT NOT NULL,
+      last_hash TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (tenant_id, id)
+    )`,
+  },
+  {
+    table: "fhir_subscriptions",
+    columns: ["tenant_id", "id", "status", "criteria", "endpoint", "payload", "created_at"],
+    ddl: `CREATE TABLE fhir_subscriptions__new (
+      tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+      id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      criteria TEXT NOT NULL,
+      endpoint TEXT NOT NULL,
+      payload TEXT NOT NULL DEFAULT 'application/fhir+json',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (tenant_id, id)
     )`,
   },
   {
@@ -599,9 +634,8 @@ export class Db {
     this.sql
       .prepare(
         `INSERT INTO channels (tenant_id, id, name, enabled, config) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET name = excluded.name, enabled = excluded.enabled,
-           config = excluded.config, updated_at = datetime('now')
-         WHERE channels.tenant_id = excluded.tenant_id`
+         ON CONFLICT(tenant_id, id) DO UPDATE SET name = excluded.name, enabled = excluded.enabled,
+           config = excluded.config, updated_at = datetime('now')`
       )
       .run(this.tenantId, id, name, enabled ? 1 : 0, config);
   }

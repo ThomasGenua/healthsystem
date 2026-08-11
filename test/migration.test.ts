@@ -19,17 +19,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Db } from "../src/db.ts";
 
-/** channels, messages and deliveries as v0.3.0 defined them, before retention existed. */
+/** messages and deliveries as v0.3.0 defined them, before retention existed. */
 const V030 = `
-CREATE TABLE channels (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  enabled INTEGER NOT NULL DEFAULT 1,
-  config TEXT NOT NULL,
-  last_hash TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
 CREATE TABLE messages (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   id TEXT NOT NULL UNIQUE,
@@ -130,6 +121,12 @@ test("rows written before the digest column verify by the older formula", () => 
     // it always was.
     {
       const old = new DatabaseSync(path);
+      old.exec(`CREATE TABLE channels (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+        config TEXT NOT NULL, last_hash TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );`);
       const raw = "legacy message";
       const hash = createHash("sha256").update("").update("|").update("c").update("|").update(raw).digest("hex");
       old.prepare("INSERT INTO channels (id, name, config, last_hash) VALUES ('c', 'c', '{}', ?)").run(hash);
@@ -150,6 +147,47 @@ test("rows written before the digest column verify by the older formula", () => 
     const chain = db.verifyChain("c");
     assert.equal(chain.ok, true, "and the chain must survive the join between the two formulas");
     assert.equal(chain.checked, 2);
+    db.close();
+  } finally {
+    cleanup();
+  }
+});
+
+test("an upgraded database can hold two custodians with the same channel id", () => {
+  // The rebuild path for keys that were unique across the whole database. On
+  // an upgraded node these tables keep their old shape unless something
+  // rewrites them, and the failure is quiet: the second custodian's
+  // upsertChannel hits the conflict and does nothing, so their feed reports
+  // success and does not exist.
+  const { path, cleanup } = legacyDb();
+  try {
+    {
+      const old = new DatabaseSync(path);
+      old.exec(`CREATE TABLE channels (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        config TEXT NOT NULL,
+        last_hash TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );`);
+      old.prepare("INSERT INTO channels (id, name, config) VALUES ('adt', 'admissions', '{}')").run();
+      old.close();
+    }
+
+    const db = new Db(path);
+    // What was already there belongs to the default tenant and survives.
+    assert.equal(db.listChannels().length, 1);
+    assert.equal(db.getChannel("adt")!.name, "admissions");
+
+    db.createTenant("north", "Northern Health");
+    db.createTenant("south", "Southern Health");
+    db.forTenant("north").upsertChannel("adt", "north admissions", true, "{}");
+    db.forTenant("south").upsertChannel("adt", "south admissions", true, "{}");
+
+    assert.equal(db.forTenant("north").getChannel("adt")!.name, "north admissions");
+    assert.equal(db.forTenant("south").getChannel("adt")!.name, "south admissions", "and neither took the name");
     db.close();
   } finally {
     cleanup();
