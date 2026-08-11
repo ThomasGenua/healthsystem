@@ -37,8 +37,9 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A chart summary that declares what it could not include**, because a summary is read as complete and an empty panel is not the same as none.
 - **A clinical API that cannot serve patient data unaudited**, checked by reading the routing source rather than by remembering.
 - **Proxy access that lapses on the day it was set to**, because nothing about a child's sixteenth birthday generates an event.
+- **Quality measures that refuse a rate they cannot stand behind**, because the patients a measure cannot assess are the ones nobody managed.
 
-344 tests. Backend first, tests before UI.
+357 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -89,7 +90,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 344 tests
+npm test          # 357 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -557,6 +558,30 @@ What the patient is shown is a **category**, not the clinical justification. "Yo
 ### The patient's own access log
 
 Section 11 requires a patient be able to see who looked at their record, and a proxy's accesses are in it under the proxy's own name. *"My ex-husband opened my chart four times last month"* is exactly what a patient has a right to find out, and it is unanswerable if a proxy's reads are recorded as the patient's own. Refused attempts are in it too.
+
+## Registries and care gaps
+
+Section 12 asks who in a population needs something they have not had. The arithmetic is easy. The denominator is not, and that is what this module is about.
+
+A diabetes registry reports control by dividing patients whose last HbA1c was under target by patients with a recent HbA1c. Patients with **no** recent HbA1c fall out of both halves — and those are, precisely and not coincidentally, the people nobody has managed. So the measure reads best exactly where care is worst, and it does so silently: no error, no warning, a clean percentage on a dashboard a health region plans around.
+
+The same shape appears throughout quality measurement. Exclusions accumulate, each individually defensible, until a measure describes a carefully chosen subset and is reported as though it described a population.
+
+So:
+
+- **The denominator is the whole cohort**, not its assessable part. A patient with no recent test counts against the measure rather than vanishing from it.
+- **`unclassified` is returned beside the numerator and denominator**, with a reason per patient: no qualifying observation, a value that is not numeric, no birth date to apply an age criterion to.
+- **`rate` is `null` when too much of the cohort could not be assessed.** A number that is wrong is worse than no number, because a number gets planned around. The caveat says why in words, so a dashboard cannot render a bare percentage.
+
+The property that follows is the one worth stating: **a measure must get worse when somebody stops being tested, never better.** A measure that improves when patients drop out of testing is measuring the wrong thing, and it is tested for directly.
+
+`"sample haemolysed"` is unclassified, not a pass. Parsed as a number it is `0`, which is below every target — and would count as excellent control.
+
+An empty cohort reports `null` rather than `0%`. Zero over zero is not zero per cent, and a dashboard rendering 0% would be read as terrible care.
+
+Cohort membership carries **why** — `condition diabetes`, `taking metformin, aged 54` — so a clinician can disagree with one patient rather than with the registry. A list nobody can argue with in detail is one they dismiss wholesale. A condition a clinician retracted takes the patient off the register, and a drug the patient has stopped taking does not keep them on it: the register is of people, not of prescriptions.
+
+Care gaps distinguish **never done** from **overdue**, never-done first. They are different conversations — one patient has never been offered the test, the other has been and did not come back. A gap can be satisfied by a medication rather than a result, because "diabetic patients on a statin" is closed by a prescription, and a rule engine that only understood results would recall every patient already treated.
 
 ## Tenancy
 
