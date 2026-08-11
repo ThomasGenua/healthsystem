@@ -40,7 +40,7 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Quality measures that refuse a rate they cannot stand behind**, because the patients a measure cannot assess are the ones nobody managed.
 - **Double-booking refused by the database**, not by a check that a second clerk can race past.
 
-368 tests. Backend first, tests before UI.
+369 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -91,7 +91,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 368 tests
+npm test          # 369 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```

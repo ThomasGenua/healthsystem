@@ -18,6 +18,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Db } from "../src/db.ts";
+import { ClinicalRecord } from "../src/clinical/record.ts";
+import { MedicationStore } from "../src/meds/store.ts";
+import { OrderStore } from "../src/orders/store.ts";
+import { ReferralStore } from "../src/work/referrals.ts";
+import { Schedule } from "../src/schedule/store.ts";
+
+const ACTOR = { actorId: "dr-tetso", actorKind: "practitioner" };
 
 /** messages and deliveries as v0.3.0 defined them, before retention existed. */
 const V030 = `
@@ -209,6 +216,106 @@ test("migrating twice is a no-op, so every boot is not a schema change", () => {
     const second = new Db(path);
     assert.deepEqual(names(second), after, "and the second must find nothing left to do");
     second.close();
+  } finally {
+    cleanup();
+  }
+});
+
+test("a v0.3.0 database upgrades into the whole clinical platform, usable", () => {
+  // Fifteen tables arrived after v0.3.0 — the chart, medications, allergies,
+  // orders, results, referrals, tasks, the schedule, patient authority. They
+  // are created by CREATE TABLE IF NOT EXISTS, which is the easy half.
+  //
+  // The half worth testing is that the result is usable rather than merely
+  // present. Indexes are applied after the migration rather than with the
+  // tables, tenant_id is added by ALTER for tables that predate it and is
+  // already there for tables that do not, and the scheduler's guarantee is a
+  // partial unique index that has to exist on an upgraded database exactly as
+  // it does on a fresh one. An upgrade that produced tables without their
+  // constraints would be worse than one that failed to open: the site runs,
+  // and double-books.
+  const { path, cleanup } = legacyDb();
+  try {
+    // A message in the old shape, so the upgrade is carrying real rows.
+    const old = new DatabaseSync(path);
+    old
+      .prepare(
+        `INSERT INTO messages (id, channel_id, source_type, content_type, raw, hash)
+         VALUES ('m1', 'adt', 'test', 'text/plain', 'MSH|old', 'deadbeef')`
+      )
+      .run();
+    old.close();
+
+    const db = new Db(path);
+    try {
+      assert.equal(db.listMessages({ channelId: "adt" }).length, 1, "the old row survived");
+
+      const record = new ClinicalRecord(db);
+      const meds = new MedicationStore(db);
+      const orders = new OrderStore(db);
+      const referrals = new ReferralStore(db);
+      const schedule = new Schedule(db);
+
+      record.record({
+        entryType: "Patient",
+        patientId: "NT123456",
+        content: { resourceType: "Patient", identifier: [{ system: "urn:jhn", value: "NT123456" }], name: [{ family: "Beaulieu" }] },
+        authorId: "adt-feed",
+        authorKind: "device",
+      });
+      meds.recordAllergy({ patientId: "NT123456", display: "Penicillin", ingredient: "penicillin", criticality: "high", by: ACTOR });
+      const o = orders.create({
+        patientId: "NT123456",
+        category: "lab",
+        code: "2823-3",
+        display: "Potassium",
+        indication: "Electrolyte check",
+        by: ACTOR,
+      });
+      orders.place(o.id, { ...ACTOR, responsibleId: "dr-tetso" });
+      orders.report({ patientId: "NT123456", orderId: o.id, code: "2823-3", display: "Potassium", value: "7.1", reportedBy: "lab" });
+      referrals.create({
+        patientId: "NT123456",
+        fromService: "Primary Care",
+        toService: "Nephrology",
+        indication: "Rising potassium",
+        by: ACTOR,
+      });
+
+      assert.equal(record.verifyChart("NT123456").ok, true, "the chart chain works on an upgraded database");
+      assert.equal(meds.allergyStatus("NT123456"), "documented");
+      assert.equal(orders.unacknowledged().length, 1);
+      assert.equal(referrals.open().length, 1);
+      assert.equal(record.patientIndex.search({ identifier: "NT123456" }).length, 1, "and the derived index too");
+
+      // The scheduler's guarantee is an index, so it has to have been applied.
+      const slot = schedule.openSlot({
+        resourceId: "dr-tetso",
+        service: "General practice",
+        startsAt: "2026-07-01T09:00:00Z",
+        endsAt: "2026-07-01T09:15:00Z",
+      });
+      schedule.book({ slotId: slot.id, patientId: "NT123456", reason: "Review", by: ACTOR });
+      assert.throws(
+        () =>
+          db.sql
+            .prepare(
+              `INSERT INTO schedule_bookings
+                 (tenant_id, id, slot_id, patient_id, seat, status, reason, priority, booked_by, booked_at, created_at)
+               VALUES ('default', 'raced', ?, 'NT999', 0, 'booked', 'raced in', 'routine', 'x', 'y', 'z')`
+            )
+            .run(slot.id),
+        /UNIQUE constraint failed/,
+        "an upgrade that produced tables without their constraints runs, and double-books"
+      );
+
+      // And the tenancy the whole platform rests on reached the new tables.
+      db.createTenant("north", "Northern Health");
+      const north = new ClinicalRecord(db.forTenant("north"));
+      assert.equal(north.chart("NT123456").length, 0, "the upgraded rows are the default tenant's, not everyone's");
+    } finally {
+      db.close();
+    }
   } finally {
     cleanup();
   }
