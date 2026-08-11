@@ -33,8 +33,9 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A unified inbox** where work cannot be closed without evidence or left belonging to nobody unseen.
 - **Closed-loop referrals**, where a deadline passes with nothing happening and the referral appears on a chase list rather than going quiet.
 - **Results whose acknowledgement cannot be inherited**, so a corrected value never arrives already signed off by somebody who read the old one.
+- **A medication list that says what the patient is taking**, and an allergy check that reports "nobody asked" rather than "no contraindications".
 
-302 tests. Backend first, tests before UI.
+315 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -85,7 +86,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 302 tests
+npm test          # 315 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -437,6 +438,38 @@ Three more decisions:
 Queues are ordered by how abnormal the value is, then by age, and the acknowledgement window comes from the same place: an hour for a panic value, a day for an abnormal one, three days for a normal one. Normal results are on the list too — "it was normal" is known after reading it, not before, and the results most often missed are the ones assumed unremarkable.
 
 `awaitingResult()` covers the other silence. A preliminary result does not answer an order: a blood culture reporting "gram-positive cocci" at 24 hours and never speciating is precisely the wait worth chasing, and an earlier version of that query dropped it from the list. Whether an order has been answered is now decided in exactly one place, and the query reads that decision rather than making it a second time.
+
+## Medications
+
+Section 5's failure is a list that records what was *prescribed* and is read as what is *in the patient*. Those are different claims. A prescription written eighteen months ago is evidence that somebody intended a drug; the patient who stopped their statin because of muscle aches and mentioned it to nobody has a chart saying otherwise. Every dose calculated around that list is calculated around a drug that is not there.
+
+So provenance is required on every statement — `prescribed`, `patient-reported`, `pharmacy-dispense`, `reconciled`, `external-record`, with no default, because a default is a guess about provenance written into the record as a fact. Adherence is a separate column from status, so a prescription can be active while the patient is not taking it. `current()` returns what the patient is taking; `current({ asPrescribed: true })` returns the other list. Both are real, and conflating them is the error.
+
+Statements are appended, never updated. A dose change is a new row superseding the old one, so "what was the patient on when this happened" stays answerable. Stopping requires a reason: a drug that vanishes with nothing recorded is indistinguishable from one removed by mistake, and the next prescriber's response to those two should be opposite.
+
+### Nobody asked is not the same as no known allergies
+
+This is what the allergy table exists for. An allergy list that is empty because somebody asked and the answer was none, and one that is empty because nobody has ever asked, are clinically opposite — and in most systems they render identically, as a blank panel. A check run against the second returns "no contraindications found", which is a reassuring answer to a question that was never put.
+
+So "no known drug allergies" is a **row**: an assertion with an author and a time. Its absence means nobody has asked, and `allergyStatus()` returns three values rather than two. `never-asked` is a finding in its own right, at severity `severe`, and is never folded into `clear`.
+
+The same refusal-to-guess applies to interactions. A source that cannot answer — an expired licence, an unreachable service — produces a finding saying so, not silence. A deployment with no interaction source configured reports interactions as unchecked rather than clear.
+
+### What blocks, and what an override is for
+
+The check never decides. A blocking finding means `prescribe` refuses without an override carrying a reason — but the prescriber may always proceed, because an emergency does not wait for an allergy history and a system that refuses outright is one clinicians route around. What must be true is that proceeding was an act somebody can be shown to have taken: the override records the reason **and the findings that were shown**, so a considered decision is distinguishable afterwards from a reflex click.
+
+Findings are ordered worst-first, independently of the order the check discovers them in. A contraindication below three informational lines is one that gets scrolled past.
+
+### Reconciliation
+
+Admission, transfer and discharge are where lists diverge. A reconciliation is seeded from the current list rather than starting empty — an empty form is completed by doing nothing — and **cannot be completed while any line is undecided**, with the unresolved medications named in the refusal so it is actionable.
+
+That refusal is the point. A reconciliation marked done with lines nobody resolved is worse than one never started, because the chart now says the work happened and the next clinician has no reason to look again. Decisions are applied to the list on completion, which is what makes it a reconciliation rather than a questionnaire, and one left open appears in `incompleteReconciliations()` rather than sitting invisibly.
+
+### What is deliberately not here
+
+The mechanism is here; the clinical content is not. A drug interaction table that is 80% complete is one a prescriber learns to trust, and the missing 20% is then invisible — worse than the gap it was meant to close. Portage ships a deliberately small cross-reactivity set covering the classes with the clearest consensus, and takes a licensed interaction database through the `InteractionSource` seam for anything more. Same posture as the terminology loaders: build the seam, do not fake the content.
 
 ## Tenancy
 

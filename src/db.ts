@@ -48,6 +48,11 @@ export const TENANT_SCOPED_TABLES = [
   "orders",
   "order_results",
   "order_events",
+  "medication_statements",
+  "allergies",
+  "med_reconciliations",
+  "med_reconciliation_items",
+  "medication_events",
 ] as const;
 
 /**
@@ -528,6 +533,148 @@ CREATE TABLE IF NOT EXISTS order_events (
   detail TEXT
 );
 
+-- What the patient is taking, and what they react to.
+--
+-- Both are appended and never updated, because both are claims made by
+-- somebody at a time, and the previous claim stays true about that moment. A
+-- medication list is not a set of current facts; it is a history of assertions
+-- about what a person is taking, and the difference shows up the moment two
+-- sources disagree.
+CREATE TABLE IF NOT EXISTS medication_statements (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  encounter_id TEXT,
+  code TEXT NOT NULL,
+  code_system TEXT,
+  display TEXT NOT NULL,
+  -- The ingredient or class, for duplicate-therapy checking. Two brands of
+  -- the same drug from two prescribers is a real and common way to double a
+  -- dose.
+  ingredient TEXT,
+  dose TEXT,
+  route TEXT,
+  frequency TEXT,
+  -- prescribed | patient-reported | pharmacy-dispense | reconciled |
+  -- external-record. Provenance is not decoration here: "the prescription
+  -- exists" and "the patient is taking it" are different claims, and a list
+  -- that cannot tell them apart is the commonest medication error there is.
+  source TEXT NOT NULL,
+  -- active | completed | stopped | on-hold | entered-in-error
+  status TEXT NOT NULL DEFAULT 'active',
+  -- taking | not-taking | taking-differently | unknown. Separate from status,
+  -- because a prescription can be active while the patient stopped it months
+  -- ago and told nobody.
+  adherence TEXT NOT NULL DEFAULT 'unknown',
+  indication TEXT,
+  prescriber_id TEXT,
+  -- Required to stop a medication. A drug that vanishes with no reason is
+  -- indistinguishable from one deleted by accident.
+  stop_reason TEXT,
+  effective_from TEXT,
+  effective_to TEXT,
+  -- The statement this one replaces. A dose change is a new row.
+  supersedes TEXT,
+  asserted_by TEXT NOT NULL,
+  asserted_at TEXT NOT NULL,
+  source_message_id TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Allergies and intolerances, including the assertion that there are none.
+--
+-- The distinction this table exists for: an empty allergy list because nobody
+-- asked, and an empty one because somebody asked and the answer was none, are
+-- clinically opposite and render identically in most systems. A check run
+-- against the first returns "no interactions found", which is a reassuring
+-- answer to a question that was never put. So "no known allergies" is a row —
+-- an assertion with an author and a time — and its absence means nobody has
+-- asked.
+CREATE TABLE IF NOT EXISTS allergies (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  -- Null on a no-known-allergies assertion, which is the whole point of it.
+  code TEXT,
+  code_system TEXT,
+  display TEXT,
+  ingredient TEXT,
+  -- allergy | intolerance | no-known-allergies
+  kind TEXT NOT NULL DEFAULT 'allergy',
+  -- low | high | unable-to-assess. Anaphylaxis and a rash are not the same
+  -- contraindication.
+  criticality TEXT NOT NULL DEFAULT 'unable-to-assess',
+  reaction TEXT,
+  -- active | resolved | entered-in-error
+  status TEXT NOT NULL DEFAULT 'active',
+  supersedes TEXT,
+  asserted_by TEXT NOT NULL,
+  asserted_at TEXT NOT NULL,
+  source_message_id TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Medication reconciliation at a transition of care.
+--
+-- Admission, transfer and discharge are where lists diverge, and a
+-- reconciliation that was started and never finished is worse than none: the
+-- chart shows the work was done.
+CREATE TABLE IF NOT EXISTS med_reconciliations (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  encounter_id TEXT,
+  -- admission | transfer | discharge | ambulatory-review
+  transition TEXT NOT NULL,
+  -- open | completed | abandoned
+  status TEXT NOT NULL DEFAULT 'open',
+  started_by TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  completed_by TEXT,
+  completed_at TEXT,
+  abandon_reason TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- One line of a reconciliation: a medication, and what was decided about it.
+CREATE TABLE IF NOT EXISTS med_reconciliation_items (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  reconciliation_id TEXT NOT NULL,
+  statement_id TEXT,
+  display TEXT NOT NULL,
+  -- What the two sides said, so the discrepancy is on the record rather than
+  -- only its resolution.
+  prior TEXT,
+  proposed TEXT,
+  -- continue | stop | modify | start | unresolved
+  decision TEXT NOT NULL DEFAULT 'unresolved',
+  reason TEXT,
+  decided_by TEXT,
+  decided_at TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS medication_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  statement_id TEXT,
+  at TEXT NOT NULL,
+  event TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_kind TEXT NOT NULL,
+  detail TEXT,
+  -- Set when a prescriber signed past a safety finding. The override and its
+  -- reason are the record that the warning was seen, which is the only thing
+  -- that distinguishes a considered decision from a reflex click.
+  overrides TEXT
+);
+
 -- Lookup index over the charts.
 --
 -- Derived, not authoritative. Every column here is recoverable from the
@@ -616,6 +763,14 @@ CREATE INDEX IF NOT EXISTS idx_results_patient ON order_results(tenant_id, patie
 CREATE INDEX IF NOT EXISTS idx_results_unack ON order_results(tenant_id, acknowledged_at, ack_due_by);
 CREATE INDEX IF NOT EXISTS idx_results_supersedes ON order_results(tenant_id, supersedes);
 CREATE INDEX IF NOT EXISTS idx_order_events ON order_events(tenant_id, order_id, seq);
+CREATE INDEX IF NOT EXISTS idx_meds_patient ON medication_statements(tenant_id, patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_meds_supersedes ON medication_statements(tenant_id, supersedes);
+CREATE INDEX IF NOT EXISTS idx_meds_ingredient ON medication_statements(tenant_id, patient_id, ingredient);
+CREATE INDEX IF NOT EXISTS idx_allergies_patient ON allergies(tenant_id, patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_allergies_supersedes ON allergies(tenant_id, supersedes);
+CREATE INDEX IF NOT EXISTS idx_medrec_patient ON med_reconciliations(tenant_id, patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_medrec_items ON med_reconciliation_items(tenant_id, reconciliation_id);
+CREATE INDEX IF NOT EXISTS idx_med_events ON medication_events(tenant_id, patient_id, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at);
 CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(tenant_id, channel_id, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status);
