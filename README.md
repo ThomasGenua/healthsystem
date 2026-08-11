@@ -4,6 +4,18 @@ A health integration engine built for northern operating conditions. HL7 v2 in a
 
 The design targets the interoperability posture Canadian jurisdictions are converging on through Canada Health Infoway: PS-CA patient summaries, CA:FeX FHIR exchange, and CA:eReC eReferral and eConsult, operated over networks where a 5 Mbps satellite tail and a multi-hour outage are normal conditions rather than incidents. Every acknowledgement means the message is durably queued, not merely seen, and an ordered channel resumes exactly where it stopped.
 
+## Contents
+
+**Getting started** — [Status](#status) · [Requirements](#requirements) · [Quickstart](#quickstart)
+
+**The clinical platform** — [The clinical record](#the-clinical-record) · [The inbox](#the-inbox) · [Closing referral loops](#closing-referral-loops) · [Orders and results](#orders-and-results) · [Medications](#medications) · [The clinician workspace](#the-clinician-workspace) · [Scheduling](#scheduling) · [Registries and care gaps](#registries-and-care-gaps)
+
+**Privacy and access** — [Security](#security) · [Audit trail](#audit-trail) · [Patient access](#patient-access) · [Consent directives and breaking glass](#consent-directives-and-breaking-glass) · [The clinical API, and audit by construction](#the-clinical-api-and-audit-by-construction) · [Retention](#retention) · [What the chains prove](#what-the-chains-prove) · [Tenancy](#tenancy)
+
+**Running it** — [Upgrading](#upgrading) · [Backup](#backup) · [Monitoring](#monitoring) · [Throughput](#throughput) · [Durability under failure](#durability-under-failure) · [Crash recovery](#crash-recovery)
+
+**Reference** — [Architecture](#architecture) · [Channels](#channels) · [Character sets](#character-sets) · [Mappings](#mappings) · [API](#api) · [FHIR facade](#fhir-facade) · [Terminology](#terminology) · [Conformance packs](#conformance-packs) · [Subscriptions](#subscriptions) · [Connectors](#connectors) · [Admin UI](#admin-ui) · [Loading a licensed terminology release](#loading-a-licensed-terminology-release) · [Satellite demo](#satellite-demo) · [Roadmap](#roadmap)
+
 ## Status
 
 v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources; filter, split, mapping and validation pipeline; retrying ordered destinations with DLQ and replay; hash-chained lineage; FHIR R4 facade; terminology service; PS-CA / CA:FeX / CA:eReC conformance packs; rest-hook Subscriptions; satellite outage demo; admin UI) plus:
@@ -51,6 +63,10 @@ Honest limits, so nobody discovers them in production:
 - **`node:sqlite` is still flagged experimental on Node 22.** Durability rests on it, so run Node 24+ in production, where it is stable. The engine warns at boot when it is running below 24; the supported floor stays at 22.18 so an upgrade breaks nobody. CI covers both.
 - **The shipped terminology pack is a labelled demo subset.** SNOMED CT CA, LOINC, pCLOCD, ICD-10-CA and CCI are licensed distributions; the loaders are here, the content is not.
 - **The conformance packs are not certified.** They encode the published profiles as data and pass the shipped fixtures, but no projectathon has scored them.
+- **The clinical platform has no user interface.** Every module described below — the chart, medications, orders, referrals, scheduling, registries — is a store and an HTTP API with tests. The admin UI covers interface operations only. This is deliberate ordering, not an oversight, but "a clinician can use this today" is not a claim being made.
+- **No patient portal.** `src/patient/access.ts` and `src/patient/consent.ts` are built and tested and are not mounted on the API, because a portal is a different trust boundary — a patient authenticating as themselves, and a proxy as somebody entitled to act for them, neither of which is an operator with an `admin` key. Serving them from an admin-scoped API would make the scope model say something false about who is calling.
+- **No clinical decision support content.** The medication safety mechanism is here — the check, the severities, the override with its record — and ships a deliberately small cross-reactivity set covering the classes with the clearest consensus. Drug interactions come from a licensed database through the `InteractionSource` seam. An interaction table that is 80% complete is one prescribers learn to trust, and the missing 20% is then invisible.
+- **Nothing here uses machine learning.** Section 7 of the requirements asks for it; nothing in this repository does anything of the sort, and no output should be read as though it did.
 
 ## Requirements
 
@@ -931,7 +947,22 @@ src/
   conformance/validator.ts declarative profile rules and capability self-check
   fhir/store.ts       versioned FHIR resource store behind the facade
   fhir/subscriptions.ts    rest-hook subscriptions on the durable queue
-  api/admin.ts        admin, ingest, terminology, conformance and FHIR API
+
+  clinical/record.ts       the append-only chart, hash chained per patient
+  clinical/patients.ts     patient index, derived and rebuildable from the log
+  clinical/notes.ts        drafts, signatures, co-signatures, addenda
+  meds/store.ts            medication list, allergies, reconciliation
+  meds/safety.ts           the check that runs before a prescription is signed
+  orders/store.ts          orders, results, and acknowledgement that cannot be inherited
+  work/tasks.ts            the unified inbox
+  work/referrals.ts        closed-loop referrals and the stalled query
+  schedule/store.ts        slots and bookings, double-booking refused by an index
+  population/registry.ts   cohorts, care gaps, quality measures with honest denominators
+  patient/access.ts        patient and proxy authority, result release timing
+  patient/consent.ts       consent directives and break-glass
+  workspace/summary.ts     the assembled chart, declaring what it left out
+
+  api/admin.ts        admin, ingest, clinical, terminology, conformance and FHIR API
   api/tls.ts          TLS and mutual TLS for the listener
   api/ratelimit.ts    per-principal and per-source token buckets
   api/ui.html         single-file admin UI served at GET /
@@ -940,6 +971,7 @@ src/
   auth/jwt.ts         OAuth 2.0 / SMART bearer validation against a JWKS
   auth/gate.ts        the one check every request passes
   audit/store.ts      hash-chained access trail
+  core/text.ts        small helpers for messages people read
   core/retention.ts   payload redaction and purge under a retention policy
   core/backup.ts      verified online snapshots
   connectors/sql.ts   Postgres and MySQL polling clients
@@ -1197,7 +1229,14 @@ Everything streams and loads in batches, because a SNOMED snapshot runs to milli
 
 ## Roadmap
 
-- Projectathon readiness: pack tightening against the published PS-CA, CA:FeX and CA:eReC test scripts
-- Terminology: ValueSet and ConceptMap import from release formats (concepts land today; memberships and mappings are still pack JSON)
-- Subscription topics and the R5 backport, alongside today's R4 rest-hook criteria
-- Horizontal operation: today a Portage node is a single writer, which suits a community site but not a territorial hub
+What is genuinely next, in the order it would be worth doing:
+
+**The patient-facing surface.** The hardest part is already built and tested — directives, proxy authority that expires, release timing, the access log. What is missing is its trust boundary: patient identity rather than an issued operator credential, a scope vocabulary of its own, and `PatientAccess.may()` consulted per request instead of a scope check. Until that exists, "patients can reach their record" is not true.
+
+**A clinician-facing interface.** Every store below is exercised only by tests and HTTP. The chart summary is designed for it — `complete` and `omissions` exist so a renderer can be honest about a short panel — but nothing renders them yet.
+
+**Interoperability, continued.** Projectathon readiness: pack tightening against the published PS-CA, CA:FeX and CA:eReC test scripts. Terminology ValueSet and ConceptMap import from release formats (concepts land today; memberships and mappings are still pack JSON). Subscription topics and the R5 backport, alongside today's R4 rest-hook criteria.
+
+**Horizontal operation.** A Portage node is a single writer, which suits a community site and not a territorial hub. The instance lock makes that a refusal rather than a corruption, which is the right failure — but it is still a ceiling.
+
+**Bulk data conversion.** Section 15 asks for migration from incumbent systems, and there is nothing here for it: no legacy extract readers, no reconciliation report, no way to tell an operator which records did not convert and why. The clinical stores are append-only and provenance-carrying, which is the right shape to migrate into; the migration itself is unwritten.
