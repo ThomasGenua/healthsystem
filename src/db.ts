@@ -59,6 +59,8 @@ export const TENANT_SCOPED_TABLES = [
   "schedule_slots",
   "schedule_bookings",
   "schedule_events",
+  "consent_directives",
+  "break_glass",
 ] as const;
 
 /**
@@ -846,6 +848,84 @@ CREATE TABLE IF NOT EXISTS schedule_events (
   detail TEXT
 );
 
+-- A patient's instruction about who may see their record.
+--
+-- Provincial EHRs call this a consent directive or a lockbox: a patient may
+-- withhold their record from a provider, or from a class of provider, and the
+-- system must honour it. The instruction is a clinical fact about the patient
+-- (they do not want this person reading this), and it lives here rather than
+-- in a configuration file for the same reason allergies do.
+--
+-- Every directive is overridable in an emergency, because a patient
+-- unconscious in a resuscitation room cannot lift their own lockbox and a
+-- system that made it impossible would kill somebody. What makes that safe is
+-- not the difficulty of the override; it is that overriding is loud. See
+-- break_glass below.
+CREATE TABLE IF NOT EXISTS consent_directives (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  -- withhold-from-provider | withhold-from-organization | withhold-all
+  kind TEXT NOT NULL,
+  -- Who is being withheld from. Null on withhold-all, which is the blanket
+  -- instruction: nobody outside the circle of care that created a record.
+  target_id TEXT,
+  -- Optional narrowing: only these entry types are withheld. Null means the
+  -- whole record.
+  scope TEXT,
+  -- The patient's own words, kept because a directive without a reason is one
+  -- a reviewer cannot weigh against an emergency.
+  reason TEXT,
+  -- active | revoked | expired
+  status TEXT NOT NULL DEFAULT 'active',
+  effective_from TEXT NOT NULL,
+  expires_at TEXT,
+  revoked_at TEXT,
+  revoked_by TEXT,
+  recorded_by TEXT NOT NULL,
+  recorded_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Emergency access taken past a directive.
+--
+-- The row that makes a lockbox real. An override with no record is
+-- indistinguishable from no lockbox at all, and worse than none: everybody
+-- learns that breaking glass costs nothing, and the directive becomes a
+-- formality that slows down honest people and stops nobody.
+--
+-- So an override is declared before it is taken, carries a reason in the
+-- clinician's own words, notifies the patient, and lands in a queue somebody
+-- reviews. All four, because dropping any one of them turns the other three
+-- into paperwork.
+CREATE TABLE IF NOT EXISTS break_glass (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  subject_kind TEXT NOT NULL,
+  -- The directive that was overridden, where there was one.
+  directive_id TEXT,
+  -- Why, in the clinician's own words. Not a dropdown: "unconscious, no
+  -- collateral history, need allergy status before induction" is a defence
+  -- and "emergency" is not.
+  reason TEXT NOT NULL,
+  purpose_of_use TEXT,
+  declared_at TEXT NOT NULL,
+  -- How long this override is good for. An override that never ends is a
+  -- permission, and this is not one.
+  expires_at TEXT NOT NULL,
+  -- Set when somebody has reviewed it. Unreviewed overrides are the queue.
+  reviewed_at TEXT,
+  reviewed_by TEXT,
+  review_outcome TEXT,
+  -- Whether the patient has been told, which is not optional.
+  patient_notified_at TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
 -- Lookup index over the charts.
 --
 -- Derived, not authoritative. Every column here is recoverable from the
@@ -957,6 +1037,11 @@ CREATE INDEX IF NOT EXISTS idx_slots_service ON schedule_slots(tenant_id, servic
 CREATE INDEX IF NOT EXISTS idx_bookings_patient ON schedule_bookings(tenant_id, patient_id, status);
 CREATE INDEX IF NOT EXISTS idx_bookings_slot ON schedule_bookings(tenant_id, slot_id, status);
 CREATE INDEX IF NOT EXISTS idx_schedule_events ON schedule_events(tenant_id, booking_id, seq);
+CREATE INDEX IF NOT EXISTS idx_directives_patient ON consent_directives(tenant_id, patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_directives_target ON consent_directives(tenant_id, target_id, status);
+CREATE INDEX IF NOT EXISTS idx_breakglass_review ON break_glass(tenant_id, reviewed_at, declared_at);
+CREATE INDEX IF NOT EXISTS idx_breakglass_patient ON break_glass(tenant_id, patient_id, declared_at);
+CREATE INDEX IF NOT EXISTS idx_breakglass_subject ON break_glass(tenant_id, subject_id, declared_at);
 CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at);
 CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(tenant_id, channel_id, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status);

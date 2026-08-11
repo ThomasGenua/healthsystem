@@ -39,8 +39,9 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Proxy access that lapses on the day it was set to**, because nothing about a child's sixteenth birthday generates an event.
 - **Quality measures that refuse a rate they cannot stand behind**, because the patients a measure cannot assess are the ones nobody managed.
 - **Double-booking refused by the database**, not by a check that a second clerk can race past.
+- **Break-glass that is loud**: declared, reasoned in words, notified to the patient, and queued for review — because a quiet override makes the lockbox theatre.
 
-369 tests. Backend first, tests before UI.
+382 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -91,7 +92,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 369 tests
+npm test          # 382 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -627,6 +628,37 @@ So `didNotAttend()` returns **what is owed**, not just a status:
 ```
 
 `unresolvedNonAttendance()` holds them until somebody says what they did about it — worst first, because a missed urgent appointment gets less recoverable with every week. Clearing one requires an action in words, for the same reason completing a task requires evidence.
+
+## Consent directives and breaking glass
+
+A patient may withhold their record from a provider, from an organization, or from everybody outside the circle of care that created it. Provincial EHRs call it a consent directive or a lockbox, and it is a clinical fact about the patient — *they do not want this person reading this* — rather than a configuration setting, which is why it lives beside their allergies.
+
+**Every directive is overridable in an emergency.** That is not a weakness in the design, it is the design. A patient unconscious in a resuscitation room cannot lift their own lockbox, and a system that made the override impossible would eventually kill somebody — or, more likely, grow a shared account everybody uses, which is worse in every respect including the audit trail.
+
+### What makes the override safe is not that it is hard
+
+It is that it is **loud**. Four things, and dropping any one turns the other three into paperwork:
+
+| | |
+| --- | --- |
+| **Declared before it is taken** | The access happens under a stated intention, rather than being reconstructed afterwards from logs. |
+| **Reasoned in the clinician's own words** | Not a dropdown. *"Unconscious, no collateral history, need allergy status before induction"* is a defence; *"emergency"* is not — and a dropdown produces only the second. A reason under twelve characters is refused. |
+| **The patient is told** | The part systems quietly omit, and the one that makes a directive mean anything. A lockbox nobody can find out was opened is a lockbox with no lock. `pendingNotification()` is a queue that must empty. |
+| **Somebody reviews it** | `pendingReview()` is a queue rather than a statistic. An override nobody looks at teaches a ward that breaking glass costs nothing, and a directive that costs nothing to break slows down only the people who would have asked permission anyway. |
+
+An override **expires**. One that did not would be a permission, and this is not one. Reviewing it does not extend it: the access window and the paperwork are separate things.
+
+`frequentBreakers()` reports the pattern rather than the incident. One override is a clinical emergency; forty in a month is a workflow that has decided the directive is an obstacle, and only the count shows it.
+
+Breaking glass where no directive existed is still recorded — the declaration is the thing worth keeping, because it is how *"I did not realise there was no lockbox"* is told apart from a habit.
+
+### Two smaller decisions
+
+**The refusal says a directive exists, never what it says.** "This record is withheld by a patient directive" is what a clinician needs. The patient's reason for withholding is between them and whoever recorded it, and disclosing it to the person being withheld from would be an odd way to honour the instruction.
+
+**A directive narrowed to particular entry types does not withhold the rest of the chart.** Applying it to everything would give the patient more than they asked for, which is its own kind of not listening.
+
+Directives lapse by the clock — revoked, expired, or not yet effective — rather than by a sweep changing a status, for the same reason proxy authority does.
 
 ## Tenancy
 
