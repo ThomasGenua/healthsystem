@@ -30,8 +30,9 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **An append-only clinical record**, where a correction cannot destroy what it corrects.
 - **A patient index** derived from the log and rebuildable from it, surfacing duplicates rather than merging them.
 - **Clinical documentation** where a signature fixes the text and only an addendum may follow.
+- **A unified inbox** where work cannot be closed without evidence or left belonging to nobody unseen.
 
-257 tests. Backend first, tests before UI.
+270 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -82,7 +83,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 257 tests
+npm test          # 270 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -373,6 +374,22 @@ notes.addendum({ recordId: note.record_id, sections: { note: "Film reported late
 A co-signature must come from someone other than the signer. One signature counted twice is not two people taking responsibility. `awaitingCosignature` is the supervisor's queue.
 
 The signed text is covered by the chart chain too, so the refusal stops the API changing a note and verification catches anything that goes around it.
+
+## The inbox
+
+Section 8 asks for one guarantee, and it is not a feature: clinically important work must not disappear between people or organizations. Work is rarely lost by being deleted. It is lost by being handed to somebody who has left, closed with nothing to show for it, or owned by nobody — which means it is on nobody's list and is invisible in exactly the way that matters.
+
+Three things are therefore structural:
+
+- **Nothing is ever removed.** `cancel` is a status with a reason, distinct from `complete`, because "we decided not to" and "we did it" are different answers to an audit and only one of them is aftercare. A closed item is still there and can be reopened.
+- **Completion requires evidence.** A task closed with an empty hand is indistinguishable, afterwards, from one abandoned — and "the result was acknowledged" versus "the result was marked acknowledged" is the distinction a review of a missed diagnosis turns on.
+- **An unowned item is a list, not a silence.** `unassigned()` exists so that "belongs to nobody" is somewhere a person looks. Releasing an item is an action with a reason rather than a side effect of somebody leaving.
+
+Every transition is appended with an actor and a reason, so delegation history is a record rather than a reconstruction. An owner column knows who has it now; "who had this when it went wrong" is the question actually asked.
+
+**Inboxes are ordered by urgency and deadline, never by arrival.** A chronological inbox buries the one item that mattered under the forty that did not, which is the mechanism by which a critical result is missed with nobody doing anything wrong.
+
+Items carry a correlation identifier, so a referral raised here and the consult report that answers it months later are recognisable as two items and one question — which is what closing a loop requires.
 
 ## Tenancy
 

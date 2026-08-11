@@ -41,6 +41,8 @@ export const TENANT_SCOPED_TABLES = [
   "clinical_entries",
   "patient_index",
   "patient_identifiers",
+  "tasks",
+  "task_events",
 ] as const;
 
 /**
@@ -319,6 +321,60 @@ CREATE TABLE IF NOT EXISTS clinical_entries (
   prev_hash TEXT
 );
 
+-- Work items: the unified inbox.
+--
+-- Section 8's requirement is that clinically important work must not disappear
+-- between people or organizations. Losing a task is not usually a deletion —
+-- it is a reassignment to somebody who has left, a completion with nothing to
+-- show for it, or an item nobody owns that therefore appears on nobody's list.
+-- So current state lives here, where an inbox can be queried quickly, and
+-- every transition is written to task_events, which is append-only.
+CREATE TABLE IF NOT EXISTS tasks (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL,
+  patient_id TEXT,
+  encounter_id TEXT,
+  -- routine | urgent | stat. Ordering an inbox by arrival alone buries the
+  -- one item that mattered under the forty that did not.
+  priority TEXT NOT NULL DEFAULT 'routine',
+  -- open | in-progress | completed | cancelled. No "deleted".
+  status TEXT NOT NULL DEFAULT 'open',
+  -- NULL means nobody has it. Deliberately visible rather than absent: an
+  -- unowned item is the single most common way work is lost.
+  owner_id TEXT,
+  due_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  closed_at TEXT,
+  -- What produced it: a result, a referral update, a portal message. Kept so
+  -- an item can be reconciled against the interface that raised it.
+  source TEXT,
+  source_message_id TEXT,
+  -- Ties an item to the thing it is about across systems, so a referral and
+  -- the consult report that answers it can be recognised as one loop.
+  correlation_id TEXT,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Every transition, append-only. Who did what, to whom it went, and why.
+CREATE TABLE IF NOT EXISTS task_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  event TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_kind TEXT NOT NULL,
+  from_owner TEXT,
+  to_owner TEXT,
+  detail TEXT,
+  -- What was actually done, recorded on completion. A task closed with
+  -- nothing to show for it is indistinguishable from one abandoned.
+  evidence TEXT
+);
+
 -- Lookup index over the charts.
 --
 -- Derived, not authoritative. Every column here is recoverable from the
@@ -390,6 +446,11 @@ CREATE INDEX IF NOT EXISTS idx_clinical_encounter ON clinical_entries(tenant_id,
 CREATE INDEX IF NOT EXISTS idx_clinical_key ON clinical_entries(tenant_id, record_key, version);
 CREATE INDEX IF NOT EXISTS idx_patient_name ON patient_index(tenant_id, family, given, birth_date);
 CREATE INDEX IF NOT EXISTS idx_patient_ident ON patient_identifiers(tenant_id, value, system);
+CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(tenant_id, owner_id, status, due_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_open ON tasks(tenant_id, status, due_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_patient ON tasks(tenant_id, patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_tasks_correlation ON tasks(tenant_id, correlation_id);
+CREATE INDEX IF NOT EXISTS idx_task_events ON task_events(tenant_id, task_id, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at);
 CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(tenant_id, channel_id, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status);
