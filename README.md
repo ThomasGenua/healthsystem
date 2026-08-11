@@ -25,8 +25,9 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Subscriptions behind `admin`**, so a push-only feed credential cannot arrange to receive the clinical record.
 - **Character sets honoured on the wire**, so an accented or syllabic name is not silently replaced with question marks.
 - **Silent-feed detection**, so an interface that stopped sending is not mistaken for a quiet night.
+- **Structural tenant isolation** at the persistence layer, checked by reading the source rather than by trusting it.
 
-197 tests. Backend first, tests before UI.
+200 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -77,7 +78,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 197 tests
+npm test          # 200 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -292,6 +293,30 @@ In-flight and queued deliveries are never redacted — a payload that has not go
 
 A sweep that destroys data records itself on the audit trail, because that is an event worth being able to account for.
 
+## Tenancy
+
+One platform, many health information custodians, and no code fork per clinic. A tenant is a custodian's boundary: organizations, providers, channels, messages, deliveries, keys, audit and facade records all live inside one.
+
+**Isolation is structural, not conventional.** The tenant is part of the database handle's identity rather than a parameter on every method:
+
+```ts
+const db = new Db(path);                 // the default tenant
+const north = db.forTenant("moh-north"); // same connection, different boundary
+```
+
+A `tenantId` argument is one a caller can forget, and the cost of forgetting it once is a query that reads across custodians — silently, returning plausible results. Here there is nothing to forget: every statement binds the handle's tenant, and reaching another custodian's data means naming them in a `forTenant` call, which is greppable and reviewable.
+
+**That property is checked, not asserted.** `test/tenant-scoping.test.ts` reads the source and requires every statement naming a tenant-scoped table to name `tenant_id`. Behavioural tests only prove the queries someone thought to test are scoped; they say nothing about the fiftieth method or the one added next month. A statement that genuinely spans tenants — the delivery worker's queue sweep, startup reclaim, authentication by key hash — declares itself with a `crosses-tenants:` comment giving the reason, so crossing a boundary is always a visible act rather than an omission.
+
+Terminology is deliberately **not** tenant-scoped. SNOMED CT CA, LOINC and the classification tables are the shared provincial baseline; copying them per tenant would mean a code meaning one thing in one clinic and another elsewhere.
+
+Two things this changed that were not obvious:
+
+- **The ordering key now leads with the tenant.** It was `channel:destination`, and channel ids are only unique within a tenant — so two custodians who both named a channel `adt` would have shared one ordered queue, and a message stuck at one organization's head would have blocked the other's feed entirely. Strict ordering is a per-destination promise, not a promise to serialise the province.
+- **The audit truncation check no longer uses SQLite's `AUTOINCREMENT` mark.** That mark counts rows across the whole table, which was exact with one tenant and meaningless with two — every tenant would have reported most of its trail missing. Each tenant now carries its own issued counter, backfilled on upgrade from the old mark so nothing is lost in the transition.
+
+Existing databases migrate in place; see [Upgrading](#upgrading). Rows written before tenancy land in the `default` tenant, and a deployment that never configures a second one behaves exactly as before.
+
 ## Upgrading
 
 An existing database is migrated in place on the first open. Columns added since it was created are added by `ALTER TABLE`; new tables and indexes come from the schema itself. Running the migration again finds nothing to do, so it costs one `PRAGMA` per tracked column at boot.
@@ -299,6 +324,8 @@ An existing database is migrated in place on the first open. Columns added since
 This matters more than it sounds. `CREATE TABLE IF NOT EXISTS` does *nothing* to a table that already exists, so before this a column added to the schema never reached a database an earlier version had created — and the failure arrived on the first ingest rather than on open. A site that had been running fine went off the air at upgrade and stayed there, reporting itself healthy. Every test starts from an empty file, so no test could see it; `test/migration.test.ts` starts from the real v0.3.0 table definitions instead.
 
 A chain that spans the upgrade still verifies. Rows written before the digest column commit to the payload itself and rows after it commit to the digest, and `verifyChain` accepts both, so an upgrade does not read as tampering.
+
+Tenancy needs more than added columns. `fhir_resources`, `fhir_identifiers` and `channel_state` had primary keys that were unique across the whole database, and `ALTER TABLE` cannot change a primary key — so those three are rebuilt (create, copy, drop, rename, in one transaction). Without it, the first time a second custodian stored `Patient/p1` it would overwrite the first custodian's patient of that id, which is a silent cross-tenant write and exactly what tenancy exists to prevent. Indexes are applied after the migration rather than with the tables, because an index naming a column the migration is about to add cannot be created before it exists.
 
 One thing to do by hand, once, on a database that ran a version before this one: `sqlite3 data/portage.db 'VACUUM;'`. Freed pages are zeroed from now on, but pages freed under the old build may still hold legible content, and only a rebuild clears those.
 

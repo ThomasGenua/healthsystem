@@ -269,7 +269,9 @@ export class Engine {
   }
 
   private async activate(config: ChannelConfig): Promise<void> {
-    const destinationIds = config.destinations.map((d, i) => this.worker.registerDestination(config.id, d, i));
+    const destinationIds = config.destinations.map((d, i) =>
+      this.worker.registerDestination(this.db.tenantId, config.id, d, i)
+    );
     const rc: RuntimeChannel = { config, destinationIds, timers: [], polling: false };
 
     if (config.source.type === "mllp") {
@@ -494,7 +496,7 @@ export class Engine {
     rc.pollDb?.close();
     await this.dropSqlClient(rc);
     await this.dropSftpClient(rc);
-    this.worker.unregisterChannel(id);
+    this.worker.unregisterChannel(this.db.tenantId, id);
     this.channels.delete(id);
   }
 

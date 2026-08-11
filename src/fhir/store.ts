@@ -91,8 +91,8 @@ export class FhirStore {
     const hash = createHash("sha256").update(canonical(stripVolatileMeta(body))).digest("hex");
 
     const existing = this.db.sql
-      .prepare("SELECT version_id, hash FROM fhir_resources WHERE resource_type = ? AND id = ?")
-      .get(type, id) as { version_id: number; hash: string } | undefined;
+      .prepare("SELECT version_id, hash FROM fhir_resources WHERE tenant_id = ? AND resource_type = ? AND id = ?")
+      .get(this.db.tenantId, type, id) as { version_id: number; hash: string } | undefined;
 
     if (existing && existing.hash === hash) {
       return {
@@ -111,20 +111,22 @@ export class FhirStore {
 
     this.db.sql
       .prepare(
-        `INSERT INTO fhir_resources (resource_type, id, version_id, json, hash, updated_at)
-         VALUES (?, ?, ?, ?, ?, datetime('now'))
-         ON CONFLICT(resource_type, id) DO UPDATE SET
+        `INSERT INTO fhir_resources (tenant_id, resource_type, id, version_id, json, hash, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+         ON CONFLICT(tenant_id, resource_type, id) DO UPDATE SET
            version_id = excluded.version_id, json = excluded.json,
            hash = excluded.hash, updated_at = datetime('now')`
       )
-      .run(type, id, versionId, JSON.stringify(body), hash);
+      .run(this.db.tenantId, type, id, versionId, JSON.stringify(body), hash);
 
-    this.db.sql.prepare("DELETE FROM fhir_identifiers WHERE resource_type = ? AND id = ?").run(type, id);
+    this.db.sql
+      .prepare("DELETE FROM fhir_identifiers WHERE tenant_id = ? AND resource_type = ? AND id = ?")
+      .run(this.db.tenantId, type, id);
     const ins = this.db.sql.prepare(
-      "INSERT OR IGNORE INTO fhir_identifiers (resource_type, id, system, value) VALUES (?, ?, ?, ?)"
+      "INSERT OR IGNORE INTO fhir_identifiers (tenant_id, resource_type, id, system, value) VALUES (?, ?, ?, ?, ?)"
     );
     for (const ident of idents) {
-      if (ident.value) ins.run(type, id, ident.system ?? "", ident.value);
+      if (ident.value) ins.run(this.db.tenantId, type, id, ident.system ?? "", ident.value);
     }
 
     const result: FhirUpsertResult = {
@@ -172,8 +174,8 @@ export class FhirStore {
 
   get(type: string, id: string): Record<string, unknown> | undefined {
     const row = this.db.sql
-      .prepare("SELECT json FROM fhir_resources WHERE resource_type = ? AND id = ?")
-      .get(type, id) as { json: string } | undefined;
+      .prepare("SELECT json FROM fhir_resources WHERE tenant_id = ? AND resource_type = ? AND id = ?")
+      .get(this.db.tenantId, type, id) as { json: string } | undefined;
     return row ? (JSON.parse(row.json) as Record<string, unknown>) : undefined;
   }
 
@@ -184,40 +186,49 @@ export class FhirStore {
       const bar = opts.identifier.indexOf("|");
       const system = bar >= 0 ? opts.identifier.slice(0, bar) : null;
       const value = bar >= 0 ? opts.identifier.slice(bar + 1) : opts.identifier;
-      const where = system
-        ? "i.resource_type = ? AND i.value = ? AND i.system = ?"
-        : "i.resource_type = ? AND i.value = ?";
-      const args = system ? [type, value, system] : [type, value];
+      // The tenant sits in the statement rather than in the interpolated
+      // fragment, so the scope is visible where the query is read.
+      const where = system ? "i.resource_type = ? AND i.value = ? AND i.system = ?" : "i.resource_type = ? AND i.value = ?";
+      const args = system ? [this.db.tenantId, type, value, system] : [this.db.tenantId, type, value];
       const total = (
         this.db.sql
-          .prepare(`SELECT COUNT(DISTINCT i.id) AS n FROM fhir_identifiers i WHERE ${where}`)
+          .prepare(`SELECT COUNT(DISTINCT i.id) AS n FROM fhir_identifiers i WHERE i.tenant_id = ? AND ${where}`)
           .get(...(args as never[])) as { n: number }
       ).n;
+      // The join carries the tenant too. Matching on (resource_type, id) alone
+      // would let one custodian's identifier row select another custodian's
+      // resource of the same id — the two tables are only jointly meaningful
+      // inside a tenant.
       const rows = this.db.sql
         .prepare(
           `SELECT DISTINCT r.json FROM fhir_resources r
-           JOIN fhir_identifiers i ON i.resource_type = r.resource_type AND i.id = r.id
-           WHERE ${where} ORDER BY r.updated_at DESC LIMIT ${count}`
+           JOIN fhir_identifiers i
+             ON i.tenant_id = r.tenant_id AND i.resource_type = r.resource_type AND i.id = r.id
+           WHERE i.tenant_id = ? AND ${where} ORDER BY r.updated_at DESC LIMIT ${count}`
         )
         .all(...(args as never[])) as Array<{ json: string }>;
       return { total, resources: rows.map((r) => JSON.parse(r.json) as Record<string, unknown>) };
     }
 
     const total = (
-      this.db.sql.prepare("SELECT COUNT(*) AS n FROM fhir_resources WHERE resource_type = ?").get(type) as {
-        n: number;
-      }
+      this.db.sql
+        .prepare("SELECT COUNT(*) AS n FROM fhir_resources WHERE tenant_id = ? AND resource_type = ?")
+        .get(this.db.tenantId, type) as { n: number }
     ).n;
     const rows = this.db.sql
-      .prepare(`SELECT json FROM fhir_resources WHERE resource_type = ? ORDER BY updated_at DESC LIMIT ${count}`)
-      .all(type) as Array<{ json: string }>;
+      .prepare(
+        `SELECT json FROM fhir_resources WHERE tenant_id = ? AND resource_type = ? ORDER BY updated_at DESC LIMIT ${count}`
+      )
+      .all(this.db.tenantId, type) as Array<{ json: string }>;
     return { total, resources: rows.map((r) => JSON.parse(r.json) as Record<string, unknown>) };
   }
 
   resourceTypes(): Array<{ type: string; count: number }> {
     const rows = this.db.sql
-      .prepare("SELECT resource_type AS type, COUNT(*) AS count FROM fhir_resources GROUP BY resource_type")
-      .all() as Array<{ type: string; count: number }>;
+      .prepare(
+        "SELECT resource_type AS type, COUNT(*) AS count FROM fhir_resources WHERE tenant_id = ? GROUP BY resource_type"
+      )
+      .all(this.db.tenantId) as Array<{ type: string; count: number }>;
     const seen = new Map(rows.map((r) => [r.type, r.count]));
     for (const t of CORE_RESOURCE_TYPES) if (!seen.has(t)) seen.set(t, 0);
     return [...seen.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([type, count]) => ({ type, count }));

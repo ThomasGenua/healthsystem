@@ -8,7 +8,7 @@
  */
 import { request as httpsRequest } from "node:https";
 import { readFileSync } from "node:fs";
-import type { Db } from "../db.ts";
+import { orderingKey, type Db } from "../db.ts";
 import type { DeliveryRow, DestinationConfig, DestinationTlsConfig } from "../types.ts";
 import type { FhirStore } from "../fhir/store.ts";
 import { mllpSend } from "../hl7/mllp.ts";
@@ -40,19 +40,19 @@ export class DeliveryWorker {
     this.drainLimit = drainLimit;
   }
 
-  registerDestination(channelId: string, dest: DestinationConfig, index: number): string {
+  registerDestination(tenantId: string, channelId: string, dest: DestinationConfig, index: number): string {
     const id = dest.id ?? `${dest.type}-${index}`;
-    this.destinations.set(`${channelId}:${id}`, dest);
+    this.destinations.set(orderingKey(tenantId, channelId, id), dest);
     return id;
   }
 
-  unregisterDestination(channelId: string, destId: string): void {
-    this.destinations.delete(`${channelId}:${destId}`);
+  unregisterDestination(tenantId: string, channelId: string, destId: string): void {
+    this.destinations.delete(orderingKey(tenantId, channelId, destId));
   }
 
-  unregisterChannel(channelId: string): void {
+  unregisterChannel(tenantId: string, channelId: string): void {
     for (const key of this.destinations.keys()) {
-      if (key.startsWith(`${channelId}:`)) this.destinations.delete(key);
+      if (key.startsWith(`${tenantId}:${channelId}:`)) this.destinations.delete(key);
     }
   }
 

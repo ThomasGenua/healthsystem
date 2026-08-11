@@ -67,7 +67,7 @@ export class SubscriptionManager {
 
   remove(id: string): boolean {
     const ok = this.db.deleteSubscription(id);
-    if (ok) this.worker.unregisterDestination(SUBSCRIPTION_CHANNEL, id);
+    if (ok) this.worker.unregisterDestination(this.db.tenantId, SUBSCRIPTION_CHANNEL, id);
     return ok;
   }
 
@@ -108,6 +108,7 @@ export class SubscriptionManager {
 
   private registerDestination(row: SubscriptionRow): void {
     this.worker.registerDestination(
+      this.db.tenantId,
       SUBSCRIPTION_CHANNEL,
       {
         id: row.id,

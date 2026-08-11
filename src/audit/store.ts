@@ -128,8 +128,8 @@ export class AuditStore {
   private head(): string | null {
     if (this.tip === undefined) {
       const row = this.db.sql
-        .prepare("SELECT hash FROM audit_events ORDER BY seq DESC LIMIT 1")
-        .get() as { hash: string } | undefined;
+        .prepare("SELECT hash FROM audit_events WHERE tenant_id = ? ORDER BY seq DESC LIMIT 1")
+        .get(this.db.tenantId) as { hash: string } | undefined;
       this.tip = row?.hash ?? null;
     }
     return this.tip;
@@ -144,11 +144,12 @@ export class AuditStore {
     this.db.sql
       .prepare(
         `INSERT INTO audit_events
-           (id, recorded_at, action, outcome, principal_id, principal_kind, method, path,
+           (tenant_id, id, recorded_at, action, outcome, principal_id, principal_kind, method, path,
             resource_type, resource_id, patient, count, source_ip, detail, hash, prev_hash)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
+        this.db.tenantId,
         id,
         recordedAt,
         entry.action,
@@ -167,13 +168,22 @@ export class AuditStore {
         prev
       );
 
+    this.db.sql
+      .prepare(
+        `INSERT INTO audit_counters (tenant_id, issued) VALUES (?, 1)
+         ON CONFLICT(tenant_id) DO UPDATE SET issued = issued + 1`
+      )
+      .run(this.db.tenantId);
+
     this.tip = hash;
-    return this.db.sql.prepare("SELECT * FROM audit_events WHERE id = ?").get(id) as unknown as AuditRow;
+    return this.db.sql
+      .prepare("SELECT * FROM audit_events WHERE tenant_id = ? AND id = ?")
+      .get(this.db.tenantId, id) as unknown as AuditRow;
   }
 
   list(filter: AuditFilter = {}): AuditRow[] {
     const where: string[] = [];
-    const args: Array<string | number> = [];
+    const args: Array<string | number> = [this.db.tenantId];
     if (filter.principal) {
       where.push("principal_id = ?");
       args.push(filter.principal);
@@ -193,8 +203,8 @@ export class AuditStore {
     if (filter.failuresOnly) where.push("outcome > 0");
 
     const sql =
-      "SELECT * FROM audit_events" +
-      (where.length ? ` WHERE ${where.join(" AND ")}` : "") +
+      "SELECT * FROM audit_events WHERE tenant_id = ?" +
+      (where.length ? ` AND ${where.join(" AND ")}` : "") +
       " ORDER BY seq DESC LIMIT ?";
     args.push(Math.min(filter.limit ?? 100, 1000));
     return this.db.sql.prepare(sql).all(...(args as never[])) as unknown as AuditRow[];
@@ -235,8 +245,8 @@ export class AuditStore {
     missing?: { expected: number; found: number };
   } {
     const rows = this.db.sql
-      .prepare("SELECT * FROM audit_events ORDER BY seq")
-      .all() as unknown as AuditRow[];
+      .prepare("SELECT * FROM audit_events WHERE tenant_id = ? ORDER BY seq")
+      .all(this.db.tenantId) as unknown as AuditRow[];
     let prev: string | null = null;
     let checked = 0;
     for (const r of rows) {
@@ -262,20 +272,31 @@ export class AuditStore {
       checked++;
     }
 
-    // How many rows were ever written, according to the counter SQLite keeps
-    // for us and does not decrement.
-    const issued = this.db.sql.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'audit_events'").get() as
-      | { seq: number }
-      | undefined;
-    if (issued && issued.seq !== checked) {
-      return { ok: false, checked, missing: { expected: issued.seq, found: checked } };
+    // How many rows were ever written for this tenant.
+    //
+    // This used to read SQLite's own AUTOINCREMENT high-water mark, which was
+    // exact while there was one tenant and became meaningless the moment there
+    // were two: `seq` is issued across the whole table, so the mark counts
+    // everyone's rows and would report every tenant as missing most of its
+    // trail. The counter is kept per tenant instead, incremented in the same
+    // statement path as the insert, and — like the mark it replaces — only
+    // ever goes up, so deleting rows cannot bring it back into agreement.
+    const issued = this.db.sql
+      .prepare("SELECT issued FROM audit_counters WHERE tenant_id = ?")
+      .get(this.db.tenantId) as { issued: number } | undefined;
+    if (issued && issued.issued !== checked) {
+      return { ok: false, checked, missing: { expected: issued.issued, found: checked } };
     }
 
     return { ok: true, checked, ...(prev ? { tip: prev } : {}) };
   }
 
   count(): number {
-    return (this.db.sql.prepare("SELECT COUNT(*) AS n FROM audit_events").get() as { n: number }).n;
+    return (
+      this.db.sql
+        .prepare("SELECT COUNT(*) AS n FROM audit_events WHERE tenant_id = ?")
+        .get(this.db.tenantId) as { n: number }
+    ).n;
   }
 
   /** Renders a row as an R4 AuditEvent, so consumers get a standard shape. */
