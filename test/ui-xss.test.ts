@@ -167,22 +167,36 @@ test(
       await cdp("Runtime.enable", {}, S);
 
       const base = `http://127.0.0.1:${api.port}`;
-      let sawPayloadSomewhere = false;
+      const seen: Record<string, boolean> = {};
 
       for (const tab of ["Channels", "Messages", "FHIR", "Audit"]) {
         await cdp("Page.navigate", { url: `${base}/#${tab}` }, S);
-        await new Promise((r) => setTimeout(r, 800));
+        // Every tab fills itself from a fetch, so how long that takes is a
+        // property of the runner rather than of the page. A fixed wait is
+        // therefore a guess that is right on a quiet machine and wrong on a
+        // loaded one — and when it is wrong this test does not fail loudly,
+        // it fails on its own honesty check, having proved nothing. So it
+        // waits for the content instead. Messages is the tab that must show
+        // the payload, and is given room accordingly; the rest are provoked
+        // once they have settled.
+        const budgetMs = tab === "Messages" ? 30_000 : 4_000;
         const out = await cdp(
           "Runtime.evaluate",
           {
             expression: `(async()=>{
+              const HOSTILE = /&lt;img|&lt;script|&lt;svg|onmouseover/i;
               if(typeof go==='function') go(${JSON.stringify(tab)});
-              await new Promise(r=>setTimeout(r,600));
+              const deadline = Date.now() + ${budgetMs};
+              let escaped = false;
+              while(Date.now() < deadline){
+                await new Promise(r=>setTimeout(r,100));
+                if(HOSTILE.test(document.body.innerHTML)){ escaped = true; break; }
+              }
               for(const el of document.querySelectorAll('*')) el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
               for(const row of document.querySelectorAll('tr.row')) row.click();
               await new Promise(r=>setTimeout(r,400));
               return JSON.stringify({
-                escaped: /&lt;img|&lt;script|&lt;svg|onmouseover/i.test(document.body.innerHTML),
+                escaped: escaped || HOSTILE.test(document.body.innerHTML),
                 live: document.querySelectorAll('img,svg,script[src]').length,
               });
             })()`,
@@ -193,7 +207,7 @@ test(
         const v = JSON.parse(
           ((out.result as { result?: { value?: string } })?.result?.value ?? "{}") as string
         ) as { escaped?: boolean; live?: number };
-        if (v.escaped) sawPayloadSomewhere = true;
+        seen[tab] = v.escaped === true;
         assert.equal(v.live ?? 0, 0, `${tab} rendered an element built from message content`);
       }
 
@@ -201,8 +215,14 @@ test(
 
       // The load-bearing assertion, and the one that keeps this honest: the
       // hostile text has to have reached the page for its absence of effect
-      // to mean anything.
-      assert.ok(sawPayloadSomewhere, "no payload reached the DOM, so this proved nothing about the escaping");
+      // to mean anything. Named to one tab rather than "somewhere", because
+      // the messages are in the database before the browser starts — so this
+      // is a fact about the page, and a miss is a real failure rather than a
+      // slow runner.
+      assert.ok(
+        seen.Messages,
+        "the hostile payload never rendered on the Messages tab, so this proved nothing about the escaping"
+      );
       assert.deepEqual(beacons, [], "message content executed in the admin console");
     } finally {
       if (chrome) {
