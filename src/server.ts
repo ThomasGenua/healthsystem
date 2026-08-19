@@ -1,5 +1,6 @@
 /** Portage entry point. */
 import { readdirSync, readFileSync, existsSync } from "node:fs";
+import { encryptionAtRest, shouldWarn } from "./core/atrest.ts";
 import { join } from "node:path";
 import { Engine } from "./core/engine.ts";
 import { startApi } from "./api/admin.ts";
@@ -94,6 +95,12 @@ function buildAuthGate(engine: Engine): AuthGate {
 
 async function main(): Promise<void> {
   warnIfSqliteExperimental();
+
+  // Said at boot for the same reason the line above is: an operator should
+  // not learn from a footnote that the file holding every chart is plain
+  // text. Once, loudly, at the moment it becomes their problem.
+  const atRest = encryptionAtRest(DATA_DIR);
+  if (shouldWarn(atRest)) console.warn(`WARNING: ${atRest.detail}`);
 
   const days = (v: string | undefined): number | undefined => {
     if (v === undefined) return undefined;

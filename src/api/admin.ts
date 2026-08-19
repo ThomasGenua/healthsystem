@@ -42,6 +42,7 @@
  * Admin UI:     GET / (single-file, no build step)
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { encryptionAtRest } from "../core/atrest.ts";
 import { createServer as createSecureServer } from "node:https";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -226,6 +227,11 @@ async function route(
       degraded: stalled.length > 0 || signals.deadLetters > 0 || signals.silentChannels.length > 0,
       stats: db.stats(),
       signals: { ...signals, stalledChannels: stalled, stalledAfterSec: stalledAfter },
+      // Not part of `degraded`: an unencrypted volume is a posture rather than
+      // an incident, and flipping a health check to degraded forever would
+      // train an operator to ignore the field that also reports a stopped
+      // feed. Reported so a monitor can alert on it as its own thing.
+      atRest: encryptionAtRest(engine.dataDir),
     });
   }
 
@@ -767,12 +773,37 @@ async function route(
   if (path === "/api/keys" && method === "GET") {
     return send(res, 200, keys.list());
   }
+  if (path === "/api/keys/review" && method === "GET") {
+    // The two questions worth asking about a set of credentials, and neither
+    // is answerable by looking at a list of them: which have nobody using
+    // them, and which are about to stop working. Both are lists somebody acts
+    // on rather than numbers on a dashboard.
+    return send(res, 200, {
+      dormantAfterDays: num(url.searchParams.get("dormant_days")) ?? 90,
+      dormant: keys.dormant(num(url.searchParams.get("dormant_days")) ?? 90),
+      expiringWithinDays: num(url.searchParams.get("expiring_days")) ?? 14,
+      expiring: keys.expiring(num(url.searchParams.get("expiring_days")) ?? 14),
+    });
+  }
+  if (path.startsWith("/api/keys/") && path.endsWith("/rotate") && method === "POST") {
+    const id = path.slice("/api/keys/".length, -"/rotate".length);
+    const body = JSON.parse((await readBody(req)) || "{}") as { overlapDays?: number; expiresAt?: string };
+    try {
+      const next = keys.rotate(id, body);
+      audit({ action: "U", outcome: 0, resourceType: "Device", resourceId: id, detail: `rotated to ${next.id}` });
+      // The replacement key is shown once, here, exactly as a new one is.
+      return send(res, 201, next);
+    } catch (err) {
+      audit({ action: "U", outcome: 8, resourceType: "Device", resourceId: id, detail: (err as Error).message });
+      return send(res, 400, { error: (err as Error).message });
+    }
+  }
   if (path === "/api/keys" && method === "POST") {
-    const body = JSON.parse(await readBody(req)) as { name?: string; scopes?: string[] };
+    const body = JSON.parse(await readBody(req)) as { name?: string; scopes?: string[]; expiresAt?: string };
     if (!body.name) return send(res, 400, { error: "name required" });
     try {
       // The plaintext key appears in this response and nowhere else, ever.
-      const issued = keys.issue(body.name, body.scopes);
+      const issued = keys.issue(body.name, body.scopes, body.expiresAt ? { expiresAt: body.expiresAt } : {});
       audit({ action: "C", resourceType: "ApiKey", resourceId: issued.id, detail: `scopes: ${issued.scopes.join(" ")}` });
       return send(res, 201, issued);
     } catch (err) {

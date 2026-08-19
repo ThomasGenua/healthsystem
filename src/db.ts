@@ -253,7 +253,17 @@ CREATE TABLE IF NOT EXISTS api_keys (
   scopes TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_used_at TEXT,
-  revoked_at TEXT
+  revoked_at TEXT,
+  -- When the key stops working, by the clock rather than by anybody
+  -- remembering. Null means it does not expire, which is a choice a caller
+  -- has to make rather than the default.
+  expires_at TEXT,
+  -- Set on the old key when it is rotated, naming its replacement. The two
+  -- overlap deliberately: a rotation that cut the old key off at the instant
+  -- the new one was issued would take the interface down between issuing and
+  -- deploying, which is why rotation gets skipped in practice.
+  rotated_to TEXT,
+  rotated_at TEXT
 );
 
 -- Access audit trail, hash-chained like message lineage so a row cannot be
@@ -1094,6 +1104,9 @@ const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
   { table: "messages", column: "redacted_at", type: "TEXT" },
   { table: "deliveries", column: "redacted_at", type: "TEXT" },
   { table: "audit_events", column: "purpose_of_use", type: "TEXT" },
+  { table: "api_keys", column: "expires_at", type: "TEXT" },
+  { table: "api_keys", column: "rotated_to", type: "TEXT" },
+  { table: "api_keys", column: "rotated_at", type: "TEXT" },
   // Tenancy. NOT NULL with a default, so existing rows land in the default
   // tenant rather than becoming unreachable, and a deployment that never
   // configures a second tenant is unaffected.
@@ -2305,10 +2318,10 @@ export class Db {
 
   /* ------------------------------- api keys ----------------------------- */
 
-  insertApiKey(id: string, name: string, hash: string, scopes: string[]): void {
+  insertApiKey(id: string, name: string, hash: string, scopes: string[], expiresAt?: string): void {
     this.sql
-      .prepare("INSERT INTO api_keys (tenant_id, id, name, hash, scopes) VALUES (?, ?, ?, ?, ?)")
-      .run(this.tenantId, id, name, hash, scopes.join(" "));
+      .prepare("INSERT INTO api_keys (tenant_id, id, name, hash, scopes, expires_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(this.tenantId, id, name, hash, scopes.join(" "), expiresAt ?? null);
   }
 
   /**
@@ -2321,9 +2334,17 @@ export class Db {
    * 32 random bytes, so this is a lookup by secret rather than a search.
    */
   findApiKeyByHash(hash: string): ApiKeyRow | undefined {
+    // Expiry is applied here, against the clock, rather than by a sweep that
+    // has to run. A key that expired last night does not work this morning
+    // whether or not anything has restarted since, which is the only way an
+    // expiry date is a control rather than an intention.
     return this.sql
-      .prepare("SELECT * FROM api_keys WHERE hash = ? AND revoked_at IS NULL")
-      .get(hash) as ApiKeyRow | undefined;
+      .prepare(
+        `SELECT * FROM api_keys
+          WHERE hash = ? AND revoked_at IS NULL
+            AND (expires_at IS NULL OR expires_at > ?)`
+      )
+      .get(hash, new Date().toISOString()) as ApiKeyRow | undefined;
   }
 
   touchApiKey(id: string): void {
@@ -2345,11 +2366,63 @@ export class Db {
     return r.changes > 0;
   }
 
+  /**
+   * Keys that still work and that nobody has used lately.
+   *
+   * A credential dormant for months is one of two things and both need it
+   * found: nobody needs it, or somebody else has it. Neither announces itself,
+   * and a key issued for a pilot that ended is indistinguishable from one an
+   * attacker is sitting on.
+   *
+   * A key that has never been used at all is dormant from the day it was
+   * issued, and is reported by age rather than being excluded for having no
+   * last-used date — that shape is exactly the one left behind by a key
+   * pasted into a ticket and never deployed.
+   */
+  dormantApiKeys(days: number, asOf = new Date().toISOString()): ApiKeyRow[] {
+    const cutoff = new Date(new Date(asOf).getTime() - days * 86_400_000).toISOString();
+    return this.sql
+      .prepare(
+        `SELECT * FROM api_keys
+          WHERE tenant_id = ? AND revoked_at IS NULL
+            AND (expires_at IS NULL OR expires_at > ?)
+            AND COALESCE(last_used_at, created_at) < ?
+          ORDER BY COALESCE(last_used_at, created_at)`
+      )
+      .all(this.tenantId, asOf, cutoff) as unknown as ApiKeyRow[];
+  }
+
+  /** Keys about to expire, so a renewal is a decision rather than an outage. */
+  expiringApiKeys(withinDays: number, asOf = new Date().toISOString()): ApiKeyRow[] {
+    const until = new Date(new Date(asOf).getTime() + withinDays * 86_400_000).toISOString();
+    return this.sql
+      .prepare(
+        `SELECT * FROM api_keys
+          WHERE tenant_id = ? AND revoked_at IS NULL AND expires_at IS NOT NULL
+            AND expires_at > ? AND expires_at <= ?
+          ORDER BY expires_at`
+      )
+      .all(this.tenantId, asOf, until) as unknown as ApiKeyRow[];
+  }
+
+  markApiKeyRotated(oldId: string, newId: string, retireAt: string): boolean {
+    const r = this.sql
+      .prepare(
+        `UPDATE api_keys SET rotated_to = ?, rotated_at = ?, expires_at = ?
+          WHERE tenant_id = ? AND id = ? AND revoked_at IS NULL AND rotated_to IS NULL`
+      )
+      .run(newId, new Date().toISOString(), retireAt, this.tenantId, oldId);
+    return r.changes > 0;
+  }
+
   countActiveApiKeys(): number {
     return (
       this.sql
-        .prepare("SELECT COUNT(*) AS n FROM api_keys WHERE tenant_id = ? AND revoked_at IS NULL")
-        .get(this.tenantId) as { n: number }
+        .prepare(
+          `SELECT COUNT(*) AS n FROM api_keys
+            WHERE tenant_id = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`
+        )
+        .get(this.tenantId, new Date().toISOString()) as { n: number }
     ).n;
   }
 

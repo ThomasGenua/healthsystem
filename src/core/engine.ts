@@ -8,7 +8,7 @@
  * one, validators gate or annotate it.
  */
 import { readdirSync, readFileSync, renameSync, unlinkSync, mkdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Db } from "../db.ts";
 import { DeliveryWorker } from "./queue.ts";
@@ -129,6 +129,8 @@ export class Engine {
   private validation: ConstructorParameters<typeof FhirStore>[1];
   private views = new Map<string, TenantView>();
   private lockTimer: NodeJS.Timeout | null = null;
+  /** Where the database file lives; empty for an in-memory engine. */
+  readonly dataDir: string;
   private interactions: InteractionSource | null;
   private lockStaleMs: number;
   private lockHeartbeatMs: number;
@@ -136,6 +138,9 @@ export class Engine {
 
   constructor(opts: EngineOptions) {
     this.db = new Db(opts.dbPath);
+    // The directory the database lives in, so the encryption-at-rest check has
+    // something to resolve without being told the path twice.
+    this.dataDir = opts.dbPath === ":memory:" ? "" : dirname(opts.dbPath);
     // The terminology store and conformance registry are built first: the FHIR
     // facade validates writes against them, so it cannot be constructed before
     // they exist.

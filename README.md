@@ -10,7 +10,7 @@ The design targets the interoperability posture Canadian jurisdictions are conve
 
 **The clinical platform** — [The clinical record](#the-clinical-record) · [The inbox](#the-inbox) · [Closing referral loops](#closing-referral-loops) · [Orders and results](#orders-and-results) · [Medications](#medications) · [The clinician workspace](#the-clinician-workspace) · [Scheduling](#scheduling) · [Registries and care gaps](#registries-and-care-gaps)
 
-**Privacy and access** — [Security](#security) · [Audit trail](#audit-trail) · [Patient access](#patient-access) · [Consent directives and breaking glass](#consent-directives-and-breaking-glass) · [The clinical API, and audit by construction](#the-clinical-api-and-audit-by-construction) · [Retention](#retention) · [What the chains prove](#what-the-chains-prove) · [Tenancy](#tenancy)
+**Privacy and access** — [Security](#security) · [Encryption at rest](#encryption-at-rest) · [Key lifecycle](#key-lifecycle) · [Audit trail](#audit-trail) · [Patient access](#patient-access) · [Consent directives and breaking glass](#consent-directives-and-breaking-glass) · [The clinical API, and audit by construction](#the-clinical-api-and-audit-by-construction) · [Retention](#retention) · [What the chains prove](#what-the-chains-prove) · [Tenancy](#tenancy)
 
 **Running it** — [Upgrading](#upgrading) · [Backup](#backup) · [Monitoring](#monitoring) · [Throughput](#throughput) · [Durability under failure](#durability-under-failure) · [Crash recovery](#crash-recovery)
 
@@ -53,7 +53,7 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Double-booking refused by the database**, not by a check that a second clerk can race past.
 - **Break-glass that is loud**: declared, reasoned in words, notified to the patient, and queued for review — because a quiet override makes the lockbox theatre.
 
-388 tests. Backend first, tests before UI.
+410 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -62,6 +62,7 @@ Honest limits, so nobody discovers them in production:
 - **MLLP sources are unauthenticated.** The protocol has no authentication to hook into. Those ports are a network-layer concern — put them behind a VPN, a private APN, or mutual TLS at the transport, not behind Portage. Being unauthenticated does not mean being fragile: frames are size-capped (16 MB, `maxFrameBytes` per channel) so a sender that never terminates one cannot exhaust memory, and malformed input is answered per message rather than taking the listener down.
 - **`node:sqlite` is still flagged experimental on Node 22.** Durability rests on it, so run Node 24+ in production, where it is stable. The engine warns at boot when it is running below 24; the supported floor stays at 22.18 so an upgrade breaks nobody. CI covers both.
 - **The shipped terminology pack is a labelled demo subset.** SNOMED CT CA, LOINC, pCLOCD, ICD-10-CA and CCI are licensed distributions; the loaders are here, the content is not.
+- **The database file is not encrypted.** `node:sqlite` cannot encrypt, so the control that fits a single-file store is an encrypted volume underneath it. Portage does not assume one is there: it checks at boot and on `/api/health`, and says so loudly when it cannot find one. See [Encryption at rest](#encryption-at-rest).
 - **The conformance packs are not certified.** They encode the published profiles as data and pass the shipped fixtures, but no projectathon has scored them.
 - **The clinical platform has no user interface.** Every module described below — the chart, medications, orders, referrals, scheduling, registries — is a store and an HTTP API with tests. The admin UI covers interface operations only. This is deliberate ordering, not an oversight, but "a clinician can use this today" is not a claim being made.
 - **No patient portal.** `src/patient/access.ts` and `src/patient/consent.ts` are built and tested and are not mounted on the API, because a portal is a different trust boundary — a patient authenticating as themselves, and a proxy as somebody entitled to act for them, neither of which is an operator with an `admin` key. Serving them from an admin-scoped API would make the scope model say something false about who is calling.
@@ -108,7 +109,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 388 tests
+npm test          # 410 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -229,6 +230,49 @@ A refusal returns `429` with `Retry-After`. Counters are in memory, matching the
 | `PORTAGE_PURGE_AFTER_DAYS` | — | delete messages older than this outright |
 | `PORTAGE_RATE_AUTHENTICATED` / `_ANONYMOUS` / `PORTAGE_RATE_LIMIT` | 1200 / 120 / on | request rate limits |
 | `PORTAGE_BACKUP_DIR` / `_KEEP` | `./backups` / 7 | where POST /api/backup writes, and how many to keep |
+
+## Encryption at rest
+
+`node:sqlite` has no encryption. The database is one file, so the control that fits is full-volume encryption underneath it — LUKS, FileVault, BitLocker, an encrypted cloud volume. SQLCipher would mean a native dependency and a key-management story this project does not have, and column-level encryption would break the patient index, which has to search on names and identifiers.
+
+That decision is defensible. What is not defensible is the usual consequence of it: *encryption at rest* becomes a line in a procurement document and an assumption in a diagram, nothing checks, and then the test environment is promoted, or the volume is recreated during an incident, or the data directory moves to a mount nobody thought about — and the system carries on exactly as before, with every chart, allergy, result and audit row in the clear.
+
+So Portage refuses to be quiet about it. At boot:
+
+```
+WARNING: /var/lib/portage is on /dev/vda1, which does not appear to be encrypted.
+The database holds charts, allergies, results and the audit trail in plain text;
+an encrypted volume is the control that fits a single-file store. If the volume is
+encrypted somewhere this cannot see — a hypervisor or a cloud volume — set
+PORTAGE_ENCRYPTED_AT_REST=yes to record that.
+```
+
+and on `/api/health` as `atRest`, so a monitor can alert on it.
+
+Four states, and the distinctions are the point:
+
+| | |
+| --- | --- |
+| `encrypted` | the data directory resolves to a device-mapper volume |
+| `not-encrypted` | it resolves to a plain block device |
+| `unknown` | the check could not answer — not Linux, no mount found, or a path that would not resolve |
+| `asserted` | an operator set `PORTAGE_ENCRYPTED_AT_REST=yes` |
+
+`unknown` is never folded into either answer, and an assertion is recorded as an assertion rather than as a finding — a LUKS volume presented by a hypervisor and an encrypted EBS volume both look like plain block devices from inside, so an operator has to be able to say so, and what they said must stay distinguishable from something this verified.
+
+Only `encrypted` and `asserted` stop the warning.
+
+## Key lifecycle
+
+A credential that never expires and that nobody reviews is the ordinary way long-lived access outlives its reason. The contractor's integration key still works. The pilot that ended two years ago still has one. Nothing anywhere says so — and a key issued for a purpose that finished is indistinguishable from one somebody else is quietly using.
+
+Three things address that, none relying on anyone remembering:
+
+- **Expiry is checked at verification, against the clock.** A key that expired last night does not work this morning whether or not anything has restarted. `expires_at` is optional and has no default, so a non-expiring key is a choice somebody made.
+- **Rotation overlaps.** `POST /api/keys/:id/rotate` issues a replacement and gives the old key a retirement date — both work in between. A rotation that cut the old key off the instant the new one existed would make every rotation an outage between issuing the credential and deploying it, which is exactly why rotation gets deferred and then skipped. The old key's retirement is a **date**, not a follow-up task, so the overlap ends on its own; two working credentials where there should be one is worse than not having rotated.
+- **`GET /api/keys/review`** answers the two questions a list of keys cannot: which nobody is using, and which are about to stop working.
+
+A key **never used at all** is dormant from the day it was issued, and is reported by age rather than skipped for having no last-used date — that shape is exactly the one left by a key pasted into a ticket and never deployed. Revoked and already-expired keys stay off the list, because padding a list somebody has to act on is how it stops being acted on.
 
 ## Audit trail
 
@@ -980,6 +1024,7 @@ src/
   auth/gate.ts        the one check every request passes
   audit/store.ts      hash-chained access trail
   core/text.ts        small helpers for messages people read
+  core/atrest.ts      whether the data directory is on an encrypted volume
   core/retention.ts   payload redaction and purge under a retention policy
   core/backup.ts      verified online snapshots
   connectors/sql.ts   Postgres and MySQL polling clients

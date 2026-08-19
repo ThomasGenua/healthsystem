@@ -77,15 +77,33 @@ function statements(source: string): Array<{ sql: string; line: number }> {
   return out;
 }
 
-/** The comment lines immediately preceding a line, for opt-out markers. */
+/**
+ * Everything written about the statement at `line`: its enclosing method and
+ * that method's comments.
+ *
+ * The boundary walked back to is the previous method's closing brace, because
+ * the unit an exemption is written about is a method — a `crosses-tenants:`
+ * note may sit in the doc comment, or directly above the signature, or
+ * directly above the statement, and all three are ordinary places to put it.
+ * Stopping at the brace also means an exemption cannot be borrowed from the
+ * method above, which is the property that keeps this check honest.
+ *
+ * It used to walk back a fixed fourteen lines. That was wrong twice over: the
+ * count is arbitrary, and a declaration that had been reviewed and granted
+ * stopped applying when four lines of explanation were added between it and
+ * the statement. The failure was in the safe direction — a false positive —
+ * but a check that cries wolf when somebody comments their code is one people
+ * learn to satisfy by moving comments around.
+ */
 function precedingComment(source: string, line: number): string {
   const lines = source.split("\n");
-  let i = line - 2;
   let acc = "";
-  // Walk back over the statement itself and any comment block above it.
-  while (i >= 0 && i > line - 14) {
+  // A backstop, so a file without a closing brace above cannot make this walk
+  // to the top. Comfortably longer than any doc comment here.
+  for (let i = line - 2; i >= 0 && i > line - 90; i--) {
+    const text = lines[i].trim();
+    if (text === "}" || text === "};") break;
     acc = lines[i] + "\n" + acc;
-    i--;
   }
   return acc;
 }
@@ -150,4 +168,52 @@ test("an apostrophe in prose does not blind the scan", () => {
   ].join("\n");
 
   assert.equal(scoped(src).length, 2, "both statements must survive the comments around them");
+});
+
+test("an exemption applies to its own method and not to the one below it", () => {
+  // The property the boundary exists for, and the one worth pinning after
+  // rewriting how far back the scan looks. An exemption that leaked into the
+  // next method would silently excuse a statement nobody reviewed — which is
+  // the exact failure this whole file is written against, arrived at from the
+  // other direction.
+  const src = [
+    "  /**",
+    "   * crosses-tenants: the worker drains the whole node.",
+    "   */",
+    "  dueDeliveries(): Row[] {",
+    "    // an explanation somebody added later, between the note and the query",
+    "    return this.sql",
+    '      .prepare("SELECT * FROM deliveries WHERE state = ?")',
+    "      .all(state);",
+    "  }",
+    "",
+    "  listForChannel(id: string): Row[] {",
+    '    return this.sql.prepare("SELECT * FROM deliveries WHERE channel_id = ?").all(id);',
+    "  }",
+  ].join("\n");
+
+  const found = scoped(src);
+  assert.equal(found.length, 2, "both statements are seen");
+
+  const exempt = found.map((st) => /crosses-tenants:/.test(precedingComment(src, st.line)));
+  assert.deepEqual(
+    exempt,
+    [true, false],
+    "the declared one is excused even with prose between it and the query; the one below it is not"
+  );
+});
+
+test("a doc comment is not so long that the scan gives up before reaching it", () => {
+  // The backstop is a guard against a pathological file, not a limit on how
+  // much explanation a decision may carry. This codebase writes long reasons
+  // deliberately, and a scan that stopped short would start reporting granted
+  // exemptions as offenders again — the regression this replaced.
+  const doc = ["  /**", "   * crosses-tenants: a long and carefully argued reason."];
+  for (let i = 0; i < 60; i++) doc.push(`   * line ${i} of the argument.`);
+  doc.push("   */", "  sweep(): void {", '    this.sql.prepare("SELECT * FROM deliveries").all();', "  }");
+  const src = doc.join("\n");
+
+  const [st] = scoped(src);
+  assert.ok(st, "the statement is seen");
+  assert.ok(/crosses-tenants:/.test(precedingComment(src, st.line)), "and the reason above it still reaches it");
 });
