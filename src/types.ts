@@ -397,6 +397,11 @@ export interface ApiKeyRow {
   created_at: string;
   last_used_at: string | null;
   revoked_at: string | null;
+  /** When it stops working. Null means it does not expire. */
+  expires_at: string | null;
+  /** Set on a rotated key: the id of its replacement. */
+  rotated_to: string | null;
+  rotated_at: string | null;
 }
 
 /** Declarative conformance pack: profile rules per resource type. */

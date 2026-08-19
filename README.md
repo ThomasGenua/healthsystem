@@ -4,6 +4,18 @@ A health integration engine built for northern operating conditions. HL7 v2 in a
 
 The design targets the interoperability posture Canadian jurisdictions are converging on through Canada Health Infoway: PS-CA patient summaries, CA:FeX FHIR exchange, and CA:eReC eReferral and eConsult, operated over networks where a 5 Mbps satellite tail and a multi-hour outage are normal conditions rather than incidents. Every acknowledgement means the message is durably queued, not merely seen, and an ordered channel resumes exactly where it stopped.
 
+## Contents
+
+**Getting started** — [Status](#status) · [Requirements](#requirements) · [Quickstart](#quickstart)
+
+**The clinical platform** — [The clinical record](#the-clinical-record) · [The inbox](#the-inbox) · [Closing referral loops](#closing-referral-loops) · [Orders and results](#orders-and-results) · [Medications](#medications) · [The clinician workspace](#the-clinician-workspace) · [Scheduling](#scheduling) · [Registries and care gaps](#registries-and-care-gaps)
+
+**Privacy and access** — [Security](#security) · [Encryption at rest](#encryption-at-rest) · [Key lifecycle](#key-lifecycle) · [Audit trail](#audit-trail) · [Patient access](#patient-access) · [Consent directives and breaking glass](#consent-directives-and-breaking-glass) · [The clinical API, and audit by construction](#the-clinical-api-and-audit-by-construction) · [Retention](#retention) · [What the chains prove](#what-the-chains-prove) · [Tenancy](#tenancy)
+
+**Running it** — [Upgrading](#upgrading) · [Backup](#backup) · [Monitoring](#monitoring) · [Throughput](#throughput) · [Durability under failure](#durability-under-failure) · [Crash recovery](#crash-recovery)
+
+**Reference** — [Architecture](#architecture) · [Channels](#channels) · [Character sets](#character-sets) · [Mappings](#mappings) · [API](#api) · [FHIR facade](#fhir-facade) · [Terminology](#terminology) · [Conformance packs](#conformance-packs) · [Subscriptions](#subscriptions) · [Connectors](#connectors) · [Admin UI](#admin-ui) · [Loading a licensed terminology release](#loading-a-licensed-terminology-release) · [Satellite demo](#satellite-demo) · [Roadmap](#roadmap)
+
 ## Status
 
 v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources; filter, split, mapping and validation pipeline; retrying ordered destinations with DLQ and replay; hash-chained lineage; FHIR R4 facade; terminology service; PS-CA / CA:FeX / CA:eReC conformance packs; rest-hook Subscriptions; satellite outage demo; admin UI) plus:
@@ -31,8 +43,17 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A patient index** derived from the log and rebuildable from it, surfacing duplicates rather than merging them.
 - **Clinical documentation** where a signature fixes the text and only an addendum may follow.
 - **A unified inbox** where work cannot be closed without evidence or left belonging to nobody unseen.
+- **Closed-loop referrals**, where a deadline passes with nothing happening and the referral appears on a chase list rather than going quiet.
+- **Results whose acknowledgement cannot be inherited**, so a corrected value never arrives already signed off by somebody who read the old one.
+- **A medication list that says what the patient is taking**, and an allergy check that reports "nobody asked" rather than "no contraindications".
+- **A chart summary that declares what it could not include**, because a summary is read as complete and an empty panel is not the same as none.
+- **A clinical API that cannot serve patient data unaudited**, checked by reading the routing source rather than by remembering.
+- **Proxy access that lapses on the day it was set to**, because nothing about a child's sixteenth birthday generates an event.
+- **Quality measures that refuse a rate they cannot stand behind**, because the patients a measure cannot assess are the ones nobody managed.
+- **Double-booking refused by the database**, not by a check that a second clerk can race past.
+- **Break-glass that is loud**: declared, reasoned in words, notified to the patient, and queued for review — because a quiet override makes the lockbox theatre.
 
-270 tests. Backend first, tests before UI.
+410 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -41,7 +62,12 @@ Honest limits, so nobody discovers them in production:
 - **MLLP sources are unauthenticated.** The protocol has no authentication to hook into. Those ports are a network-layer concern — put them behind a VPN, a private APN, or mutual TLS at the transport, not behind Portage. Being unauthenticated does not mean being fragile: frames are size-capped (16 MB, `maxFrameBytes` per channel) so a sender that never terminates one cannot exhaust memory, and malformed input is answered per message rather than taking the listener down.
 - **`node:sqlite` is still flagged experimental on Node 22.** Durability rests on it, so run Node 24+ in production, where it is stable. The engine warns at boot when it is running below 24; the supported floor stays at 22.18 so an upgrade breaks nobody. CI covers both.
 - **The shipped terminology pack is a labelled demo subset.** SNOMED CT CA, LOINC, pCLOCD, ICD-10-CA and CCI are licensed distributions; the loaders are here, the content is not.
+- **The database file is not encrypted.** `node:sqlite` cannot encrypt, so the control that fits a single-file store is an encrypted volume underneath it. Portage does not assume one is there: it checks at boot and on `/api/health`, and says so loudly when it cannot find one. See [Encryption at rest](#encryption-at-rest).
 - **The conformance packs are not certified.** They encode the published profiles as data and pass the shipped fixtures, but no projectathon has scored them.
+- **The clinical platform has no user interface.** Every module described below — the chart, medications, orders, referrals, scheduling, registries — is a store and an HTTP API with tests. The admin UI covers interface operations only. This is deliberate ordering, not an oversight, but "a clinician can use this today" is not a claim being made.
+- **No patient portal.** `src/patient/access.ts` and `src/patient/consent.ts` are built and tested and are not mounted on the API, because a portal is a different trust boundary — a patient authenticating as themselves, and a proxy as somebody entitled to act for them, neither of which is an operator with an `admin` key. Serving them from an admin-scoped API would make the scope model say something false about who is calling.
+- **No clinical decision support content.** The medication safety mechanism is here — the check, the severities, the override with its record — and ships a deliberately small cross-reactivity set covering the classes with the clearest consensus. Drug interactions come from a licensed database through the `InteractionSource` seam. An interaction table that is 80% complete is one prescribers learn to trust, and the missing 20% is then invisible.
+- **Nothing here uses machine learning.** Section 7 of the requirements asks for it; nothing in this repository does anything of the sort, and no output should be read as though it did.
 
 ## Requirements
 
@@ -83,7 +109,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 270 tests
+npm test          # 410 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -205,6 +231,49 @@ A refusal returns `429` with `Retry-After`. Counters are in memory, matching the
 | `PORTAGE_RATE_AUTHENTICATED` / `_ANONYMOUS` / `PORTAGE_RATE_LIMIT` | 1200 / 120 / on | request rate limits |
 | `PORTAGE_BACKUP_DIR` / `_KEEP` | `./backups` / 7 | where POST /api/backup writes, and how many to keep |
 
+## Encryption at rest
+
+`node:sqlite` has no encryption. The database is one file, so the control that fits is full-volume encryption underneath it — LUKS, FileVault, BitLocker, an encrypted cloud volume. SQLCipher would mean a native dependency and a key-management story this project does not have, and column-level encryption would break the patient index, which has to search on names and identifiers.
+
+That decision is defensible. What is not defensible is the usual consequence of it: *encryption at rest* becomes a line in a procurement document and an assumption in a diagram, nothing checks, and then the test environment is promoted, or the volume is recreated during an incident, or the data directory moves to a mount nobody thought about — and the system carries on exactly as before, with every chart, allergy, result and audit row in the clear.
+
+So Portage refuses to be quiet about it. At boot:
+
+```
+WARNING: /var/lib/portage is on /dev/vda1, which does not appear to be encrypted.
+The database holds charts, allergies, results and the audit trail in plain text;
+an encrypted volume is the control that fits a single-file store. If the volume is
+encrypted somewhere this cannot see — a hypervisor or a cloud volume — set
+PORTAGE_ENCRYPTED_AT_REST=yes to record that.
+```
+
+and on `/api/health` as `atRest`, so a monitor can alert on it.
+
+Four states, and the distinctions are the point:
+
+| | |
+| --- | --- |
+| `encrypted` | the data directory resolves to a device-mapper volume |
+| `not-encrypted` | it resolves to a plain block device |
+| `unknown` | the check could not answer — not Linux, no mount found, or a path that would not resolve |
+| `asserted` | an operator set `PORTAGE_ENCRYPTED_AT_REST=yes` |
+
+`unknown` is never folded into either answer, and an assertion is recorded as an assertion rather than as a finding — a LUKS volume presented by a hypervisor and an encrypted EBS volume both look like plain block devices from inside, so an operator has to be able to say so, and what they said must stay distinguishable from something this verified.
+
+Only `encrypted` and `asserted` stop the warning.
+
+## Key lifecycle
+
+A credential that never expires and that nobody reviews is the ordinary way long-lived access outlives its reason. The contractor's integration key still works. The pilot that ended two years ago still has one. Nothing anywhere says so — and a key issued for a purpose that finished is indistinguishable from one somebody else is quietly using.
+
+Three things address that, none relying on anyone remembering:
+
+- **Expiry is checked at verification, against the clock.** A key that expired last night does not work this morning whether or not anything has restarted. `expires_at` is optional and has no default, so a non-expiring key is a choice somebody made.
+- **Rotation overlaps.** `POST /api/keys/:id/rotate` issues a replacement and gives the old key a retirement date — both work in between. A rotation that cut the old key off the instant the new one existed would make every rotation an outage between issuing the credential and deploying it, which is exactly why rotation gets deferred and then skipped. The old key's retirement is a **date**, not a follow-up task, so the overlap ends on its own; two working credentials where there should be one is worse than not having rotated.
+- **`GET /api/keys/review`** answers the two questions a list of keys cannot: which nobody is using, and which are about to stop working.
+
+A key **never used at all** is dormant from the day it was issued, and is reported by age rather than skipped for having no last-used date — that shape is exactly the one left by a key pasted into a ticket and never deployed. Revoked and already-expired keys stay off the list, because padding a list somebody has to act on is how it stops being acted on.
+
 ## Audit trail
 
 Canadian health privacy law — PHIPA in Ontario, HIA in Alberta, the Health Information Act in the territories — obliges a custodian to know who looked at whose record. Portage holds patient data in the facade and raw HL7 in the message log, so it answers that question.
@@ -256,6 +325,14 @@ All five are covered, in every settled delivery state including **dead** — a d
 `test/retention-leak.test.ts` proves this by searching the database file for the patient's identifiers after a sweep, rather than by checking the columns the fix was written for — so a copy kept somewhere nobody thought of still fails the test.
 
 **Purging** deletes the rows outright. It reclaims disk and destroys the record that anything happened, so the chain can only be verified from the purge point onward. The chain tip at the purge is retained, so the surviving chain still verifies and `verifiedFrom` reports where it now begins — rather than looking tampered with. Offered because operators sometimes genuinely need it, and deliberately not the default.
+
+### What retention does not touch
+
+Neither control reaches the FHIR facade, and neither reaches the clinical stores — the chart, medications, allergies, orders, results, referrals or tasks. Those hold **the record**, not a log of traffic, and how long a territorial EHR keeps a patient's chart is a clinical governance question, not something an interface engine should answer on a timer.
+
+Worth stating outright, because the alternative reading is available and would be a catastrophe: *"retention is configured"* must not be heard as *"patient data ages out everywhere"*. It ages out of the message log. A patient's allergy to penicillin recorded four years ago is not stale data, and a sweep that deleted it because a number in a config file said `1095` would be destroying the record while reporting success — and it would report success, because deleting rows is exactly what it was asked to do.
+
+`test/retention-boundary.test.ts` pins the line from both sides: it runs the most aggressive policy anyone would write over a fully populated chart and requires every record table to come out unchanged, and it reads the purge path's source and fails if a clinical table is ever named in a `DELETE`. Moving the boundary is then a deliberate act with a failing test attached, in either direction.
 
 `/api/chain/verify` reports both halves of the guarantee:
 
@@ -390,6 +467,281 @@ Every transition is appended with an actor and a reason, so delegation history i
 **Inboxes are ordered by urgency and deadline, never by arrival.** A chronological inbox buries the one item that mattered under the forty that did not, which is the mechanism by which a critical result is missed with nobody doing anything wrong.
 
 Items carry a correlation identifier, so a referral raised here and the consult report that answers it months later are recognisable as two items and one question — which is what closing a loop requires.
+
+## Closing referral loops
+
+Section 9 asks for closed-loop referral management, and the loop is the whole of it. Sending a referral is easy and every system does it. What is hard is knowing, eight months later, that one was sent and nothing has happened since — because nothing happening produces no error, no message and no alert. Nobody did anything wrong and the patient was not seen.
+
+A referral here therefore always owes something to somebody, and the deadline is the record of what:
+
+| Status | Who is waiting, and on what |
+| --- | --- |
+| `sent` | the referrer, on an acknowledgement |
+| `acknowledged` | the referrer, on a triage decision |
+| `accepted` | the patient, on an appointment |
+| `booked` | everyone, on the appointment happening |
+| `seen` | the referrer, on the consultation report |
+| `reported` | the referrer, on reading it and closing |
+
+Each transition sets what is expected next and by when, so `stalled()` — the query the rest of the module exists to serve — returns the referrals where a deadline passed with nothing happening, oldest first, which is the order they should be chased in.
+
+Three decisions are worth stating, because each is a way a loop is quietly lost:
+
+- **A redirect keeps the correlation, and carries the documents.** When a service passes a patient on, the new referral joins the same loop rather than starting one. Redirecting by cancelling and re-referring resets the clock, and the wait-time report then says the system is performing well while the patient waits from the beginning again. `waitDays()` measures from the first referral in the loop, which is what the patient experienced. The imaging already gathered travels with it too: making the next clinic re-request the same films is how a redirect costs a week.
+- **Closing requires an outcome, cancelling requires a reason.** A referral closed with nothing recorded is indistinguishable afterwards from one abandoned, and that difference is usually the entire question. Both are refused, not warned about.
+- **A referral is refused at send if the receiving service's required documents are missing.** A rejection three weeks later for a missing referral form is the same delay as never sending it, arrived at more slowly.
+
+Nothing is deleted. Cancellation and decline are statuses with reasons, the full path is on `referral_events` with the actor who moved it, and a report arriving against a loop already closed is refused rather than backdated into looking like normal completion — a consultation nobody was expecting is a discrepancy worth a person's attention, and the findings themselves belong in the chart, which needs no live referral to hold them.
+
+## Orders and results
+
+Section 4 is about two silences, and they are different failures. An order placed and never resulted is the lab never reporting. A result reported and never read is the report arriving and landing on nobody. Both end with a clinician believing the question was answered, and neither raises an error.
+
+The module is built around the second, because of a specific way it goes wrong.
+
+**A correction does not inherit the acknowledgement of the value it replaced.** Laboratories correct results — a specimen is rerun, a transcription is fixed, a preliminary becomes final — and a correction can turn a value nobody needed to act on into one somebody urgently does. If acknowledgement is recorded against the order, or against a result identity that a correction reuses, the corrected value silently inherits the sign-off given to the old one. The chart then shows a potassium of 7.1 marked reviewed, and no one has ever seen it.
+
+So results are appended, never updated. A correction is a new row superseding an earlier one, exactly as the chart works, and acknowledgement lives on the row. There is no mechanism by which it could carry over, because carrying over would mean writing it onto a row nobody wrote it onto. The superseded row keeps its own acknowledgement, because that part is true — that clinician did read that value; what is false is that anyone has read this one. Signing off a superseded result is refused, so the queue cannot be cleared with a number that is no longer current.
+
+Three more decisions:
+
+- **Acknowledgement says what was done.** "Acknowledged" alone records that a screen was clicked, and the question a review asks is what happened next. "Patient telephoned, attending this afternoon" is an answer; a timestamp is not.
+- **Unsolicited results are kept, and matched by a person.** A result from another facility, or against an order placed on paper, is a real result about a real patient — refusing it would lose it, so it lands in `unmatched()`. Matching is an action somebody takes rather than an inference from code and date: two potassiums on one morning are not interchangeable, and a wrong automatic match reads afterwards as a result filed correctly.
+- **Responsibility is a column, not an inference from who ordered.** Residents rotate and locums leave, so a result routed to whoever typed the order three weeks ago goes to an inbox nobody opens. `handover` moves it with a reason and refuses to leave it belonging to nobody.
+
+Queues are ordered by how abnormal the value is, then by age, and the acknowledgement window comes from the same place: an hour for a panic value, a day for an abnormal one, three days for a normal one. Normal results are on the list too — "it was normal" is known after reading it, not before, and the results most often missed are the ones assumed unremarkable.
+
+`awaitingResult()` covers the other silence. A preliminary result does not answer an order: a blood culture reporting "gram-positive cocci" at 24 hours and never speciating is precisely the wait worth chasing, and an earlier version of that query dropped it from the list. Whether an order has been answered is now decided in exactly one place, and the query reads that decision rather than making it a second time.
+
+## Medications
+
+Section 5's failure is a list that records what was *prescribed* and is read as what is *in the patient*. Those are different claims. A prescription written eighteen months ago is evidence that somebody intended a drug; the patient who stopped their statin because of muscle aches and mentioned it to nobody has a chart saying otherwise. Every dose calculated around that list is calculated around a drug that is not there.
+
+So provenance is required on every statement — `prescribed`, `patient-reported`, `pharmacy-dispense`, `reconciled`, `external-record`, with no default, because a default is a guess about provenance written into the record as a fact. Adherence is a separate column from status, so a prescription can be active while the patient is not taking it. `current()` returns what the patient is taking; `current({ asPrescribed: true })` returns the other list. Both are real, and conflating them is the error.
+
+Statements are appended, never updated. A dose change is a new row superseding the old one, so "what was the patient on when this happened" stays answerable. Stopping requires a reason: a drug that vanishes with nothing recorded is indistinguishable from one removed by mistake, and the next prescriber's response to those two should be opposite.
+
+### Nobody asked is not the same as no known allergies
+
+This is what the allergy table exists for. An allergy list that is empty because somebody asked and the answer was none, and one that is empty because nobody has ever asked, are clinically opposite — and in most systems they render identically, as a blank panel. A check run against the second returns "no contraindications found", which is a reassuring answer to a question that was never put.
+
+So "no known drug allergies" is a **row**: an assertion with an author and a time. Its absence means nobody has asked, and `allergyStatus()` returns three values rather than two. `never-asked` is a finding in its own right, at severity `severe`, and is never folded into `clear`.
+
+The same refusal-to-guess applies to interactions. A source that cannot answer — an expired licence, an unreachable service — produces a finding saying so, not silence. A deployment with no interaction source configured reports interactions as unchecked rather than clear.
+
+### What blocks, and what an override is for
+
+The check never decides. A blocking finding means `prescribe` refuses without an override carrying a reason — but the prescriber may always proceed, because an emergency does not wait for an allergy history and a system that refuses outright is one clinicians route around. What must be true is that proceeding was an act somebody can be shown to have taken: the override records the reason **and the findings that were shown**, so a considered decision is distinguishable afterwards from a reflex click.
+
+Findings are ordered worst-first, independently of the order the check discovers them in. A contraindication below three informational lines is one that gets scrolled past.
+
+### Reconciliation
+
+Admission, transfer and discharge are where lists diverge. A reconciliation is seeded from the current list rather than starting empty — an empty form is completed by doing nothing — and **cannot be completed while any line is undecided**, with the unresolved medications named in the refusal so it is actionable.
+
+That refusal is the point. A reconciliation marked done with lines nobody resolved is worse than one never started, because the chart now says the work happened and the next clinician has no reason to look again. Decisions are applied to the list on completion, which is what makes it a reconciliation rather than a questionnaire, and one left open appears in `incompleteReconciliations()` rather than sitting invisibly.
+
+### What is deliberately not here
+
+The mechanism is here; the clinical content is not. A drug interaction table that is 80% complete is one a prescriber learns to trust, and the missing 20% is then invisible — worse than the gap it was meant to close. Portage ships a deliberately small cross-reactivity set covering the classes with the clearest consensus, and takes a licensed interaction database through the `InteractionSource` seam for anything more. Same posture as the terminology loaders: build the seam, do not fake the content.
+
+## The clinician workspace
+
+Section 2 asks for a longitudinal view a clinician can open and act from. The temptation is to treat that as presentation — join the tables, render the panels — and the reason it is not is what the module is built around.
+
+**A summary is read as complete.** That is its entire clinical function: a clinician opens it precisely so they do not have to go looking, and having looked, they proceed on the basis that what is there is what there is.
+
+So the dangerous failure is not an error. It is a section that came back short — a store that threw and was caught, a list truncated at fifty, a category nobody wired in — rendering as an empty panel that means "none" when it actually means "not asked". An empty allergy panel is the same lie as an empty allergy list, and the same one §5 refuses to tell.
+
+Every section therefore carries its own completeness, and the summary carries `complete` and `omissions`:
+
+- a section that **could not be loaded** says so, and its omission text says the panel is empty because it failed rather than because there is nothing;
+- a section that was **cut short** says how many it dropped;
+- a store that is **not configured** in this deployment is an omission, not a blank.
+
+A failing store does not take the chart down — six panels beat an error page — but the panel it leaves behind never passes for "none". `complete === false` is the flag a renderer must surface, not a detail it may ignore.
+
+Allergy status is carried to the top of the summary rather than left inside its panel, and read from the store rather than inferred from the panel's contents. Inferring it would undo the distinction §5 exists for: a clinician scanning a chart has to see "never asked" without interpreting an empty box.
+
+`worklist()` is the same idea across the day rather than across one patient. A clinician's work is not one queue — results wait in one place, referrals in another, tasks in a third, and each system reports its own as though it were the whole picture. The value of a single view is that nothing is owed to them somewhere they are not looking, which is only true if the view says what it could not reach.
+
+The module owns no data and keeps no second copy of anything. It assembles from the stores that already exist, declares what it assembled, and is honest about the rest.
+
+## The clinical API, and audit by construction
+
+Everything above — the chart, the patient index, medications, allergies, orders, results, referrals, tasks, notes and the assembled summary — is served under `/api/clinical/*`, behind the `admin` scope and inside the caller's tenant like the rest of the API.
+
+Exposing it is the moment the audit requirement in §18 starts to bite. Until now the clinical stores were libraries: nothing reached them over a network, so nothing went unrecorded. A route is a way in, and **an audit guarantee that depends on each new route remembering to call `audit()` is one that holds until somebody forgets** — and the forgetting is invisible, because the route works, the data is served, and nothing anywhere says the trail is short.
+
+Two things make it structural instead:
+
+- **`phi()` audits first and sends second.** An exception between the two cannot produce a read that happened without a record of it happening, and there is no path through a clinical route that reaches `send` without passing through it.
+- **`test/clinical-api.test.ts` reads the routing source**, extracts every `/api/clinical/*` path, drives each one, and fails if any serves patient data without leaving a row. A route added tomorrow with no trail does not quietly work — it breaks the build. The test also fails on a route it has no case for, so a new endpoint cannot pass by being untested.
+
+A search that finds nobody is still an access. "Who did you look for" is a question a privacy review asks, and a fruitless search for a well-known name is exactly the one it asks about — so the row is written with `count: 0` rather than not at all.
+
+The allergy endpoint returns the three-valued status beside the list rather than the list alone, because an empty array on the wire is the same ambiguity an empty panel is on a screen.
+
+Read scope is not enough for any of it. A credential that may read the FHIR facade is not thereby licensed to open charts, and a refused reach for a patient record is itself recorded — that refusal is among the things an audit trail exists to show.
+
+The guarantee proved itself during this work: wiring the schedule and registry endpoints in, the structural test failed on the new routes before they had cases, which is precisely the moment it is supposed to fire.
+
+### Directives are enforced here, not merely stored
+
+The consent work above would be decoration if the chart API did not consult it, and worse than decoration — the system would claim to honour patient directives while serving the record anyway.
+
+So the check lives **inside `phi()`**, not in each route. Every route that names a patient goes through it, which means a lockbox cannot be missed by a route that forgot to ask, and `test/clinical-api.test.ts` reads the source to require that a patient-scoped route goes through `phi()` at all.
+
+A refusal is audited like any other access — a directive that stopped somebody is exactly what a privacy office wants to see — and the 403 says how to declare an emergency:
+
+```json
+{ "error": "this record is withheld by a patient directive",
+  "breakGlass": "POST /api/clinical/break-glass" }
+```
+
+Declaring is itself an event on the trail, written before any record is read under it. And `GET /api/clinical/directives` is deliberately **outside** the withholding check: refusing to show somebody the directive that stopped them would leave them unable to tell a lockbox from an empty chart, which is exactly the ambiguity the rest of this refuses.
+
+**Lists are a different problem from single records.** Refusing an entire worklist because one patient on it has a directive would take a clinician's day away, so withheld rows are omitted — but not silently:
+
+```json
+{ "rows": [ … ], "withheldCount": 1 }
+```
+
+A short list that looks complete is what this system refuses everywhere, and here it is worse than usual: a result withheld from the clinician responsible for reading it is a result now owed to **nobody**, which is the exact silence §4 exists to prevent. The count is reported so somebody can act on it; who they are is not, which is what the directive asked for. A task with no patient on it is not about anybody, so no directive withholds it.
+
+### What is deliberately not on this API
+
+**The patient-facing surface.** `src/patient/access.ts` is built and tested, and it is not mounted here, because a patient portal is a different trust boundary — a patient authenticating as themselves, and a proxy authenticating as somebody entitled to act for them, neither of which is an operator holding an `admin` key. Bolting those endpoints onto an admin-scoped API would make the scope model say something false about who is calling.
+
+That surface needs its own authentication (patient identity, not an issued operator credential), its own scope vocabulary, and `PatientAccess.may()` consulted on every request rather than a scope check. It is the next thing to build, not something already here under a different name.
+
+## Patient access
+
+Section 11 has two failures that nothing else in this system has, and they pull in opposite directions.
+
+### Delegated authority that never ends
+
+A parent's access to a child's chart is correct until a birthday and wrong afterwards — and **nothing about that day generates an event**. No message arrives, no status changes, no queue fills up. The grant simply keeps working, and a sixteen-year-old's mental health notes stay readable by somebody no longer entitled to them, for years, with nobody doing anything wrong.
+
+The same shape covers a substitute decision-maker whose authority ended when capacity returned, and a representative named during an admission that finished in 2019.
+
+So authority is time-bounded by construction:
+
+- **A delegated grant without an expiry is refused, not defaulted.** A default would be this module's guess written into the record as somebody's decision — and the decision, *when does this end*, is the entire safeguard. For a parent it is the age of majority in the jurisdiction; for a substitute decision-maker it is a review date. Neither is something a library should choose.
+- **The check is against the clock, not a status.** A grant that expired yesterday is not authority, whether or not any sweep has run.
+- **`expiring()` surfaces grants about to lapse**, so a renewal is a decision somebody makes rather than a lapse somebody discovers. A parent who still needs access to a disabled adult child's chart should be asked; one who should not have it should stop, on the day.
+
+The expired grant row stays. Who was entitled when is not something to delete — it simply stops being authority.
+
+### Release timing
+
+Immediate release is the default and it is right: a patient waiting a week for a normal result while their clinician's inbox fills is the harm the information-blocking rules were written against.
+
+But "immediate, no exceptions" means a person can learn they have cancer from a phone at eleven at night with nobody to ask. A system that cannot express that has not solved the problem — it has picked the other side of it.
+
+So a hold is possible and deliberately hard to abuse. It is **bounded** (a hold with no end is a result withheld indefinitely, which is the practice being legislated against), **reasoned**, **attributed**, and above all **visible**:
+
+> **Biopsy report** — reported 14 March
+> Your clinician will discuss this result with you. Available from 17 March.
+
+A held result appears in the patient's list, saying that it is held and when it lifts. It is never simply absent, because an absent result is indistinguishable from one that never came back — and the patient then has no idea there is anything to ask about, which is the failure the whole regime exists to prevent.
+
+What the patient is shown is a **category**, not the clinical justification. "Your clinician will discuss this result with you" is honest and does not require somebody to read a note about themselves written for someone else. The hold lifts by the clock; nothing has to run.
+
+### The patient's own access log
+
+Section 11 requires a patient be able to see who looked at their record, and a proxy's accesses are in it under the proxy's own name. *"My ex-husband opened my chart four times last month"* is exactly what a patient has a right to find out, and it is unanswerable if a proxy's reads are recorded as the patient's own. Refused attempts are in it too.
+
+## Registries and care gaps
+
+Section 12 asks who in a population needs something they have not had. The arithmetic is easy. The denominator is not, and that is what this module is about.
+
+A diabetes registry reports control by dividing patients whose last HbA1c was under target by patients with a recent HbA1c. Patients with **no** recent HbA1c fall out of both halves — and those are, precisely and not coincidentally, the people nobody has managed. So the measure reads best exactly where care is worst, and it does so silently: no error, no warning, a clean percentage on a dashboard a health region plans around.
+
+The same shape appears throughout quality measurement. Exclusions accumulate, each individually defensible, until a measure describes a carefully chosen subset and is reported as though it described a population.
+
+So:
+
+- **The denominator is the whole cohort**, not its assessable part. A patient with no recent test counts against the measure rather than vanishing from it.
+- **`unclassified` is returned beside the numerator and denominator**, with a reason per patient: no qualifying observation, a value that is not numeric, no birth date to apply an age criterion to.
+- **`rate` is `null` when too much of the cohort could not be assessed.** A number that is wrong is worse than no number, because a number gets planned around. The caveat says why in words, so a dashboard cannot render a bare percentage.
+
+The property that follows is the one worth stating: **a measure must get worse when somebody stops being tested, never better.** A measure that improves when patients drop out of testing is measuring the wrong thing, and it is tested for directly.
+
+`"sample haemolysed"` is unclassified, not a pass. Parsed as a number it is `0`, which is below every target — and would count as excellent control.
+
+An empty cohort reports `null` rather than `0%`. Zero over zero is not zero per cent, and a dashboard rendering 0% would be read as terrible care.
+
+Cohort membership carries **why** — `condition diabetes`, `taking metformin, aged 54` — so a clinician can disagree with one patient rather than with the registry. A list nobody can argue with in detail is one they dismiss wholesale. A condition a clinician retracted takes the patient off the register, and a drug the patient has stopped taking does not keep them on it: the register is of people, not of prescriptions.
+
+Care gaps distinguish **never done** from **overdue**, never-done first. They are different conversations — one patient has never been offered the test, the other has been and did not come back. A gap can be satisfied by a medication rather than a result, because "diabetic patients on a statin" is closed by a prescription, and a rule engine that only understood results would recall every patient already treated.
+
+## Scheduling
+
+Two failures carry this, unrelated except that both are ways a schedule quietly breaks.
+
+### A slot belongs to one patient, and the database says so
+
+The one thing a scheduler must never do is give one slot to two people, and **check-then-insert cannot promise that**. Between reading "free" and writing "booked" another booking fits, and the window is exactly as wide as the gap between two statements. Under a real clinic — two clerks, a patient portal and an inbound SIU feed on one diary — that window is hit, and the failure is discovered in the waiting room.
+
+So the promise is a uniqueness constraint, not a code path:
+
+```sql
+CREATE UNIQUE INDEX idx_booking_seat
+  ON schedule_bookings(tenant_id, slot_id, seat) WHERE status != 'cancelled';
+```
+
+`book()` still checks, because a clear refusal beats a constraint violation — but the check is a courtesy and the index is the guarantee. The test that matters therefore **bypasses `book()` entirely** and writes the row a racing second process would write, because a guarantee that only holds when callers behave is not a guarantee.
+
+The index is partial so that cancelling frees the seat while keeping the row. A slot freed by *deleting* its booking loses the fact that somebody cancelled — and a pattern of cancellations is made of exactly those facts, for the clinic and sometimes for the patient, whose repeated cancellations are a clinical signal rather than an administrative one.
+
+**Overbooking is a number somebody chose**, declared as slot capacity, rather than a constraint defeated. Making overbooking impossible is how a scheduler gets routed around, and a clinic overbooking in a paper diary is worse off than one overbooking here.
+
+Blocking takes a slot out of use without deleting it — leave, a meeting, a scanner down for service. A slot that exists and must not be booked is different from one that does not exist: deleting it loses the fact that the clinic was supposed to be running, which is what a capacity report is made of. A slot with a patient already in it cannot be blocked out from under them.
+
+### A missed appointment is a clinical event
+
+Marking did-not-attend and closing the record is the administrative reading, and for a routine review it is right. For the patient who missed the appointment answering an urgent referral it is a catastrophe with no error attached: the referral reads booked, the clinic's list is clear, and nobody is waiting for anything.
+
+So `didNotAttend()` returns **what is owed**, not just a status:
+
+```ts
+{ booking, followUpRequired: true,
+  because: "this appointment answers a referral, which is still open and now has nothing booked against it" }
+```
+
+`unresolvedNonAttendance()` holds them until somebody says what they did about it — worst first, because a missed urgent appointment gets less recoverable with every week. Clearing one requires an action in words, for the same reason completing a task requires evidence.
+
+## Consent directives and breaking glass
+
+A patient may withhold their record from a provider, from an organization, or from everybody outside the circle of care that created it. Provincial EHRs call it a consent directive or a lockbox, and it is a clinical fact about the patient — *they do not want this person reading this* — rather than a configuration setting, which is why it lives beside their allergies.
+
+**Every directive is overridable in an emergency.** That is not a weakness in the design, it is the design. A patient unconscious in a resuscitation room cannot lift their own lockbox, and a system that made the override impossible would eventually kill somebody — or, more likely, grow a shared account everybody uses, which is worse in every respect including the audit trail.
+
+### What makes the override safe is not that it is hard
+
+It is that it is **loud**. Four things, and dropping any one turns the other three into paperwork:
+
+| | |
+| --- | --- |
+| **Declared before it is taken** | The access happens under a stated intention, rather than being reconstructed afterwards from logs. |
+| **Reasoned in the clinician's own words** | Not a dropdown. *"Unconscious, no collateral history, need allergy status before induction"* is a defence; *"emergency"* is not — and a dropdown produces only the second. A reason under twelve characters is refused. |
+| **The patient is told** | The part systems quietly omit, and the one that makes a directive mean anything. A lockbox nobody can find out was opened is a lockbox with no lock. `pendingNotification()` is a queue that must empty. |
+| **Somebody reviews it** | `pendingReview()` is a queue rather than a statistic. An override nobody looks at teaches a ward that breaking glass costs nothing, and a directive that costs nothing to break slows down only the people who would have asked permission anyway. |
+
+An override **expires**. One that did not would be a permission, and this is not one. Reviewing it does not extend it: the access window and the paperwork are separate things.
+
+`frequentBreakers()` reports the pattern rather than the incident. One override is a clinical emergency; forty in a month is a workflow that has decided the directive is an obstacle, and only the count shows it.
+
+Breaking glass where no directive existed is still recorded — the declaration is the thing worth keeping, because it is how *"I did not realise there was no lockbox"* is told apart from a habit.
+
+### Two smaller decisions
+
+**The refusal says a directive exists, never what it says.** "This record is withheld by a patient directive" is what a clinician needs. The patient's reason for withholding is between them and whoever recorded it, and disclosing it to the person being withheld from would be an odd way to honour the instruction.
+
+**A directive narrowed to particular entry types does not withhold the rest of the chart.** Applying it to everything would give the patient more than they asked for, which is its own kind of not listening.
+
+Directives lapse by the clock — revoked, expired, or not yet effective — rather than by a sweep changing a status, for the same reason proxy authority does.
 
 ## Tenancy
 
@@ -647,7 +999,22 @@ src/
   conformance/validator.ts declarative profile rules and capability self-check
   fhir/store.ts       versioned FHIR resource store behind the facade
   fhir/subscriptions.ts    rest-hook subscriptions on the durable queue
-  api/admin.ts        admin, ingest, terminology, conformance and FHIR API
+
+  clinical/record.ts       the append-only chart, hash chained per patient
+  clinical/patients.ts     patient index, derived and rebuildable from the log
+  clinical/notes.ts        drafts, signatures, co-signatures, addenda
+  meds/store.ts            medication list, allergies, reconciliation
+  meds/safety.ts           the check that runs before a prescription is signed
+  orders/store.ts          orders, results, and acknowledgement that cannot be inherited
+  work/tasks.ts            the unified inbox
+  work/referrals.ts        closed-loop referrals and the stalled query
+  schedule/store.ts        slots and bookings, double-booking refused by an index
+  population/registry.ts   cohorts, care gaps, quality measures with honest denominators
+  patient/access.ts        patient and proxy authority, result release timing
+  patient/consent.ts       consent directives and break-glass
+  workspace/summary.ts     the assembled chart, declaring what it left out
+
+  api/admin.ts        admin, ingest, clinical, terminology, conformance and FHIR API
   api/tls.ts          TLS and mutual TLS for the listener
   api/ratelimit.ts    per-principal and per-source token buckets
   api/ui.html         single-file admin UI served at GET /
@@ -656,6 +1023,8 @@ src/
   auth/jwt.ts         OAuth 2.0 / SMART bearer validation against a JWKS
   auth/gate.ts        the one check every request passes
   audit/store.ts      hash-chained access trail
+  core/text.ts        small helpers for messages people read
+  core/atrest.ts      whether the data directory is on an encrypted volume
   core/retention.ts   payload redaction and purge under a retention policy
   core/backup.ts      verified online snapshots
   connectors/sql.ts   Postgres and MySQL polling clients
@@ -913,7 +1282,14 @@ Everything streams and loads in batches, because a SNOMED snapshot runs to milli
 
 ## Roadmap
 
-- Projectathon readiness: pack tightening against the published PS-CA, CA:FeX and CA:eReC test scripts
-- Terminology: ValueSet and ConceptMap import from release formats (concepts land today; memberships and mappings are still pack JSON)
-- Subscription topics and the R5 backport, alongside today's R4 rest-hook criteria
-- Horizontal operation: today a Portage node is a single writer, which suits a community site but not a territorial hub
+What is genuinely next, in the order it would be worth doing:
+
+**The patient-facing surface.** The hardest part is already built and tested — directives, proxy authority that expires, release timing, the access log. What is missing is its trust boundary: patient identity rather than an issued operator credential, a scope vocabulary of its own, and `PatientAccess.may()` consulted per request instead of a scope check. Until that exists, "patients can reach their record" is not true.
+
+**A clinician-facing interface.** Every store below is exercised only by tests and HTTP. The chart summary is designed for it — `complete` and `omissions` exist so a renderer can be honest about a short panel — but nothing renders them yet.
+
+**Interoperability, continued.** Projectathon readiness: pack tightening against the published PS-CA, CA:FeX and CA:eReC test scripts. Terminology ValueSet and ConceptMap import from release formats (concepts land today; memberships and mappings are still pack JSON). Subscription topics and the R5 backport, alongside today's R4 rest-hook criteria.
+
+**Horizontal operation.** A Portage node is a single writer, which suits a community site and not a territorial hub. The instance lock makes that a refusal rather than a corruption, which is the right failure — but it is still a ceiling.
+
+**Bulk data conversion.** Section 15 asks for migration from incumbent systems, and there is nothing here for it: no legacy extract readers, no reconciliation report, no way to tell an operator which records did not convert and why. The clinical stores are append-only and provenance-carrying, which is the right shape to migrate into; the migration itself is unwritten.

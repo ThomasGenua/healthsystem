@@ -43,6 +43,24 @@ export const TENANT_SCOPED_TABLES = [
   "patient_identifiers",
   "tasks",
   "task_events",
+  "referrals",
+  "referral_events",
+  "orders",
+  "order_results",
+  "order_events",
+  "medication_statements",
+  "allergies",
+  "med_reconciliations",
+  "med_reconciliation_items",
+  "medication_events",
+  "patient_authority",
+  "result_release",
+  "patient_access_log",
+  "schedule_slots",
+  "schedule_bookings",
+  "schedule_events",
+  "consent_directives",
+  "break_glass",
 ] as const;
 
 /**
@@ -235,7 +253,17 @@ CREATE TABLE IF NOT EXISTS api_keys (
   scopes TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_used_at TEXT,
-  revoked_at TEXT
+  revoked_at TEXT,
+  -- When the key stops working, by the clock rather than by anybody
+  -- remembering. Null means it does not expire, which is a choice a caller
+  -- has to make rather than the default.
+  expires_at TEXT,
+  -- Set on the old key when it is rotated, naming its replacement. The two
+  -- overlap deliberately: a rotation that cut the old key off at the instant
+  -- the new one was issued would take the interface down between issuing and
+  -- deploying, which is why rotation gets skipped in practice.
+  rotated_to TEXT,
+  rotated_at TEXT
 );
 
 -- Access audit trail, hash-chained like message lineage so a row cannot be
@@ -375,6 +403,539 @@ CREATE TABLE IF NOT EXISTS task_events (
   evidence TEXT
 );
 
+-- Referrals, as a loop rather than a message.
+--
+-- Section 9 asks for closed-loop completion reporting, and the failure it
+-- guards against is silence: a referral sent to a service that never
+-- acknowledged it, or accepted and never reported back, looks exactly like one
+-- proceeding normally. Nobody did anything wrong and the patient is not seen.
+--
+-- So a referral carries an expectation of when the next thing should happen,
+-- and anything past it is stalled — a list, not a silence. The lifecycle is
+-- here; every transition is appended to referral_events.
+CREATE TABLE IF NOT EXISTS referrals (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  -- draft | sent | acknowledged | accepted | declined | booked | seen
+  -- | reported | closed | cancelled. Declined and cancelled are terminal;
+  -- everything else is still owed something.
+  status TEXT NOT NULL DEFAULT 'draft',
+  priority TEXT NOT NULL DEFAULT 'routine',
+  from_service TEXT NOT NULL,
+  to_service TEXT NOT NULL,
+  -- Why the patient is being referred. A referral without an indication is
+  -- one the receiving service cannot triage.
+  indication TEXT NOT NULL,
+  -- Documents the receiving service requires before it will triage, and what
+  -- has actually been attached.
+  required_documents TEXT,
+  attached_documents TEXT,
+  -- When the next step is expected by. Exceeding it is what "stalled" means.
+  expected_by TEXT,
+  appointment_at TEXT,
+  -- Set at close: what came of it. A referral closed with no outcome is
+  -- indistinguishable from one abandoned.
+  outcome TEXT,
+  correlation_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  closed_at TEXT,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS referral_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  referral_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  event TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_kind TEXT NOT NULL,
+  from_status TEXT,
+  to_status TEXT,
+  detail TEXT
+);
+
+-- Orders placed, and the results that answer them.
+--
+-- An order that was never resulted and a result nobody acknowledged are the
+-- two silences section 4 is about, and they are separate rows because they are
+-- separate failures: the first is the lab never reporting, the second is the
+-- report arriving and being read by nobody.
+CREATE TABLE IF NOT EXISTS orders (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  encounter_id TEXT,
+  -- lab | imaging | procedure | referral | other
+  category TEXT NOT NULL,
+  code TEXT NOT NULL,
+  code_system TEXT,
+  display TEXT NOT NULL,
+  -- draft | placed | in-progress | completed | cancelled
+  status TEXT NOT NULL DEFAULT 'draft',
+  priority TEXT NOT NULL DEFAULT 'routine',
+  -- Why it was ordered. An order with no indication cannot be interpreted by
+  -- whoever performs it, and cannot be judged appropriate afterwards.
+  indication TEXT NOT NULL,
+  ordered_by TEXT NOT NULL,
+  ordered_at TEXT,
+  -- Who reads the result. Not necessarily who ordered it: residents rotate,
+  -- and a result routed to somebody who left the service is a result nobody
+  -- sees. Nullable only before the order is placed.
+  responsible_id TEXT,
+  -- When a result is expected. Exceeding it is what "never came back" means.
+  expected_by TEXT,
+  correlation_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  closed_at TEXT,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Results, appended and never updated.
+--
+-- A correction is a new row superseding an earlier one, exactly as the chart
+-- works, and this is what makes acknowledgement safe. Acknowledgement is
+-- recorded on the row, so it belongs to one reported value and cannot be
+-- inherited by a value that replaces it. A potassium of 7.1 correcting a 4.1
+-- somebody already signed off arrives unacknowledged, which is the only
+-- honest state for it to arrive in.
+CREATE TABLE IF NOT EXISTS order_results (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  -- Null for an unsolicited result: one from another facility, or against an
+  -- order placed on paper. Common enough that refusing them would lose real
+  -- results, so they are kept and queued for matching instead.
+  order_id TEXT,
+  patient_id TEXT NOT NULL,
+  code TEXT NOT NULL,
+  code_system TEXT,
+  display TEXT NOT NULL,
+  value TEXT NOT NULL,
+  unit TEXT,
+  reference_range TEXT,
+  -- normal | low | high | critical-low | critical-high | abnormal
+  abnormal_flag TEXT NOT NULL DEFAULT 'normal',
+  -- preliminary | final | corrected | cancelled
+  result_status TEXT NOT NULL DEFAULT 'final',
+  -- The result row this one replaces, if any.
+  supersedes TEXT,
+  observed_at TEXT,
+  reported_at TEXT NOT NULL,
+  reported_by TEXT NOT NULL,
+  source_message_id TEXT,
+  -- Who read it, when, and what they did about it. Null until a person says
+  -- so; nothing sets these on anybody's behalf.
+  acknowledged_by TEXT,
+  acknowledged_at TEXT,
+  acknowledgement_action TEXT,
+  -- When acknowledgement is owed by, derived from how abnormal it is. A
+  -- critical result is on a different clock from a normal one.
+  ack_due_by TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS order_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  order_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  event TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_kind TEXT NOT NULL,
+  from_status TEXT,
+  to_status TEXT,
+  detail TEXT
+);
+
+-- What the patient is taking, and what they react to.
+--
+-- Both are appended and never updated, because both are claims made by
+-- somebody at a time, and the previous claim stays true about that moment. A
+-- medication list is not a set of current facts; it is a history of assertions
+-- about what a person is taking, and the difference shows up the moment two
+-- sources disagree.
+CREATE TABLE IF NOT EXISTS medication_statements (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  encounter_id TEXT,
+  code TEXT NOT NULL,
+  code_system TEXT,
+  display TEXT NOT NULL,
+  -- The ingredient or class, for duplicate-therapy checking. Two brands of
+  -- the same drug from two prescribers is a real and common way to double a
+  -- dose.
+  ingredient TEXT,
+  dose TEXT,
+  route TEXT,
+  frequency TEXT,
+  -- prescribed | patient-reported | pharmacy-dispense | reconciled |
+  -- external-record. Provenance is not decoration here: "the prescription
+  -- exists" and "the patient is taking it" are different claims, and a list
+  -- that cannot tell them apart is the commonest medication error there is.
+  source TEXT NOT NULL,
+  -- active | completed | stopped | on-hold | entered-in-error
+  status TEXT NOT NULL DEFAULT 'active',
+  -- taking | not-taking | taking-differently | unknown. Separate from status,
+  -- because a prescription can be active while the patient stopped it months
+  -- ago and told nobody.
+  adherence TEXT NOT NULL DEFAULT 'unknown',
+  indication TEXT,
+  prescriber_id TEXT,
+  -- Required to stop a medication. A drug that vanishes with no reason is
+  -- indistinguishable from one deleted by accident.
+  stop_reason TEXT,
+  effective_from TEXT,
+  effective_to TEXT,
+  -- The statement this one replaces. A dose change is a new row.
+  supersedes TEXT,
+  asserted_by TEXT NOT NULL,
+  asserted_at TEXT NOT NULL,
+  source_message_id TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Allergies and intolerances, including the assertion that there are none.
+--
+-- The distinction this table exists for: an empty allergy list because nobody
+-- asked, and an empty one because somebody asked and the answer was none, are
+-- clinically opposite and render identically in most systems. A check run
+-- against the first returns "no interactions found", which is a reassuring
+-- answer to a question that was never put. So "no known allergies" is a row —
+-- an assertion with an author and a time — and its absence means nobody has
+-- asked.
+CREATE TABLE IF NOT EXISTS allergies (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  -- Null on a no-known-allergies assertion, which is the whole point of it.
+  code TEXT,
+  code_system TEXT,
+  display TEXT,
+  ingredient TEXT,
+  -- allergy | intolerance | no-known-allergies
+  kind TEXT NOT NULL DEFAULT 'allergy',
+  -- low | high | unable-to-assess. Anaphylaxis and a rash are not the same
+  -- contraindication.
+  criticality TEXT NOT NULL DEFAULT 'unable-to-assess',
+  reaction TEXT,
+  -- active | resolved | entered-in-error
+  status TEXT NOT NULL DEFAULT 'active',
+  supersedes TEXT,
+  asserted_by TEXT NOT NULL,
+  asserted_at TEXT NOT NULL,
+  source_message_id TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Medication reconciliation at a transition of care.
+--
+-- Admission, transfer and discharge are where lists diverge, and a
+-- reconciliation that was started and never finished is worse than none: the
+-- chart shows the work was done.
+CREATE TABLE IF NOT EXISTS med_reconciliations (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  encounter_id TEXT,
+  -- admission | transfer | discharge | ambulatory-review
+  transition TEXT NOT NULL,
+  -- open | completed | abandoned
+  status TEXT NOT NULL DEFAULT 'open',
+  started_by TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  completed_by TEXT,
+  completed_at TEXT,
+  abandon_reason TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- One line of a reconciliation: a medication, and what was decided about it.
+CREATE TABLE IF NOT EXISTS med_reconciliation_items (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  reconciliation_id TEXT NOT NULL,
+  statement_id TEXT,
+  display TEXT NOT NULL,
+  -- What the two sides said, so the discrepancy is on the record rather than
+  -- only its resolution.
+  prior TEXT,
+  proposed TEXT,
+  -- continue | stop | modify | start | unresolved
+  decision TEXT NOT NULL DEFAULT 'unresolved',
+  reason TEXT,
+  decided_by TEXT,
+  decided_at TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS medication_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  statement_id TEXT,
+  at TEXT NOT NULL,
+  event TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_kind TEXT NOT NULL,
+  detail TEXT,
+  -- Set when a prescriber signed past a safety finding. The override and its
+  -- reason are the record that the warning was seen, which is the only thing
+  -- that distinguishes a considered decision from a reflex click.
+  overrides TEXT
+);
+
+-- Who may see a patient's record besides the patient.
+--
+-- Delegated authority is the part of patient access that goes wrong quietly.
+-- A parent's access to a child's chart is correct until a birthday and wrong
+-- afterwards, and nothing about that day generates an event: the grant simply
+-- keeps working. A substitute decision-maker's authority ends when capacity
+-- returns, and an ex-spouse's should have ended at a date somebody wrote down
+-- once and nobody enforced.
+--
+-- So authority is time-bounded by construction: expires_at is set at grant
+-- rather than reviewed later, and the check is against the clock rather than
+-- against a status somebody has to remember to change.
+CREATE TABLE IF NOT EXISTS patient_authority (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  -- The person exercising the access: the patient themselves, or a proxy.
+  subject_id TEXT NOT NULL,
+  -- self | parent-guardian | substitute-decision-maker | representative
+  relationship TEXT NOT NULL,
+  -- full | summary. A proxy is often entitled to less than the patient is.
+  extent TEXT NOT NULL DEFAULT 'full',
+  -- Null only for the patient's own access. Every delegated grant has an end,
+  -- because the failure being guarded against is one that never ends.
+  expires_at TEXT,
+  -- Set when withdrawn early, with who and why.
+  revoked_at TEXT,
+  revoked_by TEXT,
+  revoke_reason TEXT,
+  granted_by TEXT NOT NULL,
+  granted_at TEXT NOT NULL,
+  reason TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- When a result may be shown to the patient, and why it is being held.
+--
+-- Immediate release is the default and the right one: a patient waiting a week
+-- for a normal result while their clinician's inbox fills is the harm the
+-- information-blocking rules exist to stop. But "immediate" applied without
+-- exception means a person can learn they have cancer from a phone at 11pm
+-- with nobody to ask, and a system that cannot express that has not solved the
+-- problem, it has picked the other side of it.
+--
+-- So a hold is possible, bounded, reasoned, attributed, and visible. It is not
+-- a silent delay: the patient sees that something is being held and when it
+-- will lift, because a portal that shows nothing is indistinguishable from one
+-- where nothing has come back.
+CREATE TABLE IF NOT EXISTS result_release (
+  tenant_id TEXT NOT NULL,
+  result_id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  -- immediate | held
+  state TEXT NOT NULL DEFAULT 'immediate',
+  -- Required for a hold, and shown to the patient as a category rather than as
+  -- free text: "your clinician will discuss this with you" is honest and does
+  -- not require the patient to read a clinical justification about themselves.
+  hold_reason TEXT,
+  hold_category TEXT,
+  -- Every hold ends. A hold with no end is a result withheld indefinitely,
+  -- which is the practice the release rules were written against.
+  release_at TEXT,
+  held_by TEXT,
+  held_at TEXT,
+  released_by TEXT,
+  released_at TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, result_id)
+);
+
+-- Everything a patient or their proxy did, kept apart from the clinical trail.
+--
+-- The same events reach audit_events; this is the patient-facing view of their
+-- own access history, which section 11 requires them to be able to see.
+CREATE TABLE IF NOT EXISTS patient_access_log (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  relationship TEXT NOT NULL,
+  at TEXT NOT NULL,
+  action TEXT NOT NULL,
+  resource TEXT,
+  outcome TEXT NOT NULL,
+  detail TEXT
+);
+
+-- Appointment slots, and the bookings that hold them.
+--
+-- The one thing a scheduler must never do is give the same slot to two
+-- patients, and check-then-insert cannot promise that: between reading "free"
+-- and writing "booked" another booking fits, and the window is exactly as wide
+-- as the gap between two statements. Under a real clinic — two clerks, a
+-- portal and an inbound HL7 SIU feed — that window is hit.
+--
+-- So the promise is a uniqueness constraint rather than a code path. The
+-- partial index below permits many cancelled bookings against a slot and
+-- exactly one live booking, which means a double-book is refused by the
+-- database whatever the caller does. Deliberate overbooking is expressed by
+-- declaring a slot with capacity, not by defeating the constraint: making
+-- overbooking impossible is how a scheduler gets routed around, and a clinic
+-- that overbooks in a paper diary is worse off than one that overbooks here.
+CREATE TABLE IF NOT EXISTS schedule_slots (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  -- Whose diary. A clinician, a room, a scanner.
+  resource_id TEXT NOT NULL,
+  resource_kind TEXT NOT NULL DEFAULT 'practitioner',
+  service TEXT NOT NULL,
+  starts_at TEXT NOT NULL,
+  ends_at TEXT NOT NULL,
+  -- How many bookings this slot admits. One unless a clinic has decided
+  -- otherwise, in the open and with a number.
+  capacity INTEGER NOT NULL DEFAULT 1,
+  -- open | blocked. Blocked is leave, a meeting, a machine down for service:
+  -- a slot that exists and must not be booked, which is different from one
+  -- that does not exist.
+  status TEXT NOT NULL DEFAULT 'open',
+  block_reason TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS schedule_bookings (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  slot_id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  -- Which position in the slot this booking holds: 0 for a normal slot, and
+  -- 0..capacity-1 where a clinic has chosen to overbook. Part of the unique
+  -- index, so the constraint counts rather than merely forbids.
+  seat INTEGER NOT NULL DEFAULT 0,
+  -- booked | attended | did-not-attend | cancelled
+  status TEXT NOT NULL DEFAULT 'booked',
+  -- Why the patient is coming. A booking with no reason cannot be triaged if
+  -- the clinic has to cut the list.
+  reason TEXT NOT NULL,
+  priority TEXT NOT NULL DEFAULT 'routine',
+  -- The referral or order this appointment answers, so a missed appointment
+  -- reaches the loop that is waiting on it.
+  correlation_id TEXT,
+  referral_id TEXT,
+  booked_by TEXT NOT NULL,
+  booked_at TEXT NOT NULL,
+  cancelled_by TEXT,
+  cancelled_at TEXT,
+  cancel_reason TEXT,
+  outcome_at TEXT,
+  outcome_by TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS schedule_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  booking_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  event TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_kind TEXT NOT NULL,
+  detail TEXT
+);
+
+-- A patient's instruction about who may see their record.
+--
+-- Provincial EHRs call this a consent directive or a lockbox: a patient may
+-- withhold their record from a provider, or from a class of provider, and the
+-- system must honour it. The instruction is a clinical fact about the patient
+-- (they do not want this person reading this), and it lives here rather than
+-- in a configuration file for the same reason allergies do.
+--
+-- Every directive is overridable in an emergency, because a patient
+-- unconscious in a resuscitation room cannot lift their own lockbox and a
+-- system that made it impossible would kill somebody. What makes that safe is
+-- not the difficulty of the override; it is that overriding is loud. See
+-- break_glass below.
+CREATE TABLE IF NOT EXISTS consent_directives (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  -- withhold-from-provider | withhold-from-organization | withhold-all
+  kind TEXT NOT NULL,
+  -- Who is being withheld from. Null on withhold-all, which is the blanket
+  -- instruction: nobody outside the circle of care that created a record.
+  target_id TEXT,
+  -- Optional narrowing: only these entry types are withheld. Null means the
+  -- whole record.
+  scope TEXT,
+  -- The patient's own words, kept because a directive without a reason is one
+  -- a reviewer cannot weigh against an emergency.
+  reason TEXT,
+  -- active | revoked | expired
+  status TEXT NOT NULL DEFAULT 'active',
+  effective_from TEXT NOT NULL,
+  expires_at TEXT,
+  revoked_at TEXT,
+  revoked_by TEXT,
+  recorded_by TEXT NOT NULL,
+  recorded_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Emergency access taken past a directive.
+--
+-- The row that makes a lockbox real. An override with no record is
+-- indistinguishable from no lockbox at all, and worse than none: everybody
+-- learns that breaking glass costs nothing, and the directive becomes a
+-- formality that slows down honest people and stops nobody.
+--
+-- So an override is declared before it is taken, carries a reason in the
+-- clinician's own words, notifies the patient, and lands in a queue somebody
+-- reviews. All four, because dropping any one of them turns the other three
+-- into paperwork.
+CREATE TABLE IF NOT EXISTS break_glass (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  subject_kind TEXT NOT NULL,
+  -- The directive that was overridden, where there was one.
+  directive_id TEXT,
+  -- Why, in the clinician's own words. Not a dropdown: "unconscious, no
+  -- collateral history, need allergy status before induction" is a defence
+  -- and "emergency" is not.
+  reason TEXT NOT NULL,
+  purpose_of_use TEXT,
+  declared_at TEXT NOT NULL,
+  -- How long this override is good for. An override that never ends is a
+  -- permission, and this is not one.
+  expires_at TEXT NOT NULL,
+  -- Set when somebody has reviewed it. Unreviewed overrides are the queue.
+  reviewed_at TEXT,
+  reviewed_by TEXT,
+  review_outcome TEXT,
+  -- Whether the patient has been told, which is not optional.
+  patient_notified_at TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
 -- Lookup index over the charts.
 --
 -- Derived, not authoritative. Every column here is recoverable from the
@@ -451,6 +1012,46 @@ CREATE INDEX IF NOT EXISTS idx_tasks_open ON tasks(tenant_id, status, due_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_patient ON tasks(tenant_id, patient_id, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_correlation ON tasks(tenant_id, correlation_id);
 CREATE INDEX IF NOT EXISTS idx_task_events ON task_events(tenant_id, task_id, seq);
+CREATE INDEX IF NOT EXISTS idx_referrals_open ON referrals(tenant_id, status, expected_by);
+CREATE INDEX IF NOT EXISTS idx_referrals_patient ON referrals(tenant_id, patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_referrals_corr ON referrals(tenant_id, correlation_id);
+CREATE INDEX IF NOT EXISTS idx_referral_events ON referral_events(tenant_id, referral_id, seq);
+CREATE INDEX IF NOT EXISTS idx_orders_open ON orders(tenant_id, status, expected_by);
+CREATE INDEX IF NOT EXISTS idx_orders_patient ON orders(tenant_id, patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_orders_responsible ON orders(tenant_id, responsible_id, status);
+CREATE INDEX IF NOT EXISTS idx_results_order ON order_results(tenant_id, order_id);
+CREATE INDEX IF NOT EXISTS idx_results_patient ON order_results(tenant_id, patient_id, reported_at);
+CREATE INDEX IF NOT EXISTS idx_results_unack ON order_results(tenant_id, acknowledged_at, ack_due_by);
+CREATE INDEX IF NOT EXISTS idx_results_supersedes ON order_results(tenant_id, supersedes);
+CREATE INDEX IF NOT EXISTS idx_order_events ON order_events(tenant_id, order_id, seq);
+CREATE INDEX IF NOT EXISTS idx_meds_patient ON medication_statements(tenant_id, patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_meds_supersedes ON medication_statements(tenant_id, supersedes);
+CREATE INDEX IF NOT EXISTS idx_meds_ingredient ON medication_statements(tenant_id, patient_id, ingredient);
+CREATE INDEX IF NOT EXISTS idx_allergies_patient ON allergies(tenant_id, patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_allergies_supersedes ON allergies(tenant_id, supersedes);
+CREATE INDEX IF NOT EXISTS idx_medrec_patient ON med_reconciliations(tenant_id, patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_medrec_items ON med_reconciliation_items(tenant_id, reconciliation_id);
+CREATE INDEX IF NOT EXISTS idx_med_events ON medication_events(tenant_id, patient_id, seq);
+CREATE INDEX IF NOT EXISTS idx_authority_subject ON patient_authority(tenant_id, subject_id, patient_id);
+CREATE INDEX IF NOT EXISTS idx_authority_patient ON patient_authority(tenant_id, patient_id);
+CREATE INDEX IF NOT EXISTS idx_release_patient ON result_release(tenant_id, patient_id, state);
+CREATE INDEX IF NOT EXISTS idx_patient_access ON patient_access_log(tenant_id, patient_id, seq);
+-- The double-booking constraint. Partial, so a cancelled booking releases its
+-- seat while remaining on the record — a slot freed by deleting its booking
+-- would lose the fact that somebody cancelled, which is what a pattern of
+-- cancellations is made of.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_booking_seat
+  ON schedule_bookings(tenant_id, slot_id, seat) WHERE status != 'cancelled';
+CREATE INDEX IF NOT EXISTS idx_slots_when ON schedule_slots(tenant_id, resource_id, starts_at);
+CREATE INDEX IF NOT EXISTS idx_slots_service ON schedule_slots(tenant_id, service, starts_at);
+CREATE INDEX IF NOT EXISTS idx_bookings_patient ON schedule_bookings(tenant_id, patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_bookings_slot ON schedule_bookings(tenant_id, slot_id, status);
+CREATE INDEX IF NOT EXISTS idx_schedule_events ON schedule_events(tenant_id, booking_id, seq);
+CREATE INDEX IF NOT EXISTS idx_directives_patient ON consent_directives(tenant_id, patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_directives_target ON consent_directives(tenant_id, target_id, status);
+CREATE INDEX IF NOT EXISTS idx_breakglass_review ON break_glass(tenant_id, reviewed_at, declared_at);
+CREATE INDEX IF NOT EXISTS idx_breakglass_patient ON break_glass(tenant_id, patient_id, declared_at);
+CREATE INDEX IF NOT EXISTS idx_breakglass_subject ON break_glass(tenant_id, subject_id, declared_at);
 CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at);
 CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(tenant_id, channel_id, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status);
@@ -503,6 +1104,9 @@ const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
   { table: "messages", column: "redacted_at", type: "TEXT" },
   { table: "deliveries", column: "redacted_at", type: "TEXT" },
   { table: "audit_events", column: "purpose_of_use", type: "TEXT" },
+  { table: "api_keys", column: "expires_at", type: "TEXT" },
+  { table: "api_keys", column: "rotated_to", type: "TEXT" },
+  { table: "api_keys", column: "rotated_at", type: "TEXT" },
   // Tenancy. NOT NULL with a default, so existing rows land in the default
   // tenant rather than becoming unreachable, and a deployment that never
   // configures a second tenant is unaffected.
@@ -597,6 +1201,9 @@ const REBUILT_TABLES: Array<{ table: string; columns: string[]; ddl: string }> =
 
 export class Db {
   readonly sql: DatabaseSync;
+
+  /** Nesting depth, so only the outermost call begins and commits. */
+  private txDepth = 0;
 
   /**
    * The tenant this handle speaks for.
@@ -782,11 +1389,30 @@ export class Db {
    * otherwise be its own commit, and a commit is an fsync, so a single ingest
    * paid for half a dozen of them.
    *
-   * Not reentrant, which is safe here because everything inside is
-   * synchronous — no other JavaScript can run partway through.
+   * Reentrant. A nested call joins the transaction already open rather than
+   * starting a second one, which SQLite refuses outright. This matters as soon
+   * as an operation is built from others: redirecting a referral closes one
+   * and creates another, and each of those is itself atomic. Without this the
+   * composite either crashes or has to be written non-atomically — and a
+   * redirect that closed the original without creating its successor is
+   * exactly the lost loop the referral store exists to prevent.
+   *
+   * A throw anywhere inside rolls the whole thing back, since only the
+   * outermost call commits. Safe because everything within is synchronous: no
+   * other JavaScript can interleave and find a half-finished transaction.
    */
   transaction<T>(fn: () => T): T {
+    if (this.txDepth > 0) {
+      this.txDepth++;
+      try {
+        return fn();
+      } finally {
+        this.txDepth--;
+      }
+    }
+
     this.sql.exec("BEGIN");
+    this.txDepth = 1;
     try {
       const out = fn();
       this.sql.exec("COMMIT");
@@ -798,6 +1424,8 @@ export class Db {
         // A rollback that fails leaves the original error the useful one.
       }
       throw err;
+    } finally {
+      this.txDepth = 0;
     }
   }
 
@@ -1690,10 +2318,10 @@ export class Db {
 
   /* ------------------------------- api keys ----------------------------- */
 
-  insertApiKey(id: string, name: string, hash: string, scopes: string[]): void {
+  insertApiKey(id: string, name: string, hash: string, scopes: string[], expiresAt?: string): void {
     this.sql
-      .prepare("INSERT INTO api_keys (tenant_id, id, name, hash, scopes) VALUES (?, ?, ?, ?, ?)")
-      .run(this.tenantId, id, name, hash, scopes.join(" "));
+      .prepare("INSERT INTO api_keys (tenant_id, id, name, hash, scopes, expires_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(this.tenantId, id, name, hash, scopes.join(" "), expiresAt ?? null);
   }
 
   /**
@@ -1706,9 +2334,17 @@ export class Db {
    * 32 random bytes, so this is a lookup by secret rather than a search.
    */
   findApiKeyByHash(hash: string): ApiKeyRow | undefined {
+    // Expiry is applied here, against the clock, rather than by a sweep that
+    // has to run. A key that expired last night does not work this morning
+    // whether or not anything has restarted since, which is the only way an
+    // expiry date is a control rather than an intention.
     return this.sql
-      .prepare("SELECT * FROM api_keys WHERE hash = ? AND revoked_at IS NULL")
-      .get(hash) as ApiKeyRow | undefined;
+      .prepare(
+        `SELECT * FROM api_keys
+          WHERE hash = ? AND revoked_at IS NULL
+            AND (expires_at IS NULL OR expires_at > ?)`
+      )
+      .get(hash, new Date().toISOString()) as ApiKeyRow | undefined;
   }
 
   touchApiKey(id: string): void {
@@ -1730,11 +2366,63 @@ export class Db {
     return r.changes > 0;
   }
 
+  /**
+   * Keys that still work and that nobody has used lately.
+   *
+   * A credential dormant for months is one of two things and both need it
+   * found: nobody needs it, or somebody else has it. Neither announces itself,
+   * and a key issued for a pilot that ended is indistinguishable from one an
+   * attacker is sitting on.
+   *
+   * A key that has never been used at all is dormant from the day it was
+   * issued, and is reported by age rather than being excluded for having no
+   * last-used date — that shape is exactly the one left behind by a key
+   * pasted into a ticket and never deployed.
+   */
+  dormantApiKeys(days: number, asOf = new Date().toISOString()): ApiKeyRow[] {
+    const cutoff = new Date(new Date(asOf).getTime() - days * 86_400_000).toISOString();
+    return this.sql
+      .prepare(
+        `SELECT * FROM api_keys
+          WHERE tenant_id = ? AND revoked_at IS NULL
+            AND (expires_at IS NULL OR expires_at > ?)
+            AND COALESCE(last_used_at, created_at) < ?
+          ORDER BY COALESCE(last_used_at, created_at)`
+      )
+      .all(this.tenantId, asOf, cutoff) as unknown as ApiKeyRow[];
+  }
+
+  /** Keys about to expire, so a renewal is a decision rather than an outage. */
+  expiringApiKeys(withinDays: number, asOf = new Date().toISOString()): ApiKeyRow[] {
+    const until = new Date(new Date(asOf).getTime() + withinDays * 86_400_000).toISOString();
+    return this.sql
+      .prepare(
+        `SELECT * FROM api_keys
+          WHERE tenant_id = ? AND revoked_at IS NULL AND expires_at IS NOT NULL
+            AND expires_at > ? AND expires_at <= ?
+          ORDER BY expires_at`
+      )
+      .all(this.tenantId, asOf, until) as unknown as ApiKeyRow[];
+  }
+
+  markApiKeyRotated(oldId: string, newId: string, retireAt: string): boolean {
+    const r = this.sql
+      .prepare(
+        `UPDATE api_keys SET rotated_to = ?, rotated_at = ?, expires_at = ?
+          WHERE tenant_id = ? AND id = ? AND revoked_at IS NULL AND rotated_to IS NULL`
+      )
+      .run(newId, new Date().toISOString(), retireAt, this.tenantId, oldId);
+    return r.changes > 0;
+  }
+
   countActiveApiKeys(): number {
     return (
       this.sql
-        .prepare("SELECT COUNT(*) AS n FROM api_keys WHERE tenant_id = ? AND revoked_at IS NULL")
-        .get(this.tenantId) as { n: number }
+        .prepare(
+          `SELECT COUNT(*) AS n FROM api_keys
+            WHERE tenant_id = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`
+        )
+        .get(this.tenantId, new Date().toISOString()) as { n: number }
     ).n;
   }
 

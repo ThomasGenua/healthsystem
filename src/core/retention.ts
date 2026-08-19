@@ -21,10 +21,22 @@
  *   forward. Offered because operators sometimes genuinely need it, and
  *   deliberately not the default.
  *
- * Neither touches the FHIR facade. That store holds the current clinical
- * record a consumer is reading, not a log of traffic; deciding how long a
- * territorial EHR keeps a Patient resource is a clinical governance question,
- * not something an interface engine should quietly answer.
+ * Neither touches the FHIR facade, and neither touches the clinical stores —
+ * the chart, medications, allergies, orders, results, referrals or tasks.
+ * Those hold the record itself rather than a log of traffic, and how long a
+ * territorial EHR keeps a patient's chart is a clinical governance question,
+ * not something an interface engine should quietly answer on a timer.
+ *
+ * Stating it because the alternative reading is available and would be a
+ * catastrophe: "retention is configured" must not be heard as "patient data
+ * ages out everywhere". It ages out of the message log. A patient's allergy to
+ * penicillin recorded four years ago is not stale data, and a sweep that
+ * deleted it because a number in a config file said 1095 would be destroying
+ * the record while reporting success.
+ *
+ * The boundary is pinned by test/retention-boundary.test.ts rather than left
+ * to this comment, so moving it is a deliberate act with a failing test
+ * attached, in either direction.
  */
 import type { Db } from "../db.ts";
 import type { AuditStore } from "../audit/store.ts";

@@ -42,6 +42,7 @@
  * Admin UI:     GET / (single-file, no build step)
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { encryptionAtRest } from "../core/atrest.ts";
 import { createServer as createSecureServer } from "node:https";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -226,6 +227,11 @@ async function route(
       degraded: stalled.length > 0 || signals.deadLetters > 0 || signals.silentChannels.length > 0,
       stats: db.stats(),
       signals: { ...signals, stalledChannels: stalled, stalledAfterSec: stalledAfter },
+      // Not part of `degraded`: an unencrypted volume is a posture rather than
+      // an incident, and flipping a health check to degraded forever would
+      // train an operator to ignore the field that also reports a stopped
+      // feed. Reported so a monitor can alert on it as its own thing.
+      atRest: encryptionAtRest(engine.dataDir),
     });
   }
 
@@ -501,15 +507,303 @@ async function route(
     });
   }
 
+  // ---- the clinical platform -------------------------------------------
+  //
+  // Every route below reads or writes patient data, so every one of them
+  // audits. That is enforced structurally rather than remembered: the paths
+  // are listed in CLINICAL_ROUTES, touchesPatientData() reads that list, and
+  // test/clinical-api.test.ts drives each entry and fails the build if a
+  // request leaves no audit row. A route added here without a trail is a route
+  // the test refuses.
+  //
+  // `phi()` is the shape that makes it hard to get wrong: it audits first and
+  // sends second, so an exception between the two cannot produce a read that
+  // happened without a record of it happening.
+  if (path.startsWith("/api/clinical/")) {
+    const patient = url.searchParams.get("patient") ?? undefined;
+
+    /**
+     * Whether a patient directive stands between this caller and this record.
+     *
+     * Consulted by `phi` for every route that names a patient, so a lockbox
+     * cannot be ignored by a route that forgot to ask. A refusal is audited
+     * like any other access — a directive that stopped somebody is exactly
+     * what a privacy office wants to see — and it says that a directive
+     * exists without saying what it says.
+     */
+    const withheld = (forPatient: string): { id: string } | undefined => {
+      const decision = tenant.consent.mayRead({
+        subjectId: auth.ok ? auth.principal.id : "unauthenticated",
+        patientId: forPatient,
+      });
+      return decision.allowed ? undefined : { id: decision.withheldBy!.id };
+    };
+
+    /**
+     * Filters a list of rows by directive, and says how many it dropped.
+     *
+     * A single-patient route refuses outright, because the caller asked about
+     * one person and needs to know a lockbox is why they cannot see. A list
+     * cannot do that — refusing the whole worklist because one patient on it
+     * has a directive would take a clinician's day away — so withheld rows are
+     * omitted.
+     *
+     * But not silently. A short list that looks complete is the failure this
+     * system refuses everywhere else, and here it is worse than usual: a
+     * result withheld from the clinician responsible for reading it is a
+     * result now owed to nobody, which is the exact silence the orders module
+     * exists to prevent. The count is reported so somebody can act on it; who
+     * they are is not, which is what the directive asked for.
+     */
+    const filterByDirective = <T extends { patient_id: string }>(rows: T[]): { rows: T[]; withheldCount: number } => {
+      const kept: T[] = [];
+      const blocked = new Set<string>();
+      for (const row of rows) {
+        if (withheld(row.patient_id)) blocked.add(row.patient_id);
+        else kept.push(row);
+      }
+      return { rows: kept, withheldCount: rows.length - kept.length };
+    };
+
+    /** Audits the access, then sends. In that order, deliberately. */
+    const phi = <T,>(resourceType: string, produce: () => T, count?: (v: T) => number): void => {
+      if (patient) {
+        const block = withheld(patient);
+        if (block) {
+          audit({
+            action: verbToAction(method),
+            outcome: 4,
+            resourceType,
+            patient,
+            detail: `withheld by patient directive ${block.id}`,
+          });
+          return send(res, 403, {
+            error: "this record is withheld by a patient directive",
+            // Named so a caller can declare an emergency against it, which is
+            // the whole reason a lockbox is survivable in a clinical setting.
+            breakGlass: "POST /api/clinical/break-glass",
+          });
+        }
+      }
+      let value: T;
+      try {
+        value = produce();
+      } catch (err) {
+        audit({ action: verbToAction(method), outcome: 8, resourceType, patient, detail: (err as Error).message });
+        return send(res, 400, { error: (err as Error).message });
+      }
+      audit({
+        action: verbToAction(method),
+        outcome: 0,
+        resourceType,
+        patient,
+        ...(count ? { count: count(value) } : {}),
+      });
+      return send(res, 200, value);
+    };
+
+    if (path === "/api/clinical/chart" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("Composition", () =>
+        tenant.workspace.chart(patient, { limit: num(url.searchParams.get("limit")) })
+      );
+    }
+    if (path === "/api/clinical/worklist" && method === "GET") {
+      const clinician = url.searchParams.get("clinician");
+      if (!clinician) return send(res, 400, { error: "clinician required" });
+      return phi("Task", () => tenant.workspace.worklist(clinician, { limit: num(url.searchParams.get("limit")) }));
+    }
+    if (path === "/api/clinical/patients" && method === "GET") {
+      // A search is an access even when it returns nothing: "who did you look
+      // for" is a question a privacy review asks, and a fruitless search for a
+      // celebrity's name is exactly the one it asks about.
+      return phi(
+        "Patient",
+        () =>
+          filterByDirective(
+            tenant.clinical.patientIndex
+              .search({
+                identifier: url.searchParams.get("identifier") ?? undefined,
+                family: url.searchParams.get("family") ?? undefined,
+                given: url.searchParams.get("given") ?? undefined,
+                birthDate: url.searchParams.get("birthdate") ?? undefined,
+                limit: num(url.searchParams.get("limit")),
+              })
+              // The index speaks patientId; the filter speaks patient_id.
+              .map((p) => ({ ...p, patient_id: p.patientId }))
+          ),
+        (r) => r.rows.length
+      );
+    }
+    if (path === "/api/clinical/medications" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi(
+        "MedicationStatement",
+        () => tenant.meds.current(patient, { asPrescribed: url.searchParams.get("as_prescribed") === "true" }),
+        (rows) => rows.length
+      );
+    }
+    if (path === "/api/clinical/allergies" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("AllergyIntolerance", () => ({
+        // Three-valued, carried beside the list rather than left to be
+        // inferred from its length. An empty list is not an answer.
+        status: tenant.meds.allergyStatus(patient),
+        allergies: tenant.meds.allergies(patient),
+      }));
+    }
+    if (path === "/api/clinical/results" && method === "GET") {
+      return phi(
+        "Observation",
+        () => {
+          const all = tenant.orders.unacknowledged({
+            responsibleId: url.searchParams.get("responsible") ?? undefined,
+            overdueAsOf: url.searchParams.get("overdue_as_of") ?? undefined,
+          });
+          return filterByDirective(patient ? all.filter((r) => r.patient_id === patient) : all);
+        },
+        (r) => r.rows.length
+      );
+    }
+    if (path === "/api/clinical/orders" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("ServiceRequest", () => tenant.orders.forPatient(patient), (rows) => rows.length);
+    }
+    if (path === "/api/clinical/referrals" && method === "GET") {
+      return phi(
+        "ServiceRequest",
+        () => filterByDirective(patient ? tenant.referrals.forPatient(patient) : tenant.referrals.stalled()),
+        (r) => r.rows.length
+      );
+    }
+    if (path === "/api/clinical/tasks" && method === "GET") {
+      const owner = url.searchParams.get("owner");
+      return phi(
+        "Task",
+        () => {
+          const all = owner ? tenant.tasks.inbox(owner) : patient ? tenant.tasks.forPatient(patient) : tenant.tasks.unassigned();
+          // A task with no patient on it is not about anybody, so no directive
+          // can withhold it; those pass through untouched.
+          const withPatient = all.filter((t): t is typeof t & { patient_id: string } => t.patient_id !== null);
+          const filtered = filterByDirective(withPatient);
+          return { rows: [...all.filter((t) => t.patient_id === null), ...filtered.rows], withheldCount: filtered.withheldCount };
+        },
+        (r) => r.rows.length
+      );
+    }
+    if (path === "/api/clinical/notes" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi(
+        "DocumentReference",
+        () => tenant.notes.forPatient(patient, { encounterId: url.searchParams.get("encounter") ?? undefined }),
+        (rows) => rows.length
+      );
+    }
+    if (path === "/api/clinical/appointments" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("Appointment", () => tenant.schedule.forPatient(patient), (rows) => rows.length);
+    }
+    if (path === "/api/clinical/missed" && method === "GET") {
+      // Missed appointments that mattered and that nobody has picked up. A
+      // read of patient data like any other, and audited as one.
+      return phi("Appointment", () => filterByDirective(tenant.schedule.unresolvedNonAttendance()), (r) => r.rows.length);
+    }
+    if (path === "/api/clinical/break-glass" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { patient?: string; reason?: string };
+      if (!body.patient || !body.reason) return send(res, 400, { error: "patient and reason required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      try {
+        const declared = tenant.consent.breakGlass({
+          patientId: body.patient,
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+          reason: body.reason,
+          ...(auth.ok && auth.principal.purposeOfUse ? { purposeOfUse: auth.principal.purposeOfUse } : {}),
+        });
+        // Declaring an emergency is itself an event on the trail, before any
+        // record is read under it.
+        audit({
+          action: "E",
+          outcome: 0,
+          resourceType: "Consent",
+          patient: body.patient,
+          detail: `break-glass declared: ${body.reason}`,
+        });
+        return send(res, 201, declared);
+      } catch (err) {
+        audit({ action: "E", outcome: 8, resourceType: "Consent", patient: body.patient, detail: (err as Error).message });
+        return send(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (path === "/api/clinical/directives" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      // Deliberately not behind `phi`: a directive is the patient's own
+      // instruction, and refusing to show it to somebody it withholds from
+      // would leave them unable to see that a lockbox is what stopped them.
+      audit({ action: "R", outcome: 0, resourceType: "Consent", patient });
+      return send(res, 200, tenant.consent.directivesFor(patient));
+    }
+    if (path === "/api/clinical/gaps" && method === "POST") {
+      // A cohort definition and a gap rule come in the body because they are
+      // structured, not because this writes anything: it reads a population.
+      const body = JSON.parse(await readBody(req)) as { cohort?: unknown; gap?: unknown; asOf?: string };
+      if (!body.cohort || !body.gap) return send(res, 400, { error: "cohort and gap required" });
+      audit({ action: "R", outcome: 0, resourceType: "MeasureReport", detail: "care gap query" });
+      return send(res, 200, tenant.registry.gaps(body.cohort as never, body.gap as never, body.asOf));
+    }
+    if (path === "/api/clinical/measure" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { cohort?: unknown; measure?: unknown; asOf?: string };
+      if (!body.cohort || !body.measure) return send(res, 400, { error: "cohort and measure required" });
+      audit({ action: "R", outcome: 0, resourceType: "MeasureReport", detail: "quality measure" });
+      return send(res, 200, tenant.registry.measure(body.cohort as never, body.measure as never, body.asOf));
+    }
+    if (path === "/api/clinical/safety-check" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { patient?: string; ingredient?: string; display?: string };
+      if (!body.patient || !body.ingredient) return send(res, 400, { error: "patient and ingredient required" });
+      const p = body.patient;
+      const ingredient = body.ingredient;
+      const display = body.display ?? body.ingredient;
+      // Audited as a read of the patient, because that is what it is: it
+      // consults their allergies and their medication list.
+      audit({ action: "R", outcome: 0, resourceType: "AllergyIntolerance", patient: p, detail: `safety check: ${ingredient}` });
+      return send(res, 200, tenant.meds.check(p, { ingredient, display }));
+    }
+    return send(res, 404, { error: "not found" });
+  }
+
   if (path === "/api/keys" && method === "GET") {
     return send(res, 200, keys.list());
   }
+  if (path === "/api/keys/review" && method === "GET") {
+    // The two questions worth asking about a set of credentials, and neither
+    // is answerable by looking at a list of them: which have nobody using
+    // them, and which are about to stop working. Both are lists somebody acts
+    // on rather than numbers on a dashboard.
+    return send(res, 200, {
+      dormantAfterDays: num(url.searchParams.get("dormant_days")) ?? 90,
+      dormant: keys.dormant(num(url.searchParams.get("dormant_days")) ?? 90),
+      expiringWithinDays: num(url.searchParams.get("expiring_days")) ?? 14,
+      expiring: keys.expiring(num(url.searchParams.get("expiring_days")) ?? 14),
+    });
+  }
+  if (path.startsWith("/api/keys/") && path.endsWith("/rotate") && method === "POST") {
+    const id = path.slice("/api/keys/".length, -"/rotate".length);
+    const body = JSON.parse((await readBody(req)) || "{}") as { overlapDays?: number; expiresAt?: string };
+    try {
+      const next = keys.rotate(id, body);
+      audit({ action: "U", outcome: 0, resourceType: "Device", resourceId: id, detail: `rotated to ${next.id}` });
+      // The replacement key is shown once, here, exactly as a new one is.
+      return send(res, 201, next);
+    } catch (err) {
+      audit({ action: "U", outcome: 8, resourceType: "Device", resourceId: id, detail: (err as Error).message });
+      return send(res, 400, { error: (err as Error).message });
+    }
+  }
   if (path === "/api/keys" && method === "POST") {
-    const body = JSON.parse(await readBody(req)) as { name?: string; scopes?: string[] };
+    const body = JSON.parse(await readBody(req)) as { name?: string; scopes?: string[]; expiresAt?: string };
     if (!body.name) return send(res, 400, { error: "name required" });
     try {
       // The plaintext key appears in this response and nowhere else, ever.
-      const issued = keys.issue(body.name, body.scopes);
+      const issued = keys.issue(body.name, body.scopes, body.expiresAt ? { expiresAt: body.expiresAt } : {});
       audit({ action: "C", resourceType: "ApiKey", resourceId: issued.id, detail: `scopes: ${issued.scopes.join(" ")}` });
       return send(res, 201, issued);
     } catch (err) {
@@ -789,6 +1083,7 @@ function listFixtures(): Array<{ name: string; content: string }> {
  */
 function touchesPatientData(path: string): boolean {
   if (path.startsWith("/api/messages")) return true;
+  if (path.startsWith("/api/clinical/")) return true;
   if (path.startsWith("/ingest/")) return true;
   if (path === "/fhir/metadata" || path.startsWith("/fhir/AuditEvent")) return false;
   return path.startsWith("/fhir/");
