@@ -38,6 +38,7 @@ The escape hatch is break-glass, which is loud and recorded — see
   - [Break-glass queues are not emptying](#break-glass-queues-are-not-emptying)
   - [A credential is compromised](#a-credential-is-compromised)
   - [Restoring from backup](#restoring-from-backup)
+  - [How long it takes, and how much you lose](#how-long-it-takes-and-how-much-you-lose)
 - [Escalating](#escalating)
 
 ---
@@ -64,7 +65,7 @@ The escape hatch is break-glass, which is loud and recorded — see
 git clone https://github.com/ThomasGenua/healthsystem.git portage
 cd portage
 npm ci
-npm run typecheck && npm test    # 413 tests; do not deploy a node that fails one
+npm run typecheck && npm test    # 420 tests; do not deploy a node that fails one
 
 export PORTAGE_DATA=/var/lib/portage
 export PORTAGE_PORT=8686
@@ -150,6 +151,7 @@ call for help.
 | Weekly | Chain verification across all channels | `GET /api/chain/verify`, `GET /api/audit/verify` |
 | Weekly | Unacknowledged results and open referrals past their deadline | `GET /api/clinical/results`, `/referrals` |
 | Monthly | Restore a backup onto a scratch machine and open it | see [Restoring](#restoring-from-backup) |
+| Monthly | Confirm the RTO has not drifted on your hardware | `npm run restoretest` |
 | Monthly | Review API keys: expiry, rotation, anything unused | `GET /api/keys/review` |
 
 The monthly restore is the only one that proves the others were worth doing. A
@@ -359,18 +361,53 @@ vulnerability in Portage rather than a leaked secret, see [SECURITY.md](../SECUR
 ### Restoring from backup
 
 ```bash
-systemctl stop portage                       # nothing may hold the file
-mv /var/lib/portage /var/lib/portage.broken  # keep it; do not delete it
-mkdir -p /var/lib/portage
-# restore the chosen backup into /var/lib/portage per README § Restoring
+systemctl stop portage                         # nothing may hold the file
+npm run restore -- --from /var/lib/portage/backups
 systemctl start portage
-# the restore is not done until both of these pass
-curl -sS -H "authorization: Bearer $ADMIN_KEY" http://localhost:8686/api/chain/verify
-curl -sS -H "authorization: Bearer $ADMIN_KEY" http://localhost:8686/api/audit/verify
+curl -sS http://localhost:8686/api/health
 ```
 
-Keep the broken copy until the restore is confirmed and the chain verifies. It
-is evidence if this turns out to be an incident rather than an accident.
+`npm run restore -- --snapshot <file>` picks a specific one instead of the
+newest. The script does the whole procedure and refuses rather than guessing:
+
+- it **proves the snapshot comes up first**, by migrating a scratch copy of it,
+  so a bad snapshot leaves you where you were instead of with nothing
+- it **refuses if anything still holds the target** — restoring under a live
+  engine hands it a file it does not own and the damage is silent. `--force`
+  exists; be sure
+- it **moves the old database aside** with a timestamped suffix rather than
+  deleting it, and tells you where
+- it **removes the stale `-wal` and `-shm` sidecars**, the step that gets
+  skipped by hand and points SQLite at the log of the database you replaced
+- it **clears the instance lock the snapshot inherited** from the machine that
+  took it. Without this the new engine waits out a heartbeat belonging to a
+  process on another host before it will start — seconds you are counting
+
+Keep the displaced copy until the restore is confirmed. It is evidence if this
+turns out to be an incident rather than an accident.
+
+### How long it takes, and how much you lose
+
+| database | restore | engine start | **RTO** |
+|---|---|---|---|
+| 10 MB (20,000 messages) | 0.2 s | 0.3 s | **0.5 s** |
+| 96 MB (200,000 messages) | 3.3 s | 2.8 s | **6.0 s** |
+
+**These are floors.** They are restore plus boot, and exclude noticing the
+outage, deciding to restore, and finding the snapshot — which on a real night
+are most of the elapsed time. Budget your RTO from when the pager goes off,
+not from when you type the command.
+
+**Your RPO is your backup cadence.** Everything since the last snapshot is
+gone in a total disk failure: the message log, and the clinical record, which
+is in the same file. A daily snapshot means a 24-hour RPO. A snapshot of a
+96 MB database costs about 2.5 seconds against a live engine, so if 24 hours
+of loss is not acceptable at your site, run it hourly — the cost is not the
+reason to hold back.
+
+Re-run `npm run restoretest -- --messages <n>` on your own hardware before
+putting a number in a service agreement. The figures above are single runs on
+one machine.
 
 ---
 

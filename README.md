@@ -54,8 +54,9 @@ v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Quality measures that refuse a rate they cannot stand behind**, because the patients a measure cannot assess are the ones nobody managed.
 - **Double-booking refused by the database**, not by a check that a second clerk can race past.
 - **Break-glass that is loud**: declared before the access, reasoned in words, and held in queues an operator can read and has to discharge — because a quiet override makes the lockbox theatre.
+- **A restore that has actually been rehearsed**, to somewhere the database has never been, with a measured RTO — because a verified snapshot only proves the bytes hashed correctly when they were written.
 
-413 tests. Backend first, tests before UI.
+420 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -833,13 +834,33 @@ With the engine stopped:
 
 ```bash
 systemctl stop portage
-mv data/portage.db data/portage.db.broken
-rm -f data/portage.db-wal data/portage.db-shm     # stale, and not part of the snapshot
-cp backups/portage-<stamp>.db data/portage.db
+npm run restore -- --from backups              # newest snapshot there
+npm run restore -- --snapshot backups/portage-2026-08-19T14-00-00.db
 systemctl start portage
 ```
 
-Removing the sidecars is the step people skip. Left behind, SQLite tries to apply a write-ahead log belonging to the database you just replaced.
+This used to be a documented sequence of `mv`, `rm` and `cp`, and the `rm` was the step people skip — a stale `-wal` left beside the restored file points SQLite at a write-ahead log belonging to the database you just replaced. A procedure that depends on nobody skipping a step at 03:00 is not a procedure, so it is code now.
+
+It refuses to run against a database something still appears to hold, because restoring under a live engine hands it a file it does not own and the damage is silent. Nothing is deleted: the database being replaced is moved aside with a timestamped suffix and kept, because a restore is always made by somebody having a bad day and is sometimes the wrong call.
+
+**The snapshot is proved to come up before anything is displaced.** Not by verifying the snapshot in place — that cannot work across versions, and finding out why is most of what rehearsing this was worth. `verifyBackup()` opens read-only, and a read-only handle skips both `SCHEMA` and `migrate()`, so it queries the *current* schema against a file written by whatever version took it: a snapshot one release old failed with `no such table: channels` and the verified path refused a perfectly good backup. So the preflight copies the snapshot somewhere temporary, opens the copy *writable* so the migration actually runs, and verifies that. One extra pass over the file buys the answer an operator actually needs — not "was this valid when written" but "will this come up under the code I am about to run" — and the migration is exercised before it is committed to rather than during the outage.
+
+### What restoring costs
+
+Measured by `npm run restoretest`, which takes a snapshot from under a live engine, restores it to a directory the database has never occupied, and boots an engine against it in a separate process. It runs nightly in CI on both supported Node versions.
+
+| database | backup | restore | engine start | **RTO** |
+|---|---|---|---|---|
+| 10 MB (20,000 messages) | 141 ms | 0.2 s | 0.3 s | **0.5 s** |
+| 96 MB (200,000 messages) | 2.5 s | 3.3 s | 2.8 s | **6.0 s** |
+
+Single runs on one machine, so read them as an order of magnitude rather than a benchmark: a hundred-megabyte database comes back in seconds, not minutes. Re-run `npm run restoretest --messages <n>` on your own hardware for a number you can put in a service agreement.
+
+**RPO is a property of your schedule, not of this code.** A node snapshotting every 24 hours loses up to 24 hours of the message log to a total disk failure, and the clinical record is in the same file, so it is the same number. Shorten the cadence to shorten it — a snapshot of a 96 MB database cost 2.5 seconds against a live engine, so hourly is affordable at that size.
+
+**The RTO is a floor, not a promise.** It is restore plus boot. It excludes noticing the outage, deciding to restore, and finding the snapshot, which on a real night are most of the elapsed time.
+
+**What the rehearsal does not prove.** It restores to a path the database has never occupied, in a process that has never opened it, with a cold cache and no sidecars — enough to have caught two real defects, including one invisible to any restore onto the machine that took the backup. It does not use a second machine, so a different filesystem or disk is genuinely untested. Running it on Node 22 and 24 covers the part that bites in practice: two different `node:sqlite` builds opening the same file.
 
 `PORTAGE_BACKUP_DIR` and `PORTAGE_BACKUP_KEEP` configure the API endpoint.
 

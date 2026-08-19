@@ -44,8 +44,19 @@ The clinical platform, and the privacy enforcement that makes it safe to serve.
   store and could not be read or discharged by anything.
 - `SECURITY.md`, a vulnerability disclosure process, and
   [`docs/RUNBOOK.md`](docs/RUNBOOK.md) for deployment and incidents.
-- A nightly **Resilience** workflow running the crash, disk-full and load tests,
-  which previously ran only when somebody remembered to run them by hand.
+- A nightly **Resilience** workflow running the crash, disk-full, restore and
+  load tests, which previously ran only when somebody remembered to run them by
+  hand.
+- **`npm run restore`** — the restore procedure as code rather than four lines
+  of `mv`, `rm` and `cp` in a README. It proves the snapshot comes up before
+  displacing anything, refuses to run against a database something still holds,
+  keeps what it replaces, and removes the stale sidecars that make a restore
+  half-work.
+- **`npm run restoretest`** — a restore rehearsal that takes a snapshot from
+  under a live engine, restores it somewhere the database has never been, and
+  boots an engine against it in a separate process to prove the result is
+  usable rather than merely openable. **A measured RTO and a stated RPO** are
+  now in the README and the runbook; there were none before.
 
 **Fixed**
 
@@ -62,6 +73,19 @@ The clinical platform, and the privacy enforcement that makes it safe to serve.
   enforced by nothing. It now withholds from any caller that cannot say it is
   outside the withheld organization.
 - `breakGlass()`'s docstring claimed `notifyPatient` ran there. It never did.
+- **A restored snapshot arrived owned by the machine that took it.** A backup
+  copies the whole database, `instance_lock` included, so the restored file
+  claimed to belong to a process on the source host — and
+  `acquireInstanceLock()` cannot prove a holder on another host is dead, so the
+  new engine waited out the inherited heartbeat before starting. A stall on the
+  recovery path, invisible to any restore onto the machine that took the
+  backup, which is the only kind anyone had done.
+- **A snapshot from an older release could not be verified, so the restore path
+  refused it.** `verifyBackup()` opens read-only, and a read-only handle skips
+  `SCHEMA` and `migrate()`, so it queried the current schema against a file
+  written by an older version and failed with `no such table: channels`. The
+  preflight now migrates a scratch copy instead, which both fixes the refusal
+  and exercises the migration before the live database is displaced.
 - `awaitingResult()` treated a preliminary result as an answer, so a blood
   culture reporting gram-positive cocci at 24 hours and never speciating
   dropped off the chase list.
@@ -76,7 +100,7 @@ The clinical platform, and the privacy enforcement that makes it safe to serve.
 - Licensed under **Apache-2.0**. The repository previously carried no licence
   file and declared `UNLICENSED`, which meant nobody could legally use, fork or
   contribute to a public repository.
-- 270 → 413 tests.
+- 270 → 420 tests.
 
 **Known limitations**, stated because both fixes above fail closed and are
 blunter than the patient asked for:

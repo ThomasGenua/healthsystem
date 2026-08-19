@@ -16,6 +16,8 @@
     "loadtest": "node scripts/loadtest.ts",
     "crashtest": "node scripts/crashtest.ts",
     "diskfulltest": "node scripts/diskfulltest.ts",
+    "restore": "node scripts/restore.ts",
+    "restoretest": "node scripts/restore-rehearsal.ts",
     "terminology:import": "node scripts/import-terminology.ts",
     "typecheck": "tsc --noEmit"
   },

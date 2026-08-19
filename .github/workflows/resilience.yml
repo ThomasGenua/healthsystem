@@ -80,6 +80,34 @@ jobs:
         if: always()
         run: sudo umount /mnt/diskfull || true
 
+  restore:
+    name: restore rehearsal (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both runtimes, and here the matrix is doing more than covering the
+        # supported range. A restore onto a different machine is the case this
+        # rehearsal exists for and the case a single-host CI job cannot stage;
+        # two Node versions means two different node:sqlite builds opening the
+        # same file, which is the part of "somewhere else" that actually bites.
+        node: ["22.x", "24.x"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      # Takes a snapshot from under a live engine, restores it to a directory
+      # the database has never occupied, boots an engine against it in a
+      # separate process, and proves the result is usable rather than merely
+      # openable: chart readable, message writable, both hash chains verifying
+      # with the new row on the end, and the scheduler's unique index intact.
+      # Prints the measured RTO.
+      - run: npm run restoretest -- --messages ${{ github.event.inputs.messages || '20000' }}
+
   load:
     name: load
     runs-on: ubuntu-latest
