@@ -117,7 +117,14 @@ test(
         "--disable-dev-shm-usage",
         `--user-data-dir=${profile}`,
         "about:blank",
-      ]);
+      ], {
+        // Its own process group. Chromium forks a zygote, a GPU process and a
+        // renderer per tab, and none of them are children of the signal sent
+        // to the launcher — so killing only the parent leaves them running and
+        // still writing to the profile directory, which is what makes the
+        // profile refuse to delete underneath the cleanup below.
+        detached: true,
+      });
       const wsUrl = await new Promise<string>((resolve, reject) => {
         let buf = "";
         let exited = "";
@@ -226,10 +233,15 @@ test(
       assert.deepEqual(beacons, [], "message content executed in the admin console");
     } finally {
       if (chrome) {
-        // Wait for it to actually be gone: removing the profile while the
-        // process is still flushing it fails with ENOTEMPTY, which would fail
-        // the test on cleanup and read as a security finding.
+        // The whole group, not the launcher. Signalling the negative pid
+        // reaches the zygote and the renderers too; without them the profile
+        // is still being written to when the removal below runs.
         const exited = new Promise<void>((r) => chrome!.once("exit", () => r()));
+        try {
+          if (chrome.pid) process.kill(-chrome.pid, "SIGKILL");
+        } catch {
+          // Already gone, or never got a group. Fall back to the launcher.
+        }
         chrome.kill("SIGKILL");
         await Promise.race([exited, new Promise((r) => setTimeout(r, 5_000))]);
       }
@@ -237,7 +249,20 @@ test(
       await engine.stop();
       await new Promise<void>((r) => canary.close(() => r()));
       rmSync(dir, { recursive: true, force: true });
-      rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+
+      // Best effort, and deliberately not an assertion. A Chromium profile
+      // that will not delete is a temp directory on a CI runner; it says
+      // nothing about whether hostile message content executed, and the
+      // assertions that answer that question have already run by the time
+      // this does. Failing here would report "hostile message content does
+      // not execute in the admin console: FAILED" because of an ENOTEMPTY,
+      // which is worse than a stale directory in /tmp by every measure —
+      // people stop reading a check that cries wolf.
+      try {
+        rmSync(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+      } catch (err) {
+        console.warn(`could not remove the chromium profile at ${profile}: ${(err as Error).message}`);
+      }
     }
   }
 );
