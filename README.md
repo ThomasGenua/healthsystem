@@ -12,13 +12,15 @@ The design targets the interoperability posture Canadian jurisdictions are conve
 
 **Privacy and access** — [Security](#security) · [Encryption at rest](#encryption-at-rest) · [Key lifecycle](#key-lifecycle) · [Audit trail](#audit-trail) · [Patient access](#patient-access) · [Consent directives and breaking glass](#consent-directives-and-breaking-glass) · [The clinical API, and audit by construction](#the-clinical-api-and-audit-by-construction) · [Retention](#retention) · [What the chains prove](#what-the-chains-prove) · [Tenancy](#tenancy)
 
-**Running it** — [Upgrading](#upgrading) · [Backup](#backup) · [Monitoring](#monitoring) · [Throughput](#throughput) · [Durability under failure](#durability-under-failure) · [Crash recovery](#crash-recovery)
+**Running it** — [Runbook](docs/RUNBOOK.md) · [Upgrading](#upgrading) · [Backup](#backup) · [Monitoring](#monitoring) · [Throughput](#throughput) · [Durability under failure](#durability-under-failure) · [Crash recovery](#crash-recovery)
+
+**Project** — [Changelog](CHANGELOG.md) · [Security policy](SECURITY.md) · [Licence](#licence) · [Contributing](#contributing)
 
 **Reference** — [Architecture](#architecture) · [Channels](#channels) · [Character sets](#character-sets) · [Mappings](#mappings) · [API](#api) · [FHIR facade](#fhir-facade) · [Terminology](#terminology) · [Conformance packs](#conformance-packs) · [Subscriptions](#subscriptions) · [Connectors](#connectors) · [Admin UI](#admin-ui) · [Loading a licensed terminology release](#loading-a-licensed-terminology-release) · [Satellite demo](#satellite-demo) · [Roadmap](#roadmap)
 
 ## Status
 
-v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources; filter, split, mapping and validation pipeline; retrying ordered destinations with DLQ and replay; hash-chained lineage; FHIR R4 facade; terminology service; PS-CA / CA:FeX / CA:eReC conformance packs; rest-hook Subscriptions; satellite outage demo; admin UI) plus:
+v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources; filter, split, mapping and validation pipeline; retrying ordered destinations with DLQ and replay; hash-chained lineage; FHIR R4 facade; terminology service; PS-CA / CA:FeX / CA:eReC conformance packs; rest-hook Subscriptions; satellite outage demo; admin UI) plus:
 
 - **Authentication and authorisation.** API keys and OAuth 2.0 / SMART on FHIR bearer tokens, three scopes, one gate ahead of every route. On by default.
 - **Mutual TLS**, for node-to-node links, inbound and outbound.
@@ -51,9 +53,9 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Proxy access that lapses on the day it was set to**, because nothing about a child's sixteenth birthday generates an event.
 - **Quality measures that refuse a rate they cannot stand behind**, because the patients a measure cannot assess are the ones nobody managed.
 - **Double-booking refused by the database**, not by a check that a second clerk can race past.
-- **Break-glass that is loud**: declared, reasoned in words, notified to the patient, and queued for review — because a quiet override makes the lockbox theatre.
+- **Break-glass that is loud**: declared before the access, reasoned in words, and held in queues an operator can read and has to discharge — because a quiet override makes the lockbox theatre.
 
-410 tests. Backend first, tests before UI.
+413 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -1279,6 +1281,36 @@ npm run terminology:import -- --format csv --in icd10ca.csv \
 `--system` accepts a URI or one of the shorthands `snomed`, `loinc`, `icd10ca`, `pclocd`, `cci`. `--db` chooses the database (default `./data/portage.db`) and `--out` additionally writes a pack JSON file.
 
 Everything streams and loads in batches, because a SNOMED snapshot runs to millions of rows. Concepts upsert on (system, code), so re-running a release is safe. RF2 emits only active concepts, uses the fully specified name as the display, and trims its trailing semantic tag — "Asthma (disorder)" becomes "Asthma".
+
+## Licence
+
+[Apache-2.0](LICENSE). Permissive, with an explicit patent grant — chosen
+because the software is meant to be deployed and adapted by health authorities
+and their vendors, and because clinical-safety and terminology mechanisms are
+the kind of thing patent claims attach to. A licence that leaves that
+unaddressed puts the risk on whoever deploys it.
+
+Copyright 2026 Thomas Genua.
+
+Portage carries no clinical content and no licensed terminology. SNOMED CT,
+LOINC, pCLOCD and ICD-10-CA are licensed separately by their owners; the
+loaders in `scripts/` read releases you are already entitled to and ship none
+of them. See [Loading a licensed terminology release](#loading-a-licensed-terminology-release).
+
+## Contributing
+
+Issues and pull requests are welcome. Two things worth knowing before you open
+one:
+
+- **Never attach real patient data**, in any form, including screenshots and
+  log excerpts. `fixtures/` and the test suite carry synthetic identifiers for
+  exactly this.
+- **A suspected vulnerability is not an issue.** It goes through private
+  disclosure — see [SECURITY.md](SECURITY.md).
+
+`npm run typecheck && npm test` is what CI runs on every push; the crash,
+disk-full and load tests run nightly and can be triggered by hand from the
+Actions tab.
 
 ## Roadmap
 

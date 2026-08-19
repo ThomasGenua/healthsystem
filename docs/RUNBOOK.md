@@ -1,0 +1,391 @@
+# Portage runbook
+
+For the person holding the pager. Deployment steps first, then the failures
+worth having written down before they happen.
+
+The README explains *why* each mechanism works the way it does; this explains
+what to type. Where the two disagree, the README is the design and this is the
+mistake — please fix it here.
+
+**Portage carries personal health information. Two rules apply to every
+paragraph below:** never paste a message body, a chart entry or a patient
+identifier into a ticket, a chat channel or a search engine; and never work
+around a refusal by disabling the thing that refused. A consent check, a
+tenancy boundary or an audit write that is in your way is doing its job.
+The escape hatch is break-glass, which is loud and recorded — see
+[Breaking glass](#a-clinician-cannot-see-a-record-they-need).
+
+---
+
+## Contents
+
+- [Deploying](#deploying)
+  - [What a node needs](#what-a-node-needs)
+  - [First install](#first-install)
+  - [Upgrading](#upgrading)
+  - [Rolling back](#rolling-back)
+- [Daily and weekly](#daily-and-weekly)
+- [Incidents](#incidents)
+  - [`/api/health` says degraded](#apihealth-says-degraded)
+  - [A channel is stalled](#a-channel-is-stalled)
+  - [A feed has gone silent](#a-feed-has-gone-silent)
+  - [Dead letters](#dead-letters)
+  - [The disk is full](#the-disk-is-full)
+  - [The engine will not start](#the-engine-will-not-start)
+  - [The engine crashed](#the-engine-crashed)
+  - [Chain verification fails](#chain-verification-fails)
+  - [A clinician cannot see a record they need](#a-clinician-cannot-see-a-record-they-need)
+  - [Break-glass queues are not emptying](#break-glass-queues-are-not-emptying)
+  - [A credential is compromised](#a-credential-is-compromised)
+  - [Restoring from backup](#restoring-from-backup)
+- [Escalating](#escalating)
+
+---
+
+## Deploying
+
+### What a node needs
+
+- **Node 22.18 or later.** 24.x is the production target: `node:sqlite` is no
+  longer flagged experimental there, and 22.x prints a warning on every boot.
+- **A local filesystem for `PORTAGE_DATA`.** Not NFS, not SMB, not a network
+  block device with write caching you cannot reason about. SQLite's durability
+  guarantee is only as good as the filesystem's `fsync`, and Portage's
+  acknowledgement means *durably queued* — a lie at this layer makes it a lie
+  all the way up.
+- **Disk**: roughly 4 KB per message stored, plus backups. Size for the
+  retention window, not for today.
+- **One process per database file.** This is enforced with a lock and is not a
+  convention — see [One engine per database](../README.md#one-engine-per-database).
+
+### First install
+
+```bash
+git clone https://github.com/ThomasGenua/healthsystem.git portage
+cd portage
+npm ci
+npm run typecheck && npm test    # 413 tests; do not deploy a node that fails one
+
+export PORTAGE_DATA=/var/lib/portage
+export PORTAGE_PORT=8686
+node src/server.ts
+```
+
+Then, before any real feed is pointed at it:
+
+1. **Set `PORTAGE_AUTH_MODE`.** It defaults to `apikey`. `off` exists for
+   development and must never reach a machine that can see a real feed.
+2. **Issue an admin key** and store it in whatever your site uses for secrets,
+   not in a shell history. See [API keys](../README.md#api-keys).
+3. **Turn on TLS** (`PORTAGE_TLS_CERT` / `_KEY`), and mutual TLS if the
+   destinations support it (`PORTAGE_TLS_CLIENT_CA`).
+4. **Set `PORTAGE_BACKUP_DIR`** to something on a different physical device
+   than `PORTAGE_DATA`. A backup on the disk that failed is not a backup.
+5. **Decide retention deliberately.** `PORTAGE_REDACT_AFTER_DAYS` and
+   `PORTAGE_PURGE_AFTER_DAYS` are unset by default and affect the *message
+   log only* — never the chart, medications, allergies, orders, results or
+   referrals. See [What retention does not touch](../README.md#what-retention-does-not-touch).
+6. **Point monitoring at `/api/health` and `/metrics`** before the first feed,
+   so you have a baseline.
+7. **Declare `expectMessageEverySec` on every channel you would notice the
+   absence of.** Silence detection is off unless declared, and silence is the
+   failure most likely to run for days unnoticed.
+
+### Upgrading
+
+Migrations run automatically on open and are introspection-driven rather than
+version-numbered, so an upgrade is: stop, replace the code, start. There is no
+migration command to forget to run. `test/migration.test.ts` opens a real
+v0.3.0 file and exercises the whole platform against the result.
+
+```bash
+# 1. Take a backup and verify it. Not optional; this is the rollback.
+curl -sS -X POST -H "authorization: Bearer $ADMIN_KEY" http://localhost:8686/api/backup
+
+# 2. Stop the engine. SIGTERM; it drains.
+systemctl stop portage
+
+# 3. Update, and re-run the suite against the new code on this machine.
+git fetch --tags && git checkout v0.5.0
+npm ci && npm run typecheck && npm test
+
+# 4. Start. Watch the log: the migration announces each table it rebuilds.
+systemctl start portage
+curl -sS http://localhost:8686/api/health
+```
+
+Then confirm, in this order: `/api/health` is `ok` and not `degraded`; each
+channel has a recent `lastMessageAt`; and chain verification passes
+(`GET /api/chain/verify` for the message chain, `GET /api/audit/verify` for the
+audit chain). An upgrade that produced tables without their constraints
+is worse than one that failed to open — the site runs, and double-books — so
+the verification step is the point of the exercise, not paperwork.
+
+### Rolling back
+
+Portage's migrations move forward only. **A database opened by a newer version
+may not be readable by an older one**, so rolling back the code is not enough:
+
+```bash
+systemctl stop portage
+git checkout v0.4.0 && npm ci
+# restore the pre-upgrade backup over PORTAGE_DATA — see Restoring, below
+systemctl start portage
+```
+
+Messages that arrived after the backup was taken are lost from the log by this,
+which is why the backup in step 1 is taken immediately before the stop. If the
+upgrade has been live long enough that this matters, fix forward instead and
+call for help.
+
+---
+
+## Daily and weekly
+
+| When | What | How |
+| --- | --- | --- |
+| Continuously | `degraded`, dead letters, silent channels | alert on `/metrics` |
+| Daily | A backup exists, is recent, and verified | check `PORTAGE_BACKUP_DIR` |
+| Daily | Break-glass queues are being drained | `GET /api/clinical/break-glass` |
+| Weekly | Chain verification across all channels | `GET /api/chain/verify`, `GET /api/audit/verify` |
+| Weekly | Unacknowledged results and open referrals past their deadline | `GET /api/clinical/results`, `/referrals` |
+| Monthly | Restore a backup onto a scratch machine and open it | see [Restoring](#restoring-from-backup) |
+| Monthly | Review API keys: expiry, rotation, anything unused | `GET /api/keys/review` |
+
+The monthly restore is the only one that proves the others were worth doing. A
+backup that has never been restored is a file.
+
+---
+
+## Incidents
+
+### `/api/health` says degraded
+
+`degraded` is set by a dead letter, a channel holding work older than
+`stalledAfterSec` (default an hour), or a channel that declared a cadence and
+missed it. It is deliberately not `unhealthy`: an engine holding a backlog
+through a satellite outage is working exactly as designed.
+
+```bash
+curl -sS http://localhost:8686/api/health | jq .signals
+```
+
+Read `stalledChannels` and `silentChannels` first — they name the feed, which
+is the thing a counter cannot tell you. Then go to the matching section below.
+
+### A channel is stalled
+
+Work is arriving and not leaving. The destination is the suspect, not Portage.
+
+```bash
+curl -sS -H "authorization: Bearer $ADMIN_KEY" \
+  "http://localhost:8686/api/channels/<id>" | jq
+```
+
+1. Can this machine reach the destination at all? Try it by hand.
+2. Is the destination refusing, or timing out? A refusal that repeats is a
+   configuration mismatch; a timeout that repeats is usually the network.
+3. **Do not clear the queue to make the alert stop.** The backlog is the
+   patient data that has not arrived yet. Ordered replay is the design: once
+   the destination recovers, the queue drains in order on its own.
+
+Escalate to whoever owns the destination system. The backlog is safe while you
+wait — that is what store-and-forward is for.
+
+### A feed has gone silent
+
+A source stopped sending. Nothing is in the queue, so every queue-shaped signal
+reads healthy; only `silentChannels` catches it, and only for channels that
+declared `expectMessageEverySec`.
+
+A dead ADT interface and a quiet night are indistinguishable from here, so this
+is a phone call to the sending site, not something to diagnose locally. Check
+first that the listener is actually up (`GET /api/channels`) so you are not
+calling them about your own outage.
+
+### Dead letters
+
+A message that failed past its retries. It is kept, not dropped.
+
+```bash
+curl -sS -H "authorization: Bearer $ADMIN_KEY" \
+  "http://localhost:8686/api/deliveries?state=dead" | jq
+```
+
+Replay with `POST /api/deliveries/:id/replay`; `POST /api/deliveries/:id/discard`
+drops one and releases the ordered flow behind it.
+
+Read the error before replaying. A dead letter from a transient network failure
+replays cleanly; one from a malformed message or a mapping bug replays into the
+same failure and tells you nothing new. Fix the cause, then replay.
+
+### The disk is full
+
+Portage refuses writes rather than half-writing them, and recovers on its own
+once space is freed — this is exercised by `npm run diskfulltest` and nightly
+in CI. So the engine is not the problem; the disk is.
+
+1. Free space. Old backups in `PORTAGE_BACKUP_DIR` are usually the largest
+   thing that is safe to delete, and `PORTAGE_BACKUP_KEEP` governs how many are
+   retained.
+2. **Do not delete anything inside `PORTAGE_DATA`.** Not the WAL, not the
+   journal, not "the big one".
+3. Confirm recovery: `/api/health` should return to `ok` without a restart.
+
+Then work out why it filled. Retention unset on a busy feed is the usual
+answer.
+
+### The engine will not start
+
+- **`another process owns this database`** — that is the instance lock working.
+  Find the other process (`ss -lptn` on the port, or check for a stale
+  systemd unit). Two engines on one file is the failure the lock exists to
+  prevent; do not delete the lock to get past it.
+- **`no such column: …`** — a migration did not run, which should be
+  impossible on a supported path. Do not hand-edit the schema. Take a copy of
+  the file, roll back to the previous version, and report it.
+- **Port in use** — something else is on `PORTAGE_PORT`.
+
+### The engine crashed
+
+Start it again. That is the whole procedure, and it is a claim the code is
+tested against: `npm run crashtest` SIGKILLs a real engine mid-drain and checks
+that nothing is lost and order is preserved.
+
+On restart, expect a log line about deliveries interrupted by an unclean
+shutdown being requeued. At most one message per ordering key can have been in
+the ambiguous state — sent but not committed — so a crash redelivers at most
+one per key. That is at-least-once by design, and the content-addressed FHIR
+facade absorbs the duplicate as a no-op.
+
+Then check `GET /api/chain/verify` and move on.
+
+### Chain verification fails
+
+`GET /api/chain/verify?channel_id=` reports the message chain broken, or
+`GET /api/audit/verify` reports the audit chain truncated.
+
+This is serious and is **not** a thing to fix by re-verifying until it passes.
+The chain exists to detect exactly two situations: a database that has been
+edited outside Portage, and one whose history has been truncated.
+
+1. Do not restart the engine. Do not run retention. Do not take a new backup
+   over the old one.
+2. Copy the database file and the current backups somewhere read-only.
+3. Note what `verify` says — it reports *where* the chain breaks and how much it
+   checked, which is the difference between "somebody purged" and "somebody
+   edited".
+4. A gap that begins exactly at a purge cutoff is expected and is reported as
+   such; see [What the chains prove](../README.md#what-the-chains-prove).
+5. Anything else: treat it as a potential privacy incident and escalate to your
+   privacy officer immediately. Preserve the file first.
+
+### A clinician cannot see a record they need
+
+They are hitting `403 this record is withheld by a patient directive`. The
+patient has asked for the record to be withheld, and the refusal names the way
+through in its own body.
+
+This is not something to fix by editing directives, and never by turning off
+the check. If the clinical need is real:
+
+```bash
+curl -sS -X POST -H "authorization: Bearer $KEY" -H "content-type: application/json" \
+  -d '{"patient":"NT123456","reason":"unresponsive in ED, no collateral history, need allergy status before induction"}' \
+  http://localhost:8686/api/clinical/break-glass
+```
+
+The reason must be something a privacy office can weigh months later; a single
+word is refused. The override expires on its own, the patient is owed a
+notification, and it lands in a review queue. All three are the point.
+
+Two current behaviours will send people here more often than they should, both
+deliberate and both fail-closed pending a proper fix:
+
+- a directive narrowed to particular entry types refuses the **whole** route
+  rather than filtering that section out of it
+- a `withhold-from-organization` directive withholds from **every** caller,
+  because no credential yet carries an organization to compare against
+
+### Break-glass queues are not emptying
+
+```bash
+curl -sS -H "authorization: Bearer $ADMIN_KEY" http://localhost:8686/api/clinical/break-glass | jq
+```
+
+`awaitingNotification` is patients who have not been told their record was
+opened. `awaitingReview` is overrides nobody has looked at. Neither drains
+itself, and neither is a statistic — an override nobody reviews teaches a ward
+that breaking glass costs nothing, and a directive that costs nothing to break
+slows down only the people who would have asked.
+
+Telling the patient happens on a channel Portage does not own — a letter, a
+call, a portal message. Record it once it has happened:
+
+```bash
+curl -sS -X POST -H "authorization: Bearer $ADMIN_KEY" -H "content-type: application/json" \
+  -d '{"override":"<id>"}' http://localhost:8686/api/clinical/break-glass-notified
+
+curl -sS -X POST -H "authorization: Bearer $ADMIN_KEY" -H "content-type: application/json" \
+  -d '{"override":"<id>","outcome":"appropriate; ED attendance confirmed in the record"}' \
+  http://localhost:8686/api/clinical/break-glass-review
+```
+
+If one person appears repeatedly, that is a workflow that has decided the
+directive is an obstacle rather than a run of emergencies. It is a
+conversation, not a metric.
+
+### A credential is compromised
+
+```bash
+# Issue the replacement first, so nothing goes dark between the two calls.
+curl -sS -X POST -H "authorization: Bearer $ADMIN_KEY" \
+  http://localhost:8686/api/keys/<id>/rotate
+```
+
+Rotation records what replaced what, so the audit trail stays readable across
+the change. Then revoke the old key, and read the audit trail for what it did
+while it was out of your control:
+
+```bash
+curl -sS -H "authorization: Bearer $ADMIN_KEY" \
+  "http://localhost:8686/api/audit?principal=<id>" | jq
+```
+
+If patient data was served to it, that is a privacy incident and follows your
+jurisdiction's breach process, not this document. If the credential is a
+vulnerability in Portage rather than a leaked secret, see [SECURITY.md](../SECURITY.md).
+
+### Restoring from backup
+
+```bash
+systemctl stop portage                       # nothing may hold the file
+mv /var/lib/portage /var/lib/portage.broken  # keep it; do not delete it
+mkdir -p /var/lib/portage
+# restore the chosen backup into /var/lib/portage per README § Restoring
+systemctl start portage
+# the restore is not done until both of these pass
+curl -sS -H "authorization: Bearer $ADMIN_KEY" http://localhost:8686/api/chain/verify
+curl -sS -H "authorization: Bearer $ADMIN_KEY" http://localhost:8686/api/audit/verify
+```
+
+Keep the broken copy until the restore is confirmed and the chain verifies. It
+is evidence if this turns out to be an incident rather than an accident.
+
+---
+
+## Escalating
+
+Escalate immediately, before further diagnosis, for any of:
+
+- chain verification failing in a way that is not an expected purge gap
+- patient data served to the wrong tenant, or to a credential that should not
+  have seen it
+- a backup that will not restore
+- any suspicion that the database file has been modified outside Portage
+
+For these, preserving the current state matters more than restoring service.
+Copy the database file and the backups somewhere read-only **first**.
+
+A suspected vulnerability in Portage itself goes through private disclosure —
+see [SECURITY.md](../SECURITY.md) — not a public issue.
