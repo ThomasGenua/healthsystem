@@ -1314,14 +1314,32 @@ Actions tab.
 
 ## Roadmap
 
-What is genuinely next, in the order it would be worth doing:
+Tracked as issues rather than prose, so each one can be scoped, argued with and
+closed. In the order it would be worth doing:
 
-**The patient-facing surface.** The hardest part is already built and tested — directives, proxy authority that expires, release timing, the access log. What is missing is its trust boundary: patient identity rather than an issued operator credential, a scope vocabulary of its own, and `PatientAccess.may()` consulted per request instead of a scope check. Until that exists, "patients can reach their record" is not true.
+**Prove what is currently only claimed.**
 
-**A clinician-facing interface.** Every store below is exercised only by tests and HTTP. The chart summary is designed for it — `complete` and `omissions` exist so a renderer can be honest about a short panel — but nothing renders them yet.
+- [#15 Rehearse a restore on a different machine, and state an RPO and RTO](https://github.com/ThomasGenua/healthsystem/issues/15) — snapshots are verified and a corrupt one is rejected, and no snapshot has ever been restored onto another host and run against. The current state proves less than it appears to.
+- [#21 A clinical safety case and hazard log](https://github.com/ThomasGenua/healthsystem/issues/21) — the hazard reasoning exists, scattered across docstrings and test names where no safety officer will find it, in no defensible form.
+- [#22 An external penetration test](https://github.com/ThomasGenua/healthsystem/issues/22) — the adversarial tests here share their author's model of what an attack looks like. The interesting findings are outside it.
 
-**Interoperability, continued.** Projectathon readiness: pack tightening against the published PS-CA, CA:FeX and CA:eReC test scripts. Terminology ValueSet and ConceptMap import from release formats (concepts land today; memberships and mappings are still pack JSON). Subscription topics and the R5 backport, alongside today's R4 rest-hook criteria.
+**Make the consent enforcement precise.** Both currently fail closed, which is safe and blunter than the patient asked for.
 
-**Horizontal operation.** A Portage node is a single writer, which suits a community site and not a territorial hub. The instance lock makes that a refusal rather than a corruption, which is the right failure — but it is still a ceiling.
+- [#16 Filter a scope-narrowed directive per section instead of refusing the whole chart](https://github.com/ThomasGenua/healthsystem/issues/16)
+- [#17 Give credentials an organization identity](https://github.com/ThomasGenua/healthsystem/issues/17)
+- [#18 Actually deliver the break-glass notification the patient is owed](https://github.com/ThomasGenua/healthsystem/issues/18) — the queue is visible and drainable; nothing sends anything.
 
-**Bulk data conversion.** Section 15 asks for migration from incumbent systems, and there is nothing here for it: no legacy extract readers, no reconciliation report, no way to tell an operator which records did not convert and why. The clinical stores are append-only and provenance-carrying, which is the right shape to migrate into; the migration itself is unwritten.
+**Put it in front of a person.**
+
+- [#19 A thin clinician UI: one workflow usable end to end](https://github.com/ThomasGenua/healthsystem/issues/19) — every store is exercised only by tests and HTTP. The chart summary was designed for a renderer that does not exist: `complete` and `omissions` are there so a panel can be honest about being short, and nothing renders them.
+- [#23 Validate the conformance packs against the published Projectathon scripts](https://github.com/ThomasGenua/healthsystem/issues/23) — the packs validate against this project's reading of the specifications, which is not the same as conforming to them.
+- [#24 The patient-facing surface, and its separate identity boundary](https://github.com/ThomasGenua/healthsystem/issues/24) — the hard part is built and deliberately not mounted, because a portal is a different trust boundary.
+
+**Then scale.**
+
+- [#20 §15 bulk migration from incumbent systems, with a reconciliation report](https://github.com/ThomasGenua/healthsystem/issues/20) — how a real deployment starts, and completely absent.
+- [#25 Horizontal operation](https://github.com/ThomasGenua/healthsystem/issues/25) — a single writer suits a community site and not a territorial hub. Last, because scaling a system nobody can load data into and whose recovery has never been rehearsed is optimising the wrong axis.
+
+**Smaller, from review.** [#26 `phi()` maps every store exception to HTTP 400](https://github.com/ThomasGenua/healthsystem/issues/26) · [#27 the `migrate()` rebuild runs with foreign keys on](https://github.com/ThomasGenua/healthsystem/issues/27)
+
+**Deliberately not next.** Machine learning and broad decision-support content wait for validated data, licensed content and a clinical-governance process. The decision-support mechanism ships without content on purpose, and shipping content without that process would be the most consequential version of the failure this codebase spends its time refusing: a system answering a clinical question that nobody actually answered.
