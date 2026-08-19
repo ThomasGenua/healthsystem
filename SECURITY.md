@@ -126,7 +126,5 @@ discussion, but they will not be treated as advisories:
 - **`withhold-from-organization` directives currently withhold from every
   caller**, because no credential carries an organization identity to compare
   against. This fails closed on purpose; it is over-restrictive, not permissive.
-- **A consent directive narrowed by entry type refuses the whole route** rather
-  than filtering the withheld section out of it, for the same reason.
 - **Decision support ships as a mechanism without content**, and nothing in
   Portage uses machine learning. No output should be read as though it did.

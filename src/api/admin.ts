@@ -51,6 +51,7 @@ import { DEFAULT_TENANT } from "../db.ts";
 import { checkCapability, toOperationOutcome, validateResource } from "../conformance/validator.ts";
 import { applyMapping } from "../transform/mapper.ts";
 import { takeBackup } from "../core/backup.ts";
+import { CHART_TYPES, WORKLIST_TYPES } from "../workspace/summary.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
 import { VERSION } from "../version.ts";
@@ -531,12 +532,28 @@ async function route(
      * what a privacy office wants to see — and it says that a directive
      * exists without saying what it says.
      */
-    const withheld = (forPatient: string): { id: string } | undefined => {
-      const decision = tenant.consent.mayRead({
-        subjectId: auth.ok ? auth.principal.id : "unauthenticated",
-        patientId: forPatient,
-      });
-      return decision.allowed ? undefined : { id: decision.withheldBy!.id };
+    const subjectId = auth.ok ? auth.principal.id : "unauthenticated";
+
+    const restrictions = (forPatient: string) => tenant.consent.restrictionsFor({ subjectId, patientId: forPatient });
+
+    /**
+     * Whether a directive stops this caller reading this much of this record.
+     *
+     * `covers` is what the route may return. A route serving one entry type
+     * asks about that type and is refused only if the patient locked it; the
+     * chart asks about all of them and is refused only by a directive that
+     * withholds the record as a whole, because it can drop the locked sections
+     * and say so instead.
+     */
+    const withheld = (forPatient: string, covers: readonly string[]): { id: string } | undefined => {
+      const r = restrictions(forPatient);
+      if (r.underBreakGlass) return undefined;
+      if (r.blocking) return { id: r.blocking.id };
+      // A route that can serve part of its answer is not stopped by a
+      // directive on one part; `phi` hands it the withheld set instead.
+      if (covers.length > 1) return undefined;
+      const d = covers.length === 1 ? r.withheldTypes.get(covers[0]) : undefined;
+      return d ? { id: d.id } : undefined;
     };
 
     /**
@@ -555,20 +572,41 @@ async function route(
      * exists to prevent. The count is reported so somebody can act on it; who
      * they are is not, which is what the directive asked for.
      */
-    const filterByDirective = <T extends { patient_id: string }>(rows: T[]): { rows: T[]; withheldCount: number } => {
+    const filterByDirective = <T extends { patient_id: string }>(
+      covers: readonly string[],
+      rows: T[]
+    ): { rows: T[]; withheldCount: number } => {
       const kept: T[] = [];
       const blocked = new Set<string>();
       for (const row of rows) {
-        if (withheld(row.patient_id)) blocked.add(row.patient_id);
+        if (withheld(row.patient_id, covers)) blocked.add(row.patient_id);
         else kept.push(row);
       }
       return { rows: kept, withheldCount: rows.length - kept.length };
     };
 
-    /** Audits the access, then sends. In that order, deliberately. */
-    const phi = <T,>(resourceType: string, produce: () => T, count?: (v: T) => number): void => {
+    /**
+     * Audits the access, then sends. In that order, deliberately.
+     *
+     * `covers` is every entry type the response may contain, and defaults to
+     * the resource type the route declares — which is the right answer for the
+     * routes that serve one kind of thing. The chart and the worklist pass
+     * their own lists, because they assemble several, and receive the withheld
+     * set so they can drop those sections rather than refuse outright.
+     */
+    const phi = <T,>(
+      resourceType: string,
+      produce: (withheldTypes: ReadonlySet<string>) => T,
+      count?: (v: T) => number,
+      covers: readonly string[] = [resourceType]
+    ): void => {
+      let withheldTypes: ReadonlySet<string> = new Set();
       if (patient) {
-        const block = withheld(patient);
+        const block = withheld(patient, covers);
+        if (!block) {
+          const r = restrictions(patient);
+          withheldTypes = new Set([...r.withheldTypes.keys()].filter((t) => covers.includes(t)));
+        }
         if (block) {
           audit({
             action: verbToAction(method),
@@ -587,7 +625,7 @@ async function route(
       }
       let value: T;
       try {
-        value = produce();
+        value = produce(withheldTypes);
       } catch (err) {
         audit({ action: verbToAction(method), outcome: 8, resourceType, patient, detail: (err as Error).message });
         return send(res, 400, { error: (err as Error).message });
@@ -598,20 +636,44 @@ async function route(
         resourceType,
         patient,
         ...(count ? { count: count(value) } : {}),
+        // A partly withheld read is not an ordinary one, and the trail is
+        // where a privacy office finds out the directive did something. Only
+        // the types, never the content: which sections were locked is the
+        // narrowest thing that makes the row useful.
+        ...(withheldTypes.size ? { detail: `withheld by patient directive: ${[...withheldTypes].sort().join(", ")}` } : {}),
       });
       return send(res, 200, value);
     };
 
     if (path === "/api/clinical/chart" && method === "GET") {
       if (!patient) return send(res, 400, { error: "patient required" });
-      return phi("Composition", () =>
-        tenant.workspace.chart(patient, { limit: num(url.searchParams.get("limit")) })
+      // The chart is not one entry type, which is why it passes CHART_TYPES
+      // and takes the withheld set rather than being refused outright. A
+      // patient who locked their counselling notes gets a chart without that
+      // panel — and the panel says a directive is why, because a summary is
+      // read as complete and a silently short one is the failure this whole
+      // module exists to refuse.
+      return phi(
+        "Composition",
+        (withheldTypes) =>
+          tenant.workspace.chart(patient, { limit: num(url.searchParams.get("limit")), withheldTypes }),
+        undefined,
+        CHART_TYPES
       );
     }
     if (path === "/api/clinical/worklist" && method === "GET") {
       const clinician = url.searchParams.get("clinician");
       if (!clinician) return send(res, 400, { error: "clinician required" });
-      return phi("Task", () => tenant.workspace.worklist(clinician, { limit: num(url.searchParams.get("limit")) }));
+      // A worklist spans patients rather than naming one, so a directive on
+      // any single patient cannot refuse it — `filterByDirective` inside the
+      // stores is what withholds rows there. It declares its types anyway, so
+      // that a route added to it later inherits the right answer.
+      return phi(
+        "Task",
+        () => tenant.workspace.worklist(clinician, { limit: num(url.searchParams.get("limit")) }),
+        undefined,
+        WORKLIST_TYPES
+      );
     }
     if (path === "/api/clinical/patients" && method === "GET") {
       // A search is an access even when it returns nothing: "who did you look
@@ -621,6 +683,7 @@ async function route(
         "Patient",
         () =>
           filterByDirective(
+            ["Patient"],
             tenant.clinical.patientIndex
               .search({
                 identifier: url.searchParams.get("identifier") ?? undefined,
@@ -660,7 +723,7 @@ async function route(
             responsibleId: url.searchParams.get("responsible") ?? undefined,
             overdueAsOf: url.searchParams.get("overdue_as_of") ?? undefined,
           });
-          return filterByDirective(patient ? all.filter((r) => r.patient_id === patient) : all);
+          return filterByDirective(["Observation"], patient ? all.filter((r) => r.patient_id === patient) : all);
         },
         (r) => r.rows.length
       );
@@ -672,7 +735,7 @@ async function route(
     if (path === "/api/clinical/referrals" && method === "GET") {
       return phi(
         "ServiceRequest",
-        () => filterByDirective(patient ? tenant.referrals.forPatient(patient) : tenant.referrals.stalled()),
+        () => filterByDirective(["ServiceRequest"], patient ? tenant.referrals.forPatient(patient) : tenant.referrals.stalled()),
         (r) => r.rows.length
       );
     }
@@ -685,7 +748,7 @@ async function route(
           // A task with no patient on it is not about anybody, so no directive
           // can withhold it; those pass through untouched.
           const withPatient = all.filter((t): t is typeof t & { patient_id: string } => t.patient_id !== null);
-          const filtered = filterByDirective(withPatient);
+          const filtered = filterByDirective(["Task"], withPatient);
           return { rows: [...all.filter((t) => t.patient_id === null), ...filtered.rows], withheldCount: filtered.withheldCount };
         },
         (r) => r.rows.length
@@ -706,7 +769,7 @@ async function route(
     if (path === "/api/clinical/missed" && method === "GET") {
       // Missed appointments that mattered and that nobody has picked up. A
       // read of patient data like any other, and audited as one.
-      return phi("Appointment", () => filterByDirective(tenant.schedule.unresolvedNonAttendance()), (r) => r.rows.length);
+      return phi("Appointment", () => filterByDirective(["Appointment"], tenant.schedule.unresolvedNonAttendance()), (r) => r.rows.length);
     }
     if (path === "/api/clinical/break-glass" && method === "GET") {
       // What breaking glass has cost so far, and what is still owed.

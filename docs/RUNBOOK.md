@@ -65,7 +65,7 @@ The escape hatch is break-glass, which is loud and recorded — see
 git clone https://github.com/ThomasGenua/healthsystem.git portage
 cd portage
 npm ci
-npm run typecheck && npm test    # 420 tests; do not deploy a node that fails one
+npm run typecheck && npm test    # 424 tests; do not deploy a node that fails one
 
 export PORTAGE_DATA=/var/lib/portage
 export PORTAGE_PORT=8686
@@ -301,13 +301,19 @@ The reason must be something a privacy office can weigh months later; a single
 word is refused. The override expires on its own, the patient is owed a
 notification, and it lands in a review queue. All three are the point.
 
-Two current behaviours will send people here more often than they should, both
-deliberate and both fail-closed pending a proper fix:
+Two things are worth knowing before you reach for break-glass:
 
-- a directive narrowed to particular entry types refuses the **whole** route
-  rather than filtering that section out of it
-- a `withhold-from-organization` directive withholds from **every** caller,
-  because no credential yet carries an organization to compare against
+- **A narrowed directive does not refuse the chart.** If the patient locked one
+  section, `GET /api/clinical/chart` still returns — that panel comes back
+  marked `incomplete.reason: "withheld"` and the summary's `omissions` say so.
+  Only a route serving exactly the locked type refuses, and only a directive
+  naming no entry types refuses the whole chart. A clinician who says "the
+  chart is blank" is describing something else; check `/api/health` first.
+- **A `withhold-from-organization` directive withholds from every caller**,
+  because no credential yet carries an organization to compare against. This
+  fails closed on purpose — it is over-restrictive, not permissive — and it is
+  the one case where a routine access genuinely needs break-glass. Tracked as
+  issue #17.
 
 ### Break-glass queues are not emptying
 

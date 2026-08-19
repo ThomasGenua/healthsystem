@@ -67,6 +67,18 @@ The clinical platform, and the privacy enforcement that makes it safe to serve.
   patient could lock their counselling notes and `GET /api/clinical/chart`
   served them with a 200. A read that cannot say which type it is reading may
   return the withheld one, so it is now refused.
+- **A directive narrowed by `scope` withholds its section, not the whole
+  chart.** The first fix for the leak above refused any read that could not
+  name its entry type, which was safe and much blunter than the patient asked
+  for: they locked one section and lost the chart, with break-glass as the only
+  way back. There is no honest yes-or-no to "may they read the chart" when one
+  panel is locked, so the chart now drops that panel and says on its face that
+  a directive is why — `incomplete.reason` is `withheld`, distinct from
+  `unavailable`, because a panel that failed and a panel the patient locked
+  call for completely different things from a clinician. A route serving
+  exactly the locked type still refuses, having nothing left to serve. Neither
+  the content nor the count of a withheld section reaches the response, and the
+  audit row names which types were withheld.
 - **A `withhold-from-organization` directive could never be enforced at all**,
   because it matched on an organization identity that no credential carries and
   nothing passed. It was recorded, reported to the patient as active, and
@@ -100,14 +112,11 @@ The clinical platform, and the privacy enforcement that makes it safe to serve.
 - Licensed under **Apache-2.0**. The repository previously carried no licence
   file and declared `UNLICENSED`, which meant nobody could legally use, fork or
   contribute to a public repository.
-- 270 → 420 tests.
+- 270 → 424 tests.
 
 **Known limitations**, stated because both fixes above fail closed and are
 blunter than the patient asked for:
 
-- A directive narrowed by entry type refuses the whole route rather than
-  filtering that section out of the response. Per-section filtering inside the
-  assembled chart is the honest fix.
 - A `withhold-from-organization` directive withholds from every caller until
   organization identity reaches the auth layer.
 - Break-glass notification is recorded, not sent. Telling the patient happens

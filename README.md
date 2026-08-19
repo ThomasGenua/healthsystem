@@ -54,9 +54,10 @@ v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Quality measures that refuse a rate they cannot stand behind**, because the patients a measure cannot assess are the ones nobody managed.
 - **Double-booking refused by the database**, not by a check that a second clerk can race past.
 - **Break-glass that is loud**: declared before the access, reasoned in words, and held in queues an operator can read and has to discharge — because a quiet override makes the lockbox theatre.
+- **A lockbox that can cover part of a chart**, where the locked panel says a directive withheld it rather than rendering as "none" — so a patient can withhold one section without taking the rest of their chart away from the clinician treating them.
 - **A restore that has actually been rehearsed**, to somewhere the database has never been, with a measured RTO — because a verified snapshot only proves the bytes hashed correctly when they were written.
 
-420 tests. Backend first, tests before UI.
+424 tests. Backend first, tests before UI.
 
 ### What this is not
 
@@ -611,6 +612,24 @@ Declaring is itself an event on the trail, written before any record is read und
 ```
 
 A short list that looks complete is what this system refuses everywhere, and here it is worse than usual: a result withheld from the clinician responsible for reading it is a result now owed to **nobody**, which is the exact silence §4 exists to prevent. The count is reported so somebody can act on it; who they are is not, which is what the directive asked for. A task with no patient on it is not about anybody, so no directive withholds it.
+
+**A chart is a third problem again**, because it is not one kind of thing. "May they read the chart?" has no honest yes-or-no answer when the patient has locked their counselling notes and nothing else — and both available answers are wrong. Serving it leaks what they locked. Refusing it takes the whole chart away over one panel, leaving break-glass as the only route to an allergy list nobody objected to.
+
+So a directive narrowed by `scope` withholds its **section**:
+
+```json
+{ "recentNotes": { "items": [], "complete": false,
+    "incomplete": { "reason": "withheld",
+                    "detail": "withheld by a patient directive; break glass to see it if the situation warrants it" } },
+  "complete": false,
+  "omissions": ["Recent notes: withheld by a patient directive; …"] }
+```
+
+`withheld` is a distinct reason from `unavailable`, and the distinction is clinical rather than tidy. A panel that **failed to load** is a reason to go and look elsewhere before prescribing. A panel the **patient locked** is a reason to have a conversation, or to break glass if the situation warrants it. Rendering the second as the first would be both wrong and quietly alarming.
+
+Neither the content nor the **count** of a withheld section reaches the response — "3 documents withheld" tells a reader the patient has counselling notes, which is most of what the lockbox was hiding — and the withheld section is not loaded and discarded but never read, because reading rows the patient locked in order to throw them away is still reading them. The access is audited as a success that withheld something, naming the types and nothing else.
+
+A route serving **exactly** the locked type still refuses, having nothing left to serve, and a directive naming **no** entry types refuses the whole chart. Both are the same rule seen from different sides: withhold precisely what the patient asked to withhold, and no more.
 
 ### What is deliberately not on this API
 

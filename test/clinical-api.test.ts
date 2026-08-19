@@ -547,20 +547,20 @@ test("a directive keeps a patient off a worklist, and the list says it is short"
   })();
 });
 
-test("a directive narrowed to some entry types still stops a route that names no type", () => {
-  // The gap this closes was invisible from the unit tests and visible only
-  // here. `mayRead()` honoured `scope` correctly when told which entry type
-  // was being read — and `phi()` never tells it, because a chart is not one
-  // type. So every scoped directive evaluated to "does not apply" on every
-  // request: the patient locked their counselling notes, the API reported the
-  // directive as active, and GET /api/clinical/chart served the note with a
-  // 200.
+test("a directive narrowed to some entry types withholds that section, not the whole chart", () => {
+  // Where this landed after two goes at it, and the two wrong answers are
+  // worth keeping visible because each looked right at the time.
   //
-  // A read that cannot say which type it is reading may return the withheld
-  // one, so it is refused. Blunter than the patient asked for — they locked
-  // one section and the whole chart now refuses — and the honest fix is
-  // per-section filtering inside the assembled chart. Refusing is what is safe
-  // to ship in the meantime, and break-glass is one loud, audited call away.
+  // Originally `mayRead()` honoured `scope` only when told which entry type
+  // was being read, and `phi()` never tells it — a chart is not one type — so
+  // every scoped directive evaluated to "does not apply" and the patient's
+  // locked counselling note was served with a 200. The fix for that refused
+  // any read that could not name its type, which was safe and far blunter
+  // than the patient asked for: they locked one section and lost the chart.
+  //
+  // The honest answer is that "may they read the chart" has no yes-or-no. The
+  // chart drops the locked section and says so; a route that serves exactly
+  // the locked type refuses, because there is nothing left for it to serve.
   return (async () => {
     const s = await boot();
     try {
@@ -568,7 +568,7 @@ test("a directive narrowed to some entry types still stops a route that names no
       t.clinical.record({
         entryType: "DocumentReference",
         patientId: P,
-        content: { resourceType: "DocumentReference", description: "counselling summary" },
+        content: { resourceType: "DocumentReference", description: "COUNSELLING SUMMARY" },
         ...GP_AUTHOR,
       });
       t.consent.record({
@@ -580,13 +580,90 @@ test("a directive narrowed to some entry types still stops a route that names no
       });
 
       const res = await s.get(`/api/clinical/chart?patient=${P}`);
-      assert.equal(res.status, 403, "a partial lockbox is not an absent one");
-      const body = (await res.json()) as { error: string; breakGlass: string };
-      assert.match(body.error, /withheld by a patient directive/);
-      assert.equal(body.breakGlass, "POST /api/clinical/break-glass", "and the way through is named");
+      assert.equal(res.status, 200, "one locked section does not take the clinician's chart away");
+      const chart = (await res.json()) as {
+        complete: boolean;
+        omissions: string[];
+        recentNotes: { items: unknown[]; complete: boolean; incomplete?: { reason: string; detail?: string } };
+        allergies: { complete: boolean };
+      };
 
+      assert.equal(chart.recentNotes.items.length, 0);
+      assert.equal(chart.recentNotes.incomplete?.reason, "withheld", "not 'unavailable' — nothing failed");
+      assert.match(chart.recentNotes.incomplete!.detail!, /break glass/, "and the way through is named");
+      assert.equal(chart.complete, false, "a chart missing what the patient locked is not the whole chart");
+      assert.ok(
+        chart.omissions.some((o) => /Recent notes/.test(o)),
+        `the omission is on the summary itself, got ${JSON.stringify(chart.omissions)}`
+      );
+
+      // And nothing of the withheld section leaks: not the content, and not
+      // the count, which would tell a reader the patient has counselling notes
+      // — most of what the lockbox was hiding.
+      const body = JSON.stringify(chart);
+      assert.ok(!body.includes("COUNSELLING SUMMARY"), "the withheld content is not in the response");
+
+      // The sections the patient did not lock are untouched.
+      assert.equal(chart.allergies.complete, true, "a lockbox on one section is not a lockbox on the rest");
+
+      // A route that serves exactly the withheld type has nothing left to
+      // serve, so it refuses — and names the way through.
       const notes = await s.get(`/api/clinical/notes?patient=${P}`);
-      assert.equal(notes.status, 403, "and the route serving the withheld type most of all");
+      assert.equal(notes.status, 403);
+      const refusal = (await notes.json()) as { error: string; breakGlass: string };
+      assert.match(refusal.error, /withheld by a patient directive/);
+      assert.equal(refusal.breakGlass, "POST /api/clinical/break-glass");
+
+      // A route serving a type the patient did not lock is not affected.
+      assert.equal((await s.get(`/api/clinical/allergies?patient=${P}`)).status, 200);
+      assert.equal((await s.get(`/api/clinical/medications?patient=${P}`)).status, 200);
+    } finally {
+      await s.close();
+    }
+  })();
+});
+
+test("a partly withheld read says so on the audit trail", () => {
+  // A directive that did something is exactly what a privacy office wants to
+  // see, and a 200 that quietly dropped a section is otherwise indistinguishable
+  // from a 200 that had nothing to drop.
+  return (async () => {
+    const s = await boot();
+    try {
+      s.engine.forTenant("default").consent.record({
+        patientId: P,
+        kind: "withhold-all",
+        scope: ["DocumentReference"],
+        by: { actorId: "privacy-office", actorKind: "practitioner" },
+      });
+
+      assert.equal((await s.get(`/api/clinical/chart?patient=${P}`)).status, 200);
+      const row = s.trail()[0];
+      assert.equal(row.outcome, 0, "the read succeeded");
+      assert.match(row.detail ?? "", /withheld by patient directive: DocumentReference/);
+      // The types, never the content — the narrowest thing that makes the row
+      // useful to somebody reviewing it.
+      assert.ok(!/COUNSELLING/i.test(row.detail ?? ""));
+    } finally {
+      await s.close();
+    }
+  })();
+});
+
+test("an unscoped directive still refuses the whole chart", () => {
+  // The other half of the same decision. A directive that names no entry types
+  // withholds the record, and there is no honest partial answer to give.
+  return (async () => {
+    const s = await boot();
+    try {
+      s.engine.forTenant("default").consent.record({
+        patientId: P,
+        kind: "withhold-all",
+        by: { actorId: "privacy-office", actorKind: "practitioner" },
+      });
+      const res = await s.get(`/api/clinical/chart?patient=${P}`);
+      assert.equal(res.status, 403);
+      assert.match(((await res.json()) as { error: string }).error, /withheld by a patient directive/);
     } finally {
       await s.close();
     }

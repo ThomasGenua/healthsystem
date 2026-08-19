@@ -36,13 +36,22 @@ import type { ClinicalNotes, NoteContent } from "../clinical/notes.ts";
 /**
  * Why a section is not the whole truth.
  *
- * `unavailable` and `truncated` are different problems: the first means the
- * panel is empty and should not be read as "none", the second means there is
- * more below the fold. Both must reach the reader.
+ * Three different problems, and a renderer must not merge them. `unavailable`
+ * means the panel is empty and should not be read as "none". `truncated` means
+ * there is more below the fold. `withheld` means the patient asked for this
+ * section not to be shown to this reader — which is neither a fault nor a
+ * shortage, and showing it as one would be both wrong and quietly alarming.
+ *
+ * The clinical difference is the point of keeping them apart. An allergy panel
+ * that failed to load is a reason to go and look somewhere else before
+ * prescribing. One the patient has locked is a reason to have a conversation,
+ * or to break glass if the situation warrants it — and the refusal names the
+ * way through rather than leaving a clinician to guess why a panel is bare.
  */
 export type Incompleteness =
   | { reason: "unavailable"; detail: string }
-  | { reason: "truncated"; shown: number; total: number };
+  | { reason: "truncated"; shown: number; total: number }
+  | { reason: "withheld"; detail: string };
 
 export interface Section<T> {
   items: T[];
@@ -91,6 +100,15 @@ export interface SummaryOptions {
   /** Per-section cap. A summary is not a data dump; it does say when it cut. */
   limit?: number;
   noteLimit?: number;
+  /**
+   * Entry types this reader may not see, because the patient said so.
+   *
+   * Passed in rather than looked up: this module assembles a chart and owns no
+   * opinion about consent, and the caller that knows who is asking is the one
+   * that can answer. An empty or absent set means nothing is withheld, which
+   * is the ordinary case.
+   */
+  withheldTypes?: ReadonlySet<string>;
 }
 
 /** The stores a summary is assembled from. Any may be absent. */
@@ -135,10 +153,61 @@ function section<T>(
 
 function describe(name: string, s: Section<unknown>): string | null {
   if (s.complete || !s.incomplete) return null;
-  return s.incomplete.reason === "unavailable"
-    ? `${name}: could not be loaded (${s.incomplete.detail}) — this panel is empty because it failed, not because there is nothing`
-    : `${name}: showing ${s.incomplete.shown} of ${s.incomplete.total}`;
+  switch (s.incomplete.reason) {
+    case "unavailable":
+      return `${name}: could not be loaded (${s.incomplete.detail}) — this panel is empty because it failed, not because there is nothing`;
+    case "withheld":
+      return `${name}: ${s.incomplete.detail}`;
+    case "truncated":
+      return `${name}: showing ${s.incomplete.shown} of ${s.incomplete.total}`;
+  }
 }
+
+/**
+ * The entry type each section of the chart is made of.
+ *
+ * What lets a directive narrowed to one type withhold one panel instead of the
+ * whole chart. Listed rather than derived because the mapping is a clinical
+ * judgement, not a naming convention: a patient who locks `ServiceRequest` has
+ * locked both their orders and their referrals, and somebody should have to
+ * decide that on purpose.
+ */
+export const SECTION_TYPES = {
+  allergies: "AllergyIntolerance",
+  medications: "MedicationStatement",
+  unacknowledgedResults: "Observation",
+  openOrders: "ServiceRequest",
+  openReferrals: "ServiceRequest",
+  openTasks: "Task",
+  recentNotes: "DocumentReference",
+  problems: "Condition",
+} as const;
+
+/** Every entry type the assembled chart may return. */
+export const CHART_TYPES: readonly string[] = [...new Set(Object.values(SECTION_TYPES))];
+
+/**
+ * Every entry type a worklist may return.
+ *
+ * A worklist spans patients rather than naming one, so no single patient's
+ * directive can refuse it — rows are withheld individually instead. Declared
+ * anyway so the route says what it serves, and so a kind of work added to it
+ * later is covered rather than quietly exempt.
+ */
+export const WORKLIST_TYPES: readonly string[] = ["Observation", "ServiceRequest", "Task", "MedicationStatement"];
+
+/**
+ * Replaces a section with the fact that it was withheld.
+ *
+ * The items are dropped rather than counted, because a count is itself a
+ * disclosure: "3 documents withheld" tells a reader the patient has
+ * counselling notes, which is most of what the lockbox was hiding.
+ */
+function withhold<T>(detail: string): Section<T> {
+  return { items: [], complete: false, incomplete: { reason: "withheld", detail } };
+}
+
+const WITHHELD_DETAIL = "withheld by a patient directive; break glass to see it if the situation warrants it";
 
 export class Workspace {
   private sources: WorkspaceSources;
@@ -159,29 +228,47 @@ export class Workspace {
     const limit = opts.limit ?? 50;
     const noteLimit = opts.noteLimit ?? 10;
 
-    const allergies = section(meds ? () => meds.allergies(patientId).filter((a) => a.kind !== "no-known-allergies") : undefined, limit);
-    const medications = section(meds ? () => meds.current(patientId, { asPrescribed: true }) : undefined, limit);
-    const unacknowledgedResults = section(
+    // A withheld section is not loaded and then filtered — it is not loaded.
+    // Reading rows the patient locked in order to throw them away is still
+    // reading them, and on a system whose whole argument is that access is
+    // audited and consent is enforced before the read, that distinction is the
+    // one being made.
+    const hidden = opts.withheldTypes ?? new Set<string>();
+    const sect = <T,>(key: keyof typeof SECTION_TYPES, load: (() => T[]) | undefined, cap: number): Section<T> =>
+      hidden.has(SECTION_TYPES[key]) ? withhold<T>(WITHHELD_DETAIL) : section(load, cap);
+
+    const allergies = sect("allergies", meds ? () => meds.allergies(patientId).filter((a) => a.kind !== "no-known-allergies") : undefined, limit);
+    const medications = sect("medications", meds ? () => meds.current(patientId, { asPrescribed: true }) : undefined, limit);
+    const unacknowledgedResults = sect(
+      "unacknowledgedResults",
       orders ? () => orders.unacknowledged().filter((r) => r.patient_id === patientId) : undefined,
       limit
     );
-    const openOrders = section(
+    const openOrders = sect(
+      "openOrders",
       orders ? () => orders.forPatient(patientId).filter((o) => o.status === "placed" || o.status === "in-progress") : undefined,
       limit
     );
-    const openReferrals = section(
+    const openReferrals = sect(
+      "openReferrals",
       referrals ? () => referrals.open().filter((r) => r.patient_id === patientId) : undefined,
       limit
     );
-    const openTasks = section(tasks ? () => tasks.forPatient(patientId) : undefined, limit);
-    const recentNotes = section(notes ? () => notes.forPatient(patientId) : undefined, noteLimit);
-    const problems = section(record ? () => record.chart(patientId, { entryType: "Condition" }) : undefined, limit);
+    const openTasks = sect("openTasks", tasks ? () => tasks.forPatient(patientId) : undefined, limit);
+    const recentNotes = sect("recentNotes", notes ? () => notes.forPatient(patientId) : undefined, noteLimit);
+    const problems = sect("problems", record ? () => record.chart(patientId, { entryType: "Condition" }) : undefined, limit);
 
     // Allergy status is read from the store rather than inferred from the
     // section: an empty list and a never-asked patient are the distinction
     // section 5 exists for, and inferring it here would undo that.
+    //
+    // And it is withheld with the section rather than left at the top of the
+    // chart. "never-asked" or "clear" is itself a fact about the patient's
+    // allergy history, so surfacing it beside a panel the patient has locked
+    // would leak the shape of what was locked — the one thing this is supposed
+    // to prevent.
     let allergyStatus: AllergyStatus | "unavailable" = "unavailable";
-    if (meds) {
+    if (meds && !hidden.has(SECTION_TYPES.allergies)) {
       try {
         allergyStatus = meds.allergyStatus(patientId);
       } catch {
@@ -209,7 +296,10 @@ export class Workspace {
     const omissions = sections.map(([n, s]) => describe(n, s)).filter((x): x is string => x !== null);
     if (allergyStatus === "never-asked") {
       omissions.push("Allergies: no allergy history has ever been recorded for this patient");
-    } else if (allergyStatus === "unavailable") {
+    } else if (allergyStatus === "unavailable" && !hidden.has(SECTION_TYPES.allergies)) {
+      // Not when the section is withheld: the panel already says a directive
+      // is why, and "could not be determined" beside it would read as a second,
+      // technical fault and send somebody looking for a bug.
       omissions.push("Allergies: allergy status could not be determined");
     }
 
@@ -226,7 +316,13 @@ export class Workspace {
       openTasks,
       recentNotes,
       problems,
-      complete: sections.every(([, s]) => s.complete) && allergyStatus !== "unavailable",
+      // False when a section is withheld, as much as when one failed. The flag
+      // means "this is not the whole chart", and a chart missing what the
+      // patient locked is not the whole chart — a clinician needs to know that
+      // before they act on it, even though nothing has gone wrong.
+      complete:
+        sections.every(([, s]) => s.complete) &&
+        (allergyStatus !== "unavailable" || hidden.has(SECTION_TYPES.allergies)),
       omissions,
     };
   }

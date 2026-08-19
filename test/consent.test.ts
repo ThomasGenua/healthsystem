@@ -288,6 +288,69 @@ test("a directive can be withheld from an organization rather than a person", ()
   }
 });
 
+test("restrictions separate what withholds the record from what withholds a part", () => {
+  // The question `mayRead()` cannot answer. A caller that serves several kinds
+  // of thing needs to know which ones are locked, not whether "the record" is
+  // readable — there is no honest yes-or-no to that when the patient locked
+  // one section.
+  const { c, cleanup } = office();
+  try {
+    const notes = c.record({
+      patientId: P,
+      kind: "withhold-all",
+      scope: ["DocumentReference"],
+      by: CLERK,
+      reason: "counselling notes only",
+    });
+    const meds = c.record({
+      patientId: P,
+      kind: "withhold-from-provider",
+      targetId: "dr-tetso",
+      scope: ["MedicationStatement"],
+      by: CLERK,
+    });
+
+    const mine = c.restrictionsFor({ subjectId: "dr-tetso", patientId: P });
+    assert.equal(mine.blocking, undefined, "nothing withholds the record as a whole");
+    assert.deepEqual([...mine.withheldTypes.keys()].sort(), ["DocumentReference", "MedicationStatement"]);
+    assert.equal(mine.withheldTypes.get("DocumentReference")!.id, notes.id, "and which directive did it");
+    assert.equal(mine.withheldTypes.get("MedicationStatement")!.id, meds.id);
+
+    // The provider-targeted one is aimed at dr-tetso and nobody else.
+    const theirs = c.restrictionsFor({ subjectId: "dr-hale", patientId: P });
+    assert.deepEqual([...theirs.withheldTypes.keys()], ["DocumentReference"]);
+
+    // An unscoped directive is a different kind of answer, not a longer list.
+    c.record({ patientId: P, kind: "withhold-all", by: CLERK, reason: "everything now" });
+    const all = c.restrictionsFor({ subjectId: "dr-hale", patientId: P });
+    assert.ok(all.blocking, "a directive naming no types withholds the record");
+  } finally {
+    cleanup();
+  }
+});
+
+test("an override lifts every restriction, narrowed ones included", () => {
+  // Breaking glass past a lockbox on one section is still breaking glass, so
+  // the override carries the whole record rather than the part that was open
+  // anyway. The row records which directive it went past.
+  const { c, cleanup } = office();
+  try {
+    const d = c.record({ patientId: P, kind: "withhold-all", scope: ["DocumentReference"], by: CLERK });
+
+    const before = c.restrictionsFor({ subjectId: "dr-hale", patientId: P });
+    assert.equal(before.withheldTypes.size, 1);
+
+    const bg = c.breakGlass({ patientId: P, by: ED, reason: GOOD_REASON });
+    const after = c.restrictionsFor({ subjectId: "dr-hale", patientId: P });
+    assert.equal(after.underBreakGlass?.id, bg.id);
+    assert.equal(after.withheldTypes.size, 0, "nothing is withheld while an override is in force");
+    assert.equal(after.blocking, undefined);
+    assert.equal(bg.directive_id, d.id, "and the override names the narrowed directive it went past");
+  } finally {
+    cleanup();
+  }
+});
+
 test("a directive the patient revoked, or that expired, stops applying", () => {
   const { c, cleanup } = office();
   try {
