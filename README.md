@@ -54,10 +54,11 @@ v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Quality measures that refuse a rate they cannot stand behind**, because the patients a measure cannot assess are the ones nobody managed.
 - **Double-booking refused by the database**, not by a check that a second clerk can race past.
 - **Break-glass that is loud**: declared before the access, reasoned in words, and held in queues an operator can read and has to discharge — because a quiet override makes the lockbox theatre.
+- **A clinician console** — chart, worklist and break-glass queues — where a panel that failed, one that was cut short, and one the patient locked are three visibly different things rather than three empty boxes.
 - **A lockbox that can cover part of a chart**, where the locked panel says a directive withheld it rather than rendering as "none" — so a patient can withhold one section without taking the rest of their chart away from the clinician treating them.
 - **A restore that has actually been rehearsed**, to somewhere the database has never been, with a measured RTO — because a verified snapshot only proves the bytes hashed correctly when they were written.
 
-424 tests. Backend first, tests before UI.
+426 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -630,6 +631,26 @@ So a directive narrowed by `scope` withholds its **section**:
 Neither the content nor the **count** of a withheld section reaches the response — "3 documents withheld" tells a reader the patient has counselling notes, which is most of what the lockbox was hiding — and the withheld section is not loaded and discarded but never read, because reading rows the patient locked in order to throw them away is still reading them. The access is audited as a success that withheld something, naming the types and nothing else.
 
 A route serving **exactly** the locked type still refuses, having nothing left to serve, and a directive naming **no** entry types refuses the whole chart. Both are the same rule seen from different sides: withhold precisely what the patient asked to withhold, and no more.
+
+### The clinician console
+
+Everything above is a store with an API in front of it, and until something renders it the honesty is theoretical. `complete` and `omissions` have been on every chart section since the chart was written; nothing displayed them.
+
+Three tabs in the admin UI, driven entirely through the clinical API — no privileged path, so every read leaves an audit row and passes the directive check like any other caller:
+
+**Chart.** The patient, the allergy status at the top where it cannot be missed, and eight panels. The only thing this screen really has to do is make a panel that is *not* complete impossible to mistake for one that is, so incompleteness is on the left border and in a line of prose inside the panel — never a tint somebody reads past at 03:00. The three reasons are visually distinct because they call for different actions:
+
+- **failed** — go and look somewhere else before you prescribe
+- **truncated** — there is more below
+- **withheld** — the patient asked; break glass if the situation warrants it
+
+A chart that is short says so at the top, above the panels: *"This is not the whole chart. Do not read a panel below as 'none' without checking why it is short."*
+
+**Worklist.** What is owed to one clinician across results, referrals, orders, tasks and reconciliations — each with the same completeness treatment, because something owed to you that is missing from the list is owed to nobody. Results are acknowledged inline, and the acknowledgement needs a sentence saying what was done: a queue that empties on a click teaches a ward that the queue is the work. The refusals come back verbatim, including *"this result was corrected; acknowledge &lt;other&gt; instead"*.
+
+**Break-glass.** The two queues, and the controls that discharge them. A lockbox nobody can find out was opened is a lockbox with no lock.
+
+Hostile content in this console runs in the browser session of the person holding an admin key, so `test/ui-xss.test.ts` drives all three tabs in a real Chromium against genuinely hostile input — a patient's name from an ADT feed, and the free text a clerk types into a referral, a task or a break-glass reason — and asserts both that nothing executed and that the payloads actually reached the DOM.
 
 ### What is deliberately not on this API
 

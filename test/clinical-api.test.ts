@@ -252,6 +252,28 @@ test("every clinical route leaves an audit row, including ones added later", asy
     // An override for the two routes that drain the break-glass queues to act
     // on. Made here rather than listed as a literal because their bodies name
     // a row that has to exist.
+    // An unacknowledged result for the acknowledge route to act on. The
+    // fixture's own critical potassium is used by other cases here, so this is
+    // a second one rather than a shared one — a route that only passes because
+    // another test has not run yet is not a route anything has driven.
+    const forAck = s.engine.forTenant("default").orders.create({
+      patientId: P,
+      category: "lab",
+      code: "2823-3",
+      display: "Potassium (repeat)",
+      indication: "Recheck",
+      by: GP,
+    });
+    s.engine.forTenant("default").orders.place(forAck.id, { ...GP, responsibleId: "dr-tetso" });
+    const pending = s.engine.forTenant("default").orders.report({
+      patientId: P,
+      orderId: forAck.id,
+      code: "2823-3",
+      display: "Potassium (repeat)",
+      value: "5.2",
+      reportedBy: "analyser",
+    });
+
     const standing = s.engine.forTenant("default").consent.breakGlass({
       patientId: P,
       by: { actorId: "dr-hale", actorKind: "practitioner" },
@@ -277,6 +299,7 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/directives": `?patient=${P}`,
       "/api/clinical/safety-check": "POST",
       "/api/clinical/break-glass": "POST",
+      "/api/clinical/acknowledge": "POST",
       "/api/clinical/break-glass-notified": "POST",
       "/api/clinical/break-glass-review": "POST",
       "/api/clinical/gaps": "POST",
@@ -290,6 +313,7 @@ test("every clinical route leaves an audit row, including ones added later", asy
         patient: P,
         reason: "unconscious, no collateral history, need allergy status before induction",
       },
+      "/api/clinical/acknowledge": { result: pending.id, action: "phoned the ward; potassium repeated urgently" },
       "/api/clinical/break-glass-notified": { override: standing.id },
       "/api/clinical/break-glass-review": { override: standing.id, outcome: "appropriate; ED attendance confirmed" },
       "/api/clinical/gaps": {
@@ -617,6 +641,138 @@ test("a directive narrowed to some entry types withholds that section, not the w
       // A route serving a type the patient did not lock is not affected.
       assert.equal((await s.get(`/api/clinical/allergies?patient=${P}`)).status, 200);
       assert.equal((await s.get(`/api/clinical/medications?patient=${P}`)).status, 200);
+    } finally {
+      await s.close();
+    }
+  })();
+});
+
+test("acknowledging a result is a clinical act, and a corrected one cannot be signed off", () => {
+  // The write the clinician surface needs, and the two refusals that make it
+  // worth having as a write rather than a flag.
+  //
+  // A queue that empties on a click teaches a ward that the queue is the work.
+  // And the superseded case is the hazard §4 is built around: a potassium of
+  // 7.1 corrected to 4.0, with the chart showing the 7.1 marked reviewed by a
+  // clinician who never saw either.
+  return (async () => {
+    const s = await boot();
+    try {
+      const t = s.engine.forTenant("default");
+      const order = t.orders.create({
+        patientId: P,
+        category: "lab",
+        code: "2823-3",
+        display: "Potassium",
+        indication: "Recheck",
+        by: GP,
+      });
+      t.orders.place(order.id, { ...GP, responsibleId: "dr-tetso" });
+      const first = t.orders.report({
+        patientId: P,
+        orderId: order.id,
+        code: "2823-3",
+        display: "Potassium",
+        value: "7.1",
+        abnormalFlag: "critical-high",
+        reportedBy: "analyser",
+      });
+
+      const post = (body: unknown) =>
+        fetch(`${s.base}/api/clinical/acknowledge`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${s.admin}`, "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+
+      // Saying nothing about what was done is refused by the store, and the
+      // reason reaches the caller rather than becoming a bare 400.
+      const empty = await post({ result: first.id, action: "   " });
+      assert.equal(empty.status, 400);
+      assert.match(((await empty.json()) as { error: string }).error, /say what was done about it/);
+
+      const ok = await post({ result: first.id, action: "phoned the ward, potassium repeated urgently" });
+      assert.equal(ok.status, 200);
+      assert.ok(((await ok.json()) as { acknowledged_at: string }).acknowledged_at);
+
+      // On the trail as a write, not a read.
+      const row = s.trail()[0];
+      assert.equal(row.action, "U");
+      assert.equal(row.patient, P);
+      assert.match(row.detail ?? "", /result acknowledged: phoned the ward/);
+
+      // Acknowledging it twice is refused: the second clinician would be
+      // recording an action nobody took against a result already signed off.
+      const twice = await post({ result: first.id, action: "looked again" });
+      assert.equal(twice.status, 400);
+      assert.match(((await twice.json()) as { error: string }).error, /already been acknowledged/);
+
+      // And the hazard §4 is built around. A second, unread result is
+      // corrected before anybody signs it off; signing off the superseded one
+      // would leave the chart showing a value marked reviewed by somebody who
+      // never saw the number that replaced it.
+      const unread = t.orders.report({
+        patientId: P,
+        orderId: order.id,
+        code: "2823-3",
+        display: "Potassium",
+        value: "6.8",
+        abnormalFlag: "critical-high",
+        reportedBy: "analyser",
+      });
+      const corrected = t.orders.correct(unread.id, { value: "4.0", reportedBy: "analyser" });
+      const stale = await post({ result: unread.id, action: "acting on the high one" });
+      assert.equal(stale.status, 400);
+      const why = ((await stale.json()) as { error: string }).error;
+      assert.match(why, /was corrected/);
+      assert.match(why, new RegExp(corrected.id), "and it names the one to read instead");
+      assert.equal(t.orders.result(unread.id)!.acknowledged_at, null);
+    } finally {
+      await s.close();
+    }
+  })();
+});
+
+test("a result belonging to a withheld patient cannot be acknowledged either", () => {
+  // Acknowledging a result is reading it: you cannot say what you did about a
+  // value you were not allowed to see. A write route that skipped the
+  // directive check would be the hole the structural test cannot see, because
+  // it only drives routes and this one would answer 200.
+  return (async () => {
+    const s = await boot();
+    try {
+      const t = s.engine.forTenant("default");
+      const order = t.orders.create({
+        patientId: P,
+        category: "lab",
+        code: "2823-3",
+        display: "Potassium",
+        indication: "Recheck",
+        by: GP,
+      });
+      t.orders.place(order.id, { ...GP, responsibleId: "dr-tetso" });
+      const r = t.orders.report({
+        patientId: P,
+        orderId: order.id,
+        code: "2823-3",
+        display: "Potassium",
+        value: "5.5",
+        reportedBy: "analyser",
+      });
+      t.consent.record({
+        patientId: P,
+        kind: "withhold-all",
+        by: { actorId: "privacy-office", actorKind: "practitioner" },
+      });
+
+      const res = await fetch(`${s.base}/api/clinical/acknowledge`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${s.admin}`, "content-type": "application/json" },
+        body: JSON.stringify({ result: r.id, action: "trying anyway" }),
+      });
+      assert.equal(res.status, 403);
+      assert.equal(t.orders.result(r.id)!.acknowledged_at, null, "and nothing was written");
+      assert.equal(s.trail()[0].outcome, 4, "the refusal is on the trail");
     } finally {
       await s.close();
     }

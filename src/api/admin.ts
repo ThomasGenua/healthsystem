@@ -771,6 +771,64 @@ async function route(
       // read of patient data like any other, and audited as one.
       return phi("Appointment", () => filterByDirective(["Appointment"], tenant.schedule.unresolvedNonAttendance()), (r) => r.rows.length);
     }
+    if (path === "/api/clinical/acknowledge" && method === "POST") {
+      // The one write the clinician surface needs, and the reason it is a
+      // write rather than a flag: acknowledging a result is a clinical act,
+      // and `orders.acknowledge()` refuses one without saying what was done
+      // about it. A queue that empties on a click teaches a ward that the
+      // queue is the work, and the result is what is actually owed.
+      //
+      // It also refuses a superseded result, so a corrected potassium cannot
+      // be signed off by somebody looking at the value it replaced. That
+      // refusal reaches the caller as a 400 with the reason in it, which is
+      // what the UI shows.
+      const body = JSON.parse(await readBody(req)) as { result?: string; action?: string };
+      if (!body.result || !body.action) return send(res, 400, { error: "result and action required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      const row = tenant.orders.result(body.result);
+      if (!row) return send(res, 404, { error: `no result ${body.result}` });
+      // Through the same directive check as any other access to this
+      // patient's data. Acknowledging a result is reading it — you cannot say
+      // what you did about a value you were not allowed to see.
+      const block = withheld(row.patient_id, ["Observation"]);
+      if (block) {
+        audit({
+          action: "U",
+          outcome: 4,
+          resourceType: "Observation",
+          patient: row.patient_id,
+          detail: `withheld by patient directive ${block.id}`,
+        });
+        return send(res, 403, {
+          error: "this record is withheld by a patient directive",
+          breakGlass: "POST /api/clinical/break-glass",
+        });
+      }
+      try {
+        const acknowledged = tenant.orders.acknowledge(body.result, {
+          actorId: who,
+          actorKind: auth.ok ? auth.principal.kind : "unknown",
+          action: body.action,
+        });
+        audit({
+          action: "U",
+          outcome: 0,
+          resourceType: "Observation",
+          patient: row.patient_id,
+          detail: `result acknowledged: ${body.action}`,
+        });
+        return send(res, 200, acknowledged);
+      } catch (err) {
+        audit({
+          action: "U",
+          outcome: 8,
+          resourceType: "Observation",
+          patient: row.patient_id,
+          detail: (err as Error).message,
+        });
+        return send(res, 400, { error: (err as Error).message });
+      }
+    }
     if (path === "/api/clinical/break-glass" && method === "GET") {
       // What breaking glass has cost so far, and what is still owed.
       //

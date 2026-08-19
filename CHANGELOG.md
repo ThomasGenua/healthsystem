@@ -42,6 +42,17 @@ The clinical platform, and the privacy enforcement that makes it safe to serve.
 - `GET /api/clinical/break-glass`, and `POST /api/clinical/break-glass-notified`
   and `-review` — the notification and review queues, which existed in the
   store and could not be read or discharged by anything.
+- **A clinician console**: `Chart`, `Worklist` and `Break-glass` tabs in the
+  admin UI, driven entirely through the clinical API so every read is audited
+  and passes the directive check. The chart's `complete` and `omissions` have
+  existed since the chart was written and nothing rendered them; a panel that
+  failed, one that was truncated and one the patient withheld are now three
+  visibly different things. Results are acknowledged inline, with the sentence
+  saying what was done that `orders.acknowledge()` requires.
+- `POST /api/clinical/acknowledge`, the one write the console needs. It goes
+  through the same directive check as any read — you cannot say what you did
+  about a value you were not allowed to see — and surfaces the store's refusals
+  verbatim, including the one that stops a superseded result being signed off.
 - `SECURITY.md`, a vulnerability disclosure process, and
   [`docs/RUNBOOK.md`](docs/RUNBOOK.md) for deployment and incidents.
 - A nightly **Resilience** workflow running the crash, disk-full, restore and
@@ -112,7 +123,7 @@ The clinical platform, and the privacy enforcement that makes it safe to serve.
 - Licensed under **Apache-2.0**. The repository previously carried no licence
   file and declared `UNLICENSED`, which meant nobody could legally use, fork or
   contribute to a public repository.
-- 270 → 424 tests.
+- 270 → 426 tests.
 
 **Known limitations**, stated because both fixes above fail closed and are
 blunter than the patient asked for:
