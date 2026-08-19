@@ -226,20 +226,52 @@ export class ConsentDirectives {
     return { allowed: true, reason: "no directive applies" };
   }
 
+  /**
+   * Whether this directive stands between this caller and this read.
+   *
+   * Fails closed on both of the questions it can fail to have an answer to,
+   * and that is the whole design of this function rather than a detail of it.
+   *
+   * A directive narrowed to particular entry types does not withhold the rest
+   * of the chart — applying it to everything would give the patient more than
+   * they asked for, which is its own kind of not listening. But that reasoning
+   * only holds when the caller said which type it is reading. A caller that
+   * names no type is not reading nothing; it is reading whatever the route
+   * returns, which for the assembled chart includes the very entries the
+   * directive named. Treating "no type given" as "not the withheld one" is how
+   * a partial lockbox came to withhold nothing at all over HTTP: `phi()` names
+   * no entry type, so every scoped directive short-circuited to false and the
+   * counselling note the patient locked was served with a 200.
+   *
+   * The same applies to the organization. `withhold-from-organization` can
+   * only be honoured by a caller that says which organization it speaks for,
+   * and no `Principal` carries one yet. Matching against `undefined` made
+   * every such directive permanently inert — recorded, reported as active to
+   * the patient, and enforced by nothing. Until organization identity reaches
+   * the auth layer, a caller that cannot say it is outside the withheld
+   * organization is treated as possibly inside it.
+   *
+   * Both directions cost something. Over-withholding puts a clinician in front
+   * of a refusal they may need to break glass through, which is loud, audited,
+   * and recoverable in seconds. Under-withholding hands the record to exactly
+   * the person the patient excluded, silently and unrecoverably. Those are not
+   * symmetrical, and this function is not symmetrical about them.
+   */
   private applies(
     d: DirectiveRow,
     input: { subjectId: string; organizationId?: string; entryType?: string }
   ): boolean {
-    if (d.scope) {
+    if (d.scope && input.entryType) {
       const scoped = JSON.parse(d.scope) as string[];
-      // A directive narrowed to particular entry types does not withhold the
-      // rest of the chart. Applying it to everything would give the patient
-      // more than they asked for, which is its own kind of not listening.
-      if (!input.entryType || !scoped.includes(input.entryType)) return false;
+      if (!scoped.includes(input.entryType)) return false;
     }
     if (d.kind === "withhold-all") return true;
     if (d.kind === "withhold-from-provider") return d.target_id === input.subjectId;
-    if (d.kind === "withhold-from-organization") return d.target_id === input.organizationId;
+    // Deliberately not `=== input.organizationId`: undefined must not read as
+    // "some other organization, so let them through".
+    if (d.kind === "withhold-from-organization") {
+      return input.organizationId === undefined || d.target_id === input.organizationId;
+    }
     return false;
   }
 
@@ -253,9 +285,16 @@ export class ConsentDirectives {
    * afterwards is the entire point: this row is what a privacy office reads
    * when a patient asks who opened their record and why.
    *
-   * Notifying the patient is not a separate optional step a caller may skip —
-   * `notifyPatient` runs here, and `pendingNotification()` exists so a
-   * deployment whose channel is asynchronous can still be held to it.
+   * Notifying the patient is a separate step, and this does not take it.
+   * Saying so plainly because an earlier version of this comment claimed
+   * `notifyPatient` ran here and it never did — a docstring asserting a
+   * guarantee the code does not provide is worse than no docstring, because
+   * it is the thing a reviewer checks instead of the code. What is true is
+   * that the row lands with `patient_notified_at` NULL, so the override is on
+   * `pendingNotification()` from the moment it exists and stays there until
+   * somebody records that the patient was told. The queue is the guarantee;
+   * draining it is the deployment's job, and `GET /api/clinical/break-glass`
+   * is where an operator can see what is owed.
    */
   breakGlass(input: {
     patientId: string;

@@ -233,10 +233,19 @@ test("a directive narrowed to some entry types does not withhold the rest", () =
 
     assert.equal(c.mayRead({ subjectId: "dr-tetso", patientId: P, entryType: "DocumentReference" }).allowed, false);
     assert.equal(c.mayRead({ subjectId: "dr-tetso", patientId: P, entryType: "AllergyIntolerance" }).allowed, true);
+
+    // A read that names no type is a read that may return any type, so the
+    // narrowed directive applies to it. This used to assert that such a read
+    // was "not the withheld one", which sounds reasonable until you notice
+    // that the only caller in the system — `phi()` — names no type. Every
+    // scoped directive therefore withheld nothing over HTTP: the patient
+    // locked their counselling notes and GET /api/clinical/chart served them
+    // with a 200. Proven at the boundary in test/clinical-api.test.ts, which
+    // is where it was invisible.
     assert.equal(
       c.mayRead({ subjectId: "dr-tetso", patientId: P }).allowed,
-      true,
-      "and a read that names no type is not the withheld one"
+      false,
+      "a read that cannot say which type it is reading may return the withheld one"
     );
   } finally {
     cleanup();
@@ -250,7 +259,25 @@ test("a directive can be withheld from an organization rather than a person", ()
 
     assert.equal(c.mayRead({ subjectId: "anyone", organizationId: "yk-clinic", patientId: P }).allowed, false);
     assert.equal(c.mayRead({ subjectId: "anyone", organizationId: "stanton", patientId: P }).allowed, true);
-    assert.equal(c.mayRead({ subjectId: "anyone", patientId: P }).allowed, true);
+
+    // A caller that does not say which organization it speaks for is withheld
+    // from, rather than let through. This used to assert the opposite, and the
+    // consequence was that the directive was enforced by nothing at all: no
+    // Principal carries an organization, so `phi()` had none to pass, so
+    // `undefined === "yk-clinic"` was false on every request and the record
+    // was served to the organization the patient had excluded — while
+    // GET /api/clinical/directives went on reporting the directive as active.
+    //
+    // Withholding from a caller that cannot identify itself is the wrong
+    // answer for a caller that is in fact some third organization. It is the
+    // recoverable wrong answer: they see that a directive exists and can break
+    // glass through it in seconds, loudly and on the record. The other wrong
+    // answer is silent and permanent.
+    assert.equal(
+      c.mayRead({ subjectId: "anyone", patientId: P }).allowed,
+      false,
+      "a caller that cannot say it is outside the withheld organization is not assumed to be"
+    );
 
     assert.throws(
       () => c.record({ patientId: P, kind: "withhold-from-organization", by: CLERK }),

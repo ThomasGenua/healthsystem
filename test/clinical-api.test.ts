@@ -249,6 +249,15 @@ test("every clinical route leaves an audit row, including ones added later", asy
 
   const s = await boot();
   try {
+    // An override for the two routes that drain the break-glass queues to act
+    // on. Made here rather than listed as a literal because their bodies name
+    // a row that has to exist.
+    const standing = s.engine.forTenant("default").consent.breakGlass({
+      patientId: P,
+      by: { actorId: "dr-hale", actorKind: "practitioner" },
+      reason: "unresponsive on arrival, no collateral history, need the allergy list",
+    });
+
     // Arguments good enough for each route to do real work. A route that
     // needs one not listed here 400s, which this treats as a failure rather
     // than a pass — an untested route is the thing being guarded against.
@@ -268,6 +277,8 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/directives": `?patient=${P}`,
       "/api/clinical/safety-check": "POST",
       "/api/clinical/break-glass": "POST",
+      "/api/clinical/break-glass-notified": "POST",
+      "/api/clinical/break-glass-review": "POST",
       "/api/clinical/gaps": "POST",
       "/api/clinical/measure": "POST",
     };
@@ -279,6 +290,8 @@ test("every clinical route leaves an audit row, including ones added later", asy
         patient: P,
         reason: "unconscious, no collateral history, need allergy status before induction",
       },
+      "/api/clinical/break-glass-notified": { override: standing.id },
+      "/api/clinical/break-glass-review": { override: standing.id, outcome: "appropriate; ED attendance confirmed" },
       "/api/clinical/gaps": {
         cohort: { id: "dm", name: "Diabetes", conditionCodes: ["diabetes"] },
         gap: { id: "hba1c", name: "HbA1c yearly", withinDays: 365, satisfiedByResultCodes: ["4548-4"] },
@@ -528,6 +541,150 @@ test("a directive keeps a patient off a worklist, and the list says it is short"
       };
       assert.equal(found.rows.length, 0);
       assert.equal(found.withheldCount, 1);
+    } finally {
+      await s.close();
+    }
+  })();
+});
+
+test("a directive narrowed to some entry types still stops a route that names no type", () => {
+  // The gap this closes was invisible from the unit tests and visible only
+  // here. `mayRead()` honoured `scope` correctly when told which entry type
+  // was being read — and `phi()` never tells it, because a chart is not one
+  // type. So every scoped directive evaluated to "does not apply" on every
+  // request: the patient locked their counselling notes, the API reported the
+  // directive as active, and GET /api/clinical/chart served the note with a
+  // 200.
+  //
+  // A read that cannot say which type it is reading may return the withheld
+  // one, so it is refused. Blunter than the patient asked for — they locked
+  // one section and the whole chart now refuses — and the honest fix is
+  // per-section filtering inside the assembled chart. Refusing is what is safe
+  // to ship in the meantime, and break-glass is one loud, audited call away.
+  return (async () => {
+    const s = await boot();
+    try {
+      const t = s.engine.forTenant("default");
+      t.clinical.record({
+        entryType: "DocumentReference",
+        patientId: P,
+        content: { resourceType: "DocumentReference", description: "counselling summary" },
+        ...GP_AUTHOR,
+      });
+      t.consent.record({
+        patientId: P,
+        kind: "withhold-all",
+        scope: ["DocumentReference"],
+        by: { actorId: "privacy-office", actorKind: "practitioner" },
+        reason: "counselling notes only",
+      });
+
+      const res = await s.get(`/api/clinical/chart?patient=${P}`);
+      assert.equal(res.status, 403, "a partial lockbox is not an absent one");
+      const body = (await res.json()) as { error: string; breakGlass: string };
+      assert.match(body.error, /withheld by a patient directive/);
+      assert.equal(body.breakGlass, "POST /api/clinical/break-glass", "and the way through is named");
+
+      const notes = await s.get(`/api/clinical/notes?patient=${P}`);
+      assert.equal(notes.status, 403, "and the route serving the withheld type most of all");
+    } finally {
+      await s.close();
+    }
+  })();
+});
+
+test("a directive withholding from an organization is not defeated by a caller that names none", () => {
+  // `withhold-from-organization` matched on an organizationId that no
+  // Principal carries and nothing passed, so `undefined === "yk-clinic"` was
+  // false on every request and the directive was enforced by nothing at all —
+  // while GET /api/clinical/directives went on reporting it as active to the
+  // patient. Recorded, reported, unenforced: the exact shape this system
+  // refuses everywhere else.
+  //
+  // Until organization identity reaches the auth layer, a caller that cannot
+  // say it is outside the withheld organization is treated as possibly inside
+  // it.
+  return (async () => {
+    const s = await boot();
+    try {
+      s.engine.forTenant("default").consent.record({
+        patientId: P,
+        kind: "withhold-from-organization",
+        targetId: "yk-clinic",
+        by: { actorId: "privacy-office", actorKind: "practitioner" },
+      });
+
+      const res = await s.get(`/api/clinical/chart?patient=${P}`);
+      assert.equal(res.status, 403);
+
+      // And the refusal is on the trail like any other access.
+      const row = s.trail()[0];
+      assert.equal(row.outcome, 4);
+      assert.match(row.detail ?? "", /withheld by patient directive/);
+    } finally {
+      await s.close();
+    }
+  })();
+});
+
+test("what breaking glass owes is visible, and can be discharged, over HTTP", () => {
+  // The queues existed and nothing could read them. `pendingNotification()`
+  // and `pendingReview()` returned the right rows to a caller that had a
+  // ConsentDirectives instance in hand, which over HTTP is nobody. A queue no
+  // operator can see is a statistic, and the argument for the lockbox being
+  // survivable rests entirely on it not being one.
+  return (async () => {
+    const s = await boot();
+    try {
+      const t = s.engine.forTenant("default");
+      t.consent.record({
+        patientId: P,
+        kind: "withhold-all",
+        by: { actorId: "privacy-office", actorKind: "practitioner" },
+      });
+
+      const declared = await fetch(`${s.base}/api/clinical/break-glass`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${s.admin}`, "content-type": "application/json" },
+        body: JSON.stringify({ patient: P, reason: "unresponsive in ED, need the allergy list before induction" }),
+      });
+      assert.equal(declared.status, 201);
+      const override = (await declared.json()) as { id: string };
+
+      const queues = (await (await s.get("/api/clinical/break-glass")).json()) as {
+        awaitingNotification: Array<{ id: string }>;
+        awaitingReview: Array<{ id: string }>;
+      };
+      assert.deepEqual(queues.awaitingNotification.map((r) => r.id), [override.id], "the patient has not been told");
+      assert.deepEqual(queues.awaitingReview.map((r) => r.id), [override.id], "and nobody has looked at it");
+
+      const post = (path: string, body: unknown) =>
+        fetch(`${s.base}${path}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${s.admin}`, "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+
+      assert.equal((await post("/api/clinical/break-glass-review", { override: override.id })).status, 400);
+      assert.equal((await post("/api/clinical/break-glass-notified", { override: override.id })).status, 200);
+      assert.equal(
+        (await post("/api/clinical/break-glass-review", { override: override.id, outcome: "appropriate" })).status,
+        200
+      );
+
+      const after = (await (await s.get("/api/clinical/break-glass")).json()) as {
+        awaitingNotification: unknown[];
+        awaitingReview: unknown[];
+      };
+      assert.equal(after.awaitingNotification.length, 0);
+      assert.equal(after.awaitingReview.length, 0);
+
+      // And the patient's own view of who opened their record.
+      const theirs = (await (await s.get(`/api/clinical/break-glass?patient=${P}`)).json()) as {
+        overrides: Array<{ reason: string }>;
+      };
+      assert.equal(theirs.overrides.length, 1);
+      assert.match(theirs.overrides[0].reason, /before induction/);
     } finally {
       await s.close();
     }

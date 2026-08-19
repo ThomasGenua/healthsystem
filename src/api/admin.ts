@@ -708,6 +708,89 @@ async function route(
       // read of patient data like any other, and audited as one.
       return phi("Appointment", () => filterByDirective(tenant.schedule.unresolvedNonAttendance()), (r) => r.rows.length);
     }
+    if (path === "/api/clinical/break-glass" && method === "GET") {
+      // What breaking glass has cost so far, and what is still owed.
+      //
+      // The description of this system says an override is safe because it is
+      // loud: declared before the access, reasoned in words, the patient told,
+      // and queued for review. The first two are enforced in `breakGlass()`.
+      // The last two were, until this route, queues nothing could read — the
+      // rows accumulated correctly and no operator, privacy officer or patient
+      // could see one. A queue nobody can look at is a statistic, and the
+      // whole argument for the lockbox being survivable rests on it not being
+      // one.
+      //
+      // Deliberately not behind `phi`, for the same reason `/directives` is
+      // not: filtering this by directive would hide overrides taken on exactly
+      // the patients whose directives were overridden, which is the one thing
+      // this view exists to show. It is admin-scoped and audited instead.
+      audit({
+        action: "R",
+        outcome: 0,
+        resourceType: "Consent",
+        ...(patient ? { patient } : {}),
+        detail: patient ? "break-glass history for a patient" : "break-glass oversight queues",
+      });
+      return send(
+        res,
+        200,
+        patient
+          ? { patient, overrides: tenant.consent.overridesFor(patient) }
+          : {
+              awaitingNotification: tenant.consent.pendingNotification(),
+              awaitingReview: tenant.consent.pendingReview(),
+            }
+      );
+    }
+    if (path === "/api/clinical/break-glass-notified" && method === "POST") {
+      // Recording that the patient was told. Separate from declaring, because
+      // telling them happens on a channel this system does not own — a letter,
+      // a phone call, a portal message — and a deployment that pretended
+      // otherwise would mark every override notified the instant it was taken.
+      const body = JSON.parse(await readBody(req)) as { override?: string };
+      if (!body.override) return send(res, 400, { error: "override required" });
+      try {
+        const row = tenant.consent.notifyPatient(body.override);
+        audit({
+          action: "U",
+          outcome: 0,
+          resourceType: "Consent",
+          patient: row.patient_id,
+          detail: "patient told their record was opened under break-glass",
+        });
+        return send(res, 200, row);
+      } catch (err) {
+        audit({ action: "U", outcome: 8, resourceType: "Consent", detail: (err as Error).message });
+        return send(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (path === "/api/clinical/break-glass-review" && method === "POST") {
+      // Somebody has looked at it and said what they made of it. An override
+      // nobody reviews teaches a ward that breaking glass costs nothing, and a
+      // directive that costs nothing to break slows down only the people who
+      // would have asked first.
+      const body = JSON.parse(await readBody(req)) as { override?: string; outcome?: string };
+      if (!body.override || !body.outcome) return send(res, 400, { error: "override and outcome required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      try {
+        const row = tenant.consent.review(body.override, {
+          actorId: who,
+          actorKind: auth.ok ? auth.principal.kind : "unknown",
+          outcome: body.outcome,
+        });
+        audit({
+          action: "U",
+          outcome: 0,
+          resourceType: "Consent",
+          patient: row.patient_id,
+          detail: `break-glass reviewed: ${body.outcome}`,
+        });
+        return send(res, 200, row);
+      } catch (err) {
+        audit({ action: "U", outcome: 8, resourceType: "Consent", detail: (err as Error).message });
+        return send(res, 400, { error: (err as Error).message });
+      }
+    }
     if (path === "/api/clinical/break-glass" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as { patient?: string; reason?: string };
       if (!body.patient || !body.reason) return send(res, 400, { error: "patient and reason required" });
