@@ -1400,31 +1400,50 @@ one:
   disclosure — see [SECURITY.md](SECURITY.md).
 
 `npm run typecheck && npm test` is what CI runs on every push; the crash,
-disk-full and load tests run nightly and can be triggered by hand from the
-Actions tab.
+disk-full, restore and load tests run nightly and can be triggered by hand
+from the Actions tab.
 
 ## Roadmap
 
 Tracked as issues rather than prose, so each one can be scoped, argued with and
-closed. In the order it would be worth doing:
+closed. In the order it would be worth doing.
+
+0.5.0 closed the first three: the restore is rehearsed and measured ([#15](https://github.com/ThomasGenua/healthsystem/issues/15)),
+a scope-narrowed directive withholds its section rather than the chart around it
+([#16](https://github.com/ThomasGenua/healthsystem/issues/16)), and the chart is in front of a clinician ([#19](https://github.com/ThomasGenua/healthsystem/issues/19)).
 
 **Prove what is currently only claimed.**
 
-- [#15 Rehearse a restore on a different machine, and state an RPO and RTO](https://github.com/ThomasGenua/healthsystem/issues/15) — snapshots are verified and a corrupt one is rejected, and no snapshot has ever been restored onto another host and run against. The current state proves less than it appears to.
 - [#21 A clinical safety case and hazard log](https://github.com/ThomasGenua/healthsystem/issues/21) — the hazard reasoning exists, scattered across docstrings and test names where no safety officer will find it, in no defensible form.
 - [#22 An external penetration test](https://github.com/ThomasGenua/healthsystem/issues/22) — the adversarial tests here share their author's model of what an attack looks like. The interesting findings are outside it.
+- [#37 Get a snapshot off the machine that made it](https://github.com/ThomasGenua/healthsystem/issues/37) — the restore is rehearsed and every snapshot it restores is on the same disk, in the same building, as the database it came from. The stated RPO holds only for failures that spare the backup directory.
 
 **Make the consent enforcement precise.** Both currently fail closed, which is safe and blunter than the patient asked for.
 
-- [#16 Filter a scope-narrowed directive per section instead of refusing the whole chart](https://github.com/ThomasGenua/healthsystem/issues/16)
 - [#17 Give credentials an organization identity](https://github.com/ThomasGenua/healthsystem/issues/17)
 - [#18 Actually deliver the break-glass notification the patient is owed](https://github.com/ThomasGenua/healthsystem/issues/18) — the queue is visible and drainable; nothing sends anything.
 
+**Model what the system talks about.** Three things the code already references and cannot describe.
+
+- [#32 Encounters: a visit that owns what happened during it](https://github.com/ThomasGenua/healthsystem/issues/32) — `encounter_id` is a column on five tables and no table owns it. The platform is patient-shaped; clinical work is visit-shaped.
+- [#33 A provider, organization and location directory](https://github.com/ThomasGenua/healthsystem/issues/33) — `dr-tetso` is a string in a diary. A prerequisite for #17: an organization identity cannot match against something that is not modelled.
+- [#34 Link duplicate charts reversibly, instead of stopping at detection](https://github.com/ThomasGenua/healthsystem/issues/34) — `duplicates()` finds candidates and declines to merge, for a good reason. A reversible link is what the objection leaves open.
+
 **Put it in front of a person.**
 
-- [#19 A thin clinician UI: one workflow usable end to end](https://github.com/ThomasGenua/healthsystem/issues/19) — every store is exercised only by tests and HTTP. The chart summary was designed for a renderer that does not exist: `complete` and `omissions` are there so a panel can be honest about being short, and nothing renders them.
+- [#35 An access review a privacy officer can actually run](https://github.com/ThomasGenua/healthsystem/issues/35) — the audit trail records and proves, and answers none of the questions a privacy office asks. A chain nobody reads proves only that nobody tampered with a log nobody reads.
 - [#23 Validate the conformance packs against the published Projectathon scripts](https://github.com/ThomasGenua/healthsystem/issues/23) — the packs validate against this project's reading of the specifications, which is not the same as conforming to them.
 - [#24 The patient-facing surface, and its separate identity boundary](https://github.com/ThomasGenua/healthsystem/issues/24) — the hard part is built and deliberately not mounted, because a portal is a different trust boundary.
+- [#40 Transmit a prescription to a pharmacy](https://github.com/ThomasGenua/healthsystem/issues/40) — a prescription is recorded carefully and then goes nowhere, so it is written out a second time somewhere else and the two records disagree.
+
+**Built for where it actually runs.**
+
+- [#38 A readable chart when the link is down](https://github.com/ThomasGenua/healthsystem/issues/38) — the outage demo covers the write path. During a 40-hour outage a nurse can queue what they write and see nothing of what is already known. A cache is a second copy of PHI that can be wrong, so it needs a design rather than a bolt-on.
+- [#39 Scheduling for travelling clinics, and a waitlist for when weather cancels one](https://github.com/ThomasGenua/healthsystem/issues/39) — a specialist flying in for two days a month is twenty hand-created slots, and when the plane does not fly there is no waitlist.
+
+**Operate it.**
+
+- [#36 Channel configuration as versioned, reviewable artifacts](https://github.com/ThomasGenua/healthsystem/issues/36) — messages chain, the record is append-only, audit rows chain, and the configuration that determines all of it is overwritten in place with no history, no diff and no way back.
 
 **Then scale.**
 
