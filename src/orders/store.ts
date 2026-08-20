@@ -36,6 +36,7 @@
 import { randomUUID } from "node:crypto";
 import { an } from "../core/text.ts";
 import type { Db } from "../db.ts";
+import { Encounters } from "../clinical/encounters.ts";
 
 export type OrderCategory = "lab" | "imaging" | "procedure" | "referral" | "other";
 export type OrderStatus = "draft" | "placed" | "in-progress" | "completed" | "cancelled";
@@ -148,9 +149,11 @@ function hoursFrom(iso: string, hours: number): string {
 
 export class OrderStore {
   private db: Db;
+  private encounters: Encounters;
 
   constructor(db: Db) {
     this.db = db;
+    this.encounters = new Encounters(db);
   }
 
   /**
@@ -175,6 +178,12 @@ export class OrderStore {
     if (!input.indication.trim()) {
       throw new Error("an order needs an indication, or the result cannot be interpreted");
     }
+    // An encounter_id that names nothing, or names another patient's visit,
+    // is worse than none: it reads as provenance and is not. Checked here
+    // rather than at every caller, because the callers are the ones that
+    // forget.
+    if (input.encounterId) this.encounters.validateFor(input.encounterId, input.patientId);
+
     const id = randomUUID();
     const now = new Date().toISOString();
     return this.db.transaction(() => {
@@ -537,6 +546,20 @@ export class OrderStore {
     return this.db.sql
       .prepare("SELECT * FROM order_results WHERE tenant_id = ? AND order_id = ? ORDER BY reported_at, created_at")
       .all(this.db.tenantId, orderId) as unknown as ResultRow[];
+  }
+
+  /**
+   * The orders placed during one visit.
+   *
+   * Scoped by encounter rather than by a time window around it, which is what
+   * this had to be before encounters existed and was always a guess: two
+   * clinicians see the same patient an hour apart and a window cannot say
+   * whose order was whose.
+   */
+  forEncounter(encounterId: string): OrderRow[] {
+    return this.db.sql
+      .prepare("SELECT * FROM orders WHERE tenant_id = ? AND encounter_id = ? ORDER BY created_at")
+      .all(this.db.tenantId, encounterId) as unknown as OrderRow[];
   }
 
   forPatient(patientId: string): OrderRow[] {

@@ -58,7 +58,7 @@ v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A lockbox that can cover part of a chart**, where the locked panel says a directive withheld it rather than rendering as "none" — so a patient can withhold one section without taking the rest of their chart away from the clinician treating them.
 - **A restore that has actually been rehearsed**, to somewhere the database has never been, with a measured RTO — because a verified snapshot only proves the bytes hashed correctly when they were written.
 
-426 tests. Backend first, then the interface that makes the backend's honesty visible.
+439 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -571,6 +571,22 @@ Allergy status is carried to the top of the summary rather than left inside its 
 `worklist()` is the same idea across the day rather than across one patient. A clinician's work is not one queue — results wait in one place, referrals in another, tasks in a third, and each system reports its own as though it were the whole picture. The value of a single view is that nothing is owed to them somewhere they are not looking, which is only true if the view says what it could not reach.
 
 The module owns no data and keeps no second copy of anything. It assembles from the stores that already exist, declares what it assembled, and is honest about the rest.
+
+### The visit
+
+`encounter_id` was a column on orders, medication statements, reconciliations and clinical entries long before anything owned one. It named a thing the system could not describe, so "what happened at this visit" had no answer except a time-window guess across four stores — wrong in the ordinary case where two clinicians see the same patient an hour apart — and a discharge summary had nothing to summarise.
+
+A visit now exists, with a class (in-person, virtual, telephone, home visit), a status, a period, a location, its participants and their roles, and a disposition. Three decisions in it are worth stating because each was a choice:
+
+**A visit is not a document about a visit.** The append-only record still accepts an `Encounter` entry, and that remains the right home for a narrative somebody wrote. It is the wrong home for the relationships — which orders belong here, who was present, whether it is still open — because those are queried rather than read, and re-deriving them from entries on every read is how a chart gets slow and a worklist gets wrong.
+
+**A visit that started cannot be cancelled.** Only a planned one can. Once a patient has been seen the visit happened, and a status that could erase it would erase that they attended. A patient who leaves is a *disposition* — `left-without-being-seen` — on a finished encounter, which keeps both facts: they came, and nobody saw them. Cancelling would keep neither. For the same reason `close()` requires a disposition: "finished" says the visit ended and says nothing about whether the patient went home, was admitted, or was sent to emergency, which is the part a later reader most needs.
+
+**Clinical content cannot name a visit that is not this patient's.** An `encounter_id` reads as provenance, so one pointing at another patient's visit is how a chart acquires somebody else's results. Orders, medication statements and clinical entries now check it where they write it, rather than trusting each caller to have got it right — which is what turned up eleven fixtures across the existing suite filing notes against an `enc-1` that never existed. A cancelled encounter accepts nothing at all; a finished one still accepts a late result, because results come back after the patient has gone home.
+
+The assembled visit inherits the chart's position exactly: it is read as complete, so a section that failed says so rather than rendering as "nothing was ordered at this visit". Results hang off the orders the visit placed rather than off the encounter, because a result answers an order — and if the orders section came back short, the results section reports itself as an undercount rather than as a shorter true list.
+
+Rows written before encounters existed keep `encounter_id IS NULL` and stay readable. An entry with no encounter is not an entry with an unknown one, and nothing backfills a guess.
 
 ## The clinical API, and audit by construction
 

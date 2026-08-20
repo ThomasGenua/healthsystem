@@ -18,15 +18,37 @@ import { join } from "node:path";
 import { Db } from "../src/db.ts";
 import { ClinicalRecord } from "../src/clinical/record.ts";
 import { ClinicalNotes, type NoteContent } from "../src/clinical/notes.ts";
+import { Encounters } from "../src/clinical/encounters.ts";
 
-function desk(): { db: Db; rec: ClinicalRecord; notes: ClinicalNotes; cleanup: () => void } {
+function desk(): {
+  db: Db;
+  rec: ClinicalRecord;
+  notes: ClinicalNotes;
+  enc1: string;
+  enc2: string;
+  cleanup: () => void;
+} {
   const dir = mkdtempSync(join(tmpdir(), "portage-notes-"));
   const db = new Db(join(dir, "portage.db"));
   const rec = new ClinicalRecord(db);
+  // Real visits, because a note names the encounter it was written at and the
+  // record now refuses one that does not exist. The fixture used to invent
+  // "enc-1", which is precisely the dangling reference this exists to stop.
+  const encounters = new Encounters(db);
+  const visit = (reason: string): string =>
+    encounters.open({
+      patientId: "NT123456",
+      class: "in-person",
+      reason,
+      by: { actorId: "clerk", actorKind: "staff" },
+      arrived: true,
+    }).id;
   return {
     db,
     rec,
     notes: new ClinicalNotes(rec),
+    enc1: visit("Cough"),
+    enc2: visit("Consult"),
     cleanup: () => {
       db.close();
       rmSync(dir, { recursive: true, force: true });
@@ -44,10 +66,10 @@ const SOAP = {
   plan: "Supportive care, review if worsening.",
 };
 
-function startNote(notes: ClinicalNotes) {
+function startNote(notes: ClinicalNotes, encounterId: string) {
   return notes.draft({
     patientId: "NT123456",
-    encounterId: "enc-1",
+    encounterId,
     noteType: "SOAP",
     sections: SOAP,
     author: RESIDENT,
@@ -58,9 +80,9 @@ test("a draft can be revised freely, and every version is kept", () => {
   // Drafts are working text, so revision is normal. Keeping the earlier text
   // is still right: "the draft said something different before the attending
   // saw it" is a question a serious review asks.
-  const { rec, notes, cleanup } = desk();
+  const { rec, notes, enc1, cleanup } = desk();
   try {
-    const note = startNote(notes);
+    const note = startNote(notes, enc1);
     notes.revise(note.record_id, { ...SOAP, assessment: "Viral URTI, query early pneumonia." }, RESIDENT);
     notes.revise(note.record_id, { ...SOAP, assessment: "Viral URTI." }, RESIDENT);
 
@@ -77,9 +99,9 @@ test("a signed note cannot be revised", () => {
   // The rule the rest of the module exists to enforce. A refusal rather than
   // a warning, because a signed note that can be edited is indistinguishable
   // afterwards from one that was always what it now says.
-  const { notes, cleanup } = desk();
+  const { notes, enc1, enc2, cleanup } = desk();
   try {
-    const note = startNote(notes);
+    const note = startNote(notes, enc1);
     notes.sign(note.record_id, RESIDENT);
 
     assert.throws(
@@ -92,9 +114,9 @@ test("a signed note cannot be revised", () => {
 });
 
 test("a signature names a person and fixes the text", () => {
-  const { notes, cleanup } = desk();
+  const { notes, enc1, enc2, cleanup } = desk();
   try {
-    const note = startNote(notes);
+    const note = startNote(notes, enc1);
     const signed = notes.sign(note.record_id, RESIDENT);
     const content = JSON.parse(signed.content) as NoteContent;
 
@@ -109,9 +131,9 @@ test("a signature names a person and fixes the text", () => {
 });
 
 test("an addendum is its own record, so the note still reads as it was signed", () => {
-  const { notes, cleanup } = desk();
+  const { notes, enc1, enc2, cleanup } = desk();
   try {
-    const note = startNote(notes);
+    const note = startNote(notes, enc1);
     notes.sign(note.record_id, RESIDENT);
 
     const add = notes.addendum({
@@ -133,9 +155,9 @@ test("an addendum is its own record, so the note still reads as it was signed", 
 });
 
 test("an addendum before signature is refused, because there is nothing to add to yet", () => {
-  const { notes, cleanup } = desk();
+  const { notes, enc1, enc2, cleanup } = desk();
   try {
-    const note = startNote(notes);
+    const note = startNote(notes, enc1);
     assert.throws(
       () => notes.addendum({ recordId: note.record_id, sections: { note: "later" }, author: RESIDENT }),
       /follows a signed note; revise the draft/
@@ -146,9 +168,9 @@ test("an addendum before signature is refused, because there is nothing to add t
 });
 
 test("a co-signature is a second person taking responsibility", () => {
-  const { notes, cleanup } = desk();
+  const { notes, enc1, enc2, cleanup } = desk();
   try {
-    const note = startNote(notes);
+    const note = startNote(notes, enc1);
 
     assert.throws(() => notes.cosign(note.record_id, ATTENDING), /must be signed before it can be co-signed/);
     notes.sign(note.record_id, RESIDENT);
@@ -169,9 +191,9 @@ test("a co-signature is a second person taking responsibility", () => {
 });
 
 test("a supervisor can see what is waiting on them", () => {
-  const { notes, cleanup } = desk();
+  const { notes, enc1, enc2, cleanup } = desk();
   try {
-    const waiting = startNote(notes);
+    const waiting = startNote(notes, enc1);
     notes.sign(waiting.record_id, RESIDENT);
 
     const done = notes.draft({ patientId: "NT123456", noteType: "SOAP", sections: SOAP, author: RESIDENT });
@@ -191,9 +213,9 @@ test("a supervisor can see what is waiting on them", () => {
 test("the signed text is covered by the chart chain", () => {
   // The refusal above stops the API changing a signed note. This stops
   // anything else: a note edited underneath the store breaks verification.
-  const { db, rec, notes, cleanup } = desk();
+  const { db, rec, notes, enc1, cleanup } = desk();
   try {
-    const note = startNote(notes);
+    const note = startNote(notes, enc1);
     const signed = notes.sign(note.record_id, RESIDENT);
     assert.equal(rec.verifyChart("NT123456").ok, true);
 
@@ -209,15 +231,15 @@ test("the signed text is covered by the chart chain", () => {
 });
 
 test("notes are listed per patient and per encounter, newest first", () => {
-  const { notes, cleanup } = desk();
+  const { notes, enc1, enc2, cleanup } = desk();
   try {
-    const first = notes.draft({ patientId: "NT123456", encounterId: "enc-1", noteType: "SOAP", sections: SOAP, author: RESIDENT });
+    const first = notes.draft({ patientId: "NT123456", encounterId: enc1, noteType: "SOAP", sections: SOAP, author: RESIDENT });
     notes.sign(first.record_id, RESIDENT);
-    notes.draft({ patientId: "NT123456", encounterId: "enc-2", noteType: "Consult", sections: SOAP, author: ATTENDING });
+    notes.draft({ patientId: "NT123456", encounterId: enc2, noteType: "Consult", sections: SOAP, author: ATTENDING });
     notes.draft({ patientId: "NT999", noteType: "SOAP", sections: SOAP, author: RESIDENT });
 
     assert.equal(notes.forPatient("NT123456").length, 2);
-    assert.equal(notes.forPatient("NT123456", { encounterId: "enc-1" }).length, 1);
+    assert.equal(notes.forPatient("NT123456", { encounterId: enc1 }).length, 1);
     assert.equal(notes.forPatient("NT999").length, 1, "and one patient's notes are not another's");
     assert.equal(notes.forPatient("NT123456")[0].note.noteType, "Consult", "newest first");
   } finally {
@@ -226,9 +248,9 @@ test("notes are listed per patient and per encounter, newest first", () => {
 });
 
 test("a note retracted by a clinician is out of the working record", () => {
-  const { rec, notes, cleanup } = desk();
+  const { rec, notes, enc1, cleanup } = desk();
   try {
-    const note = startNote(notes);
+    const note = startNote(notes, enc1);
     notes.sign(note.record_id, RESIDENT);
     rec.retract(note.record_id, { ...ATTENDING, reason: "filed on the wrong patient" });
 

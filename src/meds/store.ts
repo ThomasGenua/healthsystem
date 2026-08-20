@@ -26,6 +26,7 @@
 import { randomUUID } from "node:crypto";
 import { an } from "../core/text.ts";
 import type { Db } from "../db.ts";
+import { Encounters } from "../clinical/encounters.ts";
 import { assess, normalise, type AllergyStatus, type Finding, type InteractionSource, type SafetyCheck } from "./safety.ts";
 
 export type MedSource = "prescribed" | "patient-reported" | "pharmacy-dispense" | "reconciled" | "external-record";
@@ -120,10 +121,12 @@ export interface Actor {
 export class MedicationStore {
   private db: Db;
   private interactions: InteractionSource | null;
+  private encounters: Encounters;
 
   constructor(db: Db, interactions: InteractionSource | null = null) {
     this.db = db;
     this.interactions = interactions;
+    this.encounters = new Encounters(db);
   }
 
   // ---- the list ----------------------------------------------------------
@@ -267,6 +270,16 @@ export class MedicationStore {
   }
 
   /** Every version of a statement, oldest first. */
+  /** The medication statements written during one visit. */
+  forEncounter(encounterId: string): MedRow[] {
+    return this.db.sql
+      .prepare(
+        `SELECT * FROM medication_statements WHERE tenant_id = ? AND encounter_id = ?
+          ORDER BY created_at`
+      )
+      .all(this.db.tenantId, encounterId) as unknown as MedRow[];
+  }
+
   historyOf(statementId: string): MedRow[] {
     const chain: MedRow[] = [];
     let cursor = this.statement(statementId);
@@ -440,6 +453,7 @@ export class MedicationStore {
     by: Actor;
     encounterId?: string;
   }): ReconciliationRow {
+    if (input.encounterId) this.encounters.validateFor(input.encounterId, input.patientId);
     const id = randomUUID();
     const now = new Date().toISOString();
     return this.db.transaction(() => {
@@ -622,6 +636,11 @@ export class MedicationStore {
     status: MedStatus,
     stopReason?: string
   ): MedRow {
+    // An encounter_id that names nothing, or names another patient's visit,
+    // is worse than none: it reads as provenance and is not. Checked here
+    // rather than at every caller, because the callers are the ones that
+    // forget.
+    if (input.encounterId) this.encounters.validateFor(input.encounterId, input.patientId);
     const id = randomUUID();
     const now = new Date().toISOString();
     this.db.sql

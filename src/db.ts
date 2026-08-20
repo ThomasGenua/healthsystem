@@ -61,6 +61,9 @@ export const TENANT_SCOPED_TABLES = [
   "schedule_events",
   "consent_directives",
   "break_glass",
+  "encounters",
+  "encounter_participants",
+  "encounter_events",
 ] as const;
 
 /**
@@ -858,6 +861,73 @@ CREATE TABLE IF NOT EXISTS schedule_events (
   detail TEXT
 );
 
+-- A visit: the thing clinical work actually happens inside.
+--
+-- Orders, medication statements, reconciliations and notes have carried an
+-- encounter_id since they were written, and until now no table owned one. The
+-- column was a reference to a thing the system could not describe, so "what
+-- happened at this visit" had no answer except a time-window guess across four
+-- stores, and a discharge summary had nothing to summarise.
+--
+-- Kept separate from the append-only clinical record on purpose. An Encounter
+-- entry there is a document about a visit; this is the visit, and the
+-- difference matters when the question is which orders belong to it.
+CREATE TABLE IF NOT EXISTS encounters (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  -- in-person | virtual | telephone | home-visit. How the patient was seen,
+  -- not where: a telephone review and a clinic visit generate different
+  -- records and a chart that cannot tell them apart is misleading about what
+  -- was examined.
+  class TEXT NOT NULL,
+  -- planned | in-progress | finished | cancelled.
+  status TEXT NOT NULL DEFAULT 'planned',
+  reason TEXT NOT NULL,
+  location TEXT,
+  -- The booking this arose from, where it arose from one. Nullable because a
+  -- walk-in is a real encounter and was never booked.
+  booking_id TEXT,
+  started_at TEXT,
+  ended_at TEXT,
+  -- What was decided. Stored rather than derived from status, because
+  -- "finished" says the visit ended and says nothing about how.
+  disposition TEXT,
+  opened_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Who was there, and as what.
+--
+-- A role per row rather than a column on the encounter, because a visit has a
+-- clinician and an interpreter and sometimes a family member, and flattening
+-- that into "provider_id" loses the interpreter — who is exactly the person a
+-- later reader needs to know was present.
+CREATE TABLE IF NOT EXISTS encounter_participants (
+  tenant_id TEXT NOT NULL,
+  encounter_id TEXT NOT NULL,
+  participant_id TEXT NOT NULL,
+  participant_kind TEXT NOT NULL,
+  role TEXT NOT NULL,
+  joined_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, encounter_id, participant_id, role)
+);
+
+CREATE TABLE IF NOT EXISTS encounter_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  encounter_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  event TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_kind TEXT NOT NULL,
+  from_status TEXT,
+  to_status TEXT,
+  detail TEXT
+);
+
 -- A patient's instruction about who may see their record.
 --
 -- Provincial EHRs call this a consent directive or a lockbox: a patient may
@@ -1047,6 +1117,13 @@ CREATE INDEX IF NOT EXISTS idx_slots_service ON schedule_slots(tenant_id, servic
 CREATE INDEX IF NOT EXISTS idx_bookings_patient ON schedule_bookings(tenant_id, patient_id, status);
 CREATE INDEX IF NOT EXISTS idx_bookings_slot ON schedule_bookings(tenant_id, slot_id, status);
 CREATE INDEX IF NOT EXISTS idx_schedule_events ON schedule_events(tenant_id, booking_id, seq);
+-- The chart read: a patient's visits, newest first.
+CREATE INDEX IF NOT EXISTS idx_encounters_patient ON encounters(tenant_id, patient_id, started_at);
+-- The worklist read: what is still open, so a visit cannot stay open forever
+-- without somebody seeing it.
+CREATE INDEX IF NOT EXISTS idx_encounters_status ON encounters(tenant_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_encounter_participants ON encounter_participants(tenant_id, encounter_id);
+CREATE INDEX IF NOT EXISTS idx_encounter_events ON encounter_events(tenant_id, encounter_id, seq);
 CREATE INDEX IF NOT EXISTS idx_directives_patient ON consent_directives(tenant_id, patient_id, status);
 CREATE INDEX IF NOT EXISTS idx_directives_target ON consent_directives(tenant_id, target_id, status);
 CREATE INDEX IF NOT EXISTS idx_breakglass_review ON break_glass(tenant_id, reviewed_at, declared_at);

@@ -244,7 +244,11 @@ test("every clinical route leaves an audit row, including ones added later", asy
   // here. A path added to admin.ts is a path this drives, and if it answers
   // 200 without recording anything, this fails.
   const source = readFileSync(new URL("../src/api/admin.ts", import.meta.url), "utf8");
-  const paths = [...new Set([...source.matchAll(/path === "(\/api\/clinical\/[a-z-]+)"/g)].map((m) => m[1]))];
+  // The character class admits "/" so a route nested under a subpath is
+  // found too. It did not, once, and a route added as
+  // /api/clinical/encounter/arrive would have been exempt from this whole
+  // guarantee by virtue of its name.
+  const paths = [...new Set([...source.matchAll(/path === "(\/api\/clinical\/[a-z/-]+)"/g)].map((m) => m[1]))];
   assert.ok(paths.length >= 16, `expected the clinical routes to be found by scanning, got ${paths.length}`);
 
   const s = await boot();
@@ -272,6 +276,33 @@ test("every clinical route leaves an audit row, including ones added later", asy
       display: "Potassium (repeat)",
       value: "5.2",
       reportedBy: "analyser",
+    });
+
+    // A visit for the encounter routes to read and act on, and a second one
+    // left planned so the cancel route has something it is allowed to cancel:
+    // an encounter that started refuses cancellation on purpose.
+    const visit = s.engine.forTenant("default").encounters.open({
+      patientId: P,
+      class: "in-person",
+      reason: "Knee review",
+      by: { actorId: "dr-tetso", actorKind: "practitioner" },
+      arrived: true,
+    });
+    const planned = s.engine.forTenant("default").encounters.open({
+      patientId: P,
+      class: "telephone",
+      reason: "Medication review",
+      by: { actorId: "dr-tetso", actorKind: "practitioner" },
+    });
+    // A third, because the arrive route runs before the cancel route and
+    // starts `planned` — after which cancelling it is refused, correctly. A
+    // route that only passes because of the order these happen to run in is
+    // exactly what this test exists to catch.
+    const toCancel = s.engine.forTenant("default").encounters.open({
+      patientId: P,
+      class: "telephone",
+      reason: "Repeat prescription",
+      by: { actorId: "dr-tetso", actorKind: "practitioner" },
     });
 
     const standing = s.engine.forTenant("default").consent.breakGlass({
@@ -304,6 +335,13 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/break-glass-review": "POST",
       "/api/clinical/gaps": "POST",
       "/api/clinical/measure": "POST",
+      "/api/clinical/encounters": `?patient=${P}`,
+      "/api/clinical/encounter": `?id=${visit.id}`,
+      "/api/clinical/encounters-open": "",
+      "/api/clinical/encounter-open": "POST",
+      "/api/clinical/encounter-arrive": "POST",
+      "/api/clinical/encounter-close": "POST",
+      "/api/clinical/encounter-cancel": "POST",
     };
 
     /** The body each POST route needs to do real work. */
@@ -324,6 +362,11 @@ test("every clinical route leaves an audit row, including ones added later", asy
         cohort: { id: "dm", name: "Diabetes", conditionCodes: ["diabetes"] },
         measure: { id: "hba1c-8", name: "HbA1c under 8", withinDays: 365, target: { code: "4548-4", below: 8 } },
       },
+      "/api/clinical/encounter-open": { patient: P, class: "in-person", reason: "Sore throat" },
+      // One row each, so no route depends on what another did to it first.
+      "/api/clinical/encounter-arrive": { id: planned.id },
+      "/api/clinical/encounter-close": { id: visit.id, disposition: "home with advice" },
+      "/api/clinical/encounter-cancel": { id: toCancel.id, reason: "rebooked" },
     };
 
     const unlisted = paths.filter((p) => !(p in args));

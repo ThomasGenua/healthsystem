@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Db } from "../src/db.ts";
 import { ClinicalRecord } from "../src/clinical/record.ts";
+import { Encounters } from "../src/clinical/encounters.ts";
 
 function chart(): { db: Db; rec: ClinicalRecord; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "portage-chart-"));
@@ -233,13 +234,26 @@ test("one patient's chart is its own chain", () => {
 });
 
 test("the chart shows current versions, filtered by type and encounter", () => {
-  const { rec, cleanup } = chart();
+  const { db, rec, cleanup } = chart();
   try {
+    // Real visits: the record refuses an encounter_id that names nothing, so
+    // the fixture opens the two it files against rather than inventing them.
+    const encounters = new Encounters(db);
+    const visit = (reason: string): string =>
+      encounters.open({
+        patientId: "p",
+        class: "in-person",
+        reason,
+        by: { actorId: "clerk", actorKind: "staff" },
+        arrived: true,
+      }).id;
+    const enc1 = visit("Review");
+    const enc2 = visit("Bloods");
     const cond = rec.record({
       entryType: "Condition",
       patientId: "p",
       content: { code: "E11" },
-      encounterId: "enc-1",
+      encounterId: enc1,
       ...CLINICIAN,
     });
     rec.amend(cond.record_id, { code: "E10" }, { ...CLINICIAN, reason: "re-coded" });
@@ -247,14 +261,14 @@ test("the chart shows current versions, filtered by type and encounter", () => {
       entryType: "Observation",
       patientId: "p",
       content: { value: 7.4 },
-      encounterId: "enc-2",
+      encounterId: enc2,
       ...CLINICIAN,
     });
 
     const all = rec.chart("p");
     assert.equal(all.length, 2, "one row per record, at its latest version");
     assert.deepEqual(rec.chart("p", { entryType: "Condition" }).map((e) => JSON.parse(e.content).code), ["E10"]);
-    assert.equal(rec.chart("p", { encounterId: "enc-2" }).length, 1);
+    assert.equal(rec.chart("p", { encounterId: enc2 }).length, 1);
   } finally {
     cleanup();
   }
