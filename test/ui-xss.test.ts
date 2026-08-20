@@ -47,6 +47,11 @@ function findChrome(): string | undefined {
 
 const CHROME = findChrome();
 
+/** A patient, a clinician and an author for the hostile clinical fixtures. */
+const HOSTILE_PATIENT = "NT900001";
+const HOSTILE_CLINICIAN = "dr-tetso";
+const HOSTILE_ACTOR = { actorId: HOSTILE_CLINICIAN, actorKind: "practitioner" };
+
 test(
   "hostile message content does not execute in the admin console",
   { skip: CHROME ? false : "no chromium found; set PORTAGE_TEST_CHROME to run this" },
@@ -105,6 +110,82 @@ test(
         await mllpSend("127.0.0.1", port, adt, 5_000).catch(() => "");
       }
       await until(() => engine.db.listMessages({ channelId: "hostile" }).length === payloads.length);
+
+      // The clinical console renders a second class of hostile input, and it
+      // does not arrive over MLLP. A patient's name comes from an ADT feed, but
+      // a referral's service, a task's title, an acknowledgement action and a
+      // break-glass reason are free text somebody types — a clerk, a
+      // clinician, or anybody who has reached a form. Every one of them is
+      // rendered into the chart, the worklist or the break-glass queues, and
+      // several land inside single-quoted onclick attributes.
+      //
+      // Seeded straight into the stores rather than through a channel because
+      // that is genuinely how they arrive: these are written by the API, not
+      // mapped from a message.
+      const t = engine.forTenant("default");
+      const evilName = payloads[0];
+      t.clinical.record({
+        entryType: "Patient",
+        patientId: HOSTILE_PATIENT,
+        content: {
+          resourceType: "Patient",
+          identifier: [{ system: "urn:jhn", value: HOSTILE_PATIENT }],
+          name: [{ family: evilName, given: [payloads[3]] }],
+        },
+        authorId: "adt-feed",
+        authorKind: "device",
+      });
+      t.meds.recordAllergy({
+        patientId: HOSTILE_PATIENT,
+        display: payloads[5],
+        ingredient: "penicillin",
+        criticality: "high",
+        by: HOSTILE_ACTOR,
+      });
+      const ord = t.orders.create({
+        patientId: HOSTILE_PATIENT,
+        category: "lab",
+        code: "2823-3",
+        display: payloads[1],
+        indication: payloads[2],
+        by: HOSTILE_ACTOR,
+      });
+      t.orders.place(ord.id, { ...HOSTILE_ACTOR, responsibleId: HOSTILE_CLINICIAN });
+      t.orders.report({
+        patientId: HOSTILE_PATIENT,
+        orderId: ord.id,
+        code: "2823-3",
+        display: payloads[1],
+        value: payloads[4],
+        abnormalFlag: "critical-high",
+        reportedBy: "analyser",
+      });
+      t.referrals.create({
+        patientId: HOSTILE_PATIENT,
+        fromService: payloads[2],
+        toService: payloads[0],
+        indication: payloads[3],
+        by: HOSTILE_ACTOR,
+      });
+      t.tasks.create({ kind: "administrative", title: payloads[5], by: HOSTILE_ACTOR, ownerId: HOSTILE_CLINICIAN });
+      // Narrowed, not a full lockbox. An unscoped directive would make the
+      // chart answer 403 and render a refusal banner containing nothing
+      // hostile — so this test would pass while proving nothing about the tab
+      // it was added to cover. Scoped, the chart renders: every panel the
+      // patient did not lock, plus the withheld one, which is itself a render
+      // path worth driving.
+      t.consent.record({
+        patientId: HOSTILE_PATIENT,
+        kind: "withhold-all",
+        scope: ["DocumentReference"],
+        by: HOSTILE_ACTOR,
+        reason: payloads[0],
+      });
+      t.consent.breakGlass({
+        patientId: HOSTILE_PATIENT,
+        by: { actorId: payloads[3], actorKind: "practitioner" },
+        reason: `${payloads[0]} — unresponsive on arrival, need the allergy list now`,
+      });
 
       chrome = spawn(CHROME!, [
         "--headless=new",
@@ -176,7 +257,16 @@ test(
       const base = `http://127.0.0.1:${api.port}`;
       const seen: Record<string, boolean> = {};
 
-      for (const tab of ["Channels", "Messages", "FHIR", "Audit"]) {
+      // What each tab needs before it will render anything. The clinical tabs
+      // are driven by a patient or a clinician the user has chosen, so without
+      // this they paint an empty form and the payloads never reach the DOM —
+      // which would pass, having proved nothing.
+      const prep: Record<string, string> = {
+        Chart: `sessionStorage.setItem('portage.patient',${JSON.stringify(HOSTILE_PATIENT)});`,
+        Worklist: `localStorage.setItem('portage.clinician',${JSON.stringify(HOSTILE_CLINICIAN)});`,
+      };
+
+      for (const tab of ["Channels", "Messages", "FHIR", "Audit", "Chart", "Worklist", "Break-glass"]) {
         await cdp("Page.navigate", { url: `${base}/#${tab}` }, S);
         // Every tab fills itself from a fetch, so how long that takes is a
         // property of the runner rather than of the page. A fixed wait is
@@ -192,6 +282,7 @@ test(
           {
             expression: `(async()=>{
               const HOSTILE = /&lt;img|&lt;script|&lt;svg|onmouseover/i;
+              ${prep[tab] ?? ""}
               if(typeof go==='function') go(${JSON.stringify(tab)});
               const deadline = Date.now() + ${budgetMs};
               let escaped = false;
@@ -230,6 +321,13 @@ test(
         seen.Messages,
         "the hostile payload never rendered on the Messages tab, so this proved nothing about the escaping"
       );
+      // The same honesty check for the clinical console. These tabs render a
+      // different class of hostile input — free text somebody typed rather
+      // than a mapped message field — and a tab that painted an empty form
+      // would sail through the beacon check having escaped nothing.
+      for (const tab of ["Chart", "Worklist", "Break-glass"]) {
+        assert.ok(seen[tab], `the hostile payload never rendered on the ${tab} tab, so this proved nothing about it`);
+      }
       assert.deepEqual(beacons, [], "message content executed in the admin console");
     } finally {
       if (chrome) {

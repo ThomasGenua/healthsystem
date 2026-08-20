@@ -49,6 +49,42 @@ svg .axis{stroke:var(--line)}
 svg text{fill:var(--dim);font-size:10px}
 .legend{display:flex;gap:14px;flex-wrap:wrap;margin:6px 0 0;font-size:12px;color:var(--dim)}
 .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}
+
+/* The clinical surface.
+
+   A summary is read as complete — that is its clinical function — so the one
+   thing this stylesheet has to do is make a panel that is NOT complete
+   impossible to mistake for one that is. An empty panel and an empty panel
+   that failed to load look identical unless something here makes them differ,
+   and an allergy list that is short because a store threw is the failure the
+   whole chart module is built to refuse.
+
+   So incompleteness is carried on the left border and in a line of prose
+   inside the panel, not in a subtle tint somebody reads past at 3am. The three
+   reasons are visually distinct because they call for different actions:
+   failed means go and look elsewhere before you prescribe, truncated means
+   there is more below, withheld means the patient asked and break-glass is the
+   way through. */
+.panel{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--ok);border-radius:6px;padding:10px 14px;margin-bottom:10px}
+.panel.bad{border-left-color:var(--bad)}
+.panel.warn{border-left-color:var(--warn)}
+.panel.held{border-left-color:var(--acc)}
+.panel h3{margin:0 0 6px;font-size:13px;font-weight:normal;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);display:flex;gap:8px;align-items:center}
+.panel .why{margin:4px 0 0;font-size:12.5px;padding:6px 9px;border-radius:4px;background:#1b2230}
+.panel.bad .why{color:var(--bad)}
+.panel.warn .why{color:var(--warn)}
+.panel.held .why{color:var(--acc)}
+.panel ul{margin:4px 0 0;padding-left:18px}
+.panel li{margin:2px 0}
+.panel .none{color:var(--dim);font-size:12.5px;margin:2px 0 0}
+.banner{border:1px solid var(--line);border-left:3px solid var(--warn);background:#241d0f;border-radius:6px;padding:10px 14px;margin-bottom:14px}
+.banner.bad{border-left-color:var(--bad);background:#2a1416}
+.banner b{color:var(--warn)}
+.banner.bad b{color:var(--bad)}
+.banner ul{margin:6px 0 0;padding-left:18px}
+.crit{color:var(--bad);font-weight:bold}
+.chartgrid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
+@media(max-width:900px){.chartgrid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -81,7 +117,7 @@ const j=async(url,opts={})=>{
 };
 const tag=(t,cls)=>`<span class="tag ${cls}">${esc(t)}</span>`;
 const stTag=s=>tag(s,{processed:"ok",delivered:"ok",filtered:"dim",queued:"warn",retrying:"warn",inflight:"warn",error:"bad",dead:"bad",discarded:"dim",active:"ok"}[s]||"dim");
-const TABS=["Dashboard","History","Audit","Channels","Designer","Mappings","Messages","Deliveries","FHIR","Subscriptions","Terminology","Conformance"];
+const TABS=["Dashboard","Chart","Worklist","Break-glass","History","Audit","Channels","Designer","Mappings","Messages","Deliveries","FHIR","Subscriptions","Terminology","Conformance"];
 let tab="Dashboard",timer=null;
 
 function nav(){$("#nav").innerHTML=TABS.map(t=>`<button class="${t===tab?"on":""}" onclick="go('${t}')">${t}</button>`).join("")}
@@ -91,6 +127,9 @@ async function render(){
   const m=$("#main");
   try{
     if(tab==="Dashboard")await dash(m);
+    else if(tab==="Chart")await chartTab(m);
+    else if(tab==="Worklist")await worklistTab(m);
+    else if(tab==="Break-glass")await glassTab(m);
     else if(tab==="History")await history(m);
     else if(tab==="Audit")await auditTab(m);
     else if(tab==="Designer")await designer(m);
@@ -104,6 +143,246 @@ async function render(){
     else if(tab==="Conformance")await confTab(m);
   }catch(e){m.innerHTML=`<p class="err">${esc(e.message||e)}</p>`}
 }
+
+/* ---------------------------------------------------------------- clinical
+
+   Three tabs, and one idea running through all of them: the honesty the
+   stores go to such lengths to produce is worth nothing until it reaches
+   somebody's eyes. `complete` and `omissions` have existed on every section
+   since the chart was written, and until now nothing rendered them.
+
+   Everything here goes through the same clinical API as any other caller.
+   There is no privileged path, which means every read below leaves an audit
+   row and passes the directive check — a console that could see more than the
+   API allows would make the audit trail a description of something other than
+   what happened. */
+
+/* How a section says it is not the whole truth.
+
+   Distinguishing the reasons is the point. `unavailable` is a fault, and the
+   panel must not be read as "none". `withheld` is the patient's instruction,
+   which is not a fault at all and must not be rendered as one — a clinician
+   who reads a lockbox as an outage goes looking for a bug instead of having a
+   conversation. `truncated` just means there is more. */
+function panel(title,sec,render,extra){
+  const inc=sec&&sec.incomplete;
+  const cls=!inc?"":inc.reason==="unavailable"?"bad":inc.reason==="withheld"?"held":"warn";
+  const items=(sec&&sec.items)||[];
+  let why="";
+  if(inc&&inc.reason==="unavailable")why=`this panel is empty because it failed to load, not because there is nothing — ${esc(inc.detail)}`;
+  else if(inc&&inc.reason==="withheld")why=esc(inc.detail);
+  else if(inc&&inc.reason==="truncated")why=`showing ${inc.shown} of ${inc.total}`;
+  const body=inc&&inc.reason==="withheld"?""
+    :items.length?`<ul>${items.map(render).join("")}</ul>`
+    :`<p class="none">none recorded</p>`;
+  return `<div class="panel ${cls}"><h3>${esc(title)}${extra?" "+extra:""}${inc?tag(inc.reason,cls):""}</h3>
+    ${why?`<p class="why">${why}</p>`:""}${body}</div>`;
+}
+
+const when=v=>esc(String(v??"").replace("T"," ").slice(0,16));
+/* Chart entries carry their FHIR resource as a JSON string, so a renderer that
+   reaches straight for `.code.text` gets undefined and falls back to printing
+   the entry type — a problem list reading "Condition, Condition", which is
+   both useless and looks like data rather than a bug. */
+const body=e=>{try{return JSON.parse(e.content)}catch{return{}}};
+/* A date qualifier that disappears when there is no date, rather than leaving
+   a bare "due" on the row. An empty deadline is not the same as a deadline, and
+   a label with nothing after it reads as a rendering fault. */
+const due=(label,v)=>v?`<span class="none">${esc(label)} ${when(v)}</span>`:"";
+
+async function chartTab(m){
+  const q=sessionStorage.getItem("portage.patient")||"";
+  m.innerHTML=`<div class="bar">
+    <input id="pt" placeholder="patient identifier, e.g. NT123456" style="width:260px" value="${esc(q)}">
+    <button class="act" onclick="loadChart()">open chart</button>
+    <input id="ptname" placeholder="or search by family name" style="width:200px">
+    <button class="act" onclick="findPatient()">search</button></div>
+    <div id="chart"></div>`;
+  if(q)await loadChart();
+}
+
+window.findPatient=async()=>{
+  const family=$("#ptname").value.trim();
+  const out=$("#chart");
+  if(!family)return;
+  try{
+    const {data}=await j("/api/clinical/patients?family="+encodeURIComponent(family));
+    const rows=(data.rows||[]);
+    out.innerHTML=`${data.withheldCount?`<div class="banner"><b>${data.withheldCount} match(es) withheld</b> by a patient directive. A short list that looks complete is the thing this system refuses, so it says so rather than quietly returning fewer.</div>`:""}
+      <table><tr><th>identifier</th><th>name</th><th>born</th></tr>
+      ${rows.map(r=>`<tr class="row" onclick="openChart('${esc(r.patient_id)}')"><td>${esc(r.patient_id)}</td>
+        <td>${esc(r.family||"")}, ${esc(r.given||"")}</td><td>${esc(r.birthDate||r.birth_date||"")}</td></tr>`).join("")
+      ||`<tr><td colspan="3" class="none">no match</td></tr>`}</table>`;
+  }catch(e){out.innerHTML=`<p class="err">${esc(e.message||e)}</p>`}
+};
+
+window.openChart=id=>{sessionStorage.setItem("portage.patient",id);$("#pt").value=id;loadChart()};
+
+window.loadChart=async()=>{
+  const id=$("#pt").value.trim();
+  const out=$("#chart");
+  if(!id){out.innerHTML="";return}
+  sessionStorage.setItem("portage.patient",id);
+  out.innerHTML=`<p class="none">loading…</p>`;
+  let c;
+  try{
+    const r=await j("/api/clinical/chart?patient="+encodeURIComponent(id));
+    if(r.status===403){
+      // The refusal names the way through, and so does this. A clinician who
+      // needs the record in an emergency should not have to know the API.
+      out.innerHTML=`<div class="banner bad"><b>This record is withheld by a patient directive.</b>
+        <p>The patient has asked that this record not be shown. If the clinical situation warrants overriding that, declare it — the declaration is recorded, the patient is told, and somebody reviews it.</p>
+        <div class="bar"><input id="bg-reason" placeholder="why you need it, and why now" style="width:420px">
+        <button class="act" onclick="declareGlass('${esc(id)}')">break glass</button></div>
+        <p class="none">A one-word reason is refused. This row is what a privacy office reads when the patient asks who opened their record.</p>
+        <div id="bg-out"></div></div>`;
+      return;
+    }
+    c=r.data;
+  }catch(e){out.innerHTML=`<p class="err">${esc(e.message||e)}</p>`;return}
+
+  const p=c.patient||{};
+  const status=c.allergyStatus;
+  const statusTag=status==="never-asked"?tag("never asked","bad")
+    :status==="unavailable"?tag("unknown","bad")
+    :status==="clear"?tag("no known allergies","ok"):tag(esc(String(status)),"warn");
+
+  out.innerHTML=`
+    <div class="cards"><div class="card"><div class="n">${esc(p.family||"—")}, ${esc(p.given||"")}</div><div class="l">${esc(c.patientId)}${p.birthDate?" · born "+esc(p.birthDate):""}</div></div>
+      <div class="card"><div class="n">${statusTag}</div><div class="l">allergy status</div></div></div>
+    ${c.complete?"":`<div class="banner"><b>This is not the whole chart.</b>
+      <p>Do not read a panel below as "none" without checking why it is short.</p>
+      <ul>${(c.omissions||[]).map(o=>`<li>${esc(o)}</li>`).join("")}</ul></div>`}
+    <div class="chartgrid">
+      <div>
+        ${panel("Allergies",c.allergies,a=>`<li>${esc(a.display)} ${a.criticality?tag(a.criticality,a.criticality==="high"?"bad":"warn"):""} <span class="none">${esc(a.reaction||"")}</span></li>`)}
+        ${panel("Medications",c.medications,x=>`<li>${esc(x.display)} <span class="none">${esc(x.adherence||"")}</span></li>`)}
+        ${panel("Problems",c.problems,x=>{const b=body(x);return `<li>${esc((b.code&&(b.code.text||(b.code.coding&&b.code.coding[0]&&b.code.coding[0].display)))||b.resourceType||x.entry_type)}${b.clinicalStatus?" "+tag(esc(String(b.clinicalStatus.text||b.clinicalStatus)),"dim"):""}</li>`})}
+        ${panel("Recent notes",c.recentNotes,n=>`<li>${when(n.entry&&n.entry.recorded_at)} — ${esc((n.note&&(n.note.title||n.note.description))||"note")}</li>`)}
+      </div>
+      <div>
+        ${panel("Unacknowledged results",c.unacknowledgedResults,r=>`<li>${esc(r.display)}: <b class="${r.abnormal_flag&&r.abnormal_flag.includes("critical")?"crit":""}">${esc(r.value)}</b>
+          ${r.abnormal_flag?tag(r.abnormal_flag,r.abnormal_flag.includes("critical")?"bad":"warn"):""} <span class="none">${when(r.reported_at)}</span></li>`)}
+        ${panel("Open orders",c.openOrders,o=>`<li>${esc(o.display)} ${stTag(o.status)} ${due("expected",o.expected_by)}</li>`)}
+        ${panel("Open referrals",c.openReferrals,r=>`<li>${esc(r.to_service)} ${stTag(r.status)} ${due("due",r.expected_by)}</li>`)}
+        ${panel("Open tasks",c.openTasks,t=>`<li>${esc(t.title)} ${stTag(t.status)}</li>`)}
+      </div>
+    </div>`;
+};
+
+window.declareGlass=async(patient)=>{
+  const reason=$("#bg-reason").value.trim();
+  const out=$("#bg-out");
+  try{
+    const {status,data}=await j("/api/clinical/break-glass",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({patient,reason})});
+    if(status!==201){out.innerHTML=`<p class="err">${esc(data.error||"refused")}</p>`;return}
+    out.innerHTML=`<p class="none">declared — the patient will be told and this will be reviewed</p>`;
+    loadChart();
+  }catch(e){out.innerHTML=`<p class="err">${esc(e.message||e)}</p>`}
+};
+
+async function worklistTab(m){
+  const who=localStorage.getItem("portage.clinician")||"";
+  m.innerHTML=`<div class="bar"><input id="cl" placeholder="clinician id, e.g. dr-tetso" style="width:220px" value="${esc(who)}">
+    <button class="act" onclick="loadWorklist()">open worklist</button></div><div id="wl"></div>`;
+  if(who)await loadWorklist();
+}
+
+window.loadWorklist=async()=>{
+  const who=$("#cl").value.trim();
+  const out=$("#wl");
+  if(!who){out.innerHTML="";return}
+  localStorage.setItem("portage.clinician",who);
+  try{
+    const {data:w}=await j("/api/clinical/worklist?clinician="+encodeURIComponent(who));
+    const {data:res}=await j("/api/clinical/results");
+    out.innerHTML=`
+      ${w.complete?"":`<div class="banner"><b>This worklist is not complete.</b>
+        <p>Something owed to you may not be on it.</p><ul>${(w.omissions||[]).map(o=>`<li>${esc(o)}</li>`).join("")}</ul></div>`}
+      ${res.withheldCount?`<div class="banner"><b>${res.withheldCount} result(s) withheld</b> by a patient directive.
+        <p>A result withheld from the clinician responsible for reading it is a result now owed to nobody. Who they are is not shown, which is what the directive asked for — but somebody has to pick these up.</p></div>`:""}
+      ${panel("Results you have not acknowledged",w.unacknowledgedResults,r=>`<li>
+        ${esc(r.display)}: <b class="${r.abnormal_flag&&r.abnormal_flag.includes("critical")?"crit":""}">${esc(r.value)}</b>
+        ${r.abnormal_flag?tag(r.abnormal_flag,r.abnormal_flag.includes("critical")?"bad":"warn"):""}
+        <a href="#" onclick="openChart('${esc(r.patient_id)}');go('Chart');return false">${esc(r.patient_id)}</a>
+        <span class="none">${when(r.reported_at)}</span>
+        <div class="bar" style="margin:6px 0 0"><input id="ack-${esc(r.id)}" placeholder="what you did about it" style="width:320px">
+        <button class="act mini" onclick="ack('${esc(r.id)}')">acknowledge</button></div>
+        <div id="ackout-${esc(r.id)}"></div></li>`)}
+      ${panel("Referrals that have gone quiet",w.stalledReferrals,r=>`<li>${esc(r.to_service)} for
+        <a href="#" onclick="openChart('${esc(r.patient_id)}');go('Chart');return false">${esc(r.patient_id)}</a>
+        ${stTag(r.status)} ${due("due",r.expected_by)}</li>`)}
+      ${panel("Orders with no result back",w.ordersAwaitingResult,o=>`<li>${esc(o.display)} for
+        <a href="#" onclick="openChart('${esc(o.patient_id)}');go('Chart');return false">${esc(o.patient_id)}</a>
+        ${due("expected",o.expected_by)}</li>`)}
+      ${panel("Tasks",w.tasks,t=>`<li>${esc(t.title)} ${stTag(t.status)}</li>`)}
+      ${panel("Medication reconciliations left open",w.incompleteReconciliations,r=>`<li>${esc(r.transition)} for
+        <a href="#" onclick="openChart('${esc(r.patient_id)}');go('Chart');return false">${esc(r.patient_id)}</a>
+        <span class="none">started ${when(r.started_at)}</span></li>`)}`;
+  }catch(e){out.innerHTML=`<p class="err">${esc(e.message||e)}</p>`}
+};
+
+window.ack=async(id)=>{
+  const action=$("#ack-"+CSS.escape(id)).value.trim();
+  const out=$("#ackout-"+CSS.escape(id));
+  try{
+    const {status,data}=await j("/api/clinical/acknowledge",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({result:id,action})});
+    // The refusals are worth showing verbatim. "this result was corrected;
+    // acknowledge <other> instead" is the store stopping somebody signing off
+    // a value that has already been replaced, and paraphrasing it would lose
+    // the only part a clinician can act on.
+    if(status!==200){out.innerHTML=`<p class="err">${esc(data.error||"refused")}</p>`;return}
+    loadWorklist();
+  }catch(e){out.innerHTML=`<p class="err">${esc(e.message||e)}</p>`}
+};
+
+async function glassTab(m){
+  m.innerHTML=`<p class="none">loading…</p>`;
+  try{
+    const {data}=await j("/api/clinical/break-glass");
+    // The action cell is filled in afterwards rather than by this template,
+    // because the two queues need different controls and threading that
+    // through here would mean building HTML for a button out of a string in
+    // two places. The row itself is identical in both.
+    const rows=(list,empty)=>list.length?`<table><tr><th>patient</th><th>who</th><th>declared</th><th>reason</th><th></th></tr>
+      ${list.map(o=>`<tr><td><a href="#" onclick="openChart('${esc(o.patient_id)}');go('Chart');return false">${esc(o.patient_id)}</a></td>
+        <td>${esc(o.subject_id)}</td><td>${when(o.declared_at)}</td><td>${esc(o.reason)}</td>
+        <td></td></tr>`).join("")}</table>`:`<p class="none">${esc(empty)}</p>`;
+    m.innerHTML=`
+      <div class="panel ${data.awaitingNotification.length?"warn":""}"><h3>Patients not yet told their record was opened ${tag(String(data.awaitingNotification.length),data.awaitingNotification.length?"warn":"ok")}</h3>
+        <p class="why">A lockbox nobody can find out was opened is a lockbox with no lock. Telling them happens on a channel this system does not own — a letter, a call — so record it here once it has happened.</p>
+        ${rows(data.awaitingNotification,"nobody is owed a notification")}</div>
+      <div class="panel ${data.awaitingReview.length?"warn":""}"><h3>Overrides nobody has reviewed ${tag(String(data.awaitingReview.length),data.awaitingReview.length?"warn":"ok")}</h3>
+        <p class="why">An override nobody looks at teaches a ward that breaking glass costs nothing, and a directive that costs nothing to break slows down only the people who would have asked.</p>
+        ${rows(data.awaitingReview,"nothing is waiting for review")}</div>`;
+    // Rendered after the tables so the action cells can carry their own inputs
+    // without the row template needing to know which queue it is in.
+    m.querySelectorAll("table").forEach((t,i)=>{
+      const queue=i===0?data.awaitingNotification:data.awaitingReview;
+      t.querySelectorAll("tr").forEach((tr,r)=>{
+        if(r===0)return;
+        const o=queue[r-1];if(!o)return;
+        const cell=tr.lastElementChild;
+        cell.innerHTML=i===0
+          ?`<button class="act mini" onclick="told('${esc(o.id)}')">record that they were told</button>`
+          :`<input id="rv-${esc(o.id)}" placeholder="what you made of it" style="width:210px"><button class="act mini" onclick="reviewed('${esc(o.id)}')">record</button>`;
+      });
+    });
+  }catch(e){m.innerHTML=`<p class="err">${esc(e.message||e)}</p>`}
+}
+
+window.told=async(id)=>{
+  try{await j("/api/clinical/break-glass-notified",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({override:id})});render()}
+  catch(e){$("#main").innerHTML=`<p class="err">${esc(e.message||e)}</p>`}
+};
+window.reviewed=async(id)=>{
+  const outcome=$("#rv-"+CSS.escape(id)).value.trim();
+  try{
+    const {status,data}=await j("/api/clinical/break-glass-review",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({override:id,outcome})});
+    if(status!==200)throw new Error(data.error||"refused");
+    render();
+  }catch(e){$("#main").innerHTML=`<p class="err">${esc(e.message||e)}</p>`}
+};
 
 async function dash(m){
   const draw=async()=>{

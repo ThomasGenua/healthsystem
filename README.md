@@ -12,13 +12,15 @@ The design targets the interoperability posture Canadian jurisdictions are conve
 
 **Privacy and access** — [Security](#security) · [Encryption at rest](#encryption-at-rest) · [Key lifecycle](#key-lifecycle) · [Audit trail](#audit-trail) · [Patient access](#patient-access) · [Consent directives and breaking glass](#consent-directives-and-breaking-glass) · [The clinical API, and audit by construction](#the-clinical-api-and-audit-by-construction) · [Retention](#retention) · [What the chains prove](#what-the-chains-prove) · [Tenancy](#tenancy)
 
-**Running it** — [Upgrading](#upgrading) · [Backup](#backup) · [Monitoring](#monitoring) · [Throughput](#throughput) · [Durability under failure](#durability-under-failure) · [Crash recovery](#crash-recovery)
+**Running it** — [Runbook](docs/RUNBOOK.md) · [Upgrading](#upgrading) · [Backup](#backup) · [Monitoring](#monitoring) · [Throughput](#throughput) · [Durability under failure](#durability-under-failure) · [Crash recovery](#crash-recovery)
+
+**Project** — [Changelog](CHANGELOG.md) · [Security policy](SECURITY.md) · [Licence](#licence) · [Contributing](#contributing)
 
 **Reference** — [Architecture](#architecture) · [Channels](#channels) · [Character sets](#character-sets) · [Mappings](#mappings) · [API](#api) · [FHIR facade](#fhir-facade) · [Terminology](#terminology) · [Conformance packs](#conformance-packs) · [Subscriptions](#subscriptions) · [Connectors](#connectors) · [Admin UI](#admin-ui) · [Loading a licensed terminology release](#loading-a-licensed-terminology-release) · [Satellite demo](#satellite-demo) · [Roadmap](#roadmap)
 
 ## Status
 
-v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources; filter, split, mapping and validation pipeline; retrying ordered destinations with DLQ and replay; hash-chained lineage; FHIR R4 facade; terminology service; PS-CA / CA:FeX / CA:eReC conformance packs; rest-hook Subscriptions; satellite outage demo; admin UI) plus:
+v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources; filter, split, mapping and validation pipeline; retrying ordered destinations with DLQ and replay; hash-chained lineage; FHIR R4 facade; terminology service; PS-CA / CA:FeX / CA:eReC conformance packs; rest-hook Subscriptions; satellite outage demo; admin UI) plus:
 
 - **Authentication and authorisation.** API keys and OAuth 2.0 / SMART on FHIR bearer tokens, three scopes, one gate ahead of every route. On by default.
 - **Mutual TLS**, for node-to-node links, inbound and outbound.
@@ -51,9 +53,12 @@ v0.4.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Proxy access that lapses on the day it was set to**, because nothing about a child's sixteenth birthday generates an event.
 - **Quality measures that refuse a rate they cannot stand behind**, because the patients a measure cannot assess are the ones nobody managed.
 - **Double-booking refused by the database**, not by a check that a second clerk can race past.
-- **Break-glass that is loud**: declared, reasoned in words, notified to the patient, and queued for review — because a quiet override makes the lockbox theatre.
+- **Break-glass that is loud**: declared before the access, reasoned in words, and held in queues an operator can read and has to discharge — because a quiet override makes the lockbox theatre.
+- **A clinician console** — chart, worklist and break-glass queues — where a panel that failed, one that was cut short, and one the patient locked are three visibly different things rather than three empty boxes.
+- **A lockbox that can cover part of a chart**, where the locked panel says a directive withheld it rather than rendering as "none" — so a patient can withhold one section without taking the rest of their chart away from the clinician treating them.
+- **A restore that has actually been rehearsed**, to somewhere the database has never been, with a measured RTO — because a verified snapshot only proves the bytes hashed correctly when they were written.
 
-410 tests. Backend first, tests before UI.
+426 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -609,6 +614,44 @@ Declaring is itself an event on the trail, written before any record is read und
 
 A short list that looks complete is what this system refuses everywhere, and here it is worse than usual: a result withheld from the clinician responsible for reading it is a result now owed to **nobody**, which is the exact silence §4 exists to prevent. The count is reported so somebody can act on it; who they are is not, which is what the directive asked for. A task with no patient on it is not about anybody, so no directive withholds it.
 
+**A chart is a third problem again**, because it is not one kind of thing. "May they read the chart?" has no honest yes-or-no answer when the patient has locked their counselling notes and nothing else — and both available answers are wrong. Serving it leaks what they locked. Refusing it takes the whole chart away over one panel, leaving break-glass as the only route to an allergy list nobody objected to.
+
+So a directive narrowed by `scope` withholds its **section**:
+
+```json
+{ "recentNotes": { "items": [], "complete": false,
+    "incomplete": { "reason": "withheld",
+                    "detail": "withheld by a patient directive; break glass to see it if the situation warrants it" } },
+  "complete": false,
+  "omissions": ["Recent notes: withheld by a patient directive; …"] }
+```
+
+`withheld` is a distinct reason from `unavailable`, and the distinction is clinical rather than tidy. A panel that **failed to load** is a reason to go and look elsewhere before prescribing. A panel the **patient locked** is a reason to have a conversation, or to break glass if the situation warrants it. Rendering the second as the first would be both wrong and quietly alarming.
+
+Neither the content nor the **count** of a withheld section reaches the response — "3 documents withheld" tells a reader the patient has counselling notes, which is most of what the lockbox was hiding — and the withheld section is not loaded and discarded but never read, because reading rows the patient locked in order to throw them away is still reading them. The access is audited as a success that withheld something, naming the types and nothing else.
+
+A route serving **exactly** the locked type still refuses, having nothing left to serve, and a directive naming **no** entry types refuses the whole chart. Both are the same rule seen from different sides: withhold precisely what the patient asked to withhold, and no more.
+
+### The clinician console
+
+Everything above is a store with an API in front of it, and until something renders it the honesty is theoretical. `complete` and `omissions` have been on every chart section since the chart was written; nothing displayed them.
+
+Three tabs in the admin UI, driven entirely through the clinical API — no privileged path, so every read leaves an audit row and passes the directive check like any other caller:
+
+**Chart.** The patient, the allergy status at the top where it cannot be missed, and eight panels. The only thing this screen really has to do is make a panel that is *not* complete impossible to mistake for one that is, so incompleteness is on the left border and in a line of prose inside the panel — never a tint somebody reads past at 03:00. The three reasons are visually distinct because they call for different actions:
+
+- **failed** — go and look somewhere else before you prescribe
+- **truncated** — there is more below
+- **withheld** — the patient asked; break glass if the situation warrants it
+
+A chart that is short says so at the top, above the panels: *"This is not the whole chart. Do not read a panel below as 'none' without checking why it is short."*
+
+**Worklist.** What is owed to one clinician across results, referrals, orders, tasks and reconciliations — each with the same completeness treatment, because something owed to you that is missing from the list is owed to nobody. Results are acknowledged inline, and the acknowledgement needs a sentence saying what was done: a queue that empties on a click teaches a ward that the queue is the work. The refusals come back verbatim, including *"this result was corrected; acknowledge &lt;other&gt; instead"*.
+
+**Break-glass.** The two queues, and the controls that discharge them. A lockbox nobody can find out was opened is a lockbox with no lock.
+
+Hostile content in this console runs in the browser session of the person holding an admin key, so `test/ui-xss.test.ts` drives all three tabs in a real Chromium against genuinely hostile input — a patient's name from an ADT feed, and the free text a clerk types into a referral, a task or a break-glass reason — and asserts both that nothing executed and that the payloads actually reached the DOM.
+
 ### What is deliberately not on this API
 
 **The patient-facing surface.** `src/patient/access.ts` is built and tested, and it is not mounted here, because a patient portal is a different trust boundary — a patient authenticating as themselves, and a proxy authenticating as somebody entitled to act for them, neither of which is an operator holding an `admin` key. Bolting those endpoints onto an admin-scoped API would make the scope model say something false about who is calling.
@@ -831,13 +874,33 @@ With the engine stopped:
 
 ```bash
 systemctl stop portage
-mv data/portage.db data/portage.db.broken
-rm -f data/portage.db-wal data/portage.db-shm     # stale, and not part of the snapshot
-cp backups/portage-<stamp>.db data/portage.db
+npm run restore -- --from backups              # newest snapshot there
+npm run restore -- --snapshot backups/portage-2026-08-19T14-00-00.db
 systemctl start portage
 ```
 
-Removing the sidecars is the step people skip. Left behind, SQLite tries to apply a write-ahead log belonging to the database you just replaced.
+This used to be a documented sequence of `mv`, `rm` and `cp`, and the `rm` was the step people skip — a stale `-wal` left beside the restored file points SQLite at a write-ahead log belonging to the database you just replaced. A procedure that depends on nobody skipping a step at 03:00 is not a procedure, so it is code now.
+
+It refuses to run against a database something still appears to hold, because restoring under a live engine hands it a file it does not own and the damage is silent. Nothing is deleted: the database being replaced is moved aside with a timestamped suffix and kept, because a restore is always made by somebody having a bad day and is sometimes the wrong call.
+
+**The snapshot is proved to come up before anything is displaced.** Not by verifying the snapshot in place — that cannot work across versions, and finding out why is most of what rehearsing this was worth. `verifyBackup()` opens read-only, and a read-only handle skips both `SCHEMA` and `migrate()`, so it queries the *current* schema against a file written by whatever version took it: a snapshot one release old failed with `no such table: channels` and the verified path refused a perfectly good backup. So the preflight copies the snapshot somewhere temporary, opens the copy *writable* so the migration actually runs, and verifies that. One extra pass over the file buys the answer an operator actually needs — not "was this valid when written" but "will this come up under the code I am about to run" — and the migration is exercised before it is committed to rather than during the outage.
+
+### What restoring costs
+
+Measured by `npm run restoretest`, which takes a snapshot from under a live engine, restores it to a directory the database has never occupied, and boots an engine against it in a separate process. It runs nightly in CI on both supported Node versions.
+
+| database | backup | restore | engine start | **RTO** |
+|---|---|---|---|---|
+| 10 MB (20,000 messages) | 141 ms | 0.2 s | 0.3 s | **0.5 s** |
+| 96 MB (200,000 messages) | 2.5 s | 3.3 s | 2.8 s | **6.0 s** |
+
+Single runs on one machine, so read them as an order of magnitude rather than a benchmark: a hundred-megabyte database comes back in seconds, not minutes. Re-run `npm run restoretest --messages <n>` on your own hardware for a number you can put in a service agreement.
+
+**RPO is a property of your schedule, not of this code.** A node snapshotting every 24 hours loses up to 24 hours of the message log to a total disk failure, and the clinical record is in the same file, so it is the same number. Shorten the cadence to shorten it — a snapshot of a 96 MB database cost 2.5 seconds against a live engine, so hourly is affordable at that size.
+
+**The RTO is a floor, not a promise.** It is restore plus boot. It excludes noticing the outage, deciding to restore, and finding the snapshot, which on a real night are most of the elapsed time.
+
+**What the rehearsal does not prove.** It restores to a path the database has never occupied, in a process that has never opened it, with a cold cache and no sidecars — enough to have caught two real defects, including one invisible to any restore onto the machine that took the backup. It does not use a second machine, so a different filesystem or disk is genuinely untested. Running it on Node 22 and 24 covers the part that bites in practice: two different `node:sqlite` builds opening the same file.
 
 `PORTAGE_BACKUP_DIR` and `PORTAGE_BACKUP_KEEP` configure the API endpoint.
 
@@ -1280,16 +1343,64 @@ npm run terminology:import -- --format csv --in icd10ca.csv \
 
 Everything streams and loads in batches, because a SNOMED snapshot runs to millions of rows. Concepts upsert on (system, code), so re-running a release is safe. RF2 emits only active concepts, uses the fully specified name as the display, and trims its trailing semantic tag — "Asthma (disorder)" becomes "Asthma".
 
+## Licence
+
+[Apache-2.0](LICENSE). Permissive, with an explicit patent grant — chosen
+because the software is meant to be deployed and adapted by health authorities
+and their vendors, and because clinical-safety and terminology mechanisms are
+the kind of thing patent claims attach to. A licence that leaves that
+unaddressed puts the risk on whoever deploys it.
+
+Copyright 2026 Thomas Genua.
+
+Portage carries no clinical content and no licensed terminology. SNOMED CT,
+LOINC, pCLOCD and ICD-10-CA are licensed separately by their owners; the
+loaders in `scripts/` read releases you are already entitled to and ship none
+of them. See [Loading a licensed terminology release](#loading-a-licensed-terminology-release).
+
+## Contributing
+
+Issues and pull requests are welcome. Two things worth knowing before you open
+one:
+
+- **Never attach real patient data**, in any form, including screenshots and
+  log excerpts. `fixtures/` and the test suite carry synthetic identifiers for
+  exactly this.
+- **A suspected vulnerability is not an issue.** It goes through private
+  disclosure — see [SECURITY.md](SECURITY.md).
+
+`npm run typecheck && npm test` is what CI runs on every push; the crash,
+disk-full and load tests run nightly and can be triggered by hand from the
+Actions tab.
+
 ## Roadmap
 
-What is genuinely next, in the order it would be worth doing:
+Tracked as issues rather than prose, so each one can be scoped, argued with and
+closed. In the order it would be worth doing:
 
-**The patient-facing surface.** The hardest part is already built and tested — directives, proxy authority that expires, release timing, the access log. What is missing is its trust boundary: patient identity rather than an issued operator credential, a scope vocabulary of its own, and `PatientAccess.may()` consulted per request instead of a scope check. Until that exists, "patients can reach their record" is not true.
+**Prove what is currently only claimed.**
 
-**A clinician-facing interface.** Every store below is exercised only by tests and HTTP. The chart summary is designed for it — `complete` and `omissions` exist so a renderer can be honest about a short panel — but nothing renders them yet.
+- [#15 Rehearse a restore on a different machine, and state an RPO and RTO](https://github.com/ThomasGenua/healthsystem/issues/15) — snapshots are verified and a corrupt one is rejected, and no snapshot has ever been restored onto another host and run against. The current state proves less than it appears to.
+- [#21 A clinical safety case and hazard log](https://github.com/ThomasGenua/healthsystem/issues/21) — the hazard reasoning exists, scattered across docstrings and test names where no safety officer will find it, in no defensible form.
+- [#22 An external penetration test](https://github.com/ThomasGenua/healthsystem/issues/22) — the adversarial tests here share their author's model of what an attack looks like. The interesting findings are outside it.
 
-**Interoperability, continued.** Projectathon readiness: pack tightening against the published PS-CA, CA:FeX and CA:eReC test scripts. Terminology ValueSet and ConceptMap import from release formats (concepts land today; memberships and mappings are still pack JSON). Subscription topics and the R5 backport, alongside today's R4 rest-hook criteria.
+**Make the consent enforcement precise.** Both currently fail closed, which is safe and blunter than the patient asked for.
 
-**Horizontal operation.** A Portage node is a single writer, which suits a community site and not a territorial hub. The instance lock makes that a refusal rather than a corruption, which is the right failure — but it is still a ceiling.
+- [#16 Filter a scope-narrowed directive per section instead of refusing the whole chart](https://github.com/ThomasGenua/healthsystem/issues/16)
+- [#17 Give credentials an organization identity](https://github.com/ThomasGenua/healthsystem/issues/17)
+- [#18 Actually deliver the break-glass notification the patient is owed](https://github.com/ThomasGenua/healthsystem/issues/18) — the queue is visible and drainable; nothing sends anything.
 
-**Bulk data conversion.** Section 15 asks for migration from incumbent systems, and there is nothing here for it: no legacy extract readers, no reconciliation report, no way to tell an operator which records did not convert and why. The clinical stores are append-only and provenance-carrying, which is the right shape to migrate into; the migration itself is unwritten.
+**Put it in front of a person.**
+
+- [#19 A thin clinician UI: one workflow usable end to end](https://github.com/ThomasGenua/healthsystem/issues/19) — every store is exercised only by tests and HTTP. The chart summary was designed for a renderer that does not exist: `complete` and `omissions` are there so a panel can be honest about being short, and nothing renders them.
+- [#23 Validate the conformance packs against the published Projectathon scripts](https://github.com/ThomasGenua/healthsystem/issues/23) — the packs validate against this project's reading of the specifications, which is not the same as conforming to them.
+- [#24 The patient-facing surface, and its separate identity boundary](https://github.com/ThomasGenua/healthsystem/issues/24) — the hard part is built and deliberately not mounted, because a portal is a different trust boundary.
+
+**Then scale.**
+
+- [#20 §15 bulk migration from incumbent systems, with a reconciliation report](https://github.com/ThomasGenua/healthsystem/issues/20) — how a real deployment starts, and completely absent.
+- [#25 Horizontal operation](https://github.com/ThomasGenua/healthsystem/issues/25) — a single writer suits a community site and not a territorial hub. Last, because scaling a system nobody can load data into and whose recovery has never been rehearsed is optimising the wrong axis.
+
+**Smaller, from review.** [#26 `phi()` maps every store exception to HTTP 400](https://github.com/ThomasGenua/healthsystem/issues/26) · [#27 the `migrate()` rebuild runs with foreign keys on](https://github.com/ThomasGenua/healthsystem/issues/27)
+
+**Deliberately not next.** Machine learning and broad decision-support content wait for validated data, licensed content and a clinical-governance process. The decision-support mechanism ships without content on purpose, and shipping content without that process would be the most consequential version of the failure this codebase spends its time refusing: a system answering a clinical question that nobody actually answered.

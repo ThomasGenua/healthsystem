@@ -1,10 +1,10 @@
 {
   "name": "portage",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Health integration engine for northern operating conditions. HL7 v2, FHIR R4, durable store-and-forward, ordered replay, hash-chained message lineage, authenticated API with mutual TLS.",
   "type": "module",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "engines": {
     "node": ">=22.18"
   },
@@ -16,6 +16,8 @@
     "loadtest": "node scripts/loadtest.ts",
     "crashtest": "node scripts/crashtest.ts",
     "diskfulltest": "node scripts/diskfulltest.ts",
+    "restore": "node scripts/restore.ts",
+    "restoretest": "node scripts/restore-rehearsal.ts",
     "terminology:import": "node scripts/import-terminology.ts",
     "typecheck": "tsc --noEmit"
   },

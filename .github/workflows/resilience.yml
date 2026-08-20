@@ -1,0 +1,127 @@
+---
+# The tests that cost minutes rather than seconds, on a schedule.
+#
+# ci.yml runs on every push and has to stay fast enough that people wait for
+# it, so it runs typechecking and the unit and integration suites and nothing
+# else. That leaves the three checks that exercise the guarantees the README
+# actually makes — that an acknowledgement means durable, that a full disk is
+# refused rather than half-written, and that the throughput numbers are still
+# true — running only when somebody remembers to run them by hand. A guarantee
+# nobody checks on a schedule is a guarantee that decays quietly between
+# releases, which is the same failure mode this system spends its tests
+# refusing everywhere else.
+#
+# Nightly rather than per-push because they take minutes and because what they
+# catch is drift, not a bad commit: a durability regression is nearly always
+# introduced by a change that looked unrelated to durability.
+name: Resilience
+
+on:
+  schedule:
+    # 08:00 UTC is roughly 01:00 in Yellowknife, so a failure is waiting in the
+    # morning rather than interrupting the day.
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+    inputs:
+      messages:
+        description: "Messages to push through the crash and load tests"
+        required: false
+        default: "300"
+
+jobs:
+  crash:
+    name: crash recovery (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both supported runtimes. Durability is the guarantee most likely to
+        # differ between node:sqlite versions, so it is the one worth running
+        # against each of them rather than only against the production target.
+        node: ["22.x", "24.x"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      # SIGKILLs a real engine mid-drain against a real file, restarts it, and
+      # checks nothing was lost and order held.
+      - run: npm run crashtest -- --messages ${{ github.event.inputs.messages || '300' }} --kills 3
+
+  disk-full:
+    name: disk full
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.x"
+          cache: npm
+      - run: npm ci
+      # A size-capped tmpfs, because the script's job is to fill the
+      # filesystem it is pointed at and the runner's root filesystem is not a
+      # thing to fill. 64 MB is enough to exhaust with ballast in seconds and
+      # small enough that nothing else on the runner notices.
+      - name: Mount a small scratch filesystem
+        run: |
+          sudo mkdir -p /mnt/diskfull
+          sudo mount -t tmpfs -o size=64m tmpfs /mnt/diskfull
+          sudo chown "$(id -u):$(id -g)" /mnt/diskfull
+          df -h /mnt/diskfull
+      # Exit 2 means the script could not set up the condition (no --dir, or
+      # the filesystem never filled) rather than that the engine failed. That
+      # is a broken check, not a passing one, so it is not swallowed.
+      - run: npm run diskfulltest -- --dir /mnt/diskfull
+      - name: Release the scratch filesystem
+        if: always()
+        run: sudo umount /mnt/diskfull || true
+
+  restore:
+    name: restore rehearsal (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both runtimes, and here the matrix is doing more than covering the
+        # supported range. A restore onto a different machine is the case this
+        # rehearsal exists for and the case a single-host CI job cannot stage;
+        # two Node versions means two different node:sqlite builds opening the
+        # same file, which is the part of "somewhere else" that actually bites.
+        node: ["22.x", "24.x"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      # Takes a snapshot from under a live engine, restores it to a directory
+      # the database has never occupied, boots an engine against it in a
+      # separate process, and proves the result is usable rather than merely
+      # openable: chart readable, message writable, both hash chains verifying
+      # with the new row on the end, and the scheduler's unique index intact.
+      # Prints the measured RTO.
+      - run: npm run restoretest -- --messages ${{ github.event.inputs.messages || '20000' }}
+
+  load:
+    name: load
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.x"
+          cache: npm
+      - run: npm ci
+      # Throughput, database growth per message, and a backup taken against a
+      # live engine. The numbers are printed rather than asserted — a shared
+      # runner is too noisy to fail a build on a percentage — so this catches
+      # the order-of-magnitude regression and the outright breakage, and the
+      # log is where the trend is read.
+      - run: npm run loadtest -- --messages ${{ github.event.inputs.messages || '20000' }}

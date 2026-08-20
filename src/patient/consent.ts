@@ -101,6 +101,33 @@ export interface AccessDecision {
   reason: string;
 }
 
+/**
+ * What this caller may not see of this patient, separated by how much of it.
+ *
+ * A directive that names no entry types withholds the record; a directive
+ * narrowed by `scope` withholds part of it. Collapsing those two into one
+ * yes-or-no is what made a partial lockbox unusable: the only safe answer to
+ * "may they read?" for a caller that could be reading anything is no, so a
+ * patient who locked one section lost the whole chart.
+ *
+ * Keeping them apart lets the caller answer honestly at its own granularity. A
+ * route serving one entry type asks about that type and gets a precise answer.
+ * The assembled chart asks about all of them, serves the sections that are not
+ * withheld, and — because this is a summary and a summary is read as complete
+ * — says on its face which sections are missing and that a directive is why.
+ */
+export interface ReadRestrictions {
+  /** An override is in force, so nothing is withheld. */
+  underBreakGlass?: BreakGlassRow;
+  /**
+   * A directive that withholds the record as a whole, rather than a part.
+   * A route cannot serve anything past this.
+   */
+  blocking?: DirectiveRow;
+  /** Entry types withheld by a narrowed directive, and which directive. */
+  withheldTypes: Map<string, DirectiveRow>;
+}
+
 /** How long an override lasts unless a deployment says otherwise. */
 const DEFAULT_OVERRIDE_HOURS = 4;
 
@@ -210,36 +237,95 @@ export class ConsentDirectives {
     input: { subjectId: string; organizationId?: string; patientId: string; entryType?: string },
     asOf = new Date().toISOString()
   ): AccessDecision {
-    const live = this.liveOverride(input.subjectId, input.patientId, asOf);
-    if (live) {
-      return { allowed: true, underBreakGlass: live, reason: "emergency override in force" };
+    const r = this.restrictionsFor(input, asOf);
+    if (r.underBreakGlass) {
+      return { allowed: true, underBreakGlass: r.underBreakGlass, reason: "emergency override in force" };
     }
-
-    for (const d of this.directivesFor(input.patientId, asOf)) {
-      if (!this.applies(d, input)) continue;
-      return {
-        allowed: false,
-        withheldBy: d,
-        reason: "this record is withheld by a patient directive",
-      };
+    if (r.blocking) {
+      return { allowed: false, withheldBy: r.blocking, reason: "this record is withheld by a patient directive" };
+    }
+    // A caller that named its entry type is asking a precise question and gets
+    // a precise answer. One that named none could be reading anything,
+    // including the withheld part, so any narrowed directive stops it — see
+    // `applies()` for why that asymmetry is the safe direction. A caller that
+    // can serve its answer section by section should be asking
+    // `restrictionsFor()` rather than this.
+    const withheld = input.entryType
+      ? r.withheldTypes.get(input.entryType)
+      : r.withheldTypes.values().next().value;
+    if (withheld) {
+      return { allowed: false, withheldBy: withheld, reason: "this record is withheld by a patient directive" };
     }
     return { allowed: true, reason: "no directive applies" };
   }
 
-  private applies(
-    d: DirectiveRow,
-    input: { subjectId: string; organizationId?: string; entryType?: string }
-  ): boolean {
-    if (d.scope) {
-      const scoped = JSON.parse(d.scope) as string[];
-      // A directive narrowed to particular entry types does not withhold the
-      // rest of the chart. Applying it to everything would give the patient
-      // more than they asked for, which is its own kind of not listening.
-      if (!input.entryType || !scoped.includes(input.entryType)) return false;
+  /**
+   * Everything standing between this caller and this patient's record, split
+   * into what withholds the whole of it and what withholds a part.
+   *
+   * The question `mayRead()` cannot answer for a caller that serves more than
+   * one kind of thing. A chart is not one entry type, so "may they read the
+   * chart" has no honest yes-or-no answer when the patient has locked their
+   * counselling notes and nothing else.
+   */
+  restrictionsFor(
+    input: { subjectId: string; organizationId?: string; patientId: string },
+    asOf = new Date().toISOString()
+  ): ReadRestrictions {
+    const live = this.liveOverride(input.subjectId, input.patientId, asOf);
+    if (live) return { underBreakGlass: live, withheldTypes: new Map() };
+
+    const withheldTypes = new Map<string, DirectiveRow>();
+    let blocking: DirectiveRow | undefined;
+    for (const d of this.directivesFor(input.patientId, asOf)) {
+      if (!this.targets(d, input)) continue;
+      if (!d.scope) {
+        // The first unscoped directive settles it; nothing narrower can widen
+        // what a whole-record directive already withholds.
+        blocking ??= d;
+        continue;
+      }
+      for (const t of JSON.parse(d.scope) as string[]) {
+        // First directive to name a type owns the refusal, so the reason a
+        // clinician is shown is the one that was recorded first rather than
+        // whichever happened to sort last.
+        if (!withheldTypes.has(t)) withheldTypes.set(t, d);
+      }
     }
+    return { blocking, withheldTypes };
+  }
+
+  /**
+   * Whether this directive is aimed at this caller at all.
+   *
+   * Only the "who" half. What a directive covers — the whole record or the
+   * entry types in its `scope` — is decided by `restrictionsFor()`, because
+   * that answer is not a boolean and squeezing it into one is what made a
+   * partial lockbox behave as no lockbox at all.
+   *
+   * Fails closed on the organization, and that is the design rather than a
+   * detail of it. `withhold-from-organization` can only be honoured by a
+   * caller that says which organization it speaks for, and no `Principal`
+   * carries one yet. Matching against `undefined` made every such directive
+   * permanently inert — recorded, reported to the patient as active, and
+   * enforced by nothing. Until organization identity reaches the auth layer, a
+   * caller that cannot say it is outside the withheld organization is treated
+   * as possibly inside it.
+   *
+   * The two directions cost different things. Over-withholding puts a
+   * clinician in front of a refusal they can break glass through in seconds,
+   * loudly and on the record. Under-withholding hands the record to exactly
+   * the person the patient excluded, silently. Those are not symmetrical, and
+   * this is not symmetrical about them.
+   */
+  private targets(d: DirectiveRow, input: { subjectId: string; organizationId?: string }): boolean {
     if (d.kind === "withhold-all") return true;
     if (d.kind === "withhold-from-provider") return d.target_id === input.subjectId;
-    if (d.kind === "withhold-from-organization") return d.target_id === input.organizationId;
+    // Deliberately not `=== input.organizationId`: undefined must not read as
+    // "some other organization, so let them through".
+    if (d.kind === "withhold-from-organization") {
+      return input.organizationId === undefined || d.target_id === input.organizationId;
+    }
     return false;
   }
 
@@ -253,9 +339,16 @@ export class ConsentDirectives {
    * afterwards is the entire point: this row is what a privacy office reads
    * when a patient asks who opened their record and why.
    *
-   * Notifying the patient is not a separate optional step a caller may skip —
-   * `notifyPatient` runs here, and `pendingNotification()` exists so a
-   * deployment whose channel is asynchronous can still be held to it.
+   * Notifying the patient is a separate step, and this does not take it.
+   * Saying so plainly because an earlier version of this comment claimed
+   * `notifyPatient` ran here and it never did — a docstring asserting a
+   * guarantee the code does not provide is worse than no docstring, because
+   * it is the thing a reviewer checks instead of the code. What is true is
+   * that the row lands with `patient_notified_at` NULL, so the override is on
+   * `pendingNotification()` from the moment it exists and stays there until
+   * somebody records that the patient was told. The queue is the guarantee;
+   * draining it is the deployment's job, and `GET /api/clinical/break-glass`
+   * is where an operator can see what is owed.
    */
   breakGlass(input: {
     patientId: string;
@@ -271,8 +364,12 @@ export class ConsentDirectives {
       );
     }
     const now = new Date();
+    // The directive this override goes past, recorded on the row so a privacy
+    // office reading it later can see what was overridden. Any directive aimed
+    // at this caller counts, narrowed or not: breaking glass past a lockbox on
+    // one section is still breaking glass past that patient's instruction.
     const directive = this.directivesFor(input.patientId, now.toISOString()).find((d) =>
-      this.applies(d, { subjectId: input.by.actorId })
+      this.targets(d, { subjectId: input.by.actorId })
     );
     const id = randomUUID();
     const expires = new Date(now.getTime() + (input.hours ?? this.overrideHours) * 3_600_000).toISOString();
