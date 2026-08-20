@@ -7,6 +7,68 @@ Portage is pre-1.0: minor versions may change interfaces. Database upgrades are
 always forward-compatible and run automatically on open — see
 [Upgrading](docs/RUNBOOK.md#upgrading).
 
+## Unreleased
+
+**Added**
+
+- **Encounters** (#32) — the visit, and everything that happened inside it.
+  `encounter_id` had been a column on orders, medication statements,
+  reconciliations and clinical entries since they were written, and no table
+  owned one, so it named something the system could not describe. A visit now
+  has a class, a status, a period, a location, participants with roles, and a
+  disposition; `GET /api/clinical/encounter` assembles what belongs to it with
+  the same per-section completeness as the chart, so a section that failed says
+  so instead of reading as "nothing was ordered at this visit".
+- A worklist of visits still open (`GET /api/clinical/encounters-open`), with an
+  age threshold, so a visit cannot stay open indefinitely without somebody
+  seeing it — everything filed against an open visit inherits its ambiguity,
+  and a discharge summary cannot be produced for one that has not ended.
+- `POST /api/clinical/encounter-open`, `-arrive`, `-close` and `-cancel`, each
+  through the same directive check as a read: a caller who may not see a
+  patient's record may not start adding to it either.
+- **A provider, organization, location and service directory** (#33), with
+  roles and first-class identifiers. A scheduler slot said `dr-tetso` and a
+  referral said "Stanton Orthopaedics", and neither resolved to anything.
+  Organization is modelled separately from tenancy, because several
+  organizations operate inside one custodian's tenant — conflating them is what
+  would make a `withhold-from-organization` directive (#17) withhold a record
+  from the whole territory rather than from one clinic.
+- Directory entries are **retired, never deleted**: a clinic that closes must
+  not break the referral sent to it two years ago, so `retire()` sets an end
+  date and the reference keeps resolving as known-and-inactive, which is a more
+  useful answer than either "gone" or "current".
+- `Schedule.openSlot()` accepts a typed `resource: { kind, id }` that is
+  validated against the directory, and `resolveResource()` answers for any
+  slot including those written before the directory existed. A referral target
+  is now three-valued — a known service, a **declared** external one, or
+  unverified free text — because collapsing the last two makes a typo
+  indistinguishable from a southern hospital, which is how a referral goes
+  nowhere while looking as though it went somewhere.
+- `GET/POST /api/directory`, `/resolve`, `/roles`, `/role` and `/retire`.
+
+**Fixed**
+
+- **Clinical content could name an encounter that did not exist, or that
+  belonged to another patient.** `encounter_id` reads as provenance, and
+  nothing checked it, so an order filed against somebody else's visit was
+  stored as fact — the same hazard `duplicates()` declines to merge for. Orders,
+  medication statements and clinical entries now validate it where they write
+  it. Eleven existing tests were filing notes against an `enc-1` that was never
+  created by anything, which is what the check was for.
+- **A clinical route nested under a subpath was exempt from the audit-coverage
+  guarantee.** `test/clinical-api.test.ts` discovers routes by reading
+  `admin.ts`, and its pattern stopped at the first `/`, so a route added as
+  `/api/clinical/encounter/arrive` would never have been driven and its missing
+  audit row would never have been noticed. The pattern now admits nested paths.
+
+**Changed**
+
+- `phi()` is now a thin wrapper over `phiFor()`, which takes the subject
+  explicitly. A route that learns whose record it is serving from the data
+  rather than from the query string — an encounter knows its own patient — uses
+  it directly, so the directive check cannot be dodged by omitting `patient`.
+- 426 → 448 tests.
+
 ## 0.5.0 — 2026-08-19
 
 The clinical platform, and the privacy enforcement that makes it safe to serve.

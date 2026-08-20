@@ -26,6 +26,9 @@ import { OrderStore } from "../orders/store.ts";
 import { ReferralStore } from "../work/referrals.ts";
 import { TaskStore } from "../work/tasks.ts";
 import { Workspace } from "../workspace/summary.ts";
+import { VisitView } from "../workspace/visit.ts";
+import { Encounters } from "../clinical/encounters.ts";
+import { Directory } from "../directory/store.ts";
 import { Schedule } from "../schedule/store.ts";
 import { Registry } from "../population/registry.ts";
 import { ConsentDirectives } from "../patient/consent.ts";
@@ -84,6 +87,12 @@ export interface TenantView {
   consent: ConsentDirectives;
   /** The assembled chart, over exactly the stores above. */
   workspace: Workspace;
+  /** Visits, and what belongs to each one. */
+  encounters: Encounters;
+  /** Practitioners, organizations, locations and the services they provide. */
+  directory: Directory;
+  /** The assembled visit, the encounter-scoped counterpart to `workspace`. */
+  visits: VisitView;
 }
 
 export interface EngineOptions {
@@ -213,6 +222,7 @@ export class Engine {
     const orders = new OrderStore(db);
     const referrals = new ReferralStore(db);
     const tasks = new TaskStore(db);
+    const encounters = new Encounters(db);
     const subs = new SubscriptionManager(db, this.worker);
     fhir.onChange((result, resource) => subs.notify(result, resource));
     const view: TenantView = {
@@ -232,6 +242,9 @@ export class Engine {
       registry: new Registry(db),
       consent: new ConsentDirectives(db),
       workspace: new Workspace({ record: clinical, notes, meds, orders, referrals, tasks }),
+      encounters,
+      directory: new Directory(db),
+      visits: new VisitView({ encounters, record: clinical, meds, orders }),
     };
     this.views.set(tenantId, view);
     return view;

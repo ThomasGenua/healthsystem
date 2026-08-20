@@ -33,6 +33,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Db } from "../db.ts";
 import { PatientIndex } from "./patients.ts";
+import { Encounters } from "./encounters.ts";
 
 /**
  * What an entry is. FHIR R4 resource names where one fits, so the facade and
@@ -135,10 +136,12 @@ function digest(prev: string | null, e: Omit<ClinicalEntry, "seq" | "hash" | "pr
 export class ClinicalRecord {
   private db: Db;
   private index: PatientIndex;
+  private encounters: Encounters;
 
   constructor(db: Db) {
     this.db = db;
     this.index = new PatientIndex(db);
+    this.encounters = new Encounters(db);
   }
 
   /** States something new about a patient. Returns the version written. */
@@ -400,6 +403,11 @@ export class ClinicalRecord {
       amendmentReason: string | null;
     }
   ): ClinicalEntry {
+    // An encounter_id that names nothing, or names another patient's visit,
+    // is worse than none: it reads as provenance and is not. Checked here
+    // rather than at every caller, because the callers are the ones that
+    // forget.
+    if (input.encounterId) this.encounters.validateFor(input.encounterId, input.patientId);
     return this.db.transaction(() => {
       const versionId = randomUUID();
       const row: Omit<ClinicalEntry, "seq" | "hash" | "prev_hash"> = {

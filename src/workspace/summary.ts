@@ -129,7 +129,7 @@ export interface WorkspaceSources {
  * panels is better served than one with an error page — but the panel it
  * leaves behind must say it failed rather than sit there looking like "none".
  */
-function section<T>(
+export function section<T>(
   load: (() => T[]) | undefined,
   limit: number,
   missing = "not configured in this deployment"
@@ -151,7 +151,7 @@ function section<T>(
   return { items: all, complete: true };
 }
 
-function describe(name: string, s: Section<unknown>): string | null {
+export function describe(name: string, s: Section<unknown>): string | null {
   if (s.complete || !s.incomplete) return null;
   switch (s.incomplete.reason) {
     case "unavailable":

@@ -61,6 +61,15 @@ export const TENANT_SCOPED_TABLES = [
   "schedule_events",
   "consent_directives",
   "break_glass",
+  "encounters",
+  "encounter_participants",
+  "encounter_events",
+  "directory_practitioners",
+  "directory_organizations",
+  "directory_locations",
+  "directory_services",
+  "directory_roles",
+  "directory_identifiers",
 ] as const;
 
 /**
@@ -424,6 +433,13 @@ CREATE TABLE IF NOT EXISTS referrals (
   priority TEXT NOT NULL DEFAULT 'routine',
   from_service TEXT NOT NULL,
   to_service TEXT NOT NULL,
+  -- The directory service this names, when it names one. Three-valued on
+  -- purpose: an id means a known service, to_external = 1 means a deliberate
+  -- referral out to somewhere Portage does not hold, and both NULL means
+  -- nobody said which — an unverified free-text target, and a different thing
+  -- from a declared external one.
+  to_service_id TEXT,
+  to_external INTEGER,
   -- Why the patient is being referred. A referral without an indication is
   -- one the receiving service cannot triage.
   indication TEXT NOT NULL,
@@ -858,6 +874,173 @@ CREATE TABLE IF NOT EXISTS schedule_events (
   detail TEXT
 );
 
+-- A visit: the thing clinical work actually happens inside.
+--
+-- Orders, medication statements, reconciliations and notes have carried an
+-- encounter_id since they were written, and until now no table owned one. The
+-- column was a reference to a thing the system could not describe, so "what
+-- happened at this visit" had no answer except a time-window guess across four
+-- stores, and a discharge summary had nothing to summarise.
+--
+-- Kept separate from the append-only clinical record on purpose. An Encounter
+-- entry there is a document about a visit; this is the visit, and the
+-- difference matters when the question is which orders belong to it.
+CREATE TABLE IF NOT EXISTS encounters (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  -- in-person | virtual | telephone | home-visit. How the patient was seen,
+  -- not where: a telephone review and a clinic visit generate different
+  -- records and a chart that cannot tell them apart is misleading about what
+  -- was examined.
+  class TEXT NOT NULL,
+  -- planned | in-progress | finished | cancelled.
+  status TEXT NOT NULL DEFAULT 'planned',
+  reason TEXT NOT NULL,
+  location TEXT,
+  -- The booking this arose from, where it arose from one. Nullable because a
+  -- walk-in is a real encounter and was never booked.
+  booking_id TEXT,
+  started_at TEXT,
+  ended_at TEXT,
+  -- What was decided. Stored rather than derived from status, because
+  -- "finished" says the visit ended and says nothing about how.
+  disposition TEXT,
+  opened_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Who was there, and as what.
+--
+-- A role per row rather than a column on the encounter, because a visit has a
+-- clinician and an interpreter and sometimes a family member, and flattening
+-- that into "provider_id" loses the interpreter — who is exactly the person a
+-- later reader needs to know was present.
+CREATE TABLE IF NOT EXISTS encounter_participants (
+  tenant_id TEXT NOT NULL,
+  encounter_id TEXT NOT NULL,
+  participant_id TEXT NOT NULL,
+  participant_kind TEXT NOT NULL,
+  role TEXT NOT NULL,
+  joined_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, encounter_id, participant_id, role)
+);
+
+CREATE TABLE IF NOT EXISTS encounter_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  encounter_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  event TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_kind TEXT NOT NULL,
+  from_status TEXT,
+  to_status TEXT,
+  detail TEXT
+);
+
+-- Who and what the system talks about: practitioners, organizations,
+-- locations, the services they provide, and who holds which role where.
+--
+-- Before this, a scheduler slot named "dr-tetso" and a referral named
+-- "Stanton Orthopaedics", and neither string resolved to anything. The system
+-- could not say whether that person existed, was licensed, worked here, or was
+-- the same dr-tetso who received a referral last week.
+--
+-- Effective-dated rather than deleted. A clinic that closes must not break the
+-- referral sent to it in 2024, and a practitioner who leaves must not vanish
+-- from the visits they attended — so a directory entry is retired by setting
+-- active_to, and history keeps resolving.
+CREATE TABLE IF NOT EXISTS directory_practitioners (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  family TEXT NOT NULL,
+  given TEXT,
+  prefix TEXT,
+  active_from TEXT NOT NULL,
+  active_to TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Organization is NOT tenancy. Several organizations operate inside one
+-- custodian's tenant, and conflating them would make a
+-- withhold-from-organization directive useless in exactly the deployment that
+-- needs it: a patient withholding from one clinic would withhold from the
+-- whole territory.
+CREATE TABLE IF NOT EXISTS directory_organizations (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  kind TEXT,
+  part_of TEXT,
+  active_from TEXT NOT NULL,
+  active_to TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS directory_locations (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  organization_id TEXT,
+  address TEXT,
+  -- The community, which in the north is the thing a clinician actually needs
+  -- when deciding whether an appointment is reachable.
+  community TEXT,
+  active_from TEXT NOT NULL,
+  active_to TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS directory_services (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  organization_id TEXT,
+  location_id TEXT,
+  category TEXT,
+  active_from TEXT NOT NULL,
+  active_to TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- What a practitioner does, where, and for whom. Separate from the
+-- practitioner because one person holds several: a locum at two clinics is one
+-- practitioner and two roles, and flattening that loses which hat they were
+-- wearing.
+CREATE TABLE IF NOT EXISTS directory_roles (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  practitioner_id TEXT NOT NULL,
+  organization_id TEXT,
+  location_id TEXT,
+  service_id TEXT,
+  role TEXT NOT NULL,
+  specialty TEXT,
+  active_from TEXT NOT NULL,
+  active_to TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Licence numbers, provider numbers, facility identifiers. First-class rather
+-- than a name string, because a name is not an identity and the join to a
+-- credential (#17) has to be on something that is.
+CREATE TABLE IF NOT EXISTS directory_identifiers (
+  tenant_id TEXT NOT NULL,
+  party_kind TEXT NOT NULL,
+  party_id TEXT NOT NULL,
+  system TEXT NOT NULL,
+  value TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, party_kind, party_id, system, value)
+);
+
 -- A patient's instruction about who may see their record.
 --
 -- Provincial EHRs call this a consent directive or a lockbox: a patient may
@@ -1047,6 +1230,21 @@ CREATE INDEX IF NOT EXISTS idx_slots_service ON schedule_slots(tenant_id, servic
 CREATE INDEX IF NOT EXISTS idx_bookings_patient ON schedule_bookings(tenant_id, patient_id, status);
 CREATE INDEX IF NOT EXISTS idx_bookings_slot ON schedule_bookings(tenant_id, slot_id, status);
 CREATE INDEX IF NOT EXISTS idx_schedule_events ON schedule_events(tenant_id, booking_id, seq);
+-- The chart read: a patient's visits, newest first.
+CREATE INDEX IF NOT EXISTS idx_encounters_patient ON encounters(tenant_id, patient_id, started_at);
+-- The worklist read: what is still open, so a visit cannot stay open forever
+-- without somebody seeing it.
+CREATE INDEX IF NOT EXISTS idx_encounters_status ON encounters(tenant_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_encounter_participants ON encounter_participants(tenant_id, encounter_id);
+CREATE INDEX IF NOT EXISTS idx_encounter_events ON encounter_events(tenant_id, encounter_id, seq);
+CREATE INDEX IF NOT EXISTS idx_directory_practitioner_name ON directory_practitioners(tenant_id, family, given);
+CREATE INDEX IF NOT EXISTS idx_directory_org_name ON directory_organizations(tenant_id, name);
+CREATE INDEX IF NOT EXISTS idx_directory_service_org ON directory_services(tenant_id, organization_id);
+CREATE INDEX IF NOT EXISTS idx_directory_roles_practitioner ON directory_roles(tenant_id, practitioner_id);
+CREATE INDEX IF NOT EXISTS idx_directory_roles_org ON directory_roles(tenant_id, organization_id);
+-- The lookup that matters for #17: a credential carries an identifier, and
+-- this is what turns it into a party.
+CREATE INDEX IF NOT EXISTS idx_directory_identifier ON directory_identifiers(tenant_id, system, value);
 CREATE INDEX IF NOT EXISTS idx_directives_patient ON consent_directives(tenant_id, patient_id, status);
 CREATE INDEX IF NOT EXISTS idx_directives_target ON consent_directives(tenant_id, target_id, status);
 CREATE INDEX IF NOT EXISTS idx_breakglass_review ON break_glass(tenant_id, reviewed_at, declared_at);
@@ -1100,6 +1298,8 @@ export interface DbOptions {
  * this column existed".
  */
 const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
+  { table: "referrals", column: "to_service_id", type: "TEXT" },
+  { table: "referrals", column: "to_external", type: "INTEGER" },
   { table: "messages", column: "raw_digest", type: "TEXT" },
   { table: "messages", column: "redacted_at", type: "TEXT" },
   { table: "deliveries", column: "redacted_at", type: "TEXT" },

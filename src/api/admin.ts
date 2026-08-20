@@ -52,6 +52,9 @@ import { checkCapability, toOperationOutcome, validateResource } from "../confor
 import { applyMapping } from "../transform/mapper.ts";
 import { takeBackup } from "../core/backup.ts";
 import { CHART_TYPES, WORKLIST_TYPES } from "../workspace/summary.ts";
+import { VISIT_TYPES } from "../workspace/visit.ts";
+import type { EncounterClass } from "../clinical/encounters.ts";
+import { DIRECTORY_KINDS, type PartyKind } from "../directory/store.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
 import { VERSION } from "../version.ts";
@@ -335,6 +338,92 @@ async function route(
     return;
   }
 
+  // ---- the directory ------------------------------------------------------
+  //
+  // Not clinical data and not under /api/clinical/, so these do not go through
+  // phi(): a directory says who works here, not anything about a patient.
+  // /api/ requires admin by default, which is the right posture for a registry
+  // that decides whose name a referral can be addressed to.
+  if (path.startsWith("/api/directory")) {
+    const kind = (url.searchParams.get("kind") ?? "practitioner") as PartyKind;
+    if (!DIRECTORY_KINDS.includes(kind)) {
+      return send(res, 400, { error: `unknown kind ${kind}; expected one of ${DIRECTORY_KINDS.join(", ")}` });
+    }
+    if (path === "/api/directory" && method === "GET") {
+      return send(res, 200, {
+        kind,
+        entries: tenant.directory.list(kind, {
+          includeRetired: url.searchParams.get("retired") === "true",
+          limit: num(url.searchParams.get("limit")),
+        }),
+      });
+    }
+    if (path === "/api/directory/resolve" && method === "GET") {
+      const id = url.searchParams.get("id");
+      if (!id) return send(res, 400, { error: "id required" });
+      // A reference the directory does not hold answers 200 with known:false
+      // rather than 404. "This is what the row says and I cannot find it" is
+      // the useful answer for a diary rendering a slot written years ago; a
+      // 404 would make the caller guess whether the id or the lookup was
+      // wrong.
+      return send(res, 200, tenant.directory.resolve(kind, id));
+    }
+    if (path === "/api/directory/roles" && method === "GET") {
+      const practitioner = url.searchParams.get("practitioner");
+      if (!practitioner) return send(res, 400, { error: "practitioner required" });
+      return send(res, 200, {
+        roles: tenant.directory.rolesFor(practitioner, {
+          includeRetired: url.searchParams.get("retired") === "true",
+        }),
+        organizations: tenant.directory.organizationsFor(practitioner),
+      });
+    }
+    if (path === "/api/directory" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as Record<string, string | undefined>;
+      try {
+        if (kind === "practitioner") {
+          return send(res, 201, tenant.directory.addPractitioner({ family: body.family ?? "", given: body.given, prefix: body.prefix }));
+        }
+        if (kind === "organization") {
+          return send(res, 201, tenant.directory.addOrganization({ name: body.name ?? "", kind: body.orgKind, partOf: body.partOf }));
+        }
+        if (kind === "location") {
+          return send(res, 201, tenant.directory.addLocation({ name: body.name ?? "", organizationId: body.organizationId, community: body.community, address: body.address }));
+        }
+        return send(res, 201, tenant.directory.addService({ name: body.name ?? "", organizationId: body.organizationId, locationId: body.locationId, category: body.category }));
+      } catch (err) {
+        return send(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (path === "/api/directory/role" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as Record<string, string | undefined>;
+      try {
+        return send(res, 201, tenant.directory.assignRole({
+          practitionerId: body.practitioner ?? "",
+          role: body.role ?? "",
+          organizationId: body.organizationId,
+          locationId: body.locationId,
+          serviceId: body.serviceId,
+          specialty: body.specialty,
+        }));
+      } catch (err) {
+        return send(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (path === "/api/directory/retire" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; at?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      try {
+        // Retire, never delete: the referral sent to this clinic in 2024 still
+        // has to resolve afterwards.
+        tenant.directory.retire(kind, body.id, body.at);
+        return send(res, 200, tenant.directory.resolve(kind, body.id));
+      } catch (err) {
+        return send(res, 400, { error: (err as Error).message });
+      }
+    }
+  }
+
   if (path === "/api/channels" && method === "GET") {
     return send(res, 200, engine.listChannels());
   }
@@ -594,12 +683,14 @@ async function route(
      * their own lists, because they assemble several, and receive the withheld
      * set so they can drop those sections rather than refuse outright.
      */
-    const phi = <T,>(
+    const phiFor = <T,>(
+      subject: string | undefined,
       resourceType: string,
       produce: (withheldTypes: ReadonlySet<string>) => T,
       count?: (v: T) => number,
       covers: readonly string[] = [resourceType]
     ): void => {
+      const patient = subject;
       let withheldTypes: ReadonlySet<string> = new Set();
       if (patient) {
         const block = withheld(patient, covers);
@@ -645,6 +736,23 @@ async function route(
       return send(res, 200, value);
     };
 
+    /**
+     * The ordinary case: the patient this route is about is the one named in
+     * the query string.
+     *
+     * A route that learns whose record it is serving from the data rather than
+     * from the caller — an encounter, say, which knows its own patient — uses
+     * `phiFor` directly. That distinction matters: letting a caller omit
+     * `patient` and have the directive check skipped would be a way past every
+     * lockbox in the system.
+     */
+    const phi = <T,>(
+      resourceType: string,
+      produce: (withheldTypes: ReadonlySet<string>) => T,
+      count?: (v: T) => number,
+      covers: readonly string[] = [resourceType]
+    ): void => phiFor(patient, resourceType, produce, count, covers);
+
     if (path === "/api/clinical/chart" && method === "GET") {
       if (!patient) return send(res, 400, { error: "patient required" });
       // The chart is not one entry type, which is why it passes CHART_TYPES
@@ -659,6 +767,50 @@ async function route(
           tenant.workspace.chart(patient, { limit: num(url.searchParams.get("limit")), withheldTypes }),
         undefined,
         CHART_TYPES
+      );
+    }
+    if (path === "/api/clinical/encounters" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      // The list of visits is not clinical content — a reason for attending is
+      // — so it goes through phi() like anything else that names a patient.
+      // "Who came to the clinic and why" is exactly what a lockbox is for.
+      return phi(
+        "Encounter",
+        () =>
+          tenant.encounters.forPatient(patient, {
+            includeCancelled: url.searchParams.get("cancelled") === "true",
+            limit: num(url.searchParams.get("limit")),
+          }),
+        (r) => r.length
+      );
+    }
+    if (path === "/api/clinical/encounter" && method === "GET") {
+      const id = url.searchParams.get("id");
+      if (!id) return send(res, 400, { error: "id required" });
+      // The patient is read from the encounter rather than from the query
+      // string, so the directive check cannot be dodged by omitting `patient`
+      // — the caller does not get to nominate whose consent is consulted.
+      const e = tenant.encounters.get(id);
+      if (!e) return send(res, 404, { error: `no encounter ${id}` });
+      return phiFor(
+        e.patient_id,
+        "Encounter",
+        (withheldTypes) => tenant.visits.summarise(id, { limit: num(url.searchParams.get("limit")), withheldTypes }),
+        undefined,
+        VISIT_TYPES
+      );
+    }
+    if (path === "/api/clinical/encounters-open" && method === "GET") {
+      // Spans patients, like the worklist, so no single directive can refuse
+      // it. It returns visits rather than clinical content: what is on it is
+      // that a visit is still open, which is an administrative fact.
+      return phi(
+        "Encounter",
+        () =>
+          tenant.encounters.stillOpen({
+            olderThanHours: num(url.searchParams.get("olderThanHours")),
+          }),
+        (r) => r.length
       );
     }
     if (path === "/api/clinical/worklist" && method === "GET") {
@@ -828,6 +980,58 @@ async function route(
         });
         return send(res, 400, { error: (err as Error).message });
       }
+    }
+    if (path === "/api/clinical/encounter-open" && method === "POST") {
+      // Opening a visit is a write about a patient, so it goes through the
+      // same directive check as a read of one. A caller who may not see this
+      // patient's record may not start adding to it either.
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        class?: string;
+        reason?: string;
+        location?: string;
+        bookingId?: string;
+        arrived?: boolean;
+      };
+      if (!body.patient || !body.class || !body.reason) {
+        return send(res, 400, { error: "patient, class and reason required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(body.patient, "Encounter", () =>
+        tenant.encounters.open({
+          patientId: body.patient!,
+          class: body.class as EncounterClass,
+          reason: body.reason!,
+          by: { actorId: who, actorKind: "practitioner" },
+          ...(body.location ? { location: body.location } : {}),
+          ...(body.bookingId ? { bookingId: body.bookingId } : {}),
+          ...(body.arrived ? { arrived: true } : {}),
+        })
+      );
+    }
+    if (
+      method === "POST" &&
+      (path === "/api/clinical/encounter-arrive" ||
+        path === "/api/clinical/encounter-close" ||
+        path === "/api/clinical/encounter-cancel")
+    ) {
+      const body = JSON.parse(await readBody(req)) as { id?: string; disposition?: string; reason?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      const e = tenant.encounters.get(body.id);
+      if (!e) return send(res, 404, { error: `no encounter ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      const by = { actorId: who, actorKind: "practitioner" };
+      // The store's refusals reach the caller verbatim, because each of them
+      // says something a clinician needs to read rather than a validation
+      // code: a visit that started cannot be cancelled, and closing one needs
+      // a disposition saying what was decided.
+      return phiFor(e.patient_id, "Encounter", () => {
+        if (path.endsWith("-arrive")) return tenant.encounters.arrive(body.id!, by);
+        if (path.endsWith("-close")) {
+          return tenant.encounters.close(body.id!, { ...by, disposition: body.disposition ?? "" });
+        }
+        return tenant.encounters.cancel(body.id!, { ...by, reason: body.reason ?? "" });
+      });
     }
     if (path === "/api/clinical/break-glass" && method === "GET") {
       // What breaking glass has cost so far, and what is still owed.
