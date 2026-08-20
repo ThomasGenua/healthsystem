@@ -58,7 +58,7 @@ v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A lockbox that can cover part of a chart**, where the locked panel says a directive withheld it rather than rendering as "none" — so a patient can withhold one section without taking the rest of their chart away from the clinician treating them.
 - **A restore that has actually been rehearsed**, to somewhere the database has never been, with a measured RTO — because a verified snapshot only proves the bytes hashed correctly when they were written.
 
-439 tests. Backend first, then the interface that makes the backend's honesty visible.
+448 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -587,6 +587,20 @@ A visit now exists, with a class (in-person, virtual, telephone, home visit), a 
 The assembled visit inherits the chart's position exactly: it is read as complete, so a section that failed says so rather than rendering as "nothing was ordered at this visit". Results hang off the orders the visit placed rather than off the encounter, because a result answers an order — and if the orders section came back short, the results section reports itself as an undercount rather than as a shorter true list.
 
 Rows written before encounters existed keep `encounter_id IS NULL` and stay readable. An entry with no encounter is not an entry with an unknown one, and nothing backfills a guess.
+
+### The directory
+
+A slot said `dr-tetso`. A referral said "Stanton Orthopaedics". Neither string resolved to anything, so the system could not say whether that person existed, was licensed, worked here, or was the same `dr-tetso` who received a referral last week.
+
+Practitioners, organizations, locations, the services they provide, and the roles joining them are now modelled, with licence and facility identifiers as first-class rather than a display name — a name is not an identity, and the identifier is what a credential will eventually be matched on.
+
+**Organization is not tenancy.** Several organizations operate inside one custodian's tenant. Conflating the two would make a `withhold-from-organization` directive withhold a patient's record from the whole territory instead of from the one clinic they named, which is the deployment that most needs the distinction. One practitioner holds several roles for the same reason: a locum covering two clinics is one person and two roles, and a single `organization_id` would lose which hat they were wearing.
+
+**Nothing is deleted.** A clinic that closes must not break the referral sent to it in 2024. Entries are effective-dated, so retiring one keeps it resolving afterwards as known-and-inactive — a more useful answer than either "gone" or "current".
+
+**Resolution is honest rather than fatal.** A reference the directory does not hold resolves to `known: false` carrying the row's own value, not a blank and not an exception. That is what lets a site adopt a directory without a flag day: existing slots keep working and report themselves as unregistered. A caller wanting the strong guarantee passes a typed reference — `openSlot({ resource: { kind, id } })` — which is validated on write, so a typo is refused there rather than found by a clerk staring at a diary for somebody who does not work here.
+
+A referral target is three-valued for the same reason: a known service, a **declared** external one, or unverified free text. A referral south is ordinary and must not be refused for being unknown; what it must not be is indistinguishable from a typo.
 
 ## The clinical API, and audit by construction
 

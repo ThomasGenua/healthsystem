@@ -54,6 +54,7 @@ import { takeBackup } from "../core/backup.ts";
 import { CHART_TYPES, WORKLIST_TYPES } from "../workspace/summary.ts";
 import { VISIT_TYPES } from "../workspace/visit.ts";
 import type { EncounterClass } from "../clinical/encounters.ts";
+import { DIRECTORY_KINDS, type PartyKind } from "../directory/store.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
 import { VERSION } from "../version.ts";
@@ -335,6 +336,92 @@ async function route(
     res.writeHead(200, { "content-type": "text/plain; version=0.0.4", "content-length": Buffer.byteLength(body) });
     res.end(body);
     return;
+  }
+
+  // ---- the directory ------------------------------------------------------
+  //
+  // Not clinical data and not under /api/clinical/, so these do not go through
+  // phi(): a directory says who works here, not anything about a patient.
+  // /api/ requires admin by default, which is the right posture for a registry
+  // that decides whose name a referral can be addressed to.
+  if (path.startsWith("/api/directory")) {
+    const kind = (url.searchParams.get("kind") ?? "practitioner") as PartyKind;
+    if (!DIRECTORY_KINDS.includes(kind)) {
+      return send(res, 400, { error: `unknown kind ${kind}; expected one of ${DIRECTORY_KINDS.join(", ")}` });
+    }
+    if (path === "/api/directory" && method === "GET") {
+      return send(res, 200, {
+        kind,
+        entries: tenant.directory.list(kind, {
+          includeRetired: url.searchParams.get("retired") === "true",
+          limit: num(url.searchParams.get("limit")),
+        }),
+      });
+    }
+    if (path === "/api/directory/resolve" && method === "GET") {
+      const id = url.searchParams.get("id");
+      if (!id) return send(res, 400, { error: "id required" });
+      // A reference the directory does not hold answers 200 with known:false
+      // rather than 404. "This is what the row says and I cannot find it" is
+      // the useful answer for a diary rendering a slot written years ago; a
+      // 404 would make the caller guess whether the id or the lookup was
+      // wrong.
+      return send(res, 200, tenant.directory.resolve(kind, id));
+    }
+    if (path === "/api/directory/roles" && method === "GET") {
+      const practitioner = url.searchParams.get("practitioner");
+      if (!practitioner) return send(res, 400, { error: "practitioner required" });
+      return send(res, 200, {
+        roles: tenant.directory.rolesFor(practitioner, {
+          includeRetired: url.searchParams.get("retired") === "true",
+        }),
+        organizations: tenant.directory.organizationsFor(practitioner),
+      });
+    }
+    if (path === "/api/directory" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as Record<string, string | undefined>;
+      try {
+        if (kind === "practitioner") {
+          return send(res, 201, tenant.directory.addPractitioner({ family: body.family ?? "", given: body.given, prefix: body.prefix }));
+        }
+        if (kind === "organization") {
+          return send(res, 201, tenant.directory.addOrganization({ name: body.name ?? "", kind: body.orgKind, partOf: body.partOf }));
+        }
+        if (kind === "location") {
+          return send(res, 201, tenant.directory.addLocation({ name: body.name ?? "", organizationId: body.organizationId, community: body.community, address: body.address }));
+        }
+        return send(res, 201, tenant.directory.addService({ name: body.name ?? "", organizationId: body.organizationId, locationId: body.locationId, category: body.category }));
+      } catch (err) {
+        return send(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (path === "/api/directory/role" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as Record<string, string | undefined>;
+      try {
+        return send(res, 201, tenant.directory.assignRole({
+          practitionerId: body.practitioner ?? "",
+          role: body.role ?? "",
+          organizationId: body.organizationId,
+          locationId: body.locationId,
+          serviceId: body.serviceId,
+          specialty: body.specialty,
+        }));
+      } catch (err) {
+        return send(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (path === "/api/directory/retire" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; at?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      try {
+        // Retire, never delete: the referral sent to this clinic in 2024 still
+        // has to resolve afterwards.
+        tenant.directory.retire(kind, body.id, body.at);
+        return send(res, 200, tenant.directory.resolve(kind, body.id));
+      } catch (err) {
+        return send(res, 400, { error: (err as Error).message });
+      }
+    }
   }
 
   if (path === "/api/channels" && method === "GET") {

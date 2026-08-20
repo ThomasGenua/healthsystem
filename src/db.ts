@@ -64,6 +64,12 @@ export const TENANT_SCOPED_TABLES = [
   "encounters",
   "encounter_participants",
   "encounter_events",
+  "directory_practitioners",
+  "directory_organizations",
+  "directory_locations",
+  "directory_services",
+  "directory_roles",
+  "directory_identifiers",
 ] as const;
 
 /**
@@ -427,6 +433,13 @@ CREATE TABLE IF NOT EXISTS referrals (
   priority TEXT NOT NULL DEFAULT 'routine',
   from_service TEXT NOT NULL,
   to_service TEXT NOT NULL,
+  -- The directory service this names, when it names one. Three-valued on
+  -- purpose: an id means a known service, to_external = 1 means a deliberate
+  -- referral out to somewhere Portage does not hold, and both NULL means
+  -- nobody said which — an unverified free-text target, and a different thing
+  -- from a declared external one.
+  to_service_id TEXT,
+  to_external INTEGER,
   -- Why the patient is being referred. A referral without an indication is
   -- one the receiving service cannot triage.
   indication TEXT NOT NULL,
@@ -928,6 +941,106 @@ CREATE TABLE IF NOT EXISTS encounter_events (
   detail TEXT
 );
 
+-- Who and what the system talks about: practitioners, organizations,
+-- locations, the services they provide, and who holds which role where.
+--
+-- Before this, a scheduler slot named "dr-tetso" and a referral named
+-- "Stanton Orthopaedics", and neither string resolved to anything. The system
+-- could not say whether that person existed, was licensed, worked here, or was
+-- the same dr-tetso who received a referral last week.
+--
+-- Effective-dated rather than deleted. A clinic that closes must not break the
+-- referral sent to it in 2024, and a practitioner who leaves must not vanish
+-- from the visits they attended — so a directory entry is retired by setting
+-- active_to, and history keeps resolving.
+CREATE TABLE IF NOT EXISTS directory_practitioners (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  family TEXT NOT NULL,
+  given TEXT,
+  prefix TEXT,
+  active_from TEXT NOT NULL,
+  active_to TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Organization is NOT tenancy. Several organizations operate inside one
+-- custodian's tenant, and conflating them would make a
+-- withhold-from-organization directive useless in exactly the deployment that
+-- needs it: a patient withholding from one clinic would withhold from the
+-- whole territory.
+CREATE TABLE IF NOT EXISTS directory_organizations (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  kind TEXT,
+  part_of TEXT,
+  active_from TEXT NOT NULL,
+  active_to TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS directory_locations (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  organization_id TEXT,
+  address TEXT,
+  -- The community, which in the north is the thing a clinician actually needs
+  -- when deciding whether an appointment is reachable.
+  community TEXT,
+  active_from TEXT NOT NULL,
+  active_to TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS directory_services (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  organization_id TEXT,
+  location_id TEXT,
+  category TEXT,
+  active_from TEXT NOT NULL,
+  active_to TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- What a practitioner does, where, and for whom. Separate from the
+-- practitioner because one person holds several: a locum at two clinics is one
+-- practitioner and two roles, and flattening that loses which hat they were
+-- wearing.
+CREATE TABLE IF NOT EXISTS directory_roles (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  practitioner_id TEXT NOT NULL,
+  organization_id TEXT,
+  location_id TEXT,
+  service_id TEXT,
+  role TEXT NOT NULL,
+  specialty TEXT,
+  active_from TEXT NOT NULL,
+  active_to TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Licence numbers, provider numbers, facility identifiers. First-class rather
+-- than a name string, because a name is not an identity and the join to a
+-- credential (#17) has to be on something that is.
+CREATE TABLE IF NOT EXISTS directory_identifiers (
+  tenant_id TEXT NOT NULL,
+  party_kind TEXT NOT NULL,
+  party_id TEXT NOT NULL,
+  system TEXT NOT NULL,
+  value TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, party_kind, party_id, system, value)
+);
+
 -- A patient's instruction about who may see their record.
 --
 -- Provincial EHRs call this a consent directive or a lockbox: a patient may
@@ -1124,6 +1237,14 @@ CREATE INDEX IF NOT EXISTS idx_encounters_patient ON encounters(tenant_id, patie
 CREATE INDEX IF NOT EXISTS idx_encounters_status ON encounters(tenant_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_encounter_participants ON encounter_participants(tenant_id, encounter_id);
 CREATE INDEX IF NOT EXISTS idx_encounter_events ON encounter_events(tenant_id, encounter_id, seq);
+CREATE INDEX IF NOT EXISTS idx_directory_practitioner_name ON directory_practitioners(tenant_id, family, given);
+CREATE INDEX IF NOT EXISTS idx_directory_org_name ON directory_organizations(tenant_id, name);
+CREATE INDEX IF NOT EXISTS idx_directory_service_org ON directory_services(tenant_id, organization_id);
+CREATE INDEX IF NOT EXISTS idx_directory_roles_practitioner ON directory_roles(tenant_id, practitioner_id);
+CREATE INDEX IF NOT EXISTS idx_directory_roles_org ON directory_roles(tenant_id, organization_id);
+-- The lookup that matters for #17: a credential carries an identifier, and
+-- this is what turns it into a party.
+CREATE INDEX IF NOT EXISTS idx_directory_identifier ON directory_identifiers(tenant_id, system, value);
 CREATE INDEX IF NOT EXISTS idx_directives_patient ON consent_directives(tenant_id, patient_id, status);
 CREATE INDEX IF NOT EXISTS idx_directives_target ON consent_directives(tenant_id, target_id, status);
 CREATE INDEX IF NOT EXISTS idx_breakglass_review ON break_glass(tenant_id, reviewed_at, declared_at);
@@ -1177,6 +1298,8 @@ export interface DbOptions {
  * this column existed".
  */
 const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
+  { table: "referrals", column: "to_service_id", type: "TEXT" },
+  { table: "referrals", column: "to_external", type: "INTEGER" },
   { table: "messages", column: "raw_digest", type: "TEXT" },
   { table: "messages", column: "redacted_at", type: "TEXT" },
   { table: "deliveries", column: "redacted_at", type: "TEXT" },

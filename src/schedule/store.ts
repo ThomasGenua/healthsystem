@@ -39,6 +39,7 @@
 import { randomUUID } from "node:crypto";
 import { an } from "../core/text.ts";
 import type { Db } from "../db.ts";
+import { Directory, type PartyKind, type Resolution } from "../directory/store.ts";
 
 export type SlotStatus = "open" | "blocked";
 export type BookingStatus = "booked" | "attended" | "did-not-attend" | "cancelled";
@@ -98,9 +99,24 @@ const PRIORITY_RANK: Record<Priority, number> = { stat: 0, urgent: 1, routine: 2
 
 export class Schedule {
   private db: Db;
+  private directory: Directory;
 
   constructor(db: Db) {
     this.db = db;
+    this.directory = new Directory(db);
+  }
+
+  /**
+   * Who or what a slot's resource actually is.
+   *
+   * Answers for every slot, including those created before the directory
+   * existed, and says plainly when it cannot find the party. A diary that
+   * rendered an unregistered resource as a blank would read as "no clinician";
+   * one that threw would take the whole diary down for one bad row.
+   */
+  resolveResource(slot: SlotRow): Resolution {
+    const kind: PartyKind = slot.resource_kind === "practitioner" ? "practitioner" : "location";
+    return this.directory.resolve(kind, slot.resource_id);
   }
 
   /**
@@ -111,16 +127,32 @@ export class Schedule {
    * rather than by a clerk booking twice into a slot meant for one.
    */
   openSlot(input: {
-    resourceId: string;
+    resourceId?: string;
     service: string;
     startsAt: string;
     endsAt: string;
     resourceKind?: string;
     capacity?: number;
+    /**
+     * A directory reference, validated on the way in.
+     *
+     * The strong form. `resourceId` as a bare string still works and is what
+     * every slot written before the directory existed carries — those resolve
+     * as unregistered rather than being refused, so a site can adopt a
+     * directory without a flag day. Passing `resource` opts into the
+     * guarantee: the party has to exist, and a typo is refused here rather
+     * than discovered by a clerk staring at a diary for somebody who does not
+     * work here.
+     */
+    resource?: { kind: PartyKind; id: string };
   }): SlotRow {
     if (new Date(input.endsAt) <= new Date(input.startsAt)) {
       throw new Error("a slot must end after it starts");
     }
+    if (input.resource) this.directory.require(input.resource.kind, input.resource.id);
+    const resourceId = input.resource?.id ?? input.resourceId;
+    if (!resourceId) throw new Error("a slot needs a resource: pass resource {kind, id}, or a resourceId string");
+    const resourceKind = input.resource?.kind ?? input.resourceKind ?? "practitioner";
     const capacity = input.capacity ?? 1;
     if (!Number.isInteger(capacity) || capacity < 1) throw new Error("capacity must be a positive whole number");
     const id = randomUUID();
@@ -133,8 +165,8 @@ export class Schedule {
       .run(
         this.db.tenantId,
         id,
-        input.resourceId,
-        input.resourceKind ?? "practitioner",
+        resourceId,
+        resourceKind,
         input.service,
         input.startsAt,
         input.endsAt,

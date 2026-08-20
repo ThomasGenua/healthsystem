@@ -26,6 +26,7 @@
 import { randomUUID } from "node:crypto";
 import { an } from "../core/text.ts";
 import type { Db } from "../db.ts";
+import { Directory } from "../directory/store.ts";
 
 export type ReferralStatus =
   | "draft"
@@ -52,6 +53,9 @@ export interface ReferralRow {
   priority: ReferralPriority;
   from_service: string;
   to_service: string;
+  to_service_id: string | null;
+  /** 1 = declared external, 0 = a directory service, NULL = nobody said. */
+  to_external: number | null;
   indication: string;
   required_documents: string | null;
   attached_documents: string | null;
@@ -91,11 +95,46 @@ function list(json: string | null): string[] {
   }
 }
 
+/**
+ * What a referral is addressed to, three-valued on purpose.
+ *
+ * `known` is a service in the directory. `external` is a deliberate referral
+ * out to somewhere Portage does not hold — ordinary, and stated rather than
+ * inferred. `unverified` is free text nobody checked, which is the state every
+ * referral written before the directory existed is in.
+ *
+ * Keeping the third apart from the second is the whole point. Collapsing them
+ * would make a typo indistinguishable from a southern hospital, which is how a
+ * referral goes nowhere while looking as though it went somewhere.
+ */
+export type ReferralTarget =
+  | { kind: "known"; serviceId: string; display: string; active: boolean }
+  | { kind: "external"; display: string }
+  | { kind: "unverified"; display: string };
+
 export class ReferralStore {
   private db: Db;
+  private directory: Directory;
 
   constructor(db: Db) {
     this.db = db;
+    this.directory = new Directory(db);
+  }
+
+  /** Who this referral is actually addressed to. See `ReferralTarget`. */
+  target(referral: ReferralRow): ReferralTarget {
+    if (referral.to_service_id) {
+      const r = this.directory.resolve("service", referral.to_service_id);
+      return r.known
+        ? { kind: "known", serviceId: r.id, display: r.display, active: r.active }
+        : // The service was validated when the referral was written, so this
+          // means the row was removed rather than retired. Reported as
+          // unverified rather than invented, because the honest answer is that
+          // the directory no longer backs this reference.
+          { kind: "unverified", display: referral.to_service };
+    }
+    if (referral.to_external === 1) return { kind: "external", display: referral.to_service };
+    return { kind: "unverified", display: referral.to_service };
   }
 
   /** Starts a referral. A draft is not yet owed anything by anyone. */
@@ -108,7 +147,27 @@ export class ReferralStore {
     priority?: ReferralPriority;
     requiredDocuments?: string[];
     correlationId?: string;
+    /**
+     * The directory service this is addressed to, validated on the way in.
+     *
+     * Mutually exclusive with `external`. Passing neither is still accepted
+     * and means nobody said which — see `target()`.
+     */
+    toServiceId?: string;
+    /**
+     * Declares that this goes somewhere Portage does not hold.
+     *
+     * A referral out to a southern hospital is ordinary and must not be
+     * refused for being unknown. What it must not be is *indistinguishable*
+     * from a typo, so it is stated rather than inferred from the target not
+     * resolving.
+     */
+    external?: boolean;
   }): ReferralRow {
+    if (input.toServiceId && input.external) {
+      throw new Error("a referral is either to a service in the directory or explicitly external, not both");
+    }
+    if (input.toServiceId) this.directory.require("service", input.toServiceId);
     if (!input.indication.trim()) {
       // A receiving service triages on the indication. Without one the
       // referral cannot be prioritised, so it waits at routine regardless of
@@ -121,9 +180,9 @@ export class ReferralStore {
       this.db.sql
         .prepare(
           `INSERT INTO referrals
-             (tenant_id, id, patient_id, status, priority, from_service, to_service, indication,
-              required_documents, correlation_id, created_at, updated_at)
-           VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?)`
+             (tenant_id, id, patient_id, status, priority, from_service, to_service, to_service_id,
+              to_external, indication, required_documents, correlation_id, created_at, updated_at)
+           VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           this.db.tenantId,
@@ -132,6 +191,8 @@ export class ReferralStore {
           input.priority ?? "routine",
           input.fromService,
           input.toService,
+          input.toServiceId ?? null,
+          input.external ? 1 : input.toServiceId ? 0 : null,
           input.indication,
           JSON.stringify(input.requiredDocuments ?? []),
           input.correlationId ?? `ref-${id}`,

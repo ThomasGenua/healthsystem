@@ -26,6 +26,25 @@ always forward-compatible and run automatically on open — see
 - `POST /api/clinical/encounter-open`, `-arrive`, `-close` and `-cancel`, each
   through the same directive check as a read: a caller who may not see a
   patient's record may not start adding to it either.
+- **A provider, organization, location and service directory** (#33), with
+  roles and first-class identifiers. A scheduler slot said `dr-tetso` and a
+  referral said "Stanton Orthopaedics", and neither resolved to anything.
+  Organization is modelled separately from tenancy, because several
+  organizations operate inside one custodian's tenant — conflating them is what
+  would make a `withhold-from-organization` directive (#17) withhold a record
+  from the whole territory rather than from one clinic.
+- Directory entries are **retired, never deleted**: a clinic that closes must
+  not break the referral sent to it two years ago, so `retire()` sets an end
+  date and the reference keeps resolving as known-and-inactive, which is a more
+  useful answer than either "gone" or "current".
+- `Schedule.openSlot()` accepts a typed `resource: { kind, id }` that is
+  validated against the directory, and `resolveResource()` answers for any
+  slot including those written before the directory existed. A referral target
+  is now three-valued — a known service, a **declared** external one, or
+  unverified free text — because collapsing the last two makes a typo
+  indistinguishable from a southern hospital, which is how a referral goes
+  nowhere while looking as though it went somewhere.
+- `GET/POST /api/directory`, `/resolve`, `/roles`, `/role` and `/retire`.
 
 **Fixed**
 
@@ -48,7 +67,7 @@ always forward-compatible and run automatically on open — see
   explicitly. A route that learns whose record it is serving from the data
   rather than from the query string — an encounter knows its own patient — uses
   it directly, so the directive check cannot be dodged by omitting `patient`.
-- 426 → 439 tests.
+- 426 → 448 tests.
 
 ## 0.5.0 — 2026-08-19
 
