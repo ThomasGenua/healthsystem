@@ -272,7 +272,12 @@ CREATE TABLE IF NOT EXISTS api_keys (
   -- the new one was issued would take the interface down between issuing and
   -- deploying, which is why rotation gets skipped in practice.
   rotated_to TEXT,
-  rotated_at TEXT
+  rotated_at TEXT,
+  -- The organization this credential acts for, resolved against the directory
+  -- when the key is issued. Null means the credential cannot say, which a
+  -- withhold-from-organization directive treats as "possibly the withheld
+  -- one" — over-restrictive on purpose rather than permissive by default.
+  organization_id TEXT
 );
 
 -- Access audit trail, hash-chained like message lineage so a row cannot be
@@ -298,6 +303,10 @@ CREATE TABLE IF NOT EXISTS audit_events (
   -- HL7 ActReason code the caller declared. NULL means they declined to say,
   -- which is recorded as such rather than assumed to be treatment.
   purpose_of_use TEXT,
+  -- Which organization the caller was acting for. "Who looked" and "which
+  -- organization looked" are different questions and a privacy review asks
+  -- both; before this column the trail could only answer the first.
+  organization_id TEXT,
   hash TEXT NOT NULL,
   prev_hash TEXT
 );
@@ -1307,6 +1316,13 @@ const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
   { table: "api_keys", column: "expires_at", type: "TEXT" },
   { table: "api_keys", column: "rotated_to", type: "TEXT" },
   { table: "api_keys", column: "rotated_at", type: "TEXT" },
+  // Organization identity, so a `withhold-from-organization` directive can be
+  // matched against one organization rather than withholding from everybody.
+  // Nullable, and null keeps the old fail-closed behaviour: an upgraded
+  // database's existing keys carry no organization until somebody sets one,
+  // and until then they are treated exactly as they were before this column.
+  { table: "api_keys", column: "organization_id", type: "TEXT" },
+  { table: "audit_events", column: "organization_id", type: "TEXT" },
   // Tenancy. NOT NULL with a default, so existing rows land in the default
   // tenant rather than becoming unreachable, and a deployment that never
   // configures a second tenant is unaffected.
@@ -2518,10 +2534,20 @@ export class Db {
 
   /* ------------------------------- api keys ----------------------------- */
 
-  insertApiKey(id: string, name: string, hash: string, scopes: string[], expiresAt?: string): void {
+  insertApiKey(
+    id: string,
+    name: string,
+    hash: string,
+    scopes: string[],
+    expiresAt?: string,
+    organizationId?: string
+  ): void {
     this.sql
-      .prepare("INSERT INTO api_keys (tenant_id, id, name, hash, scopes, expires_at) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(this.tenantId, id, name, hash, scopes.join(" "), expiresAt ?? null);
+      .prepare(
+        `INSERT INTO api_keys (tenant_id, id, name, hash, scopes, expires_at, organization_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(this.tenantId, id, name, hash, scopes.join(" "), expiresAt ?? null, organizationId ?? null);
   }
 
   /**

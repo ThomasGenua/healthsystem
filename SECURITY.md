@@ -123,8 +123,11 @@ discussion, but they will not be treated as advisories:
 - **No user interface for the clinical platform**, and no patient portal. The
   patient-facing modules are built and deliberately not mounted, because a
   portal is a different trust boundary and it has not been built yet.
-- **`withhold-from-organization` directives currently withhold from every
-  caller**, because no credential carries an organization identity to compare
-  against. This fails closed on purpose; it is over-restrictive, not permissive.
+- **A credential that carries no organization is withheld from by every
+  `withhold-from-organization` directive.** Credentials can now carry one, so a
+  directive against one clinic no longer withholds from the whole territory —
+  but a credential issued without an organization still cannot show it is
+  outside the withheld one, and is refused. Fails closed on purpose; it is
+  over-restrictive, not permissive.
 - **Decision support ships as a mechanism without content**, and nothing in
   Portage uses machine learning. No output should be read as though it did.

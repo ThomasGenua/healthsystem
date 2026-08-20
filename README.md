@@ -1418,15 +1418,13 @@ a scope-narrowed directive withholds its section rather than the chart around it
 - [#22 An external penetration test](https://github.com/ThomasGenua/healthsystem/issues/22) — the adversarial tests here share their author's model of what an attack looks like. The interesting findings are outside it.
 - [#37 Get a snapshot off the machine that made it](https://github.com/ThomasGenua/healthsystem/issues/37) — the restore is rehearsed and every snapshot it restores is on the same disk, in the same building, as the database it came from. The stated RPO holds only for failures that spare the backup directory.
 
-**Make the consent enforcement precise.** Both currently fail closed, which is safe and blunter than the patient asked for.
+**Make the consent enforcement precise.** [#17](https://github.com/ThomasGenua/healthsystem/issues/17) is done — credentials carry an organization, so a directive against one clinic no longer withholds from the territory. What is left still fails closed, which is safe and blunter than the patient asked for.
 
-- [#17 Give credentials an organization identity](https://github.com/ThomasGenua/healthsystem/issues/17)
 - [#18 Actually deliver the break-glass notification the patient is owed](https://github.com/ThomasGenua/healthsystem/issues/18) — the queue is visible and drainable; nothing sends anything.
 
-**Model what the system talks about.** Three things the code already references and cannot describe.
+**Model what the system talks about.** [#32](https://github.com/ThomasGenua/healthsystem/issues/32) and the store half of [#33](https://github.com/ThomasGenua/healthsystem/issues/33) are done: a visit owns what happened inside it, and a practitioner, organization, location or service is a party rather than a string. What remains:
 
-- [#32 Encounters: a visit that owns what happened during it](https://github.com/ThomasGenua/healthsystem/issues/32) — `encounter_id` is a column on five tables and no table owns it. The platform is patient-shaped; clinical work is visit-shaped.
-- [#33 A provider, organization and location directory](https://github.com/ThomasGenua/healthsystem/issues/33) — `dr-tetso` is a string in a diary. A prerequisite for #17: an organization identity cannot match against something that is not modelled.
+- [#33 Project the directory into the FHIR facade](https://github.com/ThomasGenua/healthsystem/issues/33) — the parties are modelled; `Practitioner`, `PractitionerRole`, `Organization`, `Location` and `HealthcareService` are not yet served as resources.
 - [#34 Link duplicate charts reversibly, instead of stopping at detection](https://github.com/ThomasGenua/healthsystem/issues/34) — `duplicates()` finds candidates and declines to merge, for a good reason. A reversible link is what the objection leaves open.
 
 **Put it in front of a person.**

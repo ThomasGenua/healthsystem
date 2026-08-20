@@ -402,6 +402,16 @@ export interface ApiKeyRow {
   /** Set on a rotated key: the id of its replacement. */
   rotated_to: string | null;
   rotated_at: string | null;
+  /**
+   * The organization this credential acts for, as a directory organization id.
+   *
+   * Not the tenant. Several organizations operate inside one custodian's
+   * tenant, and conflating them would make a `withhold-from-organization`
+   * directive useless in exactly the deployment that needs one. Null means the
+   * credential cannot say, and a directive treats that as possibly-the-
+   * withheld-one rather than as somebody else.
+   */
+  organization_id: string | null;
 }
 
 /** Declarative conformance pack: profile rules per resource type. */

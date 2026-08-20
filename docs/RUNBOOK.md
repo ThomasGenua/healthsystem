@@ -309,11 +309,18 @@ Two things are worth knowing before you reach for break-glass:
   Only a route serving exactly the locked type refuses, and only a directive
   naming no entry types refuses the whole chart. A clinician who says "the
   chart is blank" is describing something else; check `/api/health` first.
-- **A `withhold-from-organization` directive withholds from every caller**,
-  because no credential yet carries an organization to compare against. This
-  fails closed on purpose — it is over-restrictive, not permissive — and it is
-  the one case where a routine access genuinely needs break-glass. Tracked as
-  issue #17.
+- **A `withhold-from-organization` directive withholds from a credential that
+  carries no organization.** Credentials carry one now — set at issue
+  time for API keys, from the `organization` (or `portage_organization`) claim
+  for OAuth — and a directive naming one clinic no longer withholds from the
+  rest of the territory. A caller whose credential names no organization cannot
+  show it is outside the withheld one and is still refused, which fails closed
+  on purpose. If a clinician is being refused unexpectedly, check whether their
+  credential has an `organization_id`:
+
+  ```bash
+  curl -s -H "authorization: Bearer $ADMIN_KEY" localhost:8080/api/keys | jq '.[] | {name, organization_id}'
+  ```
 
 ### Break-glass queues are not emptying
 

@@ -59,6 +59,14 @@ export interface AuditEntry {
    * this chart, and said they were treating the patient".
    */
   purposeOfUse?: string;
+  /**
+   * Which organization the caller was acting for, when the credential says.
+   *
+   * "Who looked at this record" and "which organization looked at this record"
+   * are different questions, and a privacy review asks both. Absent means the
+   * credential could not say, which is recorded as such rather than guessed.
+   */
+  organizationId?: string;
 }
 
 export interface AuditRow {
@@ -78,12 +86,15 @@ export interface AuditRow {
   source_ip: string | null;
   detail: string | null;
   purpose_of_use: string | null;
+  organization_id: string | null;
   hash: string;
   prev_hash: string | null;
 }
 
 export interface AuditFilter {
   principal?: string;
+  /** Every access by callers acting for one organization. */
+  organization?: string;
   patient?: string;
   resourceType?: string;
   /** ISO timestamp; rows at or after it. */
@@ -125,6 +136,14 @@ function digest(prev: string | null, e: AuditEntry, id: string, recordedAt: stri
     // Covered by the chain like everything else that could be falsified. A
     // purpose that could be edited after the fact is worse than none.
     .update(e.purposeOfUse ?? "")
+    // Appended only when there is one, so a row without an organization hashes
+    // to exactly what it hashed to before this field existed. That is what
+    // lets an upgraded database keep verifying: every historical row has no
+    // organization, so every historical hash is unchanged and `verifyChain()`
+    // does not report an upgrade as tampering. Unambiguous because
+    // `purposeOfUse` is validated against a fixed list of codes and cannot
+    // contain the separator.
+    .update(e.organizationId ? `|${e.organizationId}` : "")
     .digest("hex");
 }
 
@@ -157,8 +176,9 @@ export class AuditStore {
       .prepare(
         `INSERT INTO audit_events
            (tenant_id, id, recorded_at, action, outcome, principal_id, principal_kind, method, path,
-            resource_type, resource_id, patient, count, source_ip, detail, purpose_of_use, hash, prev_hash)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            resource_type, resource_id, patient, count, source_ip, detail, purpose_of_use,
+            organization_id, hash, prev_hash)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         this.db.tenantId,
@@ -177,6 +197,7 @@ export class AuditStore {
         entry.sourceIp ?? null,
         entry.detail ?? null,
         entry.purposeOfUse ?? null,
+        entry.organizationId ?? null,
         hash,
         prev
       );
@@ -200,6 +221,10 @@ export class AuditStore {
     if (filter.principal) {
       where.push("principal_id = ?");
       args.push(filter.principal);
+    }
+    if (filter.organization) {
+      where.push("organization_id = ?");
+      args.push(filter.organization);
     }
     if (filter.patient) {
       where.push("patient = ?");
@@ -277,6 +302,7 @@ export class AuditStore {
           patient: r.patient ?? undefined,
           count: r.count ?? undefined,
           purposeOfUse: r.purpose_of_use ?? undefined,
+          organizationId: r.organization_id ?? undefined,
         },
         r.id,
         r.recorded_at

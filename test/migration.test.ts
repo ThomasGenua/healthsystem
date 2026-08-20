@@ -23,6 +23,7 @@ import { MedicationStore } from "../src/meds/store.ts";
 import { OrderStore } from "../src/orders/store.ts";
 import { ReferralStore } from "../src/work/referrals.ts";
 import { Schedule } from "../src/schedule/store.ts";
+import { AuditStore } from "../src/audit/store.ts";
 
 const ACTOR = { actorId: "dr-tetso", actorKind: "practitioner" };
 
@@ -316,6 +317,122 @@ test("a v0.3.0 database upgrades into the whole clinical platform, usable", () =
     } finally {
       db.close();
     }
+  } finally {
+    cleanup();
+  }
+});
+
+/**
+ * The audit chain as v0.5.0 wrote it, before credentials carried an
+ * organization. Deliberately not built by `AuditStore`: the point is to have
+ * rows on disk in the older shape, hashed by the older formula, the way an
+ * upgraded site's trail actually is.
+ */
+const V050_AUDIT = `
+CREATE TABLE audit_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
+  tenant_id TEXT NOT NULL DEFAULT 'default',
+  recorded_at TEXT NOT NULL,
+  action TEXT NOT NULL,
+  outcome INTEGER NOT NULL DEFAULT 0,
+  principal_id TEXT NOT NULL,
+  principal_kind TEXT NOT NULL,
+  method TEXT NOT NULL,
+  path TEXT NOT NULL,
+  resource_type TEXT,
+  resource_id TEXT,
+  patient TEXT,
+  count INTEGER,
+  source_ip TEXT,
+  detail TEXT,
+  purpose_of_use TEXT,
+  hash TEXT NOT NULL,
+  prev_hash TEXT
+);
+CREATE TABLE audit_counters (tenant_id TEXT PRIMARY KEY, issued INTEGER NOT NULL DEFAULT 0);
+`;
+
+/** The digest exactly as it was before the organization field was appended. */
+function v050Digest(
+  prev: string | null,
+  e: { id: string; at: string; action: string; principal: string; path: string; patient: string }
+): string {
+  return createHash("sha256")
+    .update(prev ?? "")
+    .update("|").update(e.id)
+    .update("|").update(e.at)
+    .update("|").update(e.action)
+    .update("|").update("0")
+    .update("|").update("apikey")
+    .update("|").update(e.principal)
+    .update("|").update("GET")
+    .update("|").update(e.path)
+    .update("|").update("")
+    .update("|").update("")
+    .update("|").update(e.patient)
+    .update("|").update("")
+    .update("|").update("TREAT")
+    .digest("hex");
+}
+
+test("an audit chain written before credentials carried an organization still verifies", () => {
+  // The chain hash gained a field, and a field appended unconditionally would
+  // have changed every historical row's expected hash — so the first
+  // `verifyChain()` after an upgrade would report a site's own trail as
+  // forged. That is a false alarm of the worst kind: it fires on the one
+  // artefact whose credibility the whole design rests on, and it fires for
+  // every site at once. The field is appended only when there is one.
+  const { path, cleanup } = legacyDb();
+  try {
+    const old = new DatabaseSync(path);
+    old.exec(V050_AUDIT);
+    let prev: string | null = null;
+    for (let i = 0; i < 3; i++) {
+      const row = {
+        id: `aud-${i}`,
+        at: `2026-08-0${i + 1}T09:00:00.000Z`,
+        action: "R",
+        principal: "key-1",
+        path: "/api/clinical/chart",
+        patient: "NT900001",
+      };
+      const hash = v050Digest(prev, row);
+      old
+        .prepare(
+          `INSERT INTO audit_events
+             (id, tenant_id, recorded_at, action, outcome, principal_id, principal_kind, method, path,
+              patient, purpose_of_use, hash, prev_hash)
+           VALUES (?, 'default', ?, ?, 0, ?, 'apikey', 'GET', ?, ?, 'TREAT', ?, ?)`
+        )
+        .run(row.id, row.at, row.action, row.principal, row.path, row.patient, hash, prev);
+      prev = hash;
+    }
+    old.prepare("INSERT INTO audit_counters (tenant_id, issued) VALUES ('default', 3)").run();
+    old.close();
+
+    const db = new Db(path);
+    const audit = new AuditStore(db);
+
+    const before = audit.verifyChain();
+    assert.equal(before.ok, true, "the pre-upgrade trail must still verify after the column is added");
+    assert.equal(before.checked, 3);
+
+    // And a new row — which does carry an organization — extends the same
+    // chain rather than starting a second one.
+    audit.record({
+      action: "R",
+      principalId: "key-2",
+      principalKind: "apikey",
+      method: "GET",
+      path: "/api/clinical/chart",
+      patient: "NT900001",
+      organizationId: "yk-clinic",
+    });
+    const after = audit.verifyChain();
+    assert.equal(after.ok, true, "and the new row extends it");
+    assert.equal(after.checked, 4);
+    db.close();
   } finally {
     cleanup();
   }
