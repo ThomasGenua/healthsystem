@@ -1418,9 +1418,7 @@ a scope-narrowed directive withholds its section rather than the chart around it
 - [#22 An external penetration test](https://github.com/ThomasGenua/healthsystem/issues/22) — the adversarial tests here share their author's model of what an attack looks like. The interesting findings are outside it.
 - [#37 Get a snapshot off the machine that made it](https://github.com/ThomasGenua/healthsystem/issues/37) — the restore is rehearsed and every snapshot it restores is on the same disk, in the same building, as the database it came from. The stated RPO holds only for failures that spare the backup directory.
 
-**Make the consent enforcement precise.** [#17](https://github.com/ThomasGenua/healthsystem/issues/17) is done — credentials carry an organization, so a directive against one clinic no longer withholds from the territory. What is left still fails closed, which is safe and blunter than the patient asked for.
-
-- [#18 Actually deliver the break-glass notification the patient is owed](https://github.com/ThomasGenua/healthsystem/issues/18) — the queue is visible and drainable; nothing sends anything.
+**Make the consent enforcement precise.** Done. [#17](https://github.com/ThomasGenua/healthsystem/issues/17): credentials carry an organization, so a directive against one clinic no longer withholds from the territory. [#18](https://github.com/ThomasGenua/healthsystem/issues/18): a break-glass notice is dispatched through the delivery machinery rather than left on a queue for somebody to remember, and what could not be sent says so. What remains is honest and small — *sent* is still not *told*, and recording that the patient was actually told is a deliberate human act, because the last step happens on a channel Portage does not own.
 
 **Model what the system talks about.** [#32](https://github.com/ThomasGenua/healthsystem/issues/32) and the store half of [#33](https://github.com/ThomasGenua/healthsystem/issues/33) are done: a visit owns what happened inside it, and a practitioner, organization, location or service is a party rather than a string. What remains:
 

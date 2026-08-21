@@ -77,7 +77,46 @@ export interface BreakGlassRow {
   reviewed_by: string | null;
   review_outcome: string | null;
   patient_notified_at: string | null;
+  /** When the notice was handed to the delivery machinery, if it ever was. */
+  notice_dispatched_at: string | null;
+  /** The message it became, so what was sent can be found and read. */
+  notice_message_id: string | null;
+  /** Why nothing was sent. A notice that cannot be addressed says so. */
+  notice_error: string | null;
   created_at: string;
+}
+
+/**
+ * What a deployment is handed when an override needs telling the patient about.
+ *
+ * Deliberately not an address. Portage holds no contact details — `patient_index`
+ * carries a name and a birth date and nothing to reach anybody by — so it
+ * cannot resolve where this should go, and a system that invents a destination
+ * for a disclosure notice sends somebody else's private business to a wrong
+ * number. Routing belongs to whatever the deployment configures downstream and
+ * already knows how to reach patients; this is the fact that needs sending.
+ */
+export interface BreakGlassNotice {
+  overrideId: string;
+  patientId: string;
+  subjectId: string;
+  subjectKind: string;
+  reason: string;
+  declaredAt: string;
+  expiresAt: string;
+  directiveId: string | null;
+}
+
+/**
+ * Publishes a notice, and returns the id of the message it became.
+ *
+ * Throwing is a real outcome and is recorded rather than swallowed: a notice
+ * nobody could address stays on `pendingNotification()` with a reason attached,
+ * which is what makes an un-sendable notice visible instead of indistinguishable
+ * from one nobody has got to yet.
+ */
+export interface NoticeDispatcher {
+  dispatch(notice: BreakGlassNotice): string;
 }
 
 export interface Actor {
@@ -134,10 +173,18 @@ const DEFAULT_OVERRIDE_HOURS = 4;
 export class ConsentDirectives {
   private db: Db;
   private overrideHours: number;
+  private dispatcher: NoticeDispatcher | null;
 
-  constructor(db: Db, opts: { overrideHours?: number } = {}) {
+  /**
+   * The dispatcher is optional, and its absence is honest rather than silent:
+   * with none configured an override lands on `pendingNotification()` exactly
+   * as it did before, and the queue is still the guarantee. What changes when
+   * one is configured is that the queue starts draining itself.
+   */
+  constructor(db: Db, opts: { overrideHours?: number; dispatcher?: NoticeDispatcher } = {}) {
     this.db = db;
     this.overrideHours = opts.overrideHours ?? DEFAULT_OVERRIDE_HOURS;
+    this.dispatcher = opts.dispatcher ?? null;
   }
 
   // ---- directives --------------------------------------------------------
@@ -397,7 +444,88 @@ export class ConsentDirectives {
         expires,
         now.toISOString()
       );
+
+    // Attempted here, and never allowed to fail the override. A clinician
+    // standing over an unconscious patient must not be stopped because a
+    // notification queue is unreachable — that would make the safety valve
+    // depend on the thing least likely to be working during an incident. A
+    // failure is recorded on the row and the override stands.
+    this.dispatchNotice(id);
     return this.override(id)!;
+  }
+
+  /**
+   * Hands the notice to whatever the deployment configured, and records what
+   * happened either way.
+   *
+   * Safe to call again: a notice already dispatched is not sent twice, because
+   * telling a patient twice that their record was opened is its own small harm
+   * and because a retry loop that duplicates disclosures is worse than one that
+   * gives up. A previous *failure* is retried, which is the case worth having.
+   */
+  dispatchNotice(overrideId: string): BreakGlassRow {
+    const row = this.override(overrideId);
+    if (!row) throw new Error(`no override ${overrideId}`);
+    if (row.notice_dispatched_at) return row;
+    if (!this.dispatcher) return row;
+
+    try {
+      const messageId = this.dispatcher.dispatch({
+        overrideId: row.id,
+        patientId: row.patient_id,
+        subjectId: row.subject_id,
+        subjectKind: row.subject_kind,
+        reason: row.reason,
+        declaredAt: row.declared_at,
+        expiresAt: row.expires_at,
+        directiveId: row.directive_id,
+      });
+      this.db.sql
+        .prepare(
+          `UPDATE break_glass SET notice_dispatched_at = ?, notice_message_id = ?, notice_error = NULL
+             WHERE tenant_id = ? AND id = ?`
+        )
+        .run(new Date().toISOString(), messageId, this.db.tenantId, overrideId);
+    } catch (err) {
+      // Recorded rather than thrown. The override is already in force and the
+      // read is already happening; what is at stake here is whether anybody
+      // can see that the patient has not been told, and a swallowed exception
+      // is exactly how that becomes invisible.
+      this.db.sql
+        .prepare("UPDATE break_glass SET notice_error = ? WHERE tenant_id = ? AND id = ?")
+        .run(err instanceof Error ? err.message : String(err), this.db.tenantId, overrideId);
+    }
+    return this.override(overrideId)!;
+  }
+
+  /**
+   * Overrides the patient still has not been told about after `hours`.
+   *
+   * The queue on its own has no upper bound on how long somebody can go
+   * untold, and "loud" that depends on a person working through a list every
+   * day is loud only as long as they do. This is the escalation: what is late,
+   * oldest first, whether or not anything was ever sent.
+   */
+  overdueNotification(hours = 24, asOf = new Date().toISOString()): BreakGlassRow[] {
+    const cutoff = new Date(new Date(asOf).getTime() - hours * 3_600_000).toISOString();
+    return this.db.sql
+      .prepare(
+        `SELECT * FROM break_glass
+          WHERE tenant_id = ? AND patient_notified_at IS NULL AND declared_at <= ?
+          ORDER BY declared_at`
+      )
+      .all(this.db.tenantId, cutoff) as unknown as BreakGlassRow[];
+  }
+
+  /** Notices that were attempted and could not be sent. */
+  undeliveredNotices(): BreakGlassRow[] {
+    return this.db.sql
+      .prepare(
+        `SELECT * FROM break_glass
+          WHERE tenant_id = ? AND notice_error IS NOT NULL AND notice_dispatched_at IS NULL
+          ORDER BY declared_at`
+      )
+      .all(this.db.tenantId) as unknown as BreakGlassRow[];
   }
 
   /** Records that the patient has been told. */
