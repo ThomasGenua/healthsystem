@@ -11,6 +11,23 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Organization identity on credentials** (#17), which is what makes a
+  `withhold-from-organization` directive mean something. The directive matched
+  on a field no `Principal` carried and nothing ever passed, so it was recorded,
+  reported to the patient as active, and enforced by nothing; the 0.5.0 fix made
+  it fail closed, which withheld the record from every caller in the territory
+  when the patient had named one clinic. An API key now carries an organization
+  set at issue time and checked against the directory, an OAuth token carries
+  one from the `organization` (or `portage_organization`) claim, and both come
+  off the credential rather than off the request — a caller that could name its
+  own organization could name its way out of a directive. A directive against
+  one organization no longer withholds from another; a credential that names
+  none still cannot show it is outside the withheld one, and is still refused.
+- **Which organization looked** is on the audit trail beside who and why, and
+  `AuditFilter.organization` asks the question directly. "Did anyone at that
+  clinic read this record" is what a privacy review asks, and the trail could
+  not answer it.
+
 - **Encounters** (#32) — the visit, and everything that happened inside it.
   `encounter_id` had been a column on orders, medication statements,
   reconciliations and clinical entries since they were written, and no table
@@ -191,7 +208,7 @@ The clinical platform, and the privacy enforcement that makes it safe to serve.
 blunter than the patient asked for:
 
 - A `withhold-from-organization` directive withholds from every caller until
-  organization identity reaches the auth layer.
+  organization identity reaches the auth layer. *(Closed — see Unreleased.)*
 - Break-glass notification is recorded, not sent. Telling the patient happens
   on a channel Portage does not own; the queue holds until an operator records
   that it happened.

@@ -321,8 +321,11 @@ export class ConsentDirectives {
   private targets(d: DirectiveRow, input: { subjectId: string; organizationId?: string }): boolean {
     if (d.kind === "withhold-all") return true;
     if (d.kind === "withhold-from-provider") return d.target_id === input.subjectId;
-    // Deliberately not `=== input.organizationId`: undefined must not read as
-    // "some other organization, so let them through".
+    // A caller that says which organization it is gets an exact answer: a
+    // directive against organization A does not withhold from organization B.
+    // One that cannot say is still stopped, because `undefined` must not read
+    // as "some other organization, so let them through" — the asymmetry is
+    // deliberate and is the safe direction.
     if (d.kind === "withhold-from-organization") {
       return input.organizationId === undefined || d.target_id === input.organizationId;
     }

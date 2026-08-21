@@ -38,6 +38,20 @@ export interface Principal {
    * itself worth recording rather than guessing at.
    */
   purposeOfUse?: string;
+  /**
+   * Which organization the caller acts for, as a directory organization id.
+   *
+   * Deliberately not the tenant. Several organizations operate inside one
+   * custodian's tenant — a territorial authority hosting a community clinic
+   * and a visiting specialist service — and a patient who withholds their
+   * record from one of them has not withheld it from the other.
+   *
+   * Absent when the credential does not say, which stays fail-closed: a
+   * `withhold-from-organization` directive treats a caller that cannot rule
+   * itself out as possibly the withheld one. That is over-restrictive rather
+   * than permissive, which is the correct direction to be wrong in.
+   */
+  organizationId?: string;
 }
 
 export type AuthOutcome =
@@ -135,12 +149,27 @@ export class AuthGate {
       // The tenant comes from the stored row, never from the request. A caller
       // naming their own tenant would be naming their own authorisation.
       return hit
-        ? { kind: "apikey", id: hit.row.id, scopes: hit.scopes, tenantId: hit.row.tenant_id ?? DEFAULT_TENANT }
+        ? {
+            kind: "apikey",
+            id: hit.row.id,
+            scopes: hit.scopes,
+            tenantId: hit.row.tenant_id ?? DEFAULT_TENANT,
+            // Also from the stored row, for the same reason as the tenant: an
+            // organization the caller could assert is an organization they
+            // could assert their way out of a directive with.
+            ...(hit.row.organization_id ? { organizationId: hit.row.organization_id } : {}),
+          }
         : null;
     }
     if (this.opts.jwt && looksLikeJwt(token)) {
       const v = await this.opts.jwt.verify(token);
-      return { kind: "oauth", id: v.subject, scopes: v.scopes, tenantId: v.tenantId ?? DEFAULT_TENANT };
+      return {
+        kind: "oauth",
+        id: v.subject,
+        scopes: v.scopes,
+        tenantId: v.tenantId ?? DEFAULT_TENANT,
+        ...(v.organizationId ? { organizationId: v.organizationId } : {}),
+      };
     }
     return null;
   }

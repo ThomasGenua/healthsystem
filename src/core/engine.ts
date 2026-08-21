@@ -165,7 +165,7 @@ export class Engine {
     // Resolved per delivery, since one worker drains every tenant on the node.
     this.worker = new DeliveryWorker(this.db, opts.tickMs ?? 250, 25, (tenantId) => this.forTenant(tenantId));
     this.subs = new SubscriptionManager(this.db, this.worker);
-    this.keys = new ApiKeyStore(this.db);
+    this.keys = new ApiKeyStore(this.db, new Directory(this.db));
     this.audit = new AuditStore(this.db);
     this.retention = new RetentionRunner(this.db, opts.retention ?? {}, this.audit);
     this.connectors = {
@@ -223,6 +223,10 @@ export class Engine {
     const referrals = new ReferralStore(db);
     const tasks = new TaskStore(db);
     const encounters = new Encounters(db);
+    // Built here rather than inline in the view because the key store needs it
+    // too: issuing a credential for an organization nobody has registered is a
+    // typo worth refusing, and only the directory can tell.
+    const directory = new Directory(db);
     const subs = new SubscriptionManager(db, this.worker);
     fhir.onChange((result, resource) => subs.notify(result, resource));
     const view: TenantView = {
@@ -230,7 +234,7 @@ export class Engine {
       db,
       fhir,
       subs,
-      keys: new ApiKeyStore(db),
+      keys: new ApiKeyStore(db, directory),
       audit: new AuditStore(db),
       clinical,
       notes,
@@ -243,7 +247,7 @@ export class Engine {
       consent: new ConsentDirectives(db),
       workspace: new Workspace({ record: clinical, notes, meds, orders, referrals, tasks }),
       encounters,
-      directory: new Directory(db),
+      directory,
       visits: new VisitView({ encounters, record: clinical, meds, orders }),
     };
     this.views.set(tenantId, view);

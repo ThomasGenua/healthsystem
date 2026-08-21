@@ -32,6 +32,7 @@
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Db } from "../db.ts";
+import type { Directory } from "../directory/store.ts";
 import type { ApiKeyRow } from "../types.ts";
 import { ALL_SCOPES, effectiveScopes, isScope, type Scope } from "./scopes.ts";
 
@@ -55,25 +56,56 @@ export interface IssuedKey {
   /** Set on a rotation: the key this one replaces, and when that one stops. */
   replaces?: string;
   previousRetiresAt?: string;
+  /** The organization this credential acts for. Null when it does not say. */
+  organizationId: string | null;
 }
 
 export class ApiKeyStore {
   private readonly db: Db;
+  private readonly directory: Directory | null;
 
-  constructor(db: Db) {
+  /**
+   * The directory is optional in the same way `Meds`' interaction source is:
+   * absent, an organization is recorded as given rather than checked. A site
+   * that has not populated a directory can still issue keys; one that has gets
+   * the typo caught at issue time rather than discovering months later that a
+   * directive named `yk-clinic` and every credential says `ykclinic`.
+   */
+  constructor(db: Db, directory: Directory | null = null) {
     this.db = db;
+    this.directory = directory;
   }
 
-  issue(name: string, scopes: string[] = ALL_SCOPES, opts: { expiresAt?: string } = {}): IssuedKey {
+  issue(
+    name: string,
+    scopes: string[] = ALL_SCOPES,
+    opts: { expiresAt?: string; organizationId?: string } = {}
+  ): IssuedKey {
     const requested = scopes.filter(isScope);
     if (requested.length === 0) throw new Error(`no valid scopes in [${scopes.join(", ")}]`);
     if (opts.expiresAt && new Date(opts.expiresAt).getTime() <= Date.now()) {
       throw new Error("that expiry is already past");
     }
+    // Refused rather than recorded-and-ignored. An organization that resolves
+    // to nothing would make the credential look precise while behaving exactly
+    // like one that never named an organization at all, and the two need to be
+    // distinguishable: one is a deliberate "cannot say", the other is a typo.
+    if (opts.organizationId !== undefined && this.directory) {
+      const seen = this.directory.resolve("organization", opts.organizationId);
+      if (!seen.known) throw new Error(`no organization '${opts.organizationId}' in the directory`);
+      if (!seen.active) throw new Error(`organization '${opts.organizationId}' is retired`);
+    }
     const id = randomUUID();
     const key = KEY_PREFIX + randomBytes(32).toString("base64url");
-    this.db.insertApiKey(id, name, hashKey(key), requested, opts.expiresAt);
-    return { id, name, scopes: requested, key, expiresAt: opts.expiresAt ?? null };
+    this.db.insertApiKey(id, name, hashKey(key), requested, opts.expiresAt, opts.organizationId);
+    return {
+      id,
+      name,
+      scopes: requested,
+      key,
+      expiresAt: opts.expiresAt ?? null,
+      organizationId: opts.organizationId ?? null,
+    };
   }
 
   /**
@@ -99,8 +131,12 @@ export class ApiKeyStore {
     const overlapDays = opts.overlapDays ?? 7;
     const retireAt = new Date(Date.now() + overlapDays * 86_400_000).toISOString();
     return this.db.transaction(() => {
+      // The organization travels with the rotation. A replacement that lost it
+      // would silently widen what a directive withholds from, which is the
+      // failure this whole issue exists to close.
       const replacement = this.issue(current.name, current.scopes.split(/\s+/).filter(Boolean), {
         ...(opts.expiresAt ? { expiresAt: opts.expiresAt } : {}),
+        ...(current.organization_id ? { organizationId: current.organization_id } : {}),
       });
       this.db.markApiKeyRotated(id, replacement.id, retireAt);
       return { ...replacement, replaces: id, previousRetiresAt: retireAt };

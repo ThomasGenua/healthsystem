@@ -160,6 +160,10 @@ async function route(
       // Why, not just who. A trail that cannot separate treatment from
       // curiosity cannot answer the question a privacy office actually asks.
       ...(auth.ok && auth.principal.purposeOfUse ? { purposeOfUse: auth.principal.purposeOfUse } : {}),
+      // Which organization, not just which credential. A privacy review asks
+      // "did anyone at that clinic look at this record", and until this was
+      // recorded the trail could not answer it.
+      ...(auth.ok && auth.principal.organizationId ? { organizationId: auth.principal.organizationId } : {}),
       ...entry,
     });
   };
@@ -623,7 +627,18 @@ async function route(
      */
     const subjectId = auth.ok ? auth.principal.id : "unauthenticated";
 
-    const restrictions = (forPatient: string) => tenant.consent.restrictionsFor({ subjectId, patientId: forPatient });
+    // `organizationId` is what makes a `withhold-from-organization` directive
+    // mean anything. It was matched against a field nothing ever passed, so
+    // every such directive evaluated the same way for every caller; passing it
+    // is the whole of the fix. A credential that carries none is still stopped,
+    // because a caller that cannot say it is outside the withheld organization
+    // has not shown that it is.
+    const restrictions = (forPatient: string) =>
+      tenant.consent.restrictionsFor({
+        subjectId,
+        patientId: forPatient,
+        ...(auth.ok && auth.principal.organizationId ? { organizationId: auth.principal.organizationId } : {}),
+      });
 
     /**
      * Whether a directive stops this caller reading this much of this record.
@@ -1207,12 +1222,29 @@ async function route(
     }
   }
   if (path === "/api/keys" && method === "POST") {
-    const body = JSON.parse(await readBody(req)) as { name?: string; scopes?: string[]; expiresAt?: string };
+    const body = JSON.parse(await readBody(req)) as {
+      name?: string;
+      scopes?: string[];
+      expiresAt?: string;
+      organizationId?: string;
+    };
     if (!body.name) return send(res, 400, { error: "name required" });
     try {
       // The plaintext key appears in this response and nowhere else, ever.
-      const issued = keys.issue(body.name, body.scopes, body.expiresAt ? { expiresAt: body.expiresAt } : {});
-      audit({ action: "C", resourceType: "ApiKey", resourceId: issued.id, detail: `scopes: ${issued.scopes.join(" ")}` });
+      const issued = keys.issue(body.name, body.scopes, {
+        ...(body.expiresAt ? { expiresAt: body.expiresAt } : {}),
+        // Checked against the directory inside `issue()`, so a credential
+        // either names an organization that exists or names none at all.
+        ...(body.organizationId ? { organizationId: body.organizationId } : {}),
+      });
+      audit({
+        action: "C",
+        resourceType: "ApiKey",
+        resourceId: issued.id,
+        detail:
+          `scopes: ${issued.scopes.join(" ")}` +
+          (issued.organizationId ? `; organization: ${issued.organizationId}` : "; no organization"),
+      });
       return send(res, 201, issued);
     } catch (err) {
       return send(res, 400, { error: err instanceof Error ? err.message : "cannot issue key" });

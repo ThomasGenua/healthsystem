@@ -71,6 +71,18 @@ export interface VerifiedToken {
    * default tenant rather than in whichever one they would have preferred.
    */
   tenantId?: string;
+  /**
+   * The organization the token was issued for, from a claim the identity
+   * provider controls. Absent when the provider does not assert one, which a
+   * consent directive treats as "cannot rule out the withheld organization".
+   *
+   * SMART on FHIR does not standardise this — it standardises what a caller
+   * may *do*, not which organization they belong to — so the claim name is a
+   * deployment decision rather than something to infer. `organization` is the
+   * common convention; `portage_organization` is the escape hatch for an
+   * issuer that already uses `organization` for something else.
+   */
+  organizationId?: string;
 }
 
 export class JwtVerifier {
@@ -181,11 +193,19 @@ export class JwtVerifier {
     // call it; `portage_tenant` is the escape hatch for one that already uses
     // `tenant` for something else.
     const tenantClaim = [claims.portage_tenant, claims.tenant].find((c) => typeof c === "string" && c.length > 0);
+    // Same shape and the same reasoning as the tenant claim above: asserted by
+    // the provider, never taken from the request. A caller who could name their
+    // own organization could name their way out of a directive that withholds
+    // from it.
+    const orgClaim = [claims.portage_organization, claims.organization].find(
+      (c) => typeof c === "string" && c.length > 0
+    );
     return {
       subject: typeof claims.sub === "string" ? claims.sub : "unknown",
       scopes: scopesFromSmart(rawScopes(claims)),
       claims,
       ...(typeof tenantClaim === "string" ? { tenantId: tenantClaim } : {}),
+      ...(typeof orgClaim === "string" ? { organizationId: orgClaim } : {}),
     };
   }
 }
