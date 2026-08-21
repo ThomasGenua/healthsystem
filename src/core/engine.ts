@@ -29,6 +29,7 @@ import { Workspace } from "../workspace/summary.ts";
 import { VisitView } from "../workspace/visit.ts";
 import { Encounters } from "../clinical/encounters.ts";
 import { Directory } from "../directory/store.ts";
+import { ChannelNoticeDispatcher } from "../patient/notice.ts";
 import { Schedule } from "../schedule/store.ts";
 import { Registry } from "../population/registry.ts";
 import { ConsentDirectives } from "../patient/consent.ts";
@@ -119,6 +120,20 @@ export interface EngineOptions {
    * so this only bounds the cross-host and reused-pid cases.
    */
   lockStaleMs?: number;
+  /**
+   * The channel break-glass notices are published to.
+   *
+   * Unset means notices are not sent, and the override queue behaves exactly
+   * as it did before — an operator is shown what they owe and tells the patient
+   * by hand. Set, and every override becomes a message on that channel, carried
+   * to the deployment's destinations by the same ordered, retried, dead-lettered
+   * machinery as any other clinical message.
+   *
+   * Deliberately a channel id rather than an address: Portage holds nothing to
+   * reach a patient by, and inventing one for a disclosure notice would send
+   * somebody's private business to a stranger.
+   */
+  breakGlassNoticeChannel?: string;
 }
 
 export class Engine {
@@ -141,6 +156,8 @@ export class Engine {
   /** Where the database file lives; empty for an in-memory engine. */
   readonly dataDir: string;
   private interactions: InteractionSource | null;
+  /** The channel break-glass notices go to, when a deployment configures one. */
+  private noticeChannel: string | null;
   private lockStaleMs: number;
   private lockHeartbeatMs: number;
   private holdsLock = false;
@@ -173,6 +190,7 @@ export class Engine {
       sftp: opts.connectors?.sftp ?? connectSftp,
     };
     this.interactions = opts.interactions ?? null;
+    this.noticeChannel = opts.breakGlassNoticeChannel ?? null;
     this.lockStaleMs = opts.lockStaleMs ?? 20_000;
     // Comfortably inside the staleness window, so a slow moment never costs a
     // running engine its own claim.
@@ -244,7 +262,9 @@ export class Engine {
       tasks,
       schedule: new Schedule(db),
       registry: new Registry(db),
-      consent: new ConsentDirectives(db),
+      consent: new ConsentDirectives(db, {
+        ...(this.noticeChannel ? { dispatcher: new ChannelNoticeDispatcher(db, this.noticeChannel) } : {}),
+      }),
       workspace: new Workspace({ record: clinical, notes, meds, orders, referrals, tasks }),
       encounters,
       directory,

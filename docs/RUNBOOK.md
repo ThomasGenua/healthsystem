@@ -328,14 +328,42 @@ Two things are worth knowing before you reach for break-glass:
 curl -sS -H "authorization: Bearer $ADMIN_KEY" http://localhost:8686/api/clinical/break-glass | jq
 ```
 
-`awaitingNotification` is patients who have not been told their record was
-opened. `awaitingReview` is overrides nobody has looked at. Neither drains
-itself, and neither is a statistic — an override nobody reviews teaches a ward
-that breaking glass costs nothing, and a directive that costs nothing to break
-slows down only the people who would have asked.
+Four lists come back, and they mean different things:
 
-Telling the patient happens on a channel Portage does not own — a letter, a
-call, a portal message. Record it once it has happened:
+| | |
+| --- | --- |
+| `awaitingNotification` | patients who have not been told their record was opened |
+| `awaitingReview` | overrides nobody has looked at |
+| `overdueNotification` | of those, the ones more than 24 hours old |
+| `undeliveredNotices` | notices that were attempted and could not be sent |
+
+None of them drains itself, and none is a statistic — an override nobody
+reviews teaches a ward that breaking glass costs nothing, and a directive that
+costs nothing to break slows down only the people who would have asked.
+
+**If `undeliveredNotices` is non-empty**, notice sending is configured and
+failing. Each row carries `notice_error`. The usual cause is
+`breakGlassNoticeChannel` naming a channel that does not exist or was removed
+while the engine ran. Fix the channel, then retry — safe to run repeatedly,
+because a notice already sent is never sent twice:
+
+```bash
+curl -sS -X POST -H "authorization: Bearer $ADMIN_KEY" -H "content-type: application/json" \
+  -d '{"override":"<id>"}' http://localhost:8686/api/clinical/break-glass-dispatch
+```
+
+**If every row has `notice_dispatched_at: null` and no `notice_error`**, no
+notice channel is configured at all. That is a valid deployment — the queue is
+then the whole mechanism and an operator tells each patient by hand — but it
+means nothing is being sent. Configure `breakGlassNoticeChannel` to change
+that.
+
+### Sent is not told
+
+`notice_dispatched_at` says Portage handed the notice to the delivery
+machinery. It does not say the patient received it, and a portal message that
+bounced is neither. Telling them still finishes on a channel Portage does not
+own — a letter, a call, a conversation — so record it once it has happened:
 
 ```bash
 curl -sS -X POST -H "authorization: Bearer $ADMIN_KEY" -H "content-type: application/json" \

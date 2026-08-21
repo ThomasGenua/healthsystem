@@ -333,6 +333,7 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/acknowledge": "POST",
       "/api/clinical/break-glass-notified": "POST",
       "/api/clinical/break-glass-review": "POST",
+      "/api/clinical/break-glass-dispatch": "POST",
       "/api/clinical/gaps": "POST",
       "/api/clinical/measure": "POST",
       "/api/clinical/encounters": `?patient=${P}`,
@@ -354,6 +355,11 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/acknowledge": { result: pending.id, action: "phoned the ward; potassium repeated urgently" },
       "/api/clinical/break-glass-notified": { override: standing.id },
       "/api/clinical/break-glass-review": { override: standing.id, outcome: "appropriate; ED attendance confirmed" },
+      // No dispatcher is configured in this harness, so this exercises the
+      // "nothing to send with" path — which still has to audit, because a
+      // notice that was not sent is exactly the event an operator needs on the
+      // trail.
+      "/api/clinical/break-glass-dispatch": { override: standing.id },
       "/api/clinical/gaps": {
         cohort: { id: "dm", name: "Diabetes", conditionCodes: ["diabetes"] },
         gap: { id: "hba1c", name: "HbA1c yearly", withinDays: 365, satisfiedByResultCodes: ["4548-4"] },

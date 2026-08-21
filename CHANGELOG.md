@@ -23,6 +23,27 @@ always forward-compatible and run automatically on open — see
   own organization could name its way out of a directive. A directive against
   one organization no longer withholds from another; a credential that names
   none still cannot show it is outside the withheld one, and is still refused.
+- **Break-glass notices are dispatched** (#18), not merely owed. An override
+  becomes a message on a channel the deployment configures, carried by the same
+  ordered, retried, dead-lettered machinery as any other clinical message —
+  `breakGlassNoticeChannel` names it, and leaving it unset keeps the previous
+  behaviour rather than pretending to send. Portage resolves no addresses: it
+  holds nothing to reach a patient by, and inventing a destination for a
+  disclosure notice sends somebody's private business to a stranger, so routing
+  belongs to whatever the deployment already uses to reach patients.
+
+  Three facts are now kept apart that were one: *sent*
+  (`notice_dispatched_at`, with the message it became), *told*
+  (`patient_notified_at`, still a deliberate human act), and *could not send*
+  (`notice_error`). A notice that failed is on `undeliveredNotices` with the
+  reason rather than looking exactly like one nobody has got to yet.
+  `overdueNotification()` is the escalation the queue never had — it had no
+  upper bound on how long somebody could go untold. `POST
+  /api/clinical/break-glass-dispatch` retries, and never sends twice.
+
+  A dispatch failure cannot stop somebody breaking glass. A clinician refused
+  over an unconscious patient because a broker is down is how a shared login
+  gets created, which is worse in every respect including the audit trail.
 - **Which organization looked** is on the audit trail beside who and why, and
   `AuditFilter.organization` asks the question directly. "Did anyone at that
   clinic read this record" is what a privacy review asks, and the trail could
@@ -211,7 +232,8 @@ blunter than the patient asked for:
   organization identity reaches the auth layer. *(Closed — see Unreleased.)*
 - Break-glass notification is recorded, not sent. Telling the patient happens
   on a channel Portage does not own; the queue holds until an operator records
-  that it happened.
+  that it happened. *(Notices are dispatched as of Unreleased; recording that
+  the patient was actually told is still a separate, manual act.)*
 
 ## 0.4.0
 

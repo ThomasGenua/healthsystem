@@ -1123,7 +1123,17 @@ CREATE TABLE IF NOT EXISTS break_glass (
   reviewed_by TEXT,
   review_outcome TEXT,
   -- Whether the patient has been told, which is not optional.
+  --
+  -- Three separate facts, deliberately not collapsed into one. "We sent it"
+  -- (notice_dispatched_at, with the message it became) and "we know they were
+  -- told" (patient_notified_at) are different claims, and a portal message
+  -- that bounced is neither. notice_error is why nothing was sent, so a
+  -- notice that could not be addressed is a visible refusal rather than a row
+  -- that silently looks the same as one nobody has got to yet.
   patient_notified_at TEXT,
+  notice_dispatched_at TEXT,
+  notice_message_id TEXT,
+  notice_error TEXT,
   created_at TEXT NOT NULL,
   PRIMARY KEY (tenant_id, id)
 );
@@ -1323,6 +1333,12 @@ const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
   // and until then they are treated exactly as they were before this column.
   { table: "api_keys", column: "organization_id", type: "TEXT" },
   { table: "audit_events", column: "organization_id", type: "TEXT" },
+  // Dispatch, recorded separately from acknowledgement. An upgraded database's
+  // existing overrides have all three NULL, which reads correctly: nothing was
+  // sent, because before this there was nothing that could send.
+  { table: "break_glass", column: "notice_dispatched_at", type: "TEXT" },
+  { table: "break_glass", column: "notice_message_id", type: "TEXT" },
+  { table: "break_glass", column: "notice_error", type: "TEXT" },
   // Tenancy. NOT NULL with a default, so existing rows land in the default
   // tenant rather than becoming unreachable, and a deployment that never
   // configures a second tenant is unaffected.

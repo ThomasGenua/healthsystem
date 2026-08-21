@@ -1079,8 +1079,40 @@ async function route(
           : {
               awaitingNotification: tenant.consent.pendingNotification(),
               awaitingReview: tenant.consent.pendingReview(),
+              // What is late, and what could not be sent. The queue on its own
+              // has no upper bound on how long a patient can go untold, and a
+              // notice that failed to dispatch looks exactly like one nobody
+              // has got to yet unless it is separated out here.
+              overdueNotification: tenant.consent.overdueNotification(),
+              undeliveredNotices: tenant.consent.undeliveredNotices(),
             }
       );
+    }
+    if (path === "/api/clinical/break-glass-dispatch" && method === "POST") {
+      // Retrying a notice that could not be sent — an unreachable channel, a
+      // misconfigured destination, a channel removed while the engine ran.
+      // Safe to call repeatedly: a notice already dispatched is not sent twice,
+      // because telling somebody twice that their record was opened is its own
+      // small harm and a retry loop that duplicates disclosures is worse than
+      // one that gives up.
+      const body = JSON.parse(await readBody(req)) as { override?: string };
+      if (!body.override) return send(res, 400, { error: "override required" });
+      try {
+        const row = tenant.consent.dispatchNotice(body.override);
+        audit({
+          action: "U",
+          outcome: row.notice_dispatched_at ? 0 : 8,
+          resourceType: "Consent",
+          patient: row.patient_id,
+          detail: row.notice_dispatched_at
+            ? `break-glass notice dispatched as message ${row.notice_message_id}`
+            : `break-glass notice could not be dispatched: ${row.notice_error ?? "no dispatcher configured"}`,
+        });
+        return send(res, 200, row);
+      } catch (err) {
+        audit({ action: "U", outcome: 8, resourceType: "Consent", detail: (err as Error).message });
+        return send(res, 400, { error: (err as Error).message });
+      }
     }
     if (path === "/api/clinical/break-glass-notified" && method === "POST") {
       // Recording that the patient was told. Separate from declaring, because
