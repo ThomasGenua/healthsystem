@@ -36,6 +36,8 @@ always forward-compatible and run automatically on open — see
   restore rehearsal goes through the replica and deletes the local snapshot
   first, so what comes back is the copy that left.
 
+  448 → 488 tests.
+
 - **Organization identity on credentials** (#17), which is what makes a
   `withhold-from-organization` directive mean something. The directive matched
   on a field no `Principal` carried and nothing ever passed, so it was recorded,

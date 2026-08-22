@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Db } from "../src/db.ts";
@@ -68,6 +68,7 @@ function temp(): string {
 }
 
 function keyFile(dir: string): string {
+  mkdirSync(dir, { recursive: true });
   const path = join(dir, "backup.key");
   initBackupKey(path);
   return path;
@@ -170,7 +171,10 @@ test("the wrong key, and a tampered copy, both fail closed", () => {
   flipped[flipped.length - 1] ^= 1;
   assert.throws(() => decryptSnapshot(flipped, key), /key is wrong|tampered/);
 
-  assert.throws(() => decryptSnapshot(Buffer.from("not a snapshot"), key), /missing PTGB1/);
+  assert.throws(
+    () => decryptSnapshot(Buffer.from("not a snapshot but long enough to have been one"), key),
+    /missing PTGB1/
+  );
 });
 
 test("init-key refuses to overwrite, because losing it loses every remote snapshot", () => {
