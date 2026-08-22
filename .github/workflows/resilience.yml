@@ -100,12 +100,13 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
-      # Takes a snapshot from under a live engine, restores it to a directory
-      # the database has never occupied, boots an engine against it in a
-      # separate process, and proves the result is usable rather than merely
-      # openable: chart readable, message writable, both hash chains verifying
-      # with the new row on the end, and the scheduler's unique index intact.
-      # Prints the measured RTO.
+      # Takes a snapshot from under a live engine, encrypts and replicates it
+      # through the off-machine store, deletes the local snapshot, fetches the
+      # replica, restores it to a directory the database has never occupied,
+      # boots an engine against it in a separate process, and proves the
+      # result is usable rather than merely openable. Prints the measured RTO.
+      # The destination is a directory on this runner — the encrypt / read-back
+      # / decrypt path, not a second machine.
       - run: npm run restoretest -- --messages ${{ github.event.inputs.messages || '20000' }}
 
   load:

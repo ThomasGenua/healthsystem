@@ -57,6 +57,7 @@ v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A clinician console** — chart, worklist and break-glass queues — where a panel that failed, one that was cut short, and one the patient locked are three visibly different things rather than three empty boxes.
 - **A lockbox that can cover part of a chart**, where the locked panel says a directive withheld it rather than rendering as "none" — so a patient can withhold one section without taking the rest of their chart away from the clinician treating them.
 - **A restore that has actually been rehearsed**, to somewhere the database has never been, with a measured RTO — because a verified snapshot only proves the bytes hashed correctly when they were written.
+- **A snapshot that leaves the machine**, encrypted, put, read back and walked again, so the stated RPO is not only for failures that spare the backup directory.
 
 448 tests. Backend first, then the interface that makes the backend's honesty visible.
 
@@ -234,7 +235,12 @@ A refusal returns `429` with `Retry-After`. Counters are in memory, matching the
 | `PORTAGE_REDACT_AFTER_DAYS` | — | replace stored payloads older than this with a tombstone |
 | `PORTAGE_PURGE_AFTER_DAYS` | — | delete messages older than this outright |
 | `PORTAGE_RATE_AUTHENTICATED` / `_ANONYMOUS` / `PORTAGE_RATE_LIMIT` | 1200 / 120 / on | request rate limits |
-| `PORTAGE_BACKUP_DIR` / `_KEEP` | `./backups` / 7 | where POST /api/backup writes, and how many to keep |
+| `PORTAGE_BACKUP_DIR` / `_KEEP` | `./backups` / 7 | where POST /api/backup writes locally, and how many to keep |
+| `PORTAGE_BACKUP_REMOTE` | — | off-machine destination: `s3://bucket/prefix`, `sftp://user@host/path`, or `fs:/absolute/path` |
+| `PORTAGE_BACKUP_KEY_FILE` | — | 32-byte key (raw or 64 hex chars) that encrypts every remote copy. Must survive this machine. |
+| `PORTAGE_BACKUP_REMOTE_KEEP` | — | how many remote snapshots to keep; independent of local `_KEEP`. Unset means do not prune. |
+| `PORTAGE_BACKUP_S3_ENDPOINT` / `_REGION` / `_ACCESS_KEY` / `_SECRET_KEY` | — | S3-compatible API. HTTPS required except on loopback. Falls back to `AWS_*`. |
+| `PORTAGE_BACKUP_SFTP_PASSWORD` / `_KEY` / `_PASSPHRASE` | — | SFTP credentials when the destination is `sftp://` |
 
 ## Encryption at rest
 
@@ -878,6 +884,7 @@ Losing this database is the worst thing that can happen to a node. It holds the 
 **Copying that file is not a backup.** The engine runs SQLite in WAL mode, so committed data lives in `portage.db-wal` until a checkpoint folds it in. `cp portage.db` on a running engine yields a stale or torn snapshot that looks fine until the day it is needed — in testing, the copy could not even be opened.
 
 ```bash
+npm run backup -- --init-key /etc/portage/backup.key   # once; store a copy off this machine
 npm run backup                                    # -> backups/portage-<stamp>.db
 npm run backup -- --out /mnt/usb --keep 7
 npm run backup -- --verify backups/portage-2026-08-07T15-22-33.db
@@ -898,13 +905,42 @@ A short chain names no row, because the missing rows are the point; saying "brok
 
 Each snapshot is exactly one file — the `-wal` and `-shm` sidecars left by verification are removed, because a restore that copies a `.db` while leaving a stale `-wal` beside it would apply a write-ahead log belonging to a different database.
 
+### Off the machine that made it
+
+A local snapshot survives a process crash and a bad upgrade. It does not survive the disk dying, the machine being stolen, the building flooding, or ransomware encrypting the volume the snapshots sit on. Those are the failures that need a restore, and every snapshot `takeBackup` writes is still on the same disk as the database it came from.
+
+`PORTAGE_BACKUP_REMOTE` is a destination that is not this machine, configured rather than hard-coded:
+
+| | |
+|---|---|
+| `s3://bucket/prefix` | S3-compatible object storage. HTTPS required except on loopback. |
+| `sftp://user@host/path` | Reuses the existing SFTP client. |
+| `fs:/absolute/path` | A directory treated as elsewhere — tests, CI, and a mount that really is another machine. |
+
+The snapshot is encrypted here (AES-256-GCM) before it is handed over, put, **read back**, decrypted, and walked again. An upload that returned 200 is not a copy. A failed replica is visible on `/api/health` (`remoteBackup`) and `/metrics` (`portage_backup_remote_ok`, `_age_seconds`) and marks the node degraded — silent failure here is the same hazard as a chart section rendering "none" when it failed to load. The local snapshot is still written; 500 means the half that survives the machine did not.
+
+**The key has to outlive the host.** `PORTAGE_BACKUP_KEY_FILE` is 32 bytes, hex or raw. It must live somewhere this machine dying does not take with it: a secrets manager on another system, a USB in a drawer two buildings over, a printed hex string in an envelope. A key that only this machine can read unlocks nothing after the flood, and a remote copy nobody can decrypt is not a backup. Restoring begins with producing that key, not with finding the object. If the key file appears to share a volume with the database, boot says so.
+
+**Immutability is the destination's job.** A backup an attacker holding production credentials can delete is a backup that does not survive the attack most likely to need it. Object-lock, or write-only credentials (put + get + list, no delete), are the usual answers and both have operational costs. When delete is refused, prune reports that and does not fail the backup — remote retention is then the destination's policy, which is what making the objects undeletable chose. `PORTAGE_BACKUP_REMOTE_KEEP` is independent of local `_KEEP` and is unset by default, so a destination that can delete is not pruned unless somebody said so.
+
+Unconfigured is a posture, like an unencrypted volume: reported on health and at boot, not degraded. Configured-and-failed is an incident.
+
+```
+WARNING: no off-machine backup destination is configured (PORTAGE_BACKUP_REMOTE).
+Local snapshots survive a process crash and a bad upgrade; they do not survive
+the disk dying, the machine being stolen, or the building flooding. The stated
+RPO is only real for failures that spare the backup directory.
+```
+
 ### Restoring
 
 With the engine stopped:
 
 ```bash
 systemctl stop portage
-npm run restore -- --from backups              # newest snapshot there
+npm run restore -- --from backups              # newest local snapshot
+npm run restore -- --from remote               # newest off-machine copy; fetches and decrypts
+npm run restore -- --from remote --snapshot portage-2026-08-19T14-00-00.db
 npm run restore -- --snapshot backups/portage-2026-08-19T14-00-00.db
 systemctl start portage
 ```
@@ -917,7 +953,7 @@ It refuses to run against a database something still appears to hold, because re
 
 ### What restoring costs
 
-Measured by `npm run restoretest`, which takes a snapshot from under a live engine, restores it to a directory the database has never occupied, and boots an engine against it in a separate process. It runs nightly in CI on both supported Node versions.
+Measured by `npm run restoretest`, which takes a snapshot from under a live engine, encrypts and replicates it through the off-machine store, deletes the local snapshot, fetches the replica, restores it to a directory the database has never occupied, and boots an engine against it in a separate process. It runs nightly in CI on both supported Node versions.
 
 | database | backup | restore | engine start | **RTO** |
 |---|---|---|---|---|
@@ -926,13 +962,21 @@ Measured by `npm run restoretest`, which takes a snapshot from under a live engi
 
 Single runs on one machine, so read them as an order of magnitude rather than a benchmark: a hundred-megabyte database comes back in seconds, not minutes. Re-run `npm run restoretest --messages <n>` on your own hardware for a number you can put in a service agreement.
 
-**RPO is a property of your schedule, not of this code.** A node snapshotting every 24 hours loses up to 24 hours of the message log to a total disk failure, and the clinical record is in the same file, so it is the same number. Shorten the cadence to shorten it — a snapshot of a 96 MB database cost 2.5 seconds against a live engine, so hourly is affordable at that size.
+**RPO is a property of your schedule, and of which disk survives.** There is no single number.
+
+| What failed | What you still have | RPO |
+|---|---|---|
+| Process crash, bad upgrade, a restore you decide was the wrong call | The local snapshot in `PORTAGE_BACKUP_DIR` | time since the last local snapshot |
+| The disk, the machine, the building, ransomware on that volume | The last *verified replica* at `PORTAGE_BACKUP_REMOTE` | time since the last successful replication |
+| The disk, and no remote was configured | Nothing | everything |
+
+A node snapshotting every 24 hours loses up to 24 hours of the message log — and the clinical record, which is in the same file — to a process crash. The same cadence against a dead disk is only real if the last replica left the machine. Shorten the cadence to shorten it — a snapshot of a 96 MB database cost 2.5 seconds against a live engine, so hourly is affordable at that size. Replication is one more pass over the file plus the network; budget for that, and alert on `portage_backup_remote_ok` going to 0.
 
 **The RTO is a floor, not a promise.** It is restore plus boot. It excludes noticing the outage, deciding to restore, and finding the snapshot, which on a real night are most of the elapsed time.
 
-**What the rehearsal does not prove.** It restores to a path the database has never occupied, in a process that has never opened it, with a cold cache and no sidecars — enough to have caught two real defects, including one invisible to any restore onto the machine that took the backup. It does not use a second machine, so a different filesystem or disk is genuinely untested. Running it on Node 22 and 24 covers the part that bites in practice: two different `node:sqlite` builds opening the same file.
+**What the rehearsal does not prove.** It takes the encrypt / put / read-back / decrypt / restore path, against a destination that is a directory on the same runner. That is the code an operator walks when the disk is gone. It is not a second machine, a different filesystem, or a live object store — saying "rehearsed off-box" would be the overclaim this exercise exists to refuse. The S3 and SFTP transports are tested against fakes. Running it on Node 22 and 24 covers the part that bites in practice: two different `node:sqlite` builds opening the same file.
 
-`PORTAGE_BACKUP_DIR` and `PORTAGE_BACKUP_KEEP` configure the API endpoint.
+`PORTAGE_BACKUP_DIR`, `PORTAGE_BACKUP_KEEP`, `PORTAGE_BACKUP_REMOTE` and `PORTAGE_BACKUP_KEY_FILE` configure the API endpoint.
 
 ## Monitoring
 
@@ -953,7 +997,7 @@ Single runs on one machine, so read them as an order of magnitude rather than a 
 }
 ```
 
-`degraded` is set by a dead letter or a channel holding work older than `?stalled_after_sec=` (default an hour). It is deliberately *degraded* rather than *unhealthy*: an engine holding a backlog through a satellite outage is working exactly as designed, and only an operator can say whether a backlog this old means something is wrong. `stalledChannels` names the feed, which is the first thing anyone needs and the thing a counter cannot say.
+`degraded` is set by a dead letter, a channel holding work older than `?stalled_after_sec=` (default an hour), a silent feed, or a configured off-machine backup whose last replica failed. It is deliberately *degraded* rather than *unhealthy*: an engine holding a backlog through a satellite outage is working exactly as designed, and only an operator can say whether a backlog this old means something is wrong. `stalledChannels` names the feed, which is the first thing anyone needs and the thing a counter cannot say. An unconfigured remote is a posture (`remoteBackup.configured: false`) and is not degraded; configured-and-failed is.
 
 `GET /metrics` serves the same in Prometheus text format:
 
@@ -1120,6 +1164,9 @@ src/
   core/atrest.ts      whether the data directory is on an encrypted volume
   core/retention.ts   payload redaction and purge under a retention policy
   core/backup.ts      verified online snapshots
+  core/backup-crypto.ts  AES-256-GCM wrap for a snapshot that is leaving
+  core/remote.ts      off-machine destination, read-back, remote restore
+  core/remote-s3.ts   S3-compatible SigV4 client (no AWS SDK)
   connectors/sql.ts   Postgres and MySQL polling clients
   connectors/sftp.ts  SFTP polling client
   connectors/cron.ts  five-field cron schedules
@@ -1220,7 +1267,7 @@ GET    /api/deliveries?channel_id=&state=   browse; state=dead is the DLQ
 POST   /api/deliveries/:id/replay           requeue a dead, delivered or discarded delivery
 POST   /api/deliveries/:id/discard          discard a dead delivery, releasing ordered flow
 GET    /api/chain/verify?channel_id=        walk and verify the hash chain
-POST   /api/backup                          verified online snapshot of the database
+POST   /api/backup                          verified online snapshot; off-machine replica when configured
 GET    /metrics                             Prometheus exposition (public, no patient data)
 GET    /api/audit?patient=&principal=&failures=  who accessed patient data
 GET    /api/audit/verify                    walk and verify the audit hash chain
@@ -1411,12 +1458,12 @@ closed. In the order it would be worth doing.
 0.5.0 closed the first three: the restore is rehearsed and measured ([#15](https://github.com/ThomasGenua/healthsystem/issues/15)),
 a scope-narrowed directive withholds its section rather than the chart around it
 ([#16](https://github.com/ThomasGenua/healthsystem/issues/16)), and the chart is in front of a clinician ([#19](https://github.com/ThomasGenua/healthsystem/issues/19)).
+[#37](https://github.com/ThomasGenua/healthsystem/issues/37) is done: a snapshot leaves the machine, encrypted, read back and walked, and the restore path accepts the remote copy.
 
 **Prove what is currently only claimed.**
 
 - [#21 A clinical safety case and hazard log](https://github.com/ThomasGenua/healthsystem/issues/21) — the hazard reasoning exists, scattered across docstrings and test names where no safety officer will find it, in no defensible form.
 - [#22 An external penetration test](https://github.com/ThomasGenua/healthsystem/issues/22) — the adversarial tests here share their author's model of what an attack looks like. The interesting findings are outside it.
-- [#37 Get a snapshot off the machine that made it](https://github.com/ThomasGenua/healthsystem/issues/37) — the restore is rehearsed and every snapshot it restores is on the same disk, in the same building, as the database it came from. The stated RPO holds only for failures that spare the backup directory.
 
 **Make the consent enforcement precise.** Done. [#17](https://github.com/ThomasGenua/healthsystem/issues/17): credentials carry an organization, so a directive against one clinic no longer withholds from the territory. [#18](https://github.com/ThomasGenua/healthsystem/issues/18): a break-glass notice is dispatched through the delivery machinery rather than left on a queue for somebody to remember, and what could not be sent says so. What remains is honest and small — *sent* is still not *told*, and recording that the patient was actually told is a deliberate human act, because the last step happens on a channel Portage does not own.
 

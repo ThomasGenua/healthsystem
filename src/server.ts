@@ -1,6 +1,7 @@
 /** Portage entry point. */
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { encryptionAtRest, shouldWarn } from "./core/atrest.ts";
+import { RemoteBackup, remoteBackupWarning } from "./core/remote.ts";
 import { join } from "node:path";
 import { Engine } from "./core/engine.ts";
 import { startApi } from "./api/admin.ts";
@@ -102,6 +103,20 @@ async function main(): Promise<void> {
   const atRest = encryptionAtRest(DATA_DIR);
   if (shouldWarn(atRest)) console.warn(`WARNING: ${atRest.detail}`);
 
+  // Same reason, same moment: an operator should not learn from a footnote
+  // that every snapshot still lives on the disk that is about to die.
+  let remote: RemoteBackup | undefined;
+  try {
+    remote = RemoteBackup.fromEnv();
+    const warning = remoteBackupWarning(remote.status());
+    if (warning) console.warn(`WARNING: ${warning}`);
+  } catch (err) {
+    // Half-configured (a URI without a key, s3:// without credentials) is
+    // refused at boot rather than discovered on the first backup, when the
+    // local snapshot would already look like success.
+    throw err;
+  }
+
   const days = (v: string | undefined): number | undefined => {
     if (v === undefined) return undefined;
     const n = Number(v);
@@ -177,6 +192,7 @@ async function main(): Promise<void> {
       authenticatedPerMinute: rate(process.env.PORTAGE_RATE_AUTHENTICATED),
       anonymousPerMinute: rate(process.env.PORTAGE_RATE_ANONYMOUS),
     },
+    remote,
   });
   console.log(
     `Portage listening on :${api.port} (${api.tls ? (tls?.mutual ? "mutual TLS" : "TLS") : "plain HTTP"}, auth ${AUTH_MODE})`

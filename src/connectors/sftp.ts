@@ -18,6 +18,14 @@ export interface SftpFile {
 export interface SftpClient {
   list(dir: string): Promise<SftpFile[]>;
   get(path: string): Promise<string>;
+  /**
+   * Binary put/get. Optional because the ingest path only ever reads text;
+   * the off-machine backup destination needs both, and a client that cannot
+   * put a Buffer is refused there rather than silently utf8-mangling a
+   * database file.
+   */
+  put?(path: string, data: Buffer): Promise<void>;
+  getBytes?(path: string): Promise<Buffer>;
   rename(from: string, to: string): Promise<void>;
   delete(path: string): Promise<void>;
   mkdir(dir: string): Promise<void>;
@@ -38,6 +46,7 @@ interface RawSftp {
   connect(cfg: Record<string, unknown>): Promise<unknown>;
   list(dir: string): Promise<Array<{ name: string; size: number; type: string }>>;
   get(path: string): Promise<Buffer | string>;
+  put(input: Buffer | string, remote: string): Promise<unknown>;
   rename(from: string, to: string): Promise<unknown>;
   delete(path: string): Promise<unknown>;
   mkdir(dir: string, recursive?: boolean): Promise<unknown>;
@@ -79,6 +88,13 @@ export async function connectSftp(opts: SftpConnectOptions): Promise<SftpClient>
     async get(path) {
       const data = await sftp.get(path);
       return Buffer.isBuffer(data) ? data.toString("utf8") : String(data);
+    },
+    async put(path, data) {
+      await sftp.put(data, path);
+    },
+    async getBytes(path) {
+      const data = await sftp.get(path);
+      return Buffer.isBuffer(data) ? data : Buffer.from(data);
     },
     rename: async (from, to) => void (await sftp.rename(from, to)),
     delete: async (path) => void (await sftp.delete(path)),

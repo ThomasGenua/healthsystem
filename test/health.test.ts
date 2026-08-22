@@ -151,6 +151,9 @@ test("metrics are exposed in Prometheus text format", async () => {
       "portage_oldest_queued_age_seconds",
       "portage_audit_events_total",
       "portage_chain_length",
+      "portage_backup_remote_configured",
+      "portage_backup_remote_ok",
+      "portage_backup_remote_age_seconds",
     ]) {
       assert.match(text, new RegExp(`^# HELP ${name} `, "m"), `${name} needs a HELP line`);
       assert.match(text, new RegExp(`^# TYPE ${name} `, "m"), `${name} needs a TYPE line`);
