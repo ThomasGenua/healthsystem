@@ -36,6 +36,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { Db } from "../db.ts";
+import { Refusal } from "../core/refusal.ts";
 
 export type PartyKind = "practitioner" | "organization" | "location" | "service";
 
@@ -131,7 +132,12 @@ export type Resolution =
   | { known: false; kind: PartyKind; id: string; display: string };
 
 /** Thrown when a typed reference names a party the directory does not have. */
-export class UnknownParty extends Error {}
+export class UnknownParty extends Refusal {
+  constructor(message: string) {
+    super(message, 400);
+    this.name = "UnknownParty";
+  }
+}
 
 function displayOf(kind: PartyKind, row: Record<string, unknown>): string {
   if (kind === "practitioner") {
@@ -446,6 +452,17 @@ export class Directory {
     ];
   }
 
+  /** Every role this tenant has recorded. Retired ones are excluded by default. */
+  listRoles(opts: { includeRetired?: boolean; limit?: number } = {}): RoleRow[] {
+    return this.db.sql
+      .prepare(
+        `SELECT * FROM directory_roles
+          WHERE tenant_id = ?${opts.includeRetired ? "" : " AND active_to IS NULL"}
+          ORDER BY created_at LIMIT ?`
+      )
+      .all(this.db.tenantId, opts.limit ?? 200) as unknown as RoleRow[];
+  }
+
   list(kind: PartyKind, opts: { includeRetired?: boolean; limit?: number } = {}): Array<Record<string, unknown>> {
     return this.db.sql
       .prepare(
@@ -454,6 +471,16 @@ export class Directory {
           ORDER BY created_at LIMIT ?`
       )
       .all(this.db.tenantId, opts.limit ?? 200) as unknown as Array<Record<string, unknown>>;
+  }
+
+  countRoles(opts: { includeRetired?: boolean } = {}): number {
+    const r = this.db.sql
+      .prepare(
+        `SELECT COUNT(*) AS n FROM directory_roles
+          WHERE tenant_id = ?${opts.includeRetired ? "" : " AND active_to IS NULL"}`
+      )
+      .get(this.db.tenantId) as unknown as { n: number };
+    return r.n;
   }
 
   /** How many entries of a kind this tenant has. Used by callers deciding

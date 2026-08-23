@@ -14,7 +14,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Db } from "../src/db.ts";
@@ -435,5 +435,33 @@ test("an audit chain written before credentials carried an organization still ve
     db.close();
   } finally {
     cleanup();
+  }
+});
+
+test("the migrate() rebuild is FK-safe, and stays that way if SCHEMA grows a REFERENCES", () => {
+  // PRAGMA foreign_keys is a no-op inside a transaction. The day SCHEMA
+  // grows a REFERENCES, DROP TABLE during rebuild either cascades child
+  // rows away or refuses to boot — unless foreign keys are off *outside*
+  // the rebuild and foreign_key_check runs before they go back on.
+  const src = readFileSync(new URL("../src/db.ts", import.meta.url), "utf8");
+  const schemaStart = src.indexOf("const SCHEMA = `");
+  const schemaEnd = src.indexOf("const INDEXES");
+  assert.ok(schemaStart >= 0 && schemaEnd > schemaStart, "could not find SCHEMA and INDEXES in src/db.ts");
+  const schema = src.slice(schemaStart, schemaEnd);
+  const migrateStart = src.indexOf("private migrate()");
+  const migrateEnd = src.indexOf("\n  close()", migrateStart);
+  const migrate = src.slice(migrateStart, migrateEnd === -1 ? undefined : migrateEnd);
+
+  const off = /PRAGMA foreign_keys = OFF/.test(migrate);
+  const check = /PRAGMA foreign_key_check/.test(migrate);
+  const hasReferences = /\bREFERENCES\b/.test(schema);
+
+  assert.equal(off, true, "migrate() must turn foreign keys off around the rebuild");
+  assert.equal(check, true, "migrate() must PRAGMA foreign_key_check before turning them back on");
+  // The same two lines are what a REFERENCES clause would require. Written
+  // this way so a reviewer sees the coupling rather than a test that only
+  // fires the day it is already too late.
+  if (hasReferences) {
+    assert.equal(off && check, true, "SCHEMA has REFERENCES; the rebuild must stay FK-safe");
   }
 });

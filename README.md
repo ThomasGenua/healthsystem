@@ -608,6 +608,8 @@ Practitioners, organizations, locations, the services they provide, and the role
 
 A referral target is three-valued for the same reason: a known service, a **declared** external one, or unverified free text. A referral south is ordinary and must not be refused for being unknown; what it must not be is indistinguishable from a typo.
 
+The same parties are served on the FHIR facade as `Practitioner`, `PractitionerRole`, `Organization`, `Location` and `HealthcareService`. A write that arrives as one of those types is ingested into the directory when it can be; a Patient is not a party, and a half-built Practitioner is not invented.
+
 ## The clinical API, and audit by construction
 
 Everything above — the chart, the patient index, medications, allergies, orders, results, referrals, tasks, notes and the assembled summary — is served under `/api/clinical/*`, behind the `admin` scope and inside the caller's tenant like the rest of the API.
@@ -616,7 +618,7 @@ Exposing it is the moment the audit requirement in §18 starts to bite. Until no
 
 Two things make it structural instead:
 
-- **`phi()` audits first and sends second.** An exception between the two cannot produce a read that happened without a record of it happening, and there is no path through a clinical route that reaches `send` without passing through it.
+- **`phi()` audits first and sends second.** An exception between the two cannot produce a read that happened without a record of it happening, and there is no path through a clinical route that reaches `send` without passing through it. A store refusal (`Refusal`, including `SlotFull` → 409) keeps the status the store chose and is outcome 4; an unrecognised exception is 500 with a generic body, and the real message is on the trail and the log.
 - **`test/clinical-api.test.ts` reads the routing source**, extracts every `/api/clinical/*` path, drives each one, and fails if any serves patient data without leaving a row. A route added tomorrow with no trail does not quietly work — it breaks the build. The test also fails on a route it has no case for, so a new endpoint cannot pass by being untested.
 
 A search that finds nobody is still an access. "Who did you look for" is a question a privacy review asks, and a fruitless search for a well-known name is exactly the one it asks about — so the row is written with `count: 0` rather than not at all.
@@ -1467,9 +1469,8 @@ a scope-narrowed directive withholds its section rather than the chart around it
 
 **Make the consent enforcement precise.** Done. [#17](https://github.com/ThomasGenua/healthsystem/issues/17): credentials carry an organization, so a directive against one clinic no longer withholds from the territory. [#18](https://github.com/ThomasGenua/healthsystem/issues/18): a break-glass notice is dispatched through the delivery machinery rather than left on a queue for somebody to remember, and what could not be sent says so. What remains is honest and small — *sent* is still not *told*, and recording that the patient was actually told is a deliberate human act, because the last step happens on a channel Portage does not own.
 
-**Model what the system talks about.** [#32](https://github.com/ThomasGenua/healthsystem/issues/32) and the store half of [#33](https://github.com/ThomasGenua/healthsystem/issues/33) are done: a visit owns what happened inside it, and a practitioner, organization, location or service is a party rather than a string. What remains:
+**Model what the system talks about.** [#32](https://github.com/ThomasGenua/healthsystem/issues/32) and [#33](https://github.com/ThomasGenua/healthsystem/issues/33) are done: a visit owns what happened inside it, and a practitioner, organization, location or service is a party that the FHIR facade serves as `Practitioner`, `PractitionerRole`, `Organization`, `Location` and `HealthcareService`. What remains:
 
-- [#33 Project the directory into the FHIR facade](https://github.com/ThomasGenua/healthsystem/issues/33) — the parties are modelled; `Practitioner`, `PractitionerRole`, `Organization`, `Location` and `HealthcareService` are not yet served as resources.
 - [#34 Link duplicate charts reversibly, instead of stopping at detection](https://github.com/ThomasGenua/healthsystem/issues/34) — `duplicates()` finds candidates and declines to merge, for a good reason. A reversible link is what the objection leaves open.
 
 **Put it in front of a person.**
@@ -1493,6 +1494,6 @@ a scope-narrowed directive withholds its section rather than the chart around it
 - [#20 §15 bulk migration from incumbent systems, with a reconciliation report](https://github.com/ThomasGenua/healthsystem/issues/20) — how a real deployment starts, and completely absent.
 - [#25 Horizontal operation](https://github.com/ThomasGenua/healthsystem/issues/25) — a single writer suits a community site and not a territorial hub. Last, because scaling a system nobody can load data into and whose recovery has never been rehearsed is optimising the wrong axis.
 
-**Smaller, from review.** [#26 `phi()` maps every store exception to HTTP 400](https://github.com/ThomasGenua/healthsystem/issues/26) · [#27 the `migrate()` rebuild runs with foreign keys on](https://github.com/ThomasGenua/healthsystem/issues/27)
+**Smaller, from review.** [#26](https://github.com/ThomasGenua/healthsystem/issues/26) and [#27](https://github.com/ThomasGenua/healthsystem/issues/27) are done: a store refusal is not a 400-and-outcome-8, and the `migrate()` rebuild turns foreign keys off around the copy.
 
 **Deliberately not next.** Machine learning and broad decision-support content wait for validated data, licensed content and a clinical-governance process. The decision-support mechanism ships without content on purpose, and shipping content without that process would be the most consequential version of the failure this codebase spends its time refusing: a system answering a clinical question that nobody actually answered.

@@ -9,7 +9,29 @@ always forward-compatible and run automatically on open — see
 
 ## Unreleased
 
+**Fixed**
+
+- **`phi()` distinguishes a store refusal from a fault** (#26). A `Refusal`
+  (a full slot, a malformed visit, a result already signed off) keeps the
+  status the store chose — `SlotFull` is 409 — and is audit outcome 4. An
+  unrecognised exception is 500 with a generic body; the real message is on
+  the trail and the log. `POST /api/clinical/book` is the write that makes
+  a full slot reachable over HTTP.
+
+- **The `migrate()` rebuild is FK-safe** (#27). Foreign keys are turned off
+  *outside* the rebuild transaction (`PRAGMA foreign_keys` is a no-op
+  inside one), and `PRAGMA foreign_key_check` runs before they go back on.
+  SCHEMA has no `REFERENCES` today; the procedure is what keeps the next
+  one from deleting rows or refusing to boot.
+
 **Added**
+
+- **The directory is served as FHIR** (#33). `Practitioner`,
+  `PractitionerRole`, `Organization`, `Location` and `HealthcareService`
+  are projected from the local registry onto the facade. A write that
+  arrives as one of those types is ingested when it can be, and ignored
+  when it cannot — a Patient upsert does not fail because the directory
+  has no opinion about a patient.
 
 - **A snapshot that leaves the machine** (#37). `takeBackup` still writes a
   verified local file; that file does not survive the disk dying, and the

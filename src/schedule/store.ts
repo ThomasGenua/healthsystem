@@ -39,6 +39,7 @@
 import { randomUUID } from "node:crypto";
 import { an } from "../core/text.ts";
 import type { Db } from "../db.ts";
+import { Refusal } from "../core/refusal.ts";
 import { Directory, type PartyKind, type Resolution } from "../directory/store.ts";
 
 export type SlotStatus = "open" | "blocked";
@@ -86,10 +87,10 @@ export interface Actor {
 }
 
 /** Raised when a slot has no seat left. Distinct, so a caller can offer another. */
-export class SlotFull extends Error {
+export class SlotFull extends Refusal {
   readonly slotId: string;
   constructor(slotId: string, capacity: number) {
-    super(`slot ${slotId} is full (capacity ${capacity})`);
+    super(`slot ${slotId} is full (capacity ${capacity})`, 409);
     this.name = "SlotFull";
     this.slotId = slotId;
   }

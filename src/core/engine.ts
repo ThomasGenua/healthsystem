@@ -29,6 +29,7 @@ import { Workspace } from "../workspace/summary.ts";
 import { VisitView } from "../workspace/visit.ts";
 import { Encounters } from "../clinical/encounters.ts";
 import { Directory } from "../directory/store.ts";
+import { ingestFhir } from "../directory/fhir.ts";
 import { ChannelNoticeDispatcher } from "../patient/notice.ts";
 import { Schedule } from "../schedule/store.ts";
 import { Registry } from "../population/registry.ts";
@@ -178,11 +179,12 @@ export class Engine {
       defaultPack: opts.validatePack,
       defaultMode: opts.validateMode,
     };
-    this.fhir = new FhirStore(this.db, this.validation);
+    const directory = new Directory(this.db);
+    this.fhir = new FhirStore(this.db, this.validation, directory);
     // Resolved per delivery, since one worker drains every tenant on the node.
     this.worker = new DeliveryWorker(this.db, opts.tickMs ?? 250, 25, (tenantId) => this.forTenant(tenantId));
     this.subs = new SubscriptionManager(this.db, this.worker);
-    this.keys = new ApiKeyStore(this.db, new Directory(this.db));
+    this.keys = new ApiKeyStore(this.db, directory);
     this.audit = new AuditStore(this.db);
     this.retention = new RetentionRunner(this.db, opts.retention ?? {}, this.audit);
     this.connectors = {
@@ -195,7 +197,10 @@ export class Engine {
     // Comfortably inside the staleness window, so a slow moment never costs a
     // running engine its own claim.
     this.lockHeartbeatMs = Math.max(1_000, Math.floor(this.lockStaleMs / 4));
-    this.fhir.onChange((result, resource) => this.subs.notify(result, resource));
+    this.fhir.onChange((result, resource) => {
+      this.subs.notify(result, resource);
+      ingestFhir(directory, resource);
+    });
     this.mapperCtx = {
       translate: (value, args) => {
         const matches = this.terminology.translate({
@@ -230,7 +235,6 @@ export class Engine {
     if (existing) return existing;
 
     const db = this.db.forTenant(tenantId);
-    const fhir = new FhirStore(db, this.validation);
     const clinical = new ClinicalRecord(db);
     const notes = new ClinicalNotes(clinical);
     // No interaction database unless a deployment supplies one. The safety
@@ -245,8 +249,12 @@ export class Engine {
     // too: issuing a credential for an organization nobody has registered is a
     // typo worth refusing, and only the directory can tell.
     const directory = new Directory(db);
+    const fhir = new FhirStore(db, this.validation, directory);
     const subs = new SubscriptionManager(db, this.worker);
-    fhir.onChange((result, resource) => subs.notify(result, resource));
+    fhir.onChange((result, resource) => {
+      subs.notify(result, resource);
+      ingestFhir(directory, resource);
+    });
     const view: TenantView = {
       tenantId,
       db,
