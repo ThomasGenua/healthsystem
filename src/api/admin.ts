@@ -17,7 +17,7 @@
  * POST /api/deliveries/:id/replay        requeue a dead, delivered or discarded delivery
  * POST /api/deliveries/:id/discard       discard a dead delivery, releasing ordered flow
  * GET  /api/chain/verify?channel_id      verify the channel hash chain
- * POST /api/backup                       take a verified snapshot of the database
+ * POST /api/backup                       take a verified snapshot; replicate off-machine when configured
  * GET  /api/retention                    retention policy and what it would touch
  * POST /api/retention/run                apply the policy now
  * GET  /api/audit?patient=&principal=&failures=  access trail (admin only)
@@ -51,6 +51,7 @@ import { DEFAULT_TENANT } from "../db.ts";
 import { checkCapability, toOperationOutcome, validateResource } from "../conformance/validator.ts";
 import { applyMapping } from "../transform/mapper.ts";
 import { takeBackup } from "../core/backup.ts";
+import { remoteAgeSec, type RemoteBackup } from "../core/remote.ts";
 import { CHART_TYPES, WORKLIST_TYPES } from "../workspace/summary.ts";
 import { VISIT_TYPES } from "../workspace/visit.ts";
 import type { EncounterClass } from "../clinical/encounters.ts";
@@ -94,6 +95,11 @@ export interface ApiOptions {
   tls?: TlsConfig;
   /** Request rate limits. Defaults apply unless disabled explicitly. */
   rateLimit?: RateLimitPolicy;
+  /**
+   * Off-machine snapshot destination. Unset means local-only backups, which
+   * health reports as a posture rather than an incident.
+   */
+  remote?: RemoteBackup;
 }
 
 export function startApi(engine: Engine, port: number, host = "0.0.0.0", options: ApiOptions = {}): Promise<ApiHandle> {
@@ -102,8 +108,9 @@ export function startApi(engine: Engine, port: number, host = "0.0.0.0", options
   // share a budget, and an operator running two listeners means them to be
   // independent.
   const limiter = new RateLimiter(options.rateLimit);
+  const remote = options.remote;
   const handler = (req: IncomingMessage, res: ServerResponse): void => {
-    void route(engine, req, res, gate, limiter).catch((err) => {
+    void route(engine, req, res, gate, limiter, remote).catch((err) => {
       send(res, 500, { error: err instanceof Error ? err.message : "internal error" });
     });
   };
@@ -129,7 +136,8 @@ async function route(
   req: IncomingMessage,
   res: ServerResponse,
   gate: AuthGate,
-  limiter: RateLimiter
+  limiter: RateLimiter,
+  remote?: RemoteBackup
 ): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname.replace(/\/+$/, "") || "/";
@@ -224,6 +232,12 @@ async function route(
     // threshold. Reported rather than merely counted, because "which feed"
     // is the first thing an operator needs and the counters cannot say.
     const stalled = signals.stalledChannels.filter((c) => c.oldestQueuedAgeSec >= stalledAfter);
+    const remoteStatus = remote?.status() ?? {
+      configured: false,
+      ok: false,
+      detail:
+        "no PORTAGE_BACKUP_REMOTE; a snapshot that never leaves this machine does not survive the failures that need a restore",
+    };
     return send(res, 200, {
       ok: true,
       // Degraded rather than unhealthy: the engine is working correctly by
@@ -232,7 +246,14 @@ async function route(
       // A silent feed counts too. It is the one failure that produces no
       // backlog and no dead letters, so without it here a stopped interface
       // reports a clean bill of health for as long as it stays stopped.
-      degraded: stalled.length > 0 || signals.deadLetters > 0 || signals.silentChannels.length > 0,
+      // A configured remote whose last replica failed counts too: local
+      // snapshots still exist, but the copy that survives the machine does
+      // not, and that is an incident rather than a posture.
+      degraded:
+        stalled.length > 0 ||
+        signals.deadLetters > 0 ||
+        signals.silentChannels.length > 0 ||
+        Boolean(remote?.isDegraded()),
       stats: db.stats(),
       signals: { ...signals, stalledChannels: stalled, stalledAfterSec: stalledAfter },
       // Not part of `degraded`: an unencrypted volume is a posture rather than
@@ -240,6 +261,10 @@ async function route(
       // train an operator to ignore the field that also reports a stopped
       // feed. Reported so a monitor can alert on it as its own thing.
       atRest: encryptionAtRest(engine.dataDir),
+      // Same shape: unconfigured is a posture (reported, not degraded);
+      // configured-and-failed is an incident and already folded into
+      // `degraded` above.
+      remoteBackup: remoteStatus,
     });
   }
 
@@ -334,6 +359,27 @@ async function route(
       engine
         .listChannels()
         .map((c) => [`{channel="${c.id.replace(/"/g, "")}"}`, db.countMessages(c.id)] as [string, number])
+    );
+
+    const remoteStatus = remote?.status() ?? {
+      configured: false,
+      ok: false,
+      detail: "no PORTAGE_BACKUP_REMOTE",
+    };
+    metric("portage_backup_remote_configured", "1 when an off-machine backup destination is configured.", "gauge", [
+      ["", remoteStatus.configured ? 1 : 0],
+    ]);
+    metric(
+      "portage_backup_remote_ok",
+      "1 when the last off-machine replica was verified. 0 if unconfigured, never attempted, or last attempt failed.",
+      "gauge",
+      [["", remoteStatus.ok ? 1 : 0]]
+    );
+    metric(
+      "portage_backup_remote_age_seconds",
+      "Seconds since the last verified off-machine replica. -1 if none.",
+      "gauge",
+      [["", remoteAgeSec(remoteStatus)]]
     );
 
     const body = lines.join("\n") + "\n";
@@ -542,12 +588,37 @@ async function route(
     const keep = Number(process.env.PORTAGE_BACKUP_KEEP ?? "7");
     try {
       const result = await takeBackup(db, { dir, keep: Number.isInteger(keep) && keep > 0 ? keep : undefined });
-      audit({
-        action: "E",
-        resourceType: "Backup",
-        detail: `snapshot ${result.path} (${result.bytes} bytes, ${result.verified.messages} messages verified)`,
-      });
-      return send(res, 200, result);
+      if (!remote?.configured) {
+        audit({
+          action: "E",
+          resourceType: "Backup",
+          detail: `snapshot ${result.path} (${result.bytes} bytes, ${result.verified.messages} messages verified; local only)`,
+        });
+        return send(res, 200, { ...result, remote: remote?.status() ?? { configured: false, ok: false } });
+      }
+      try {
+        const replica = await remote.replicate(result.path);
+        audit({
+          action: "E",
+          resourceType: "Backup",
+          detail:
+            `snapshot ${result.path} (${result.bytes} bytes, ${result.verified.messages} messages verified); ` +
+            `replicated to ${replica.location} as ${replica.name} (${replica.bytes} bytes, read back and verified)`,
+        });
+        return send(res, 200, { ...result, remote: replica });
+      } catch (err) {
+        // The local snapshot is good. The copy that survives the machine is
+        // not. 500 because the operator asked for a backup and the half that
+        // makes it one for a dead disk failed; the path is still in the body.
+        const message = err instanceof Error ? err.message : "remote replication failed";
+        audit({
+          action: "E",
+          resourceType: "Backup",
+          outcome: 8,
+          detail: `snapshot ${result.path} written locally; replication failed: ${message}`,
+        });
+        return send(res, 500, { error: message, path: result.path, local: result, remote: remote.status() });
+      }
     } catch (err) {
       // A snapshot that failed verification is worse than none, because it
       // would be trusted. Report it as a failure and record it.

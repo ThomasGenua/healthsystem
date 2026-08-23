@@ -65,7 +65,7 @@ The escape hatch is break-glass, which is loud and recorded — see
 git clone https://github.com/ThomasGenua/healthsystem.git portage
 cd portage
 npm ci
-npm run typecheck && npm test    # 448 tests; do not deploy a node that fails one
+npm run typecheck && npm test    # 488 tests; do not deploy a node that fails one
 
 export PORTAGE_DATA=/var/lib/portage
 export PORTAGE_PORT=8686
@@ -81,7 +81,13 @@ Then, before any real feed is pointed at it:
 3. **Turn on TLS** (`PORTAGE_TLS_CERT` / `_KEY`), and mutual TLS if the
    destinations support it (`PORTAGE_TLS_CLIENT_CA`).
 4. **Set `PORTAGE_BACKUP_DIR`** to something on a different physical device
-   than `PORTAGE_DATA`. A backup on the disk that failed is not a backup.
+   than `PORTAGE_DATA`, and **set `PORTAGE_BACKUP_REMOTE`** to a destination
+   that is not this machine (`s3://bucket/prefix` or `sftp://user@host/path`)
+   with `PORTAGE_BACKUP_KEY_FILE` pointing at a 32-byte key that lives
+   somewhere this host dying does not take with it. A backup on the disk
+   that failed is not a backup; a key that only this machine can read
+   unlocks nothing after it dies. `npm run backup -- --init-key /etc/portage/backup.key`
+   writes one; store a copy off-box before the first real feed.
 5. **Decide retention deliberately.** `PORTAGE_REDACT_AFTER_DAYS` and
    `PORTAGE_PURGE_AFTER_DAYS` are unset by default and affect the *message
    log only* — never the chart, medications, allergies, orders, results or
@@ -146,7 +152,7 @@ call for help.
 | When | What | How |
 | --- | --- | --- |
 | Continuously | `degraded`, dead letters, silent channels | alert on `/metrics` |
-| Daily | A backup exists, is recent, and verified | check `PORTAGE_BACKUP_DIR` |
+| Daily | A backup exists, is recent, verified, and has left the machine | `remoteBackup` on `/api/health`; `portage_backup_remote_ok` on `/metrics` |
 | Daily | Break-glass queues are being drained | `GET /api/clinical/break-glass` |
 | Weekly | Chain verification across all channels | `GET /api/chain/verify`, `GET /api/audit/verify` |
 | Weekly | Unacknowledged results and open referrals past their deadline | `GET /api/clinical/results`, `/referrals` |
@@ -164,16 +170,20 @@ backup that has never been restored is a file.
 ### `/api/health` says degraded
 
 `degraded` is set by a dead letter, a channel holding work older than
-`stalledAfterSec` (default an hour), or a channel that declared a cadence and
-missed it. It is deliberately not `unhealthy`: an engine holding a backlog
-through a satellite outage is working exactly as designed.
+`stalledAfterSec` (default an hour), a channel that declared a cadence and
+missed it, or a configured off-machine backup whose last replica failed. It
+is deliberately not `unhealthy`: an engine holding a backlog through a
+satellite outage is working exactly as designed. An unconfigured remote is
+a posture (`remoteBackup.configured: false`) and is not degraded.
 
 ```bash
 curl -sS http://localhost:8686/api/health | jq .signals
 ```
 
 Read `stalledChannels` and `silentChannels` first — they name the feed, which
-is the thing a counter cannot tell you. Then go to the matching section below.
+is the thing a counter cannot tell you. Then `remoteBackup`: if `configured`
+is true and `ok` is false, the off-machine copy failed and the local
+snapshots are the only ones you have. Then go to the matching section below.
 
 ### A channel is stalled
 
@@ -401,6 +411,9 @@ vulnerability in Portage rather than a leaked secret, see [SECURITY.md](../SECUR
 
 ### Restoring from backup
 
+If the disk that held the database is still there and you are rolling back
+an upgrade or undoing a bad write, the local snapshot is enough:
+
 ```bash
 systemctl stop portage                         # nothing may hold the file
 npm run restore -- --from /var/lib/portage/backups
@@ -408,8 +421,19 @@ systemctl start portage
 curl -sS http://localhost:8686/api/health
 ```
 
-`npm run restore -- --snapshot <file>` picks a specific one instead of the
-newest. The script does the whole procedure and refuses rather than guessing:
+If the disk, the machine or the building is gone, the local directory is
+gone with it. Fetch the off-machine copy — this needs `PORTAGE_BACKUP_KEY_FILE`
+to be present on the replacement host, which is why that file must not have
+lived only on the dead one:
+
+```bash
+npm run restore -- --from remote
+# or a specific name, with or without the .enc suffix
+npm run restore -- --from remote --snapshot portage-2026-08-19T14-00-00.db
+```
+
+`npm run restore -- --snapshot <file>` picks a specific local file. The
+script does the whole procedure and refuses rather than guessing:
 
 - it **proves the snapshot comes up first**, by migrating a scratch copy of it,
   so a bad snapshot leaves you where you were instead of with nothing
@@ -439,12 +463,21 @@ outage, deciding to restore, and finding the snapshot — which on a real night
 are most of the elapsed time. Budget your RTO from when the pager goes off,
 not from when you type the command.
 
-**Your RPO is your backup cadence.** Everything since the last snapshot is
-gone in a total disk failure: the message log, and the clinical record, which
-is in the same file. A daily snapshot means a 24-hour RPO. A snapshot of a
-96 MB database costs about 2.5 seconds against a live engine, so if 24 hours
-of loss is not acceptable at your site, run it hourly — the cost is not the
-reason to hold back.
+**Your RPO depends on which disk survived.**
+
+| What failed | What you still have | RPO |
+| --- | --- | --- |
+| Process crash, bad upgrade | The local snapshot | time since the last local snapshot |
+| The disk, the machine, the building | The last verified replica at `PORTAGE_BACKUP_REMOTE` | time since the last *successful* replication |
+| The disk, and no remote was configured | Nothing | everything |
+
+A daily snapshot means a 24-hour RPO for a crash. The same cadence against a
+dead disk is only real if the last replica left the machine and
+`portage_backup_remote_ok` is 1. Alert on that gauge going to 0, and on
+`portage_backup_remote_age_seconds` growing past your cadence. A snapshot of
+a 96 MB database costs about 2.5 seconds against a live engine, so if 24
+hours of loss is not acceptable at your site, run it hourly — the cost is
+not the reason to hold back.
 
 Re-run `npm run restoretest -- --messages <n>` on your own hardware before
 putting a number in a service agreement. The figures above are single runs on

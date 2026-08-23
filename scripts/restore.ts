@@ -3,7 +3,14 @@
  *
  *   node scripts/restore.ts --snapshot backups/portage-2026-08-19T14-00-00.db
  *   node scripts/restore.ts --from backups            # newest snapshot there
+ *   node scripts/restore.ts --from remote             # newest off-machine copy
+ *   node scripts/restore.ts --from remote --snapshot portage-2026-08-19T14-00-00.db
  *   node scripts/restore.ts --from backups --target /var/lib/portage/portage.db
+ *
+ * `--from remote` fetches, decrypts and verifies before anything is displaced,
+ * so recovery does not begin with a manual download at 03:00. The key in
+ * PORTAGE_BACKUP_KEY_FILE has to be present; a copy nobody can decrypt is not
+ * a backup.
  *
  * Stop the engine first. This refuses to run against a database something
  * still appears to hold, because restoring under a running engine hands it a
@@ -14,7 +21,10 @@
  * having a bad day, and sometimes it is the wrong call.
  */
 import { join } from "node:path";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { restore, latestSnapshot, TargetInUse } from "../src/core/restore.ts";
+import { RemoteBackup } from "../src/core/remote.ts";
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -22,15 +32,40 @@ function arg(name: string): string | undefined {
 }
 const flag = (name: string): boolean => process.argv.includes(`--${name}`);
 
-function main(): void {
+function isRemoteFrom(from: string | undefined): boolean {
+  if (!from) return false;
+  return from === "remote" || from.startsWith("s3://") || from.startsWith("sftp://") || from.startsWith("fs:") || from.startsWith("file://");
+}
+
+async function main(): Promise<void> {
   const target = arg("target") ?? join(process.cwd(), "data", "portage.db");
   const from = arg("from");
-  const snapshot = arg("snapshot") ?? (from ? latestSnapshot(from) : undefined);
+  let snapshot = arg("snapshot");
+  let scratch: string | undefined;
+
+  if (isRemoteFrom(from)) {
+    const env = { ...process.env };
+    if (from && from !== "remote") env.PORTAGE_BACKUP_REMOTE = from;
+    const remote = RemoteBackup.fromEnv(env);
+    if (!remote.configured) {
+      console.error("PORTAGE_BACKUP_REMOTE is not set; nothing to fetch from");
+      process.exit(2);
+    }
+    scratch = mkdtempSync(join(tmpdir(), "portage-restore-remote-"));
+    const dest = join(scratch, "snapshot.db");
+    // --snapshot on a remote fetch is a name at the destination, not a path.
+    const name = snapshot && !snapshot.includes("/") ? snapshot : snapshot?.split(/[/\\]/).pop();
+    const fetched = await remote.fetch(dest, name);
+    console.log(`fetched ${fetched.name} from ${remote.status().location}`);
+    snapshot = fetched.path;
+  } else {
+    snapshot = snapshot ?? (from ? latestSnapshot(from) : undefined);
+  }
 
   if (!snapshot) {
-    console.error("usage: node scripts/restore.ts --snapshot <file> | --from <backup dir>");
+    console.error("usage: node scripts/restore.ts --snapshot <file> | --from <backup dir|remote>");
     console.error("       [--target data/portage.db] [--force]");
-    if (from) console.error(`\nno portage-*.db snapshots found in ${from}`);
+    if (from && !isRemoteFrom(from)) console.error(`\nno portage-*.db snapshots found in ${from}`);
     process.exit(2);
   }
 
@@ -41,12 +76,14 @@ function main(): void {
   try {
     result = restore({ snapshot, target, force: flag("force") });
   } catch (err) {
+    if (scratch) rmSync(scratch, { recursive: true, force: true });
     if (err instanceof TargetInUse) {
       console.error(`refusing: ${err.message}`);
       process.exit(3);
     }
     throw err;
   }
+  if (scratch) rmSync(scratch, { recursive: true, force: true });
 
   if (result.displaced) console.log(`  displaced the existing database to ${result.displaced}`);
   if (result.clearedInheritedLock) {
@@ -70,9 +107,7 @@ function main(): void {
   console.log(`\nRESTORED in ${(result.timings.totalMs / 1000).toFixed(1)}s. Start the engine.`);
 }
 
-try {
-  main();
-} catch (err) {
+main().catch((err) => {
   console.error(err instanceof Error ? err.message : err);
   process.exit(1);
-}
+});

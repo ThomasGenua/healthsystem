@@ -11,6 +11,33 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **A snapshot that leaves the machine** (#37). `takeBackup` still writes a
+  verified local file; that file does not survive the disk dying, and the
+  stated RPO was only real for failures that spare the backup directory. A
+  configured `PORTAGE_BACKUP_REMOTE` (`s3://`, `sftp://`, or `fs:`) encrypts
+  the snapshot with a key from `PORTAGE_BACKUP_KEY_FILE`, puts it, *reads it
+  back*, decrypts it and walks the chains again before success is reported.
+  An upload that returned 200 is not a copy. Remote retention
+  (`PORTAGE_BACKUP_REMOTE_KEEP`) is independent of local keep. A destination
+  that refuses deletes — write-only credentials or object-lock — is reported
+  as immutable rather than as a failed backup.
+
+  The key has to outlive the host. A key that only this machine can read
+  unlocks nothing after the flood, and boot says so if the key file appears
+  to share a volume with the database. HTTPS is required for an S3 endpoint
+  that is not loopback. There is no AWS SDK: the four calls a backup needs
+  are SigV4-signed `fetch`.
+
+  A failed replica is visible on `/api/health` (`remoteBackup`) and
+  `/metrics` (`portage_backup_remote_ok`, `_age_seconds`, `_configured`) and
+  marks the node degraded. Unconfigured is a posture, reported at boot and
+  on health, not degraded. `npm run restore -- --from remote` fetches and
+  decrypts so recovery does not begin with a manual download. The nightly
+  restore rehearsal goes through the replica and deletes the local snapshot
+  first, so what comes back is the copy that left.
+
+  448 → 488 tests.
+
 - **Organization identity on credentials** (#17), which is what makes a
   `withhold-from-organization` directive mean something. The directive matched
   on a field no `Principal` carried and nothing ever passed, so it was recorded,
