@@ -1359,8 +1359,12 @@ const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
  * write is precisely what tenancy exists to prevent, so the rebuild is not
  * optional.
  *
- * SQLite's supported procedure: create the new shape, copy, drop, rename,
- * inside a transaction.
+ * SQLite's supported procedure: turn foreign keys off *outside* the
+ * transaction (the pragma is a no-op inside one), create the new shape,
+ * copy, drop, rename, `PRAGMA foreign_key_check`, then turn them back on.
+ * SCHEMA has no REFERENCES today, so the rebuild is safe either way — the
+ * day one is added, this is the difference between an upgrade that works
+ * and one that deletes child rows or refuses to boot.
  */
 const REBUILT_TABLES: Array<{ table: string; columns: string[]; ddl: string }> = [
   {
@@ -1495,21 +1499,44 @@ export class Db {
       this.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
     }
 
-    for (const { table, columns, ddl } of REBUILT_TABLES) {
-      const info = this.sql.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string; pk: number }>;
+    const pending: typeof REBUILT_TABLES = [];
+    for (const spec of REBUILT_TABLES) {
+      const info = this.sql.prepare(`PRAGMA table_info(${spec.table})`).all() as Array<{ name: string; pk: number }>;
       if (info.length === 0) continue;
       // Already rebuilt if the tenant is part of the key. `pk` is the column's
       // 1-based position in the primary key, or 0 when it is not in it.
       if (info.some((c) => c.name === "tenant_id" && c.pk > 0)) continue;
+      pending.push(spec);
+    }
 
-      const list = columns.join(", ");
-      this.transaction(() => {
-        this.sql.exec(ddl);
-        this.sql.exec(`INSERT INTO ${table}__new (${list}) SELECT ${list} FROM ${table}`);
-        this.sql.exec(`DROP TABLE ${table}`);
-        this.sql.exec(`ALTER TABLE ${table}__new RENAME TO ${table}`);
-      });
-      console.warn(`migrated ${table} to a per-tenant primary key`);
+    if (pending.length > 0) {
+      // Must sit outside the transaction: PRAGMA foreign_keys is a no-op
+      // inside one, and DROP TABLE with FKs on would cascade or fail.
+      this.sql.exec("PRAGMA foreign_keys = OFF;");
+      try {
+        for (const { table, columns, ddl } of pending) {
+          const list = columns.join(", ");
+          this.transaction(() => {
+            this.sql.exec(ddl);
+            this.sql.exec(`INSERT INTO ${table}__new (${list}) SELECT ${list} FROM ${table}`);
+            this.sql.exec(`DROP TABLE ${table}`);
+            this.sql.exec(`ALTER TABLE ${table}__new RENAME TO ${table}`);
+            const violations = this.sql.prepare("PRAGMA foreign_key_check").all() as Array<{
+              table: string;
+              rowid: number;
+            }>;
+            if (violations.length > 0) {
+              const first = violations[0];
+              throw new Error(
+                `foreign_key_check failed rebuilding ${table}: ${violations.length} violation(s), first on ${first.table} rowid ${first.rowid}`
+              );
+            }
+          });
+          console.warn(`migrated ${table} to a per-tenant primary key`);
+        }
+      } finally {
+        this.sql.exec("PRAGMA foreign_keys = ON;");
+      }
     }
     // Indexes dropped with a rebuilt table are restored by the caller, which
     // applies them after this returns.

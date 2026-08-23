@@ -56,6 +56,7 @@ import { CHART_TYPES, WORKLIST_TYPES } from "../workspace/summary.ts";
 import { VISIT_TYPES } from "../workspace/visit.ts";
 import type { EncounterClass } from "../clinical/encounters.ts";
 import { DIRECTORY_KINDS, type PartyKind } from "../directory/store.ts";
+import { mapStoreError } from "../core/refusal.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
 import { VERSION } from "../version.ts";
@@ -804,8 +805,10 @@ async function route(
       try {
         value = produce(withheldTypes);
       } catch (err) {
-        audit({ action: verbToAction(method), outcome: 8, resourceType, patient, detail: (err as Error).message });
-        return send(res, 400, { error: (err as Error).message });
+        const mapped = mapStoreError(err);
+        if (mapped.outcome === 8) console.error(`phi ${resourceType}: ${mapped.detail}`);
+        audit({ action: verbToAction(method), outcome: mapped.outcome, resourceType, patient, detail: mapped.detail });
+        return send(res, mapped.status, { error: mapped.error });
       }
       audit({
         action: verbToAction(method),
@@ -1057,15 +1060,42 @@ async function route(
         });
         return send(res, 200, acknowledged);
       } catch (err) {
+        const mapped = mapStoreError(err);
+        if (mapped.outcome === 8) console.error(`acknowledge: ${mapped.detail}`);
         audit({
           action: "U",
-          outcome: 8,
+          outcome: mapped.outcome,
           resourceType: "Observation",
           patient: row.patient_id,
-          detail: (err as Error).message,
+          detail: mapped.detail,
         });
-        return send(res, 400, { error: (err as Error).message });
+        return send(res, mapped.status, { error: mapped.error });
       }
+    }
+    if (path === "/api/clinical/book" && method === "POST") {
+      // A booking is a write about a patient, so it goes through the same
+      // directive check as a read of one. SlotFull reaches the caller as 409
+      // so they can offer another seat, rather than collapsing into a 400
+      // that looks like a malformed body.
+      const body = JSON.parse(await readBody(req)) as {
+        slot?: string;
+        patient?: string;
+        reason?: string;
+        priority?: "routine" | "urgent" | "stat";
+      };
+      if (!body.slot || !body.patient || !body.reason) {
+        return send(res, 400, { error: "slot, patient and reason required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(body.patient, "Appointment", () =>
+        tenant.schedule.book({
+          slotId: body.slot!,
+          patientId: body.patient!,
+          reason: body.reason!,
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+          ...(body.priority ? { priority: body.priority } : {}),
+        })
+      );
     }
     if (path === "/api/clinical/encounter-open" && method === "POST") {
       // Opening a visit is a write about a patient, so it goes through the

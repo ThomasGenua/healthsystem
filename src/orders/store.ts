@@ -36,6 +36,7 @@
 import { randomUUID } from "node:crypto";
 import { an } from "../core/text.ts";
 import type { Db } from "../db.ts";
+import { refuse } from "../core/refusal.ts";
 import { Encounters } from "../clinical/encounters.ts";
 
 export type OrderCategory = "lab" | "imaging" | "procedure" | "referral" | "other";
@@ -389,14 +390,14 @@ export class OrderStore {
    */
   acknowledge(resultId: string, by: Actor & { action: string }): ResultRow {
     if (!by.action.trim()) {
-      throw new Error("acknowledging a result needs to say what was done about it");
+      refuse("acknowledging a result needs to say what was done about it");
     }
     const r = this.result(resultId);
-    if (!r) throw new Error(`no result ${resultId}`);
-    if (r.acknowledged_at) throw new Error("this result has already been acknowledged");
+    if (!r) refuse(`no result ${resultId}`);
+    if (r.acknowledged_at) refuse("this result has already been acknowledged");
     const newer = this.supersededBy(resultId);
     if (newer) {
-      throw new Error(`this result was corrected; acknowledge ${newer} instead`);
+      refuse(`this result was corrected; acknowledge ${newer} instead`);
     }
     return this.db.transaction(() => {
       this.db.sql

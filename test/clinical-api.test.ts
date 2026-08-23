@@ -304,6 +304,12 @@ test("every clinical route leaves an audit row, including ones added later", asy
       reason: "Repeat prescription",
       by: { actorId: "dr-tetso", actorKind: "practitioner" },
     });
+    const slot = s.engine.forTenant("default").schedule.openSlot({
+      resourceId: "dr-tetso",
+      service: "GP review",
+      startsAt: "2026-09-01T10:00:00Z",
+      endsAt: "2026-09-01T10:30:00Z",
+    });
 
     const standing = s.engine.forTenant("default").consent.breakGlass({
       patientId: P,
@@ -343,6 +349,7 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/encounter-arrive": "POST",
       "/api/clinical/encounter-close": "POST",
       "/api/clinical/encounter-cancel": "POST",
+      "/api/clinical/book": "POST",
     };
 
     /** The body each POST route needs to do real work. */
@@ -373,6 +380,7 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/encounter-arrive": { id: planned.id },
       "/api/clinical/encounter-close": { id: visit.id, disposition: "home with advice" },
       "/api/clinical/encounter-cancel": { id: toCancel.id, reason: "rebooked" },
+      "/api/clinical/book": { slot: slot.id, patient: P, reason: "Follow-up" },
     };
 
     const unlisted = paths.filter((p) => !(p in args));

@@ -29,6 +29,7 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "../db.ts";
 import { an } from "../core/text.ts";
+import { Refusal, refuse } from "../core/refusal.ts";
 
 /** How the patient was seen. Not where — a home visit and a clinic visit
  * examine different things, and a chart that cannot tell them apart overstates
@@ -87,11 +88,16 @@ export interface EncounterEvent {
 /**
  * Thrown when clinical content names an encounter it may not belong to.
  *
- * A distinct type so the HTTP layer can map it to something better than a
- * generic 400 once #26 lands, and so a caller can tell "that visit is not this
- * patient's" from "that visit does not exist" without parsing a string.
+ * A distinct type so the HTTP layer can map it to 409, and so a caller can
+ * tell "that visit is not this patient's" from "that visit does not exist"
+ * without parsing a string.
  */
-export class EncounterMismatch extends Error {}
+export class EncounterMismatch extends Refusal {
+  constructor(message: string) {
+    super(message, 409);
+    this.name = "EncounterMismatch";
+  }
+}
 
 export class Encounters {
   private db: Db;
@@ -120,9 +126,9 @@ export class Encounters {
     startsAt?: string;
   }): EncounterRow {
     if (!CLASSES.includes(input.class)) {
-      throw new Error(`unknown encounter class ${input.class}; expected one of ${CLASSES.join(", ")}`);
+      refuse(`unknown encounter class ${input.class}; expected one of ${CLASSES.join(", ")}`);
     }
-    if (!input.reason.trim()) throw new Error("an encounter needs a reason for the visit");
+    if (!input.reason.trim()) refuse("an encounter needs a reason for the visit");
 
     const id = randomUUID();
     const now = new Date().toISOString();
@@ -159,7 +165,7 @@ export class Encounters {
   /** The patient arrived and the visit is under way. */
   arrive(encounterId: string, by: Actor, at?: string): EncounterRow {
     const e = this.require(encounterId);
-    if (e.status !== "planned") throw new Error(`${an(e.status)} encounter cannot be marked as arrived`);
+    if (e.status !== "planned") refuse(`${an(e.status)} encounter cannot be marked as arrived`);
     const now = new Date().toISOString();
     this.db.sql
       .prepare("UPDATE encounters SET status = 'in-progress', started_at = ?, updated_at = ? WHERE tenant_id = ? AND id = ?")
@@ -181,9 +187,9 @@ export class Encounters {
   close(encounterId: string, by: Actor & { disposition: string }): EncounterRow {
     const e = this.require(encounterId);
     if (e.status !== "in-progress") {
-      throw new Error(`${an(e.status)} encounter cannot be closed; only one in progress can`);
+      refuse(`${an(e.status)} encounter cannot be closed; only one in progress can`);
     }
-    if (!by.disposition.trim()) throw new Error("closing an encounter needs a disposition saying what was decided");
+    if (!by.disposition.trim()) refuse("closing an encounter needs a disposition saying what was decided");
     const now = new Date().toISOString();
     this.db.sql
       .prepare(
@@ -205,11 +211,11 @@ export class Encounters {
   cancel(encounterId: string, by: Actor & { reason: string }): EncounterRow {
     const e = this.require(encounterId);
     if (e.status !== "planned") {
-      throw new Error(
+      refuse(
         `${an(e.status)} encounter cannot be cancelled; a visit that started happened, so close it with a disposition instead`
       );
     }
-    if (!by.reason.trim()) throw new Error("cancelling an encounter needs a reason");
+    if (!by.reason.trim()) refuse("cancelling an encounter needs a reason");
     const now = new Date().toISOString();
     this.db.sql
       .prepare("UPDATE encounters SET status = 'cancelled', ended_at = ?, updated_at = ? WHERE tenant_id = ? AND id = ?")
@@ -223,7 +229,7 @@ export class Encounters {
     encounterId: string,
     who: { participantId: string; participantKind: string; role: string }
   ): ParticipantRow {
-    if (!who.role.trim()) throw new Error("a participant needs a role");
+    if (!who.role.trim()) refuse("a participant needs a role");
     this.db.sql
       .prepare(
         `INSERT INTO encounter_participants
@@ -325,7 +331,7 @@ export class Encounters {
 
   private require(encounterId: string): EncounterRow {
     const e = this.get(encounterId);
-    if (!e) throw new Error(`no encounter ${encounterId}`);
+    if (!e) refuse(`no encounter ${encounterId}`);
     return e;
   }
 

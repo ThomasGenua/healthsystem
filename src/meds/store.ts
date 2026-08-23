@@ -26,6 +26,7 @@
 import { randomUUID } from "node:crypto";
 import { an } from "../core/text.ts";
 import type { Db } from "../db.ts";
+import { Refusal } from "../core/refusal.ts";
 import { Encounters } from "../clinical/encounters.ts";
 import { assess, normalise, type AllergyStatus, type Finding, type InteractionSource, type SafetyCheck } from "./safety.ts";
 
@@ -766,12 +767,12 @@ export class MedicationStore {
 }
 
 /** Thrown when a prescription would proceed past a blocking finding. */
-export class PrescriptionRefused extends Error {
+export class PrescriptionRefused extends Refusal {
   readonly check: SafetyCheck;
   readonly findings: Finding[];
 
   constructor(check: SafetyCheck) {
-    super(`prescription refused without an override: ${check.blocking.map((f) => f.message).join("; ")}`);
+    super(`prescription refused without an override: ${check.blocking.map((f) => f.message).join("; ")}`, 409);
     this.name = "PrescriptionRefused";
     this.check = check;
     this.findings = check.blocking;

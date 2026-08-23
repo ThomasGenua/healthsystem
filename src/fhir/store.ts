@@ -11,6 +11,14 @@ import type { Db } from "../db.ts";
 import { validateResource, type ConformanceRegistry } from "../conformance/validator.ts";
 import type { TerminologyStore } from "../terminology/store.ts";
 import type { ConformanceIssue } from "../types.ts";
+import { Directory } from "../directory/store.ts";
+import {
+  DIRECTORY_RESOURCE_TYPES,
+  directoryCount,
+  directoryGet,
+  directorySearch,
+  isDirectoryType,
+} from "../directory/fhir.ts";
 
 export interface FhirUpsertResult {
   resourceType: string;
@@ -46,7 +54,13 @@ export interface FhirSearchResult {
 }
 
 /** Types the facade always advertises, whether or not any are stored yet. */
-export const CORE_RESOURCE_TYPES = ["Patient", "Condition", "Observation", "MedicationRequest"];
+export const CORE_RESOURCE_TYPES = [
+  "Patient",
+  "Condition",
+  "Observation",
+  "MedicationRequest",
+  ...DIRECTORY_RESOURCE_TYPES,
+];
 
 interface Identifier {
   system?: string;
@@ -57,10 +71,12 @@ export class FhirStore {
   private db: Db;
   private listeners: Array<(result: FhirUpsertResult, resource: Record<string, unknown>) => void> = [];
   private validation?: ValidationContext;
+  private directory?: Directory;
 
-  constructor(db: Db, validation?: ValidationContext) {
+  constructor(db: Db, validation?: ValidationContext, directory?: Directory) {
     this.db = db;
     this.validation = validation;
+    this.directory = directory;
   }
 
   /** Register a change listener, fired after every created or updated upsert. */
@@ -173,6 +189,10 @@ export class FhirStore {
   }
 
   get(type: string, id: string): Record<string, unknown> | undefined {
+    if (this.directory && isDirectoryType(type)) {
+      const projected = directoryGet(this.directory, type, id);
+      if (projected) return projected;
+    }
     const row = this.db.sql
       .prepare("SELECT json FROM fhir_resources WHERE tenant_id = ? AND resource_type = ? AND id = ?")
       .get(this.db.tenantId, type, id) as { json: string } | undefined;
@@ -182,6 +202,18 @@ export class FhirStore {
   /** Search by identifier token ("system|value" or bare "value"). */
   search(type: string, opts: { identifier?: string; count?: number } = {}): FhirSearchResult {
     const count = Math.min(Math.max(opts.count ?? 20, 1), 100);
+    const stored = this.searchStored(type, opts, count);
+    if (!this.directory || !isDirectoryType(type)) return stored;
+    const projected = directorySearch(this.directory, type, { identifier: opts.identifier, count });
+    const seen = new Set(projected.resources.map((r) => String((r as { id?: unknown }).id ?? "")));
+    const extra = stored.resources.filter((r) => !seen.has(String((r as { id?: unknown }).id ?? "")));
+    return {
+      total: projected.total + extra.length,
+      resources: [...projected.resources, ...extra].slice(0, count),
+    };
+  }
+
+  private searchStored(type: string, opts: { identifier?: string; count?: number }, count: number): FhirSearchResult {
     if (opts.identifier) {
       const bar = opts.identifier.indexOf("|");
       const system = bar >= 0 ? opts.identifier.slice(0, bar) : null;
@@ -231,6 +263,12 @@ export class FhirStore {
       .all(this.db.tenantId) as Array<{ type: string; count: number }>;
     const seen = new Map(rows.map((r) => [r.type, r.count]));
     for (const t of CORE_RESOURCE_TYPES) if (!seen.has(t)) seen.set(t, 0);
+    if (this.directory) {
+      for (const t of DIRECTORY_RESOURCE_TYPES) {
+        const n = directoryCount(this.directory, t);
+        seen.set(t, Math.max(seen.get(t) ?? 0, n));
+      }
+    }
     return [...seen.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([type, count]) => ({ type, count }));
   }
 
