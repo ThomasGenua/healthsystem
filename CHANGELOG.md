@@ -33,6 +33,8 @@ always forward-compatible and run automatically on open — see
   when it cannot — a Patient upsert does not fail because the directory
   has no opinion about a patient.
 
+  488 → 497 tests.
+
 - **A snapshot that leaves the machine** (#37). `takeBackup` still writes a
   verified local file; that file does not survive the disk dying, and the
   stated RPO was only real for failures that spare the backup directory. A
