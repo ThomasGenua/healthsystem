@@ -1,0 +1,307 @@
+# Clinical safety case and hazard log
+
+This is the document a clinical safety officer can open. The hazards it lists
+were not invented for it: they are the ones the code and tests already reason
+about. What this file adds is the form those comments lack — severity,
+likelihood, a named control, and a pointer at the test that pins it — so a
+reviewer does not have to reconstruct the argument from forty module headers.
+
+It is written in the shape of DCB0129 (manufacturer) and is usable as input to
+DCB0160 (deploying organisation). It is **not** a certified safety case, not a
+substitute for a named clinician signing it, and not a claim that residual
+risk is acceptable for a particular site. A deployment still has to do its
+own assessment against its own patients, its own network, and its own
+staffing.
+
+Versioned with the code. A hazard whose control has moved and whose evidence
+still points at a deleted test is a silent failure of this document; 
+`test/clinical-safety.test.ts` reads the evidence column and fails if a cited
+test is gone.
+
+**Product:** Portage (this repository).
+**Version this case describes:** the `main` it is committed on (currently
+the post-0.5.0 line: v0.5.0 plus off-machine backup, organization identity
+on credentials, break-glass notice dispatch, encounters, the provider
+directory, FHIR projection of that directory, and the refusal/fault split
+in `phi()`).
+**Last reviewed:** 2026-08-23.
+**Reviewer of this draft:** the author of the controls, not an independent
+clinical safety officer. That gap is residual risk R-01.
+
+---
+
+## 1. What the system is for
+
+Portage is a health integration engine and a clinical store for a northern
+Canadian deployment: HL7 v2 in and out, FHIR R4 over HTTP, durable
+store-and-forward, and the chart, orders, medications, referrals, schedule
+and consent that sit behind those feeds.
+
+It is for a health information custodian — a territorial authority, a
+hospital, a group of clinics — that needs one node to accept messages when
+the link is down, to keep one patient's record coherent, and to refuse the
+quiet failures that look like empty panels.
+
+It is **not** an EPR that a ward already has. It is the layer that makes
+feeds and a chart honest when the alternative is a paper list and a fax.
+
+### Clinical scope
+
+In scope, as stores and an authenticated HTTP API:
+
+- an append-only clinical record and a derived patient index
+- visits (encounters) that own what happened inside them
+- orders and results, including acknowledgement that cannot be inherited
+- medications, allergies, a safety check, and reconciliation
+- referrals and a unified work inbox
+- a schedule that cannot double-book a seat
+- consent directives, break-glass, and (built, not mounted) patient access
+- a FHIR R4 facade, including the local provider directory as resources
+- hash-chained message lineage and a hash-chained access audit
+- verified backup, including an off-machine replica when configured
+
+### What it explicitly does not do
+
+These are not gaps discovered later. They are scope:
+
+| Out of scope | Why that is a clinical statement |
+|---|---|
+| A clinician user interface | The chart is an API. "A clinician can use this today" is not claimed. A consumer that ignores `complete === false` reintroduces H-06. |
+| A patient portal | `src/patient/access.ts` is built and not mounted. A portal is a different trust boundary. |
+| Clinical decision-support *content* | The check is here; the interaction table is not. An 80% complete table is one prescribers learn to trust. |
+| Machine learning | Nothing in this repository infers, predicts or scores. No output should be read as though it did. |
+| A certified PSI / Projectathon result | Conformance packs encode published profiles and pass shipped fixtures. |
+| Authoritative provincial directories | The local registry is maintained here. Syncing from a provincial source is a later question. |
+| Horizontal multi-writer scale | One writer per database. A territorial hub is #25, last on purpose. |
+| Bulk migration from an incumbent | How a real deployment starts, and absent (#20). |
+
+---
+
+## 2. How hazards were identified
+
+Harvest, not brainstorm. Each row below started as a module header or a test
+name that already said what failure the code exists to prevent. Severity and
+likelihood were assigned for this document; they are judgements, not
+measurements.
+
+A new module, a changed control, or an incident is a trigger to re-open the
+log — see §5. Hazards that exist only in a deployment (a mis-addressed SMS
+gateway, a clinic that never opens the worklist) are residual and named as
+such, not dressed up as product defects.
+
+### Scales
+
+**Severity** — harm if the hazard is realised and the control fails or is
+absent:
+
+| Rating | Meaning |
+|---|---|
+| Catastrophic | Death, permanent disability, or a wrong-patient / wrong-result event that directs urgent treatment |
+| Major | Significant delayed treatment, a privacy breach that changes who can act, or a chart that is quietly false |
+| Moderate | Temporary harm, a missed administrative loop that is recoverable, or a disclosure that is bounded |
+| Minor | Inconvenience, extra work, no lasting clinical effect |
+
+**Likelihood** — after the control in this repository, in a deployment that
+runs the tests and follows the runbook. Not the likelihood without the
+control; that is usually higher, which is why the control exists.
+
+| Rating | Meaning |
+|---|---|
+| High | Expected in ordinary operation if the remaining dependency (a person, a feed, a licensed DB) is not met |
+| Medium | Foreseeable when the node is busy, the link is down, or a clerk races another |
+| Low | Requires bypassing the store, a failed deploy discipline, or a rare coincidence the tests already name |
+
+**Residual risk** is what remains after the control. Accepting it is a
+deployment decision. This case states it; it does not sign it off.
+
+---
+
+## 3. Clinical safety officer
+
+The role this document needs, and that this repository cannot appoint:
+
+**Clinical Safety Officer (CSO)** — a registered clinician accountable for
+keeping this log true. Not the author of the code. The CSO:
+
+- reviews the log when a trigger in §5 fires
+- decides whether a residual risk is acceptable *for a named deployment*
+- is named on that deployment's DCB0160 case, not invented here as a
+  placeholder person
+
+Until a deployment names one, the manufacturer-side owner of this file is
+the maintainer of the repository. That is not the same job, and R-01 says so.
+
+### What triggers a review of this log
+
+Any one of:
+
+1. **A new clinical module** — a store, a route under `/api/clinical/`, or a
+   FHIR resource type that names a patient.
+2. **A changed control** — a test cited in the evidence column is deleted,
+   renamed, or weakened; a uniqueness constraint is dropped; a catch starts
+   swallowing a store exception as "none".
+3. **An incident** — a near miss or a harm report that maps to a row here, or
+   that maps to nothing here (which is a missing row).
+4. **A release** that claims a closed issue in the "prove / model / in front
+   of a person" bands of the README roadmap.
+5. **A year** since the `Last reviewed` date, even if nothing else moved.
+
+`test/clinical-safety.test.ts` is the mechanical half of (2): a cited test
+that no longer exists fails the build.
+
+---
+
+## 4. Hazard log
+
+Each row: the hazard, what causes it, what it does to a patient, how severe
+and likely it is *with the control in place*, the control, and the test that
+makes the control a fact rather than a comment.
+
+### Record and identity
+
+| ID | Hazard | Cause | Effect on a patient | Sev. | Like. | Control | Evidence |
+|---|---|---|---|---|---|---|---|
+| H-01 | Silent overwrite of clinically material data | An `UPDATE` that replaces the row | The chart no longer says what was known when a decision was taken | Catastrophic | Low | Append-only record: `record` / `amend` / `retract`; per-patient hash chain | `test/clinical-record.test.ts` — "there is no way to overwrite an entry through the store" |
+| H-02 | Retraction treated as deletion | "Entered in error" removes the row | A decision taken on the original cannot be reviewed | Major | Low | Retraction is a new version; content is kept | `test/clinical-record.test.ts` — "a retraction marks the record without removing it" |
+| H-03 | Signed note revised after attestation | Edit in place after signature | The attested text is not what the chart now shows | Major | Low | `revise` refuses a signed note; only a separately signed addendum follows | `test/clinical-notes.test.ts` — "a signed note cannot be revised" |
+| H-04 | Wrong patient selected at lookup | Shared name/DOB or a shared identifier | Care, orders and meds applied to the wrong person | Catastrophic | Medium | Derived index; duplicates surfaced, never merged | `test/patient-index.test.ts` — "one identifier naming two charts is surfaced, not merged" |
+| H-05 | Automatic merge of two charts | An algorithm decides they are the same person | One chart acquires the other's allergies; unmerge is not honest | Catastrophic | Low | `duplicates()` reports; nothing merges | `test/patient-index.test.ts` — "one identifier naming two charts is surfaced, not merged" |
+| H-06 | Empty chart panel read as "none" | A store threw, a list was cut, a section was withheld — and the renderer shows a blank | Prescribe against an allergy list that failed to load | Catastrophic | Medium | Every section carries `complete` / incompleteness (`unavailable`, `truncated`, `withheld`) | `test/workspace.test.ts` — "a section that fails is empty and says why, rather than reading as none" |
+| H-07 | Empty visit read as "nothing happened" | Failed section or missing encounter rendered blank | Handover misses the orders and results of the visit | Major | Medium | Visit assembly is honest; membership is by encounter, not a time window | `test/encounters.test.ts` — "the assembled visit says a section failed, rather than rendering as nothing happened" |
+
+### Visits and the diary
+
+| ID | Hazard | Cause | Effect on a patient | Sev. | Like. | Control | Evidence |
+|---|---|---|---|---|---|---|---|
+| H-08 | A started visit is cancelled | Status used to erase attendance | The record says they never came | Moderate | Low | Only a planned visit may be cancelled; a started one is closed with a disposition | `test/encounters.test.ts` — "a visit that started cannot be cancelled, because it happened" |
+| H-09 | Content attached to another patient's visit | A free-text `encounter_id` | Orders and notes land on the wrong chart | Major | Low | `EncounterMismatch`; validate-for-patient on write | `test/encounters.test.ts` — "clinical content cannot name another patient's visit" |
+| H-10 | Two patients booked into one seat | Check-then-insert under two clerks, a portal and a SIU feed | Two people arrive; the urgent one waits | Major | Low | Uniqueness on `(slot, seat)`; `SlotFull` is 409 | `test/schedule.test.ts` — "the database refuses a second booking on a seat, whatever the caller does" |
+| H-11 | A missed urgent appointment is closed as admin | DNA marked; nobody is owed anything | The appointment that answered a referral is the end of the story | Major | Medium | `didNotAttend` returns work; `unresolvedNonAttendance()` | `test/schedule.test.ts` — "a missed urgent appointment is work, not a status" |
+
+### Orders and results
+
+| ID | Hazard | Cause | Effect on a patient | Sev. | Like. | Control | Evidence |
+|---|---|---|---|---|---|---|---|
+| H-12 | Corrected result inherits the old acknowledgement | Ack stored on the order, or on an identity a correction reuses | Potassium 7.1 marked reviewed; nobody saw 7.1 or the 4.0 that replaced it | Catastrophic | Low | Results append; ack lives on the row; a superseded result cannot be signed off | `test/orders.test.ts` — "a corrected result does not inherit the acknowledgement of the value it replaced" |
+| H-13 | Abnormal result reported and never read | No queue, or routed to someone who has left | The question looks answered | Catastrophic | Medium | Unacknowledged queue; per-flag clock; handover refuses nobody | `test/orders.test.ts` — "a critical value is on a different clock from a routine one" |
+| H-14 | Order placed and never resulted | The lab never reports; no error | The test never happens and nobody is waiting | Major | Medium | `awaitingResult()`; a preliminary does not close the wait | `test/orders.test.ts` — "an order placed and never resulted is the other silence" |
+| H-15 | Unsolicited result discarded | No matching order, so refused | An outside-facility result is lost | Major | Low | Stored and queued for matching | `test/orders.test.ts` — "a result with no order is kept and queued, not refused" |
+| H-16 | Result filed against another patient's order | Interface mis-association | Wrong number in the chart | Catastrophic | Low | Store refuses a cross-patient file | `test/orders.test.ts` — "a result is never filed against another patient's order" |
+
+### Medications
+
+| ID | Hazard | Cause | Effect on a patient | Sev. | Like. | Control | Evidence |
+|---|---|---|---|---|---|---|---|
+| H-17 | List says what was prescribed, not what is taken | One column for both claims | A dose is calculated around a statin the patient stopped | Major | Medium | `source` and `adherence` are separate; the taking-list is a query | `test/medications.test.ts` — "a prescribed drug the patient stopped taking is not on the list a dose is calculated from" |
+| H-18 | Empty allergy panel: never-asked read as no-known | Both render blank; the check returns clear | Prescribe without a history, reassured | Catastrophic | Medium | `never-asked` ≠ `none-documented`; `unknown` is never `clear` | `test/medications.test.ts` — "nobody asked and no known allergies are different answers" |
+| H-19 | Interaction source down reported as "no interactions" | A failed lookup returns empty | A contraindicated pair is signed as checked | Catastrophic | Medium | Unavailable source → finding, not clear; no source configured → unchecked | `test/medications.test.ts` — "an interaction source that cannot answer does not read as one that said no" |
+| H-20 | Partial interaction table trusted as complete | An 80% table ships as the check | The missing 20% is invisible; trust is learned | Major | High | Deliberately small shipped set; licensed DB through a seam | `test/medications.test.ts` — "prescribing past a contraindication needs an override, and the override is the record" |
+| H-21 | Stopped drug vanishes | Delete or silent status | Next prescriber cannot tell stop from mistake | Moderate | Low | Stop needs a reason; the row stays | `test/medications.test.ts` — "a stopped drug leaves the list, with a reason, and stays readable" |
+| H-22 | Reconciliation closed with undecided meds | Complete clicked to clear a queue | The transition list is a guess | Major | Medium | Complete refused while items are unresolved | `test/medications.test.ts` — "a reconciliation cannot be completed with medications nobody decided about" |
+
+### Work and referrals
+
+| ID | Hazard | Cause | Effect on a patient | Sev. | Like. | Control | Evidence |
+|---|---|---|---|---|---|---|---|
+| H-23 | Work disappears (unowned, closed without evidence) | Handed to someone who left; completed on a click | A result review or a renewal never happens | Major | Medium | No delete; complete needs evidence; `unassigned()` is a list | `test/tasks.test.ts` — "completing an item requires evidence of what was done" |
+| H-24 | Referral sent and never heard of again | No ack, no report; no error | Specialist care never occurs; the sender assumes progress | Major | High | `expected_by` per step; `stalled()`; close needs an outcome | `test/referrals.test.ts` — "a referral nobody acknowledged shows up as stalled" |
+
+### Consent, access, tenancy
+
+| ID | Hazard | Cause | Effect on a patient | Sev. | Like. | Control | Evidence |
+|---|---|---|---|---|---|---|---|
+| H-25 | Lockbox with no survivable emergency path — or a quiet bypass | Hard refuse in ED, or a shared break-glass account | Either cannot treat, or everyone can and nobody is told | Major | Medium | Break-glass: reason in words, before the read, queued for notice and review | `test/consent.test.ts` — "breaking glass needs a reason somebody can weigh, not a word" |
+| H-26 | Break-glass notice never leaves the node | A queue nobody sends | The patient is not told their record was opened | Major | Medium | Dispatch through the delivery machinery; failure is visible | `test/break-glass-notice.test.ts` — "a notice that cannot be sent is a visible failure, not a silent one" |
+| H-27 | Withhold-from-organization defeated by a caller that names no organization | The directive matched a field nothing carried | The clinic they named still sees the record — or, after the fail-closed fix, the whole territory is withheld | Major | Low | Organization on the credential, checked against the directory | `test/organization-identity.test.ts` — "a credential that cannot say which organization it is still fails closed" |
+| H-28 | Clinical route serves a record without consulting the directive | A new endpoint forgets to call `phi()` | The lockbox is theatre | Catastrophic | Low | Check lives inside `phi()`; source-reading test requires it | `test/clinical-api.test.ts` — "every patient-scoped clinical route consults the directive check" |
+| H-29 | Clinical route serves a record without an audit row | A new endpoint forgets to audit | A privacy office cannot see who looked | Major | Low | `phi()` audits first; source-reading test drives every route | `test/clinical-api.test.ts` — "every clinical route leaves an audit row, including ones added later" |
+| H-30 | Delegated access that never ends | A parent grant with no expiry | An adolescent's notes remain readable after entitlement ended | Major | Medium | Delegated grant without expiry is refused; clock-based lapse | `test/patient-access.test.ts` — "a parent's access lapses on the day it was set to, with nothing having to run" |
+| H-31 | Held result looks like no result | A hold without a visible state | The patient thinks nothing came back | Moderate | Medium | A hold is visible as held; it ends by the clock | `test/patient-access.test.ts` — "a held result is visible as held, never simply absent" |
+| H-32 | Cross-custodian read on a shared node | A query that omits `tenant_id` | Another organization's chart | Catastrophic | Low | Tenant in every statement; source-reading test | `test/tenant-scoping.test.ts` — "no statement reads or writes tenant-scoped data without naming a tenant" |
+| H-33 | Feed credential subscribes its way to the record | `write` on `/fhir/` included Subscription | A lab key becomes a standing read | Catastrophic | Low | Subscription is admin-scoped | `test/subscription-scope.test.ts` — "a feed credential cannot subscribe its way to the clinical record" |
+| H-34 | Admin path reached without admin scope | Gate and router disagree on spelling | Unauthorized PHI or operator action | Catastrophic | Low | One gate; adversarial path spellings | `test/auth-bypass.test.ts` — "no spelling of an admin path reaches admin data without the admin scope" |
+
+### Interface, backup, measurement
+
+| ID | Hazard | Cause | Effect on a patient | Sev. | Like. | Control | Evidence |
+|---|---|---|---|---|---|---|---|
+| H-35 | AA acknowledged a message that was not stored | Ack before commit | The sender believes the chart was updated | Major | Low | AE on failed write; AA only when stored | `test/durability.test.ts` — "a failed write is answered with AE, never AA" |
+| H-36 | A feed that stopped sending looks like a quiet night | Empty queue, health green | Care proceeds on a stale chart | Major | High | Declared cadence; silence degrades health | `test/silent-feed.test.ts` — "health reports degraded, and says which feed" |
+| H-37 | `cp` of a live database offered as a backup | File copy during WAL writes | Restore is corrupt; RPO was fiction | Catastrophic | Low | SQLite backup API; verify chains; remote read-back | `test/backup.test.ts` — "a copied file is not a backup, but a snapshot of the same database is" |
+| H-38 | Restore of a snapshot that cannot come up | Swap first, discover later | The live file is gone and the replacement will not open | Catastrophic | Low | Preflight migrate of a scratch copy; keep the displaced file | `test/restore.test.ts` — "a snapshot that cannot come up is refused before anything is displaced" |
+| H-39 | Two engines on one database | Overlapping deploy | Duplicate in-flight messages; split-brain writes | Major | Low | Instance lock; restore clears a stale lock | `test/instance-lock.test.ts` — "without the lock a second instance duplicates a message in flight" |
+| H-40 | Retention sweep ages out the chart | Operator thinks "retention" means the record | Allergies and meds gone; ops reports success | Catastrophic | Low | Retention is the message log only | `test/retention-boundary.test.ts` — "a retention sweep ages out the message log and leaves the record alone" |
+| H-41 | Quality measure drops the untested from the denominator | "Assessable only" rate | The worst-managed patients vanish; the rate improves | Major | Medium | Unclassified stay in; rate is refused when it cannot stand | `test/registry.test.ts` — "patients nobody tested are in the denominator, not dropped from it" |
+| H-42 | Store fault returned as HTTP 400 | `phi()` mapped every throw to 400 | A client gives up on a disk error it should have retried | Moderate | Low | `Refusal` vs fault: 4xx vs 500; outcome 4 vs 8 | `test/refusal.test.ts` — "a store refusal is 4xx the caller can read, and a fault is a 500 they cannot" |
+| H-43 | Unauthenticated MLLP accepted as a person | The protocol has no authentication | Spurious ADT/results in the chart | Major | Medium | Network-layer control; frame cap; AE not crash | `test/mllp-limits.test.ts` — "hostile payloads are answered with an AE rather than taking the channel down" |
+| H-44 | Database file readable off a stolen disk | `node:sqlite` cannot encrypt | The whole chart leaves with the disk | Catastrophic | Medium | Encrypted volume underneath; boot and health say when it is missing | `test/at-rest.test.ts` — "an unencrypted finding says what is at stake and how to correct it" |
+
+---
+
+## 5. Residual risks accepted in the product (not in a deployment)
+
+These remain after every control above. A deploying organisation may reject
+the product on the back of any of them. They are the honest-limits section
+of the README, restated so a safety officer does not have to find them
+twice.
+
+| ID | Residual risk | Why it is accepted here | What a deployment must do |
+|---|---|---|---|
+| R-01 | This case has not been signed by an independent CSO | The repository can write the log; it cannot appoint the clinician | Name a CSO before go-live; treat this file as the manufacturer's draft |
+| R-02 | No clinician UI | Backend first. A renderer that ignores `complete === false` reintroduces H-06 | Do not put an untested consumer in front of a prescriber |
+| R-03 | No patient portal | Different trust boundary; the store is built and not mounted | Do not serve `src/patient/access.ts` from an `admin` key |
+| R-04 | Decision-support mechanism without content (H-20) | A partial table is more dangerous than a small one | Licence an interaction source, or accept that interactions are unchecked |
+| R-05 | No machine learning | Section 7 asked; nothing here does it | Do not read any output as a prediction |
+| R-06 | MLLP is unauthenticated (H-43) | The protocol has nothing to hook | VPN, private APN, or transport mTLS — not Portage |
+| R-07 | Database file is not encrypted (H-44) | `node:sqlite` cannot | Encrypted volume; do not deploy if `/api/health` says the volume is not |
+| R-08 | Single writer, one node | Scale is last on the roadmap | Size the site to one writer, or wait for #25 |
+| R-09 | No bulk migration | A real cutover has no tool | Do not cut over a caseload this cannot load (#20) |
+| R-10 | Conformance packs are not certified | Fixtures are not a Projectathon | #23 before a claim of conformity |
+| R-11 | Demo terminology pack | Licensed distributions are not shipped | Load a licensed release before coding decisions rest on it |
+| R-12 | `node:sqlite` experimental on Node 22 | Durability rests on it | Node 24+ in production |
+| R-13 | Sent is not told (H-26) | The last step is a letter, a call, a portal this system does not own | Record that the patient was actually told; review the undelivered queue |
+| R-14 | Fail-closed organization withhold | A credential with no organization is treated as possibly inside the withheld clinic | Issue keys *with* an organization, or accept territorial withhold |
+| R-15 | Duplicate charts are detected, not linked (#34) | Auto-merge is H-05 | A person decides; there is no reversible link yet |
+| R-16 | Remote backup unconfigured is a posture, not degraded | A missing replica is a choice | Configure `PORTAGE_BACKUP_REMOTE` or accept that RPO is the local disk |
+| R-17 | Worklists only work if someone opens them (H-11, H-13, H-23, H-24) | The product can put a row on a list; it cannot make a person look | Staff the chase lists; do not treat an empty personal inbox as "nothing owed" |
+
+---
+
+## 6. Narrative: why the residual risk is the one being taken
+
+The product's clinical argument is not that it is safe. It is that the
+failures it knows about fail *closed and visibly*, and that the failures it
+does not know about are named as residual rather than implied to be absent.
+
+The repeating shape is the same one: a quiet success that is actually a
+miss. An empty allergy panel. A result already acknowledged. A feed that
+has been silent since Tuesday. A backup that hashed the file it wrote and
+never read it back. A directive that reports itself active and matches a
+field nothing carries. Each control is a refusal to let that silence look
+like an answer.
+
+What a safety officer should not take from this file:
+
+- that a site with no CSO, no licensed interaction source, no encrypted
+  volume and no one reading the chase lists is safe because the tests pass
+- that DCB0160 is done
+- that #22 (an external pen test) is optional colour. The adversarial tests
+  here share their author's model of an attack. The interesting findings
+  are outside it.
+
+What they can take:
+
+- a catalogue of the hazards this codebase has already paid for
+- a pointer from each to a test that fails if the control is removed
+- a list of residual risks that are not hiding in a backlog
+
+---
+
+## 7. Related documents
+
+- [README](../README.md) — honest limits, clinical modules, roadmap
+- [RUNBOOK](RUNBOOK.md) — operate, upgrade, restore, when not to deploy
+- [SECURITY](../SECURITY.md) — how to report a vulnerability
+- Issues [#21](https://github.com/ThomasGenua/healthsystem/issues/21) (this
+  document), [#22](https://github.com/ThomasGenua/healthsystem/issues/22)
+  (external pen test)

@@ -5,7 +5,9 @@ worth having written down before they happen.
 
 The README explains *why* each mechanism works the way it does; this explains
 what to type. Where the two disagree, the README is the design and this is the
-mistake — please fix it here.
+mistake — please fix it here. The hazards those mechanisms exist to prevent,
+with severity and the test that pins each one, live in
+[CLINICAL-SAFETY.md](CLINICAL-SAFETY.md).
 
 **Portage carries personal health information. Two rules apply to every
 paragraph below:** never paste a message body, a chart entry or a patient
@@ -65,7 +67,7 @@ The escape hatch is break-glass, which is loud and recorded — see
 git clone https://github.com/ThomasGenua/healthsystem.git portage
 cd portage
 npm ci
-npm run typecheck && npm test    # 497 tests; do not deploy a node that fails one
+npm run typecheck && npm test    # 498 tests; do not deploy a node that fails one
 
 export PORTAGE_DATA=/var/lib/portage
 export PORTAGE_PORT=8686

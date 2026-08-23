@@ -9,6 +9,18 @@ always forward-compatible and run automatically on open — see
 
 ## Unreleased
 
+**Added**
+
+- **A clinical safety case and hazard log** (#21). The hazards were already
+  in the module headers; they had no severity, no likelihood, no named
+  owner and no evidence trail a safety officer could follow.
+  [docs/CLINICAL-SAFETY.md](docs/CLINICAL-SAFETY.md) is DCB0129-shaped, not
+  certified, and not a substitute for a named clinician. Residual risks
+  from the README's honest limits are restated there. A source-reading
+  test fails if a cited test is renamed or deleted.
+
+  497 → 498 tests.
+
 **Fixed**
 
 - **`phi()` distinguishes a store refusal from a fault** (#26). A `Refusal`
