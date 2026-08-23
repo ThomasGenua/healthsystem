@@ -12,7 +12,7 @@ The design targets the interoperability posture Canadian jurisdictions are conve
 
 **Privacy and access** — [Security](#security) · [Encryption at rest](#encryption-at-rest) · [Key lifecycle](#key-lifecycle) · [Audit trail](#audit-trail) · [Patient access](#patient-access) · [Consent directives and breaking glass](#consent-directives-and-breaking-glass) · [The clinical API, and audit by construction](#the-clinical-api-and-audit-by-construction) · [Retention](#retention) · [What the chains prove](#what-the-chains-prove) · [Tenancy](#tenancy)
 
-**Running it** — [Runbook](docs/RUNBOOK.md) · [Upgrading](#upgrading) · [Backup](#backup) · [Monitoring](#monitoring) · [Throughput](#throughput) · [Durability under failure](#durability-under-failure) · [Crash recovery](#crash-recovery)
+**Running it** — [Runbook](docs/RUNBOOK.md) · [Clinical safety](docs/CLINICAL-SAFETY.md) · [Upgrading](#upgrading) · [Backup](#backup) · [Monitoring](#monitoring) · [Throughput](#throughput) · [Durability under failure](#durability-under-failure) · [Crash recovery](#crash-recovery)
 
 **Project** — [Changelog](CHANGELOG.md) · [Security policy](SECURITY.md) · [Licence](#licence) · [Contributing](#contributing)
 
@@ -59,7 +59,7 @@ v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A restore that has actually been rehearsed**, to somewhere the database has never been, with a measured RTO — because a verified snapshot only proves the bytes hashed correctly when they were written.
 - **A snapshot that leaves the machine**, encrypted, put, read back and walked again, so the stated RPO is not only for failures that spare the backup directory.
 
-497 tests. Backend first, then the interface that makes the backend's honesty visible.
+498 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -115,7 +115,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 497 tests
+npm test          # 498 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -1464,7 +1464,7 @@ a scope-narrowed directive withholds its section rather than the chart around it
 
 **Prove what is currently only claimed.**
 
-- [#21 A clinical safety case and hazard log](https://github.com/ThomasGenua/healthsystem/issues/21) — the hazard reasoning exists, scattered across docstrings and test names where no safety officer will find it, in no defensible form.
+- [#21 A clinical safety case and hazard log](https://github.com/ThomasGenua/healthsystem/issues/21) is done: [docs/CLINICAL-SAFETY.md](docs/CLINICAL-SAFETY.md) is the form a safety officer can open, and `test/clinical-safety.test.ts` fails if a cited test is gone. It is not signed by an independent clinician, and it says so (R-01).
 - [#22 An external penetration test](https://github.com/ThomasGenua/healthsystem/issues/22) — the adversarial tests here share their author's model of what an attack looks like. The interesting findings are outside it.
 
 **Make the consent enforcement precise.** Done. [#17](https://github.com/ThomasGenua/healthsystem/issues/17): credentials carry an organization, so a directive against one clinic no longer withholds from the territory. [#18](https://github.com/ThomasGenua/healthsystem/issues/18): a break-glass notice is dispatched through the delivery machinery rather than left on a queue for somebody to remember, and what could not be sent says so. What remains is honest and small — *sent* is still not *told*, and recording that the patient was actually told is a deliberate human act, because the last step happens on a channel Portage does not own.
