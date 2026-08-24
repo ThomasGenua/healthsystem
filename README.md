@@ -61,9 +61,10 @@ v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A chart that can say whether anyone asked about immunizations or took a vital**, and that names a primary provider and a coverage claim without overwriting the last ones. Blood pressure is two numbers; a second current MRP is refused; today's appointments sit on the worklist. This is still not a provincial EMR — see [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
 - **Durable patient–clinic messaging.** A question is a thread that cannot be deleted. Closing it needs a reason. Awaiting the clinic and belonging to nobody are lists. This is not a portal and not a claim that anything was delivered.
 - **An OAuth-only patient/proxy API.** A patient-context SMART token cannot read the general FHIR facade; every chart is authorized again through an active grant with explicit scope, purpose and expiry. Held results, appointments, messages, access history, delegates and requests are patient-safe views, not the clinician Workspace.
+- **Migration that cannot report success over a gap.** Completeness is declared and checked, not inferred from the absence of errors; rejects keep their payloads; a trial rolls back by retraction and a cutover with clinical activity refuses to.
 - **A laboratory result bridge that closes the order loop**, not just a mapping onto the facade: a resend writes nothing, a correction supersedes and arrives unacknowledged, a stale preliminary is ignored, and a result whose patient cannot be identified is held for a person rather than filed against a guess. No vendor interface is claimed — see [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
 
-579 tests. Backend first, then the interface that makes the backend's honesty visible.
+596 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -119,7 +120,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 579 tests
+npm test          # 596 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -828,6 +829,35 @@ What the patient is shown is a **category**, not the clinical justification. "Yo
 ### The patient's own access log
 
 Section 11 requires a patient be able to see who looked at their record, and a proxy's accesses are in it under the proxy's own name. *"My ex-husband opened my chart four times last month"* is exactly what a patient has a right to find out, and it is unanswerable if a proxy's reads are recorded as the patient's own. Refused attempts are in it too.
+
+## Migration from an incumbent system
+
+This is how a real deployment starts, and what makes it dangerous is not the volume. It is that **you cannot tell whether it worked by whether it errored.**
+
+A migration that loads 96% of the allergies and reports success is the catastrophe. There is no error anywhere: the extract ran, the loader ran, the counts look plausible, the clinicians start work, and the 4% that never arrived are invisible until somebody prescribes into a gap.
+
+So **completeness is declared and then checked.** Before loading a record type, the run records how many the source system says there are. Afterwards the report compares:
+
+- counts agree → **complete**
+- counts disagree → **incomplete**, and the gap is named as records that "neither loaded nor failed — nothing recorded them at all"
+- nothing declared → **cannot verify completeness**, which is a different and equally honest answer
+
+`complete` is never true because nothing threw. Closing a run over a gap is possible — sometimes the gap is a known duplicate the vendor confirmed — but it takes `acceptGapsBecause`, a sentence that lands in the run's notes with somebody's name on it.
+
+Four more decisions:
+
+- **Rejects are a queue with the payload in it.** A row that could not be loaded is kept whole, with its reason. "37 allergies failed validation" is not something a clinical safety officer can sign; 37 rows they can open is.
+- **Loading goes through the ordinary stores**, not straight into SQL. A migration that bypassed validation would load records the live system would refuse — an allergy with no substance, a medication with no provenance — and the first anyone would know is a prescriber acting on it.
+- **Source codes and provenance survive.** Every migrated record carries `_source`: the system, the row's own id, the run, and the source's own codes alongside the mapped ones. A record that cannot be traced back to the row it came from cannot be checked against the source, and checking against the source is the only way a mapping error is ever found.
+- **A migrated medication is `external-record`, never `prescribed`.** Marking everything prescribed would assert that this clinic wrote prescriptions it never saw. Adherence is `unknown`, so the drug appears on the list with the caveat attached rather than being hidden — a migrated chart showing the patient on nothing would be far more dangerous.
+
+**Loading is idempotent** on the source's own identity, so a resumed run does not double what it already did and a delta carrying unchanged rows writes nothing.
+
+**A trial can be rolled back; a cutover with clinical activity cannot.** Trials are the only way anybody finds the mapping errors, so they are disposable — and rollback is by *retraction*, so the rollback is itself on the record rather than erasing the evidence that the run happened. A cutover whose charts have been written to since is refused, naming who has written, because rolling it back would remove the records their notes refer to.
+
+`validationSample()` is the part counts cannot replace: a mapping that puts the dose in the frequency field reconciles perfectly. The sample spreads across record types rather than taking the top rows, because the first hundred rows of an extract are the easy ones.
+
+**What this is not.** It is not an extractor. Getting data out of an incumbent system is that vendor's export, a database dump, or a negotiation. Source-system inventory, cutover scheduling and post-launch stabilisation are a plan a person writes.
 
 ## Registries and care gaps
 

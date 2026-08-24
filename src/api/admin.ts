@@ -59,6 +59,7 @@ import { VISIT_TYPES } from "../workspace/visit.ts";
 import type { EncounterClass } from "../clinical/encounters.ts";
 import { DIRECTORY_KINDS, type PartyKind } from "../directory/store.ts";
 import { mapStoreError, refuse } from "../core/refusal.ts";
+import type { MigrationRecordType, SourceRecord } from "../migrate/run.ts";
 import type { AuthorityRow, PatientPermission } from "../patient/access.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
@@ -1880,6 +1881,93 @@ async function route(
         if (!reason) refuse("reason required");
         return tenant.prescribing.cancel(id, { ...by, reason });
       });
+    }
+    // Migration lives under /api/clinical/ rather than a taxonomy of its own,
+    // because it reads and writes patient data in bulk. That puts it behind
+    // phi() and inside the source-reading test that drives every clinical
+    // route and fails the build if one serves patient data without an audit
+    // row — which is a stronger guarantee than a tidier URL.
+    if (path === "/api/clinical/migrations" && method === "GET") {
+      return phi("Bundle", () => tenant.migration.runs(), (rows) => rows.length);
+    }
+    if (
+      method === "GET" &&
+      (path === "/api/clinical/migration-report" ||
+        path === "/api/clinical/migration-rejects" ||
+        path === "/api/clinical/migration-sample")
+    ) {
+      const run = url.searchParams.get("run");
+      if (!run) return send(res, 400, { error: "run required" });
+      if (!tenant.migration.run(run)) return send(res, 404, { error: `no migration run ${run}` });
+      return phi("Bundle", () => {
+        if (path.endsWith("-report")) return tenant.migration.report(run);
+        if (path.endsWith("-rejects")) return tenant.migration.rejects(run);
+        return tenant.migration.validationSample(run, num(url.searchParams.get("per_type")) ?? 5);
+      });
+    }
+    if (path === "/api/clinical/migration-begin" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        source?: string;
+        mode?: "trial" | "cutover" | "delta";
+        follows?: string;
+        notes?: string;
+      };
+      if (!body.source || !body.mode) return send(res, 400, { error: "source and mode required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phi("Bundle", () =>
+        tenant.migration.begin({
+          sourceSystem: body.source!,
+          mode: body.mode!,
+          by: { actorId: who },
+          ...(body.follows ? { follows: body.follows } : {}),
+          ...(body.notes ? { notes: body.notes } : {}),
+        })
+      );
+    }
+    if (path === "/api/clinical/migration-declare" && method === "POST") {
+      // The load-bearing call: without a declared source count the report can
+      // say what arrived and cannot say whether that was all of it.
+      const body = JSON.parse(await readBody(req)) as {
+        run?: string;
+        recordType?: MigrationRecordType;
+        sourceCount?: number;
+      };
+      if (!body.run || !body.recordType || typeof body.sourceCount !== "number") {
+        return send(res, 400, { error: "run, recordType and sourceCount required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phi("Bundle", () =>
+        tenant.migration.declare(body.run!, body.recordType!, body.sourceCount!, { actorId: who })
+      );
+    }
+    if (path === "/api/clinical/migration-load" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { run?: string; records?: SourceRecord[] };
+      if (!body.run || !Array.isArray(body.records)) {
+        return send(res, 400, { error: "run and records required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phi(
+        "Bundle",
+        () => tenant.migration.loadAll(body.run!, body.records!, { actorId: who }),
+        (rows) => rows.length
+      );
+    }
+    if (path === "/api/clinical/migration-complete" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { run?: string; acceptGapsBecause?: string };
+      if (!body.run) return send(res, 400, { error: "run required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phi("Bundle", () =>
+        tenant.migration.complete(body.run!, {
+          actorId: who,
+          ...(body.acceptGapsBecause ? { acceptGapsBecause: body.acceptGapsBecause } : {}),
+        })
+      );
+    }
+    if (path === "/api/clinical/migration-rollback" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { run?: string; reason?: string };
+      if (!body.run || !body.reason) return send(res, 400, { error: "run and reason required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phi("Bundle", () => tenant.migration.rollback(body.run!, { actorId: who, reason: body.reason! }));
     }
     if (path === "/api/clinical/lab-held" && method === "GET") {
       // Results the interface could not attribute to a chart. Spans patients

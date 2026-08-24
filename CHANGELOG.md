@@ -11,6 +11,37 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Migration that cannot report success over a gap** (#20). What makes
+  migration dangerous is that you cannot tell whether it worked by
+  whether it errored: a run loading 96% of the allergies produces no
+  error anywhere, and the missing 4% are invisible until somebody
+  prescribes into one.
+
+  So completeness is **declared and then checked**. A run records what
+  the source system says it holds, and the report compares: counts agree
+  is complete, counts disagree names the gap as records that neither
+  loaded nor failed, and nothing declared says completeness *cannot be
+  verified*. `complete` is never true because nothing threw, and closing
+  over a gap takes a written reason that lands in the run's notes.
+
+  Rejects keep their whole payload, so a rejection is a row somebody can
+  open rather than a count. Loading goes through the ordinary stores, so
+  a migration cannot load what the live system would refuse. Source codes
+  and the loading run are preserved on every record. A migrated
+  medication is `external-record` with `unknown` adherence, never
+  `prescribed`. Loading is idempotent on source identity, so a resumed
+  run or an unchanged delta row writes nothing.
+
+  A trial rolls back by retraction, so the rollback is on the record. A
+  cutover whose charts have been written to since refuses, naming who
+  wrote. `validationSample()` spreads across record types, because counts
+  reconciling does not mean a mapping is right.
+
+  Not an extractor: getting data out of an incumbent system is that
+  vendor's export. Hazards H-65–H-69.
+
+  579 → 596 tests.
+
 - **Prescriptions that reach a pharmacy, or say why not** (#40). A
   prescription was recorded carefully and then went nowhere; the pharmacy
   wrote it again at their end and the two records drifted apart. Four
