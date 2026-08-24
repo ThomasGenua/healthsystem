@@ -24,7 +24,7 @@ the post-0.5.0 line: v0.5.0 plus off-machine backup, organization identity
 on credentials, break-glass notice dispatch, encounters, the provider
 directory, FHIR projection of that directory, the refusal/fault split
 in `phi()`, the longitudinal-chart increment, durable patient messaging,
-and the OAuth patient/proxy boundary).
+the OAuth patient/proxy boundary, and the laboratory result bridge).
 **Last reviewed:** 2026-08-24.
 **Reviewer of this draft:** the author of the controls, not an independent
 clinical safety officer. That gap is residual risk R-01.
@@ -194,6 +194,12 @@ makes the control a fact rather than a comment.
 | H-14 | Order placed and never resulted | The lab never reports; no error | The test never happens and nobody is waiting | Major | Medium | `awaitingResult()`; a preliminary does not close the wait | `test/orders.test.ts` — "an order placed and never resulted is the other silence" |
 | H-15 | Unsolicited result discarded | No matching order, so refused | An outside-facility result is lost | Major | Low | Stored and queued for matching | `test/orders.test.ts` — "a result with no order is kept and queued, not refused" |
 | H-16 | Result filed against another patient's order | Interface mis-association | Wrong number in the chart | Catastrophic | Low | Store refuses a cross-patient file | `test/orders.test.ts` — "a result is never filed against another patient's order" |
+| H-55 | Inbound result filed on the wrong chart | Fallback match on name, surname or most recent order when the identifier misses | Another person's result in this chart, invisibly | Catastrophic | Low | Identifier-only matching; an ambiguous or absent match is held for a person | `test/lab-intake.test.ts` — "a result whose patient cannot be identified is held, never filed against a guess" |
+| H-56 | Retransmission read as a new result | No stable identity for an analyte on a specimen | The unacknowledged queue fills with duplicates and clinicians stop reading it | Major | High | Accession + analyte + sub-id key; identical resend writes nothing | `test/lab-intake.test.ts` — "an identical retransmission writes nothing" |
+| H-57 | Stale preliminary overwrites a final | Out-of-order delivery applied blindly | An answered order reopens and the current value is replaced by an older one | Major | Medium | A preliminary arriving after a final is ignored and recorded as ignored | `test/lab-intake.test.ts` — "a preliminary arriving after the final is ignored, and says so" |
+| H-58 | Unknown result status filed as final | Defaulting an unrecognised OBX-11 | An unfinished result starts an acknowledgement clock, or a finished one silences it | Major | Low | Unknown status or flag is refused, not defaulted | `test/lab-intake.test.ts` — "an unknown result status or abnormal flag is refused, not filed as normal" |
+| H-59 | Result timestamped in the wrong hour | HL7 timestamp with no zone assumed to be UTC | A value lands on the wrong side of a shift change | Moderate | High | Explicit offset honoured; profile offset applied; otherwise recorded as assumed and reported | `test/lab-intake.test.ts` — "a timestamp with no timezone is recorded as assumed rather than silently made UTC" |
+| H-60 | A mistyped vendor profile silently reads as generic | Fallback when a named profile is missing | A site believes it has a vendor interface it does not have | Major | Low | A named profile that does not resolve fails the delivery | `test/lab-channel.test.ts` — "a destination naming a laboratory profile that does not exist fails loudly" |
 
 ### Medications
 
@@ -267,6 +273,7 @@ twice.
 | R-07 | Database file is not encrypted (H-44) | `node:sqlite` cannot | Encrypted volume; do not deploy if `/api/health` says the volume is not |
 | R-08 | Single writer, one node | Scale is last on the roadmap | Size the site to one writer, or wait for #25 |
 | R-09 | No bulk migration | A real cutover has no tool | Do not cut over a caseload this cannot load (#20) |
+| R-18 | No vendor laboratory interface has exchanged a message | The ORU bridge is built and tested against synthetic messages; no Dynacare or LifeLabs sandbox has been connected | Do not present the generic profile as a vendor interface; obtain a conformance guide, sandbox, credentials and a signed test result |
 | R-10 | Conformance packs are not certified | Fixtures are not a Projectathon | #23 before a claim of conformity |
 | R-11 | Demo terminology pack | Licensed distributions are not shipped | Load a licensed release before coding decisions rest on it |
 | R-12 | `node:sqlite` experimental on Node 22 | Durability rests on it | Node 24+ in production |

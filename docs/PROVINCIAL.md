@@ -22,7 +22,7 @@ though it did.
 | 4 | Durable inbox, task and referral workflows | Present |
 | 5 | Scheduling and patient messaging | Scheduling is present. **Patient messaging is present as a durable clinic record** (threads, inbox, close-with-reason). Not a portal, not email, not a claim that anything was delivered. |
 | 6 | FHIR integration service | Present (R4 facade, mappings, subscriptions) |
-| 7 | Laboratory and provincial-system sandboxes | **Not present.** No Dynacare, LifeLabs, OLIS, DHDR, HRM, eConsult or ONE ID interface is claimed. |
+| 7 | Laboratory and provincial-system sandboxes | **Inbound result bridge present, vendor interfaces absent.** An ORU^R01 closes the order it answers, deduplicates retransmissions, supersedes on correction, ignores stale preliminaries and holds unidentifiable results for a person. Dialects are configuration (`labs/`). **No Dynacare, LifeLabs, OLIS, DHDR, HRM, eConsult or ONE ID interface has exchanged a message**, and none is claimed — that needs a conformance guide, a sandbox, credentials and a signed test result. |
 | 8 | Medication and result management | Present in-store. Pharmacy transmission is [#40](https://github.com/ThomasGenua/healthsystem/issues/40). |
 | 9 | Patient access | **Backend boundary present.** `/patient/*` is OAuth-only; every chart is bound through an active grant with explicit proxy scope, purpose and expiry. Patient-safe summary, held results, appointments, messages, delegates, access log, access/correction requests. No patient application, enrolment/identity proofing, French parity, notifications or accessibility claim. |
 | 10 | Population-health reporting | Partial (cohorts, gaps, measures). Equity, outreach campaigns and burden measures are not. |
@@ -39,7 +39,7 @@ though it did.
 | 1 | Complete longitudinal chart | Append-only log; demographics (incl. language/telecom); coverage/eligibility history; care team; problems; allergies; meds; immunizations; vitals; results; encounters; notes; referrals; consent; provenance and amendment | Procedures/care plans as first-class stores; patient-uploaded documents; substitute decision-makers beyond proxy grants; specialty coding libraries |
 | 2 | Clinician workspace | Assembled chart + worklist: today's appointments, results, referrals, tasks, overdue orders, incomplete reconciliations. Queues ordered by urgency/abnormality, not arrival | Waiting-room board, care-gap queue, recently discharged, high-risk follow-up, delegated-workload view, configurable ranking across all item kinds |
 | 3 | Documentation | Draft / revise / sign / co-sign / addendum; SOAP and free sections; encounter-scoped notes | Voice dictation, macros, collaborative drafting, billing codes, patient-friendly AVS, PDF export |
-| 4 | Orders and results | Order → result → acknowledge; critical clocks; correction does not inherit ack; unsolicited matching | Electronic requisitions to named labs; Dynacare/LifeLabs; trend UI; portal release rules; automatic patient notification |
+| 4 | Orders and results | Order → result → acknowledge; critical clocks; correction does not inherit ack; unsolicited matching; inbound ORU bridge with deduplication, identity holds and a reconciliation report | Electronic requisitions *out* to a laboratory; a proven Dynacare/LifeLabs interface; trend UI; automatic patient notification |
 | 5 | Medications | Current vs prescribed; allergy/interaction check; reconciliation; override with record | e-prescribing to a pharmacy; formulary/coverage; controlled-substance workflow; dosage calculators |
 | 6 | Clinical decision support | Mechanism for meds only; never-asked ≠ none | Preventive-care rules, chronic-disease guidelines, duplicate-test CDS, renal dosing, configurable alert fatigue controls |
 | 7 | AI | Nothing | All of it, by design, until governance exists |
@@ -60,7 +60,35 @@ though it did.
 | 22 | Roadmap | See README. Phases 0–5 in the specification are a procurement timeline, not a commitment this file can make. | |
 | 23 | Immediate priorities | The table above. | |
 
+## What a real vendor interface still needs
+
+The ORU bridge is built and tested against synthetic messages. Turning it into
+a *Dynacare* or *LifeLabs* interface is not a coding task, and the remaining
+work cannot be done from inside this repository:
+
+1. The vendor's HL7 conformance guide, which is what a profile in `labs/` is
+   written from — field locations, assigning authorities, timezone, accession
+   format.
+2. A sandbox endpoint, and network access to it.
+3. Credentials, and a mutual-TLS or VPN path.
+4. A connectivity and conformance test executed **with the vendor**, producing
+   a signed result. That signed result is the procurement evidence; a passing
+   local test suite is not.
+5. The same again per provincial service: ONE ID, OLIS, DHDR, HRM, eConsult.
+
+Until each of those exists for a given vendor, `generic-oru` is the honest
+configuration and the reconciliation report says what it had to assume.
+
 ## What this increment added
+
+**Laboratory result bridge.** An inbound ORU^R01 now closes the order it
+answers rather than only landing on the FHIR facade. Identity is by identifier
+only; an unidentifiable or ambiguous result is held for a person. A
+retransmission writes nothing, a correction supersedes and arrives
+unacknowledged, a stale preliminary is ignored, and an unrecognised status or
+flag is refused rather than defaulted. Timestamps with no zone are recorded as
+assumed. Dialects are configuration in `labs/`; a destination naming a profile
+that does not resolve fails rather than silently reading as generic.
 
 **Patient access boundary.** SMART `patient/*` is no longer general FHIR
 read; it reaches only `/patient/*`. An OAuth subject still needs a live
@@ -79,7 +107,7 @@ appointments) is already on `main`.
 ## What must not be read into a demo
 
 - A complete provincial EMR
-- A Dynacare or LifeLabs interface
+- A Dynacare or LifeLabs interface (the ORU bridge exists; no vendor message has ever been exchanged)
 - A patient portal application (the patient/proxy JSON boundary exists)
 - AI drafting or summarization
 - Certified Ontario profiles or ONE ID

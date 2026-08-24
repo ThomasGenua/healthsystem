@@ -1,0 +1,7 @@
+{
+  "id": "generic-oru",
+  "name": "Generic HL7 v2.x ORU^R01",
+  "//": "The standards-conformant reading. A laboratory that follows HL7 needs no profile of its own; one that does not gets a file like this with its own field locations. Nothing here changes what a result status or an abnormal flag means — those come from HL7 tables 0085 and 0078, and letting a site redefine 'critical' is not flexibility.",
+  "placerOrderPaths": ["ORC-2.1", "OBR-2.1"],
+  "fillerOrderPaths": ["ORC-3.1", "OBR-3.1"]
+}

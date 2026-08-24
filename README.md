@@ -16,7 +16,7 @@ The design targets the interoperability posture Canadian jurisdictions are conve
 
 **Project** — [Changelog](CHANGELOG.md) · [Security policy](SECURITY.md) · [Licence](#licence) · [Contributing](#contributing)
 
-**Reference** — [Architecture](#architecture) · [Channels](#channels) · [Character sets](#character-sets) · [Mappings](#mappings) · [API](#api) · [FHIR facade](#fhir-facade) · [Terminology](#terminology) · [Conformance packs](#conformance-packs) · [Subscriptions](#subscriptions) · [Connectors](#connectors) · [Admin UI](#admin-ui) · [Loading a licensed terminology release](#loading-a-licensed-terminology-release) · [Satellite demo](#satellite-demo) · [Roadmap](#roadmap)
+**Reference** — [Architecture](#architecture) · [Laboratory profiles](labs/README.md) · [Channels](#channels) · [Character sets](#character-sets) · [Mappings](#mappings) · [API](#api) · [FHIR facade](#fhir-facade) · [Terminology](#terminology) · [Conformance packs](#conformance-packs) · [Subscriptions](#subscriptions) · [Connectors](#connectors) · [Admin UI](#admin-ui) · [Loading a licensed terminology release](#loading-a-licensed-terminology-release) · [Satellite demo](#satellite-demo) · [Roadmap](#roadmap)
 
 ## Status
 
@@ -61,8 +61,9 @@ v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A chart that can say whether anyone asked about immunizations or took a vital**, and that names a primary provider and a coverage claim without overwriting the last ones. Blood pressure is two numbers; a second current MRP is refused; today's appointments sit on the worklist. This is still not a provincial EMR — see [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
 - **Durable patient–clinic messaging.** A question is a thread that cannot be deleted. Closing it needs a reason. Awaiting the clinic and belonging to nobody are lists. This is not a portal and not a claim that anything was delivered.
 - **An OAuth-only patient/proxy API.** A patient-context SMART token cannot read the general FHIR facade; every chart is authorized again through an active grant with explicit scope, purpose and expiry. Held results, appointments, messages, access history, delegates and requests are patient-safe views, not the clinician Workspace.
+- **A laboratory result bridge that closes the order loop**, not just a mapping onto the facade: a resend writes nothing, a correction supersedes and arrives unacknowledged, a stale preliminary is ignored, and a result whose patient cannot be identified is held for a person rather than filed against a guess. No vendor interface is claimed — see [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
 
-538 tests. Backend first, then the interface that makes the backend's honesty visible.
+566 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -118,7 +119,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 538 tests
+npm test          # 566 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -537,6 +538,27 @@ Three more decisions:
 - **Responsibility is a column, not an inference from who ordered.** Residents rotate and locums leave, so a result routed to whoever typed the order three weeks ago goes to an inbox nobody opens. `handover` moves it with a reason and refuses to leave it belonging to nobody.
 
 Queues are ordered by how abnormal the value is, then by age, and the acknowledgement window comes from the same place: an hour for a panic value, a day for an abnormal one, three days for a normal one. Normal results are on the list too — "it was normal" is known after reading it, not before, and the results most often missed are the ones assumed unremarkable.
+
+### The laboratory interface, as distinct from a mapping
+
+A channel that turns an ORU into a FHIR Observation is easy to mistake for a laboratory interface. It is not one. It stores a copy of a value; it does not close the order the result answers, does not start an acknowledgement clock, and has no idea that tonight's retransmission is the same potassium it filed this morning. `oru-to-fhir-observation` does that; `lab-oru-to-orders` — a `labresults` destination — does the clinical half.
+
+Four decisions carry it, and each is a way a laboratory feed quietly goes wrong:
+
+- **A result whose patient cannot be identified is held, not guessed.** Matching is by identifier only. Name and birth date are read from the message and shown to whoever resolves it, and are never matched on — two people share a name and a birthday more often than a health system expects, and the failure is silent. An identifier resolving to two charts is also a refusal, because `duplicates()` surfacing them and declining to merge would be pointless if the interface picked one. `GET /api/clinical/lab-held` is where they wait, and resolving one re-files it through the same path, so deduplication and order matching still apply.
+- **A resend is not a new result.** Identity is the laboratory's accession number, the analyte and the sub-id. An identical repeat writes nothing. Without this, a nightly repeat files the day's results again and the unacknowledged queue fills with duplicates of values somebody already read — and a queue that cannot be emptied is one clinicians stop reading.
+- **A correction is not a duplicate.** The same key with a different value supersedes, and arrives unacknowledged even if the old value was signed off. That was already true of `OrderStore`; what the interface adds is telling the two apart.
+- **A stale preliminary does not overwrite a final.** Out-of-order delivery is ordinary. Applying it would un-answer an order; dropping it silently would hide that the feed is delivering out of order. It is ignored, and recorded as ignored.
+
+An unrecognised OBX-11 or OBX-8 is **refused**, not defaulted: `final` would start a clock on something unfinished, `preliminary` would silence one that was finished, and "normal" is not a safe reading of a flag nobody recognises. What the laboratory actually sent is kept beside the mapped meaning, because a mapping is an interpretation and a reconciliation that cannot see the original cannot settle a disagreement about it.
+
+**Timestamps are not assumed to be UTC.** An explicit offset is honoured, a profile's declared `timezoneOffset` is applied when the message carries none, and a time with neither is filed with `timezone_assumed` set and counted in the reconciliation report. A result an hour out is a result on the wrong side of a shift change.
+
+Laboratory dialects are **configuration**, in [`labs/`](labs/README.md) — a fork per laboratory is how a platform stops being one platform. A profile says where to find a field; it never says what a value means. A destination naming a profile that does not resolve **fails the delivery** rather than falling back to the generic reading, because a site that configured a vendor profile and silently got the generic one would believe it had a vendor interface.
+
+`GET /api/clinical/lab-reconcile` answers what a feed did: filed, corrected, cancelled, unmatched, held, unacknowledged, overdue, critical-unacknowledged, and how many accessions. Every number is a count of rows somebody can go and look at, and the caveats say what the numbers cannot tell you — including that an unacknowledged result is work owed to a clinician rather than a broken interface.
+
+**No vendor interface is shipped or claimed.** There is no Dynacare profile and no LifeLabs profile. Writing one from a published specification and calling it an interface would be the exact failure this repository spends its time refusing. A real one needs their conformance guide, a sandbox, credentials, a connectivity certificate and a signed test result.
 
 `awaitingResult()` covers the other silence. A preliminary result does not answer an order: a blood culture reporting "gram-positive cocci" at 24 hours and never speciating is precisely the wait worth chasing, and an earlier version of that query dropped it from the list. Whether an order has been answered is now decided in exactly one place, and the query reads that decision rather than making it a second time.
 

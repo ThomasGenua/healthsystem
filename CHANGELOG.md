@@ -11,6 +11,38 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **A laboratory result bridge that closes the order loop.** There was a
+  channel mapping ORU messages onto the FHIR facade, and it was easy to
+  mistake for a laboratory interface: it stored a copy of a value and left
+  the order it answered on the overdue list. A `labresults` destination
+  now files the result, completes the order and starts the
+  acknowledgement clock.
+
+  Four refusals carry it. A result whose patient cannot be identified is
+  **held** for a person rather than matched on name or on the most recent
+  order — an ambiguous identifier is a refusal too, since surfacing
+  duplicate charts and declining to merge them would be pointless if the
+  interface picked one. An identical **retransmission writes nothing**,
+  keyed on accession, analyte and sub-id. A **correction** supersedes and
+  arrives unacknowledged even if the old value was signed off. A **stale
+  preliminary** arriving after the final is ignored and recorded as
+  ignored. An unrecognised OBX-11 or OBX-8 is refused rather than
+  defaulted to final or normal.
+
+  Timestamps are not assumed to be UTC: an explicit offset is honoured, a
+  profile's declared offset is applied, and a time with neither is filed
+  as assumed and counted in `GET /api/clinical/lab-reconcile`.
+
+  Laboratory dialects are configuration in `labs/`, not a fork per lab. A
+  destination naming a profile that does not resolve fails the delivery
+  rather than silently reading as generic.
+
+  **No vendor interface is shipped or claimed.** There is no Dynacare or
+  LifeLabs profile; that needs their conformance guide, a sandbox,
+  credentials and a signed test result (R-18). Hazards H-55–H-60.
+
+  538 → 566 tests.
+
 - **The patient/proxy identity boundary** (#24 backend). SMART
   `patient/*` is a fourth, OAuth-only scope and never becomes general FHIR
   `read`; admin does not imply it and API keys cannot carry it. Every

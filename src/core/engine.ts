@@ -27,6 +27,8 @@ import { Coverage } from "../clinical/coverage.ts";
 import { MedicationStore } from "../meds/store.ts";
 import type { InteractionSource } from "../meds/safety.ts";
 import { OrderStore } from "../orders/store.ts";
+import { LabIntake } from "../orders/intake.ts";
+import { GENERIC_LAB_PROFILE, type LabProfile } from "../orders/hl7.ts";
 import { ReferralStore } from "../work/referrals.ts";
 import { TaskStore } from "../work/tasks.ts";
 import { Workspace } from "../workspace/summary.ts";
@@ -92,6 +94,8 @@ export interface TenantView {
   coverage: Coverage;
   meds: MedicationStore;
   orders: OrderStore;
+  /** Inbound laboratory results, and the queue of ones nobody could identify. */
+  labIntake: LabIntake;
   referrals: ReferralStore;
   tasks: TaskStore;
   schedule: Schedule;
@@ -160,6 +164,12 @@ export class Engine {
   readonly audit: AuditStore;
   readonly retention: RetentionRunner;
   readonly mappings = new Map<string, MappingDoc>();
+  /**
+   * Laboratory dialects, by id. Configuration rather than code: every lab
+   * sends a slightly different ORU, and a fork per laboratory is how a
+   * platform stops being one platform.
+   */
+  readonly labProfiles = new Map<string, LabProfile>([[GENERIC_LAB_PROFILE.id, GENERIC_LAB_PROFILE]]);
   private channels = new Map<string, RuntimeChannel>();
   private mapperCtx: MapperContext;
   private connectors: Required<ConnectorFactories>;
@@ -195,6 +205,7 @@ export class Engine {
     this.fhir = new FhirStore(this.db, this.validation, directory);
     // Resolved per delivery, since one worker drains every tenant on the node.
     this.worker = new DeliveryWorker(this.db, opts.tickMs ?? 250, 25, (tenantId) => this.forTenant(tenantId));
+    this.worker.setLabProfiles((id) => this.labProfiles.get(id));
     this.subs = new SubscriptionManager(this.db, this.worker);
     this.keys = new ApiKeyStore(this.db, directory);
     this.audit = new AuditStore(this.db);
@@ -260,6 +271,7 @@ export class Engine {
     // honest answer and the one src/meds/safety.ts is built to give.
     const meds = new MedicationStore(db, this.interactions);
     const orders = new OrderStore(db);
+    const labIntake = new LabIntake(db, orders, clinical.patientIndex);
     const referrals = new ReferralStore(db);
     const tasks = new TaskStore(db);
     const patientAccess = new PatientAccess(db, orders, tasks);
@@ -289,6 +301,7 @@ export class Engine {
       coverage,
       meds,
       orders,
+      labIntake,
       referrals,
       tasks,
       schedule,
@@ -322,6 +335,20 @@ export class Engine {
 
   registerMapping(doc: MappingDoc): void {
     this.mappings.set(doc.id, doc);
+  }
+
+  /**
+   * Registers a laboratory dialect.
+   *
+   * Refuses a profile with no id, because a `labresults` destination naming a
+   * profile that does not resolve fails the delivery — and an operator who
+   * mistyped one should find out at boot rather than from a dead letter at
+   * three in the morning.
+   */
+  registerLabProfile(profile: LabProfile): void {
+    if (!profile.id?.trim()) throw new Error("a laboratory profile needs an id");
+    if (!profile.name?.trim()) throw new Error(`laboratory profile ${profile.id} needs a name`);
+    this.labProfiles.set(profile.id, profile);
   }
 
   /**
@@ -908,6 +935,18 @@ export function validateChannel(config: ChannelConfig): void {
     // full of entries nobody can file.
     if (d.type === "clinical" && !d.patientPath) {
       throw new Error("clinical destination requires patientPath, so an entry can be filed against a patient");
+    }
+    // A `labresults` destination reads raw HL7. A mapping step ahead of it
+    // replaces the payload with JSON, so the destination would refuse every
+    // message — a whole feed dead-lettering for a reason that is visible here
+    // and invisible at three in the morning. A channel that wants both a filed
+    // result and a facade Observation runs two channels, or maps in the
+    // second destination rather than in the pipeline.
+    if (d.type === "labresults" && (config.pipeline ?? []).some((s) => s.type === "transform.mapping")) {
+      throw new Error(
+        "a labresults destination reads raw HL7, so it cannot follow a transform.mapping step; " +
+          "put the mapping on a separate channel"
+      );
     }
   }
 }

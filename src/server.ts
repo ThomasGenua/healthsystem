@@ -16,6 +16,7 @@ const CHANNELS_DIR = process.env.PORTAGE_CHANNELS ?? join(process.cwd(), "channe
 const MAPPINGS_DIR = process.env.PORTAGE_MAPPINGS ?? join(process.cwd(), "mappings");
 const TERMINOLOGY_DIR = process.env.PORTAGE_TERMINOLOGY ?? join(process.cwd(), "terminology");
 const CONFORMANCE_DIR = process.env.PORTAGE_CONFORMANCE ?? join(process.cwd(), "conformance");
+const LABS_DIR = process.env.PORTAGE_LABS ?? join(process.cwd(), "labs");
 
 /**
  * Authentication is on unless explicitly switched off. `apikey` is the default
@@ -155,6 +156,21 @@ async function main(): Promise<void> {
       const pack = JSON.parse(readFileSync(join(CONFORMANCE_DIR, f), "utf8"));
       engine.conformance.register(pack);
       console.log(`conformance pack registered: ${pack.id}`);
+    }
+  }
+
+  // Laboratory dialects, before channels are seeded: a `labresults`
+  // destination naming a profile that has not been registered fails every
+  // delivery, and an operator should learn that from boot rather than from a
+  // dead-letter queue.
+  if (existsSync(LABS_DIR)) {
+    for (const f of readdirSync(LABS_DIR).filter((f) => f.endsWith(".json"))) {
+      const profile = JSON.parse(readFileSync(join(LABS_DIR, f), "utf8"));
+      engine.registerLabProfile(profile);
+      console.log(
+        `laboratory profile registered: ${profile.id}` +
+          (profile.timezoneOffset ? "" : " (no timezoneOffset declared; times with no zone are recorded as assumed)")
+      );
     }
   }
 

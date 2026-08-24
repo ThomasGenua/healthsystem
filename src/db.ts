@@ -77,6 +77,7 @@ export const TENANT_SCOPED_TABLES = [
   "patient_threads",
   "patient_messages",
   "patient_thread_events",
+  "lab_identity_holds",
 ] as const;
 
 /**
@@ -566,6 +567,41 @@ CREATE TABLE IF NOT EXISTS order_results (
   -- When acknowledgement is owed by, derived from how abnormal it is. A
   -- critical result is on a different clock from a normal one.
   ack_due_by TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Laboratory results whose patient could not be identified.
+--
+-- The alternative to this table is a fallback match, and every fallback match
+-- available here is wrong in the case that matters: on name, on the only
+-- patient with that surname, on the most recent order. A result on the wrong
+-- chart is the worst outcome the orders module has, so identity is resolved by
+-- identifier or not at all — and "not at all" has to land somewhere a person
+-- looks, or refusing to guess would just be losing the result more politely.
+--
+-- The whole message is kept, so resolving one re-files it through the ordinary
+-- path rather than through a second set of rules.
+CREATE TABLE IF NOT EXISTS lab_identity_holds (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  profile_id TEXT NOT NULL,
+  source_message_id TEXT,
+  message_control_id TEXT NOT NULL,
+  sending_facility TEXT NOT NULL,
+  -- What the laboratory said, kept so a person can see who it thought this
+  -- was. Never matched on.
+  identifiers TEXT NOT NULL,
+  patient_name TEXT NOT NULL,
+  patient_birth_date TEXT NOT NULL,
+  placer_order_number TEXT NOT NULL,
+  filler_order_number TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  resolved_at TEXT,
+  resolved_by TEXT,
+  resolved_patient_id TEXT,
   created_at TEXT NOT NULL,
   PRIMARY KEY (tenant_id, id)
 );
@@ -1379,6 +1415,11 @@ CREATE INDEX IF NOT EXISTS idx_authority_patient ON patient_authority(tenant_id,
 CREATE INDEX IF NOT EXISTS idx_release_patient ON result_release(tenant_id, patient_id, state);
 CREATE INDEX IF NOT EXISTS idx_patient_access ON patient_access_log(tenant_id, patient_id, seq);
 CREATE INDEX IF NOT EXISTS idx_patient_requests ON patient_requests(tenant_id, patient_id, submitted_at);
+-- The deduplication lookup. Every inbound result does it, so it is the one
+-- query on this table that has to stay fast as results accumulate.
+CREATE INDEX IF NOT EXISTS idx_results_key ON order_results(tenant_id, result_key);
+CREATE INDEX IF NOT EXISTS idx_results_source ON order_results(tenant_id, source_system, reported_at);
+CREATE INDEX IF NOT EXISTS idx_lab_holds ON lab_identity_holds(tenant_id, resolved_at, received_at);
 CREATE INDEX IF NOT EXISTS idx_patient_request_events ON patient_request_events(tenant_id, request_id, seq);
 -- The double-booking constraint. Partial, so a cancelled booking releases its
 -- seat while remaining on the record — a slot freed by deleting its booking
@@ -1493,6 +1534,24 @@ const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
   { table: "patient_index", column: "email", type: "TEXT" },
   { table: "patient_authority", column: "permissions", type: "TEXT" },
   { table: "patient_authority", column: "purpose", type: "TEXT" },
+  // Laboratory interface provenance. `result_key` is what makes a
+  // retransmission a no-op instead of a duplicate; without it every nightly
+  // repeat filed the day's results again. Null on rows written by hand or by
+  // an earlier version, which is why the dedupe lookup is keyed rather than
+  // assumed.
+  { table: "order_results", column: "result_key", type: "TEXT" },
+  { table: "order_results", column: "filler_order_number", type: "TEXT" },
+  { table: "order_results", column: "source_system", type: "TEXT" },
+  // The laboratory's own words for status and flag, kept beside the mapped
+  // ones. A mapping is an interpretation, and a reconciliation that cannot see
+  // what was actually sent cannot settle a disagreement about it.
+  { table: "order_results", column: "raw_status", type: "TEXT" },
+  { table: "order_results", column: "raw_flag", type: "TEXT" },
+  // 1 when the observation time arrived with no timezone at all. A result an
+  // hour out is a result on the wrong side of a shift change, so the ambiguity
+  // is recorded rather than resolved by assuming UTC.
+  { table: "order_results", column: "timezone_assumed", type: "INTEGER" },
+  { table: "orders", column: "filler_order_number", type: "TEXT" },
   // Tenancy. NOT NULL with a default, so existing rows land in the default
   // tenant rather than becoming unreachable, and a deployment that never
   // configures a second tenant is unaffected.

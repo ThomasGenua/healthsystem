@@ -1,0 +1,13 @@
+{
+  "id": "lab-oru-to-orders",
+  "name": "Laboratory ORU into the clinical order loop",
+  "//": "Distinct from oru-to-fhir-observation, which stores a copy of the value on the FHIR facade. This one closes the order the result answers, starts the acknowledgement clock, tells a retransmission from a correction, and holds a result whose patient cannot be identified rather than guessing. Split per OBR group because a message with two batteries is two orders.",
+  "enabled": true,
+  "source": { "type": "mllp", "port": 6665 },
+  "expectMessageEverySec": 86400,
+  "pipeline": [
+    { "type": "filter.hl7Type", "allow": ["ORU^R01"] },
+    { "type": "split.hl7Group", "segment": "OBR" }
+  ],
+  "destinations": [{ "id": "orders", "type": "labresults", "profile": "generic-oru", "ordered": true }]
+}

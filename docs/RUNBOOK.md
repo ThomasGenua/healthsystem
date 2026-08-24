@@ -67,7 +67,7 @@ The escape hatch is break-glass, which is loud and recorded — see
 git clone https://github.com/ThomasGenua/healthsystem.git portage
 cd portage
 npm ci
-npm run typecheck && npm test    # 538 tests; do not deploy a node that fails one
+npm run typecheck && npm test    # 566 tests; do not deploy a node that fails one
 
 export PORTAGE_DATA=/var/lib/portage
 export PORTAGE_PORT=8686

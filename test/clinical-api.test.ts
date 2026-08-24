@@ -393,6 +393,18 @@ test("every clinical route leaves an audit row, including ones added later", asy
       detail: "Please correct the historical medication.",
       by: { subjectId: P, relationship: "self" },
     });
+    // A laboratory result whose patient the interface could not identify, so
+    // the route that resolves one has something real to act on.
+    s.engine.forTenant("default").labIntake.ingest(
+      [
+        "MSH|^~\\&|LABAPP|STANTON|PORTAGE|GNWT|20260824104500||ORU^R01|MSG-HELD|P|2.5.1",
+        "PID|1||NT-UNKNOWN^^^JHN^MR||Unknown^Person||19840317|F",
+        "ORC|RE||ACC-HELD-1",
+        "OBR|1||ACC-HELD-1|CHEM^Chemistry panel|||20260824103000",
+        "OBX|1|NM|2823-3^Potassium^LN|1|4.2|mmol/L|3.5-5.1|N|||F|||20260824103000",
+      ].join("\r")
+    );
+    const heldResult = s.engine.forTenant("default").labIntake.heldForIdentity()[0];
 
     const standing = s.engine.forTenant("default").consent.breakGlass({
       patientId: P,
@@ -457,6 +469,9 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/patient-requests": "",
       "/api/clinical/patient-request-complete": "POST",
       "/api/clinical/patient-request-decline": "POST",
+      "/api/clinical/lab-held": "",
+      "/api/clinical/lab-reconcile": "",
+      "/api/clinical/lab-resolve": "POST",
     };
 
     /** The body each POST route needs to do real work. */
@@ -538,6 +553,7 @@ test("every clinical route leaves an audit row, including ones added later", asy
         request: requestToDecline.id,
         reason: "the historical entry is accurate; explanation sent to the patient",
       },
+      "/api/clinical/lab-resolve": { hold: heldResult.id, patient: P },
     };
 
     const unlisted = paths.filter((p) => !(p in args));

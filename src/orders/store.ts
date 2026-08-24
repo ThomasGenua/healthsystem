@@ -97,6 +97,8 @@ export interface OrderRow {
   responsible_id: string | null;
   expected_by: string | null;
   correlation_id: string;
+  /** The laboratory's accession number, once a result has named one. */
+  filler_order_number: string | null;
   created_at: string;
   updated_at: string;
   closed_at: string | null;
@@ -124,6 +126,19 @@ export interface ResultRow {
   acknowledged_at: string | null;
   acknowledgement_action: string | null;
   ack_due_by: string | null;
+  /**
+   * Interface provenance. Null on a result recorded by hand.
+   *
+   * `result_key` is the laboratory's identity for this analyte on this
+   * specimen, and is what tells a retransmission from a correction.
+   */
+  result_key: string | null;
+  filler_order_number: string | null;
+  source_system: string | null;
+  raw_status: string | null;
+  raw_flag: string | null;
+  /** 1 when the observation time arrived with no timezone. */
+  timezone_assumed: number | null;
   created_at: string;
 }
 

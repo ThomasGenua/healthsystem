@@ -1787,6 +1787,31 @@ async function route(
         })
       );
     }
+    if (path === "/api/clinical/lab-held" && method === "GET") {
+      // Results the interface could not attribute to a chart. Spans patients
+      // by definition — nobody knows whose they are yet — so it is audited as
+      // a read of laboratory data rather than of one patient's record.
+      return phi("DiagnosticReport", () => tenant.labIntake.heldForIdentity(), (rows) => rows.length);
+    }
+    if (path === "/api/clinical/lab-reconcile" && method === "GET") {
+      return phi("DiagnosticReport", () =>
+        tenant.labIntake.reconcile({
+          ...(url.searchParams.get("since") ? { since: url.searchParams.get("since")! } : {}),
+          ...(url.searchParams.get("profile") ? { profileId: url.searchParams.get("profile")! } : {}),
+        })
+      );
+    }
+    if (path === "/api/clinical/lab-resolve" && method === "POST") {
+      // A person names the chart. The message is then filed through exactly
+      // the same path as one that arrived identified, so deduplication,
+      // correction and order matching all still apply.
+      const body = JSON.parse(await readBody(req)) as { hold?: string; patient?: string };
+      if (!body.hold || !body.patient) return send(res, 400, { error: "hold and patient required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(body.patient, "DiagnosticReport", () =>
+        tenant.labIntake.resolveIdentity(body.hold!, body.patient!, { actorId: who })
+      );
+    }
     if (path === "/api/clinical/gaps" && method === "POST") {
       // A cohort definition and a gap rule come in the body because they are
       // structured, not because this writes anything: it reads a population.
