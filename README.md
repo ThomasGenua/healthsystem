@@ -61,7 +61,7 @@ v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A chart that can say whether anyone asked about immunizations or took a vital**, and that names a primary provider and a coverage claim without overwriting the last ones. Blood pressure is two numbers; a second current MRP is refused; today's appointments sit on the worklist. This is still not a provincial EMR — see [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
 - **Durable patient–clinic messaging.** A question is a thread that cannot be deleted. Closing it needs a reason. Awaiting the clinic and belonging to nobody are lists. This is not a portal and not a claim that anything was delivered.
 
-519 tests. Backend first, then the interface that makes the backend's honesty visible.
+526 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -117,7 +117,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 519 tests
+npm test          # 526 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
