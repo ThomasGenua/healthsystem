@@ -264,6 +264,7 @@ window.loadChart=async()=>{
         ${panel("Vitals",c.vitals,x=>`<li>${esc(x.kind)} ${x.kind==="blood-pressure"?`<b>${esc(String(x.systolic))}/${esc(String(x.diastolic))}</b>`:`<b>${esc(String(x.value))}</b>`} <span class="none">${esc(x.unit||"")} ${when(x.takenAt)}</span></li>`)}
         ${panel("Care team",c.careTeam,x=>`<li>${esc(x.role)} — ${esc(x.practitioner_id)}${x.active_to?" "+tag("ended","dim"):""}</li>`)}
         ${panel("Coverage",c.coverage,x=>`<li>${esc(x.plan)} ${stTag(x.eligibility)} <span class="none">${esc(x.identifier_value||"")}</span></li>`)}
+        ${panel("Open messages",c.openThreads,x=>`<li>${esc(x.subject)} ${stTag(x.status)} <span class="none">${esc(x.owner_id||"unowned")}</span></li>`)}
         ${panel("Recent notes",c.recentNotes,n=>`<li>${when(n.entry&&n.entry.recorded_at)} — ${esc((n.note&&(n.note.title||n.note.description))||"note")}</li>`)}
       </div>
       <div>
@@ -308,6 +309,12 @@ window.loadWorklist=async()=>{
       ${panel("Today's appointments",w.today,x=>`<li>${when(x.slot&&x.slot.starts_at)} ${esc(x.slot&&x.slot.service||"")}
         <a href="#" onclick="openChart('${esc(x.booking.patient_id)}');go('Chart');return false">${esc(x.booking.patient_id)}</a>
         ${stTag(x.booking.status)} <span class="none">${esc(x.booking.reason||"")}</span></li>`)}
+      ${panel("Messages you owe a reply",w.awaitingMessages,x=>`<li>${esc(x.subject)}
+        <a href="#" onclick="openChart('${esc(x.patient_id)}');go('Chart');return false">${esc(x.patient_id)}</a>
+        ${stTag(x.priority)} ${stTag(x.status)}</li>`)}
+      ${panel("Messages nobody owns",w.unassignedMessages,x=>`<li>${esc(x.subject)}
+        <a href="#" onclick="openChart('${esc(x.patient_id)}');go('Chart');return false">${esc(x.patient_id)}</a>
+        ${stTag(x.priority)}</li>`)}
       ${res.withheldCount?`<div class="banner"><b>${res.withheldCount} result(s) withheld</b> by a patient directive.
         <p>A result withheld from the clinician responsible for reading it is a result now owed to nobody. Who they are is not shown, which is what the directive asked for — but somebody has to pick these up.</p></div>`:""}
       ${panel("Results you have not acknowledged",w.unacknowledgedResults,r=>`<li>

@@ -333,6 +333,43 @@ test("every clinical route leaves an audit row, including ones added later", asy
       role: "allied",
       by: { actorId: "ops" },
     });
+    const messaging = s.engine.forTenant("default").messaging;
+    const thread = messaging.open({
+      patientId: P,
+      subject: "Seen on the chart",
+      body: "Thank you.",
+      authorKind: "clerk",
+      by: GP,
+    }).thread;
+    const toReply = messaging.open({
+      patientId: P,
+      subject: "Renewal",
+      body: "Please renew metformin.",
+      authorKind: "patient",
+      by: { actorId: P, actorKind: "patient" },
+    }).thread;
+    const toClose = messaging.open({
+      patientId: P,
+      subject: "Question already answered",
+      body: "Clinic note for the file.",
+      authorKind: "clerk",
+      by: GP,
+    }).thread;
+    const toReopen = messaging.open({
+      patientId: P,
+      subject: "Closed then reopened",
+      body: "Clinic note.",
+      authorKind: "clerk",
+      by: GP,
+    }).thread;
+    messaging.close(toReopen.id, { ...GP, reason: "finished for now; no further message" });
+    const toAssign = messaging.open({
+      patientId: "NT-msg",
+      subject: "Unowned",
+      body: "Do I need fasting bloods?",
+      authorKind: "patient",
+      by: { actorId: "NT-msg", actorKind: "patient" },
+    }).thread;
 
     const standing = s.engine.forTenant("default").consent.breakGlass({
       patientId: P,
@@ -382,6 +419,14 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/care-team-assign": "POST",
       "/api/clinical/care-team-retire": "POST",
       "/api/clinical/coverage-record": "POST",
+      "/api/clinical/threads": `?patient=${P}`,
+      "/api/clinical/thread": `?id=${thread.id}`,
+      "/api/clinical/messages-awaiting": "?clinician=dr-tetso",
+      "/api/clinical/thread-open": "POST",
+      "/api/clinical/thread-reply": "POST",
+      "/api/clinical/thread-close": "POST",
+      "/api/clinical/thread-reopen": "POST",
+      "/api/clinical/thread-assign": "POST",
     };
 
     /** The body each POST route needs to do real work. */
@@ -428,6 +473,23 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/care-team-assign": { patient: P, practitioner: "dr-tetso", role: "covering" },
       "/api/clinical/care-team-retire": { id: membership.id },
       "/api/clinical/coverage-record": { patient: P, plan: "NIHB", eligibility: "eligible" },
+      "/api/clinical/thread-open": {
+        patient: P,
+        subject: "Hours",
+        body: "Are you open Saturday?",
+        authorKind: "clerk",
+      },
+      "/api/clinical/thread-reply": {
+        id: toReply.id,
+        body: "Yes — we can renew for 90 days.",
+        authorKind: "practitioner",
+      },
+      "/api/clinical/thread-close": {
+        id: toClose.id,
+        reason: "answered by phone; no further message needed",
+      },
+      "/api/clinical/thread-reopen": { id: toReopen.id, reason: "patient called back with a new question" },
+      "/api/clinical/thread-assign": { id: toAssign.id, owner: "dr-tetso", reason: "picked up from the unowned queue" },
     };
 
     const unlisted = paths.filter((p) => !(p in args));
@@ -486,7 +548,7 @@ test("a patient directive stops the chart at the API, and the refusal is on the 
       assert.match(row.detail ?? "", /withheld by patient directive/);
 
       // Every patient-scoped route, not just the chart.
-      for (const p of ["medications", "allergies", "orders", "notes", "appointments", "immunizations", "vitals", "care-team", "coverage"]) {
+      for (const p of ["medications", "allergies", "orders", "notes", "appointments", "immunizations", "vitals", "care-team", "coverage", "threads"]) {
         assert.equal((await s.get(`/api/clinical/${p}?patient=${P}`)).status, 403, `${p} honoured the directive`);
       }
     } finally {

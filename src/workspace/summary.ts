@@ -37,6 +37,7 @@ import type { Vitals, VitalView, VitalHistory } from "../clinical/vitals.ts";
 import type { CareTeam, CareTeamRow } from "../clinical/careteam.ts";
 import type { Coverage, CoverageRow } from "../clinical/coverage.ts";
 import type { Schedule, SlotRow, BookingRow } from "../schedule/store.ts";
+import type { PatientMessaging, ThreadRow } from "../patient/messaging.ts";
 
 /**
  * Why a section is not the whole truth.
@@ -94,6 +95,7 @@ export interface ChartSummary {
   openTasks: Section<TaskRow>;
   recentNotes: Section<{ entry: ClinicalEntry; note: NoteContent }>;
   problems: Section<ClinicalEntry>;
+  openThreads: Section<ThreadRow>;
 
   /**
    * Whether every section is complete.
@@ -135,6 +137,7 @@ export interface WorkspaceSources {
   careTeam?: CareTeam;
   coverage?: Coverage;
   schedule?: Schedule;
+  messaging?: PatientMessaging;
 }
 
 /**
@@ -201,6 +204,7 @@ export const SECTION_TYPES = {
   openTasks: "Task",
   recentNotes: "DocumentReference",
   problems: "Condition",
+  openThreads: "Communication",
 } as const;
 
 /** Every entry type the assembled chart may return. */
@@ -220,6 +224,7 @@ export const WORKLIST_TYPES: readonly string[] = [
   "Task",
   "MedicationStatement",
   "Appointment",
+  "Communication",
 ];
 
 /**
@@ -250,7 +255,8 @@ export class Workspace {
    * seen everything.
    */
   chart(patientId: string, opts: SummaryOptions = {}): ChartSummary {
-    const { record, notes, meds, orders, referrals, tasks, immunizations, vitals, careTeam, coverage } = this.sources;
+    const { record, notes, meds, orders, referrals, tasks, immunizations, vitals, careTeam, coverage, messaging } =
+      this.sources;
     const limit = opts.limit ?? 50;
     const noteLimit = opts.noteLimit ?? 10;
 
@@ -287,6 +293,7 @@ export class Workspace {
     const vitalSection = sect("vitals", vitals ? () => vitals.forPatient(patientId) : undefined, limit);
     const careTeamSection = sect("careTeam", careTeam ? () => careTeam.forPatient(patientId, { includeRetired: true }) : undefined, limit);
     const coverageSection = sect("coverage", coverage ? () => coverage.history(patientId) : undefined, limit);
+    const openThreads = sect("openThreads", messaging ? () => messaging.forPatient(patientId) : undefined, limit);
 
     // Allergy status is read from the store rather than inferred from the
     // section: an empty list and a never-asked patient are the distinction
@@ -344,6 +351,7 @@ export class Workspace {
       ["Open tasks", openTasks],
       ["Recent notes", recentNotes],
       ["Problems", problems],
+      ["Open messages", openThreads],
     ];
     const omissions = sections.map(([n, s]) => describe(n, s)).filter((x): x is string => x !== null);
     if (allergyStatus === "never-asked") {
@@ -391,6 +399,7 @@ export class Workspace {
       openTasks,
       recentNotes,
       problems,
+      openThreads,
       // False when a section is withheld, as much as when one failed. The flag
       // means "this is not the whole chart", and a chart missing what the
       // patient locked is not the whole chart — a clinician needs to know that
@@ -422,11 +431,13 @@ export class Workspace {
     ordersAwaitingResult: Section<OrderRow>;
     tasks: Section<TaskRow>;
     today: Section<{ slot: SlotRow; booking: BookingRow }>;
+    awaitingMessages: Section<ThreadRow>;
+    unassignedMessages: Section<ThreadRow>;
     incompleteReconciliations: Section<{ id: string; patient_id: string; transition: string; started_at: string }>;
     complete: boolean;
     omissions: string[];
   } {
-    const { orders, referrals, tasks, meds, schedule } = this.sources;
+    const { orders, referrals, tasks, meds, schedule, messaging } = this.sources;
     const limit = opts.limit ?? 50;
     const asOf = opts.asOf ?? new Date().toISOString();
 
@@ -445,9 +456,13 @@ export class Workspace {
     const taskSection = section(tasks ? () => tasks.inbox(clinicianId) : undefined, limit);
     const incompleteReconciliations = section(meds ? () => meds.incompleteReconciliations() : undefined, limit);
     const today = section(schedule ? () => schedule.today(clinicianId, asOf) : undefined, limit);
+    const awaitingMessages = section(messaging ? () => messaging.inbox(clinicianId) : undefined, limit);
+    const unassignedMessages = section(messaging ? () => messaging.unassigned() : undefined, limit);
 
     const named: Array<[string, Section<unknown>]> = [
       ["Today's appointments", today],
+      ["Messages awaiting a reply", awaitingMessages],
+      ["Messages nobody owns", unassignedMessages],
       ["Unacknowledged results", unacknowledgedResults],
       ["Stalled referrals", stalledReferrals],
       ["Orders awaiting a result", ordersAwaitingResult],
@@ -456,6 +471,8 @@ export class Workspace {
     ];
     return {
       today,
+      awaitingMessages,
+      unassignedMessages,
       unacknowledgedResults,
       stalledReferrals,
       ordersAwaitingResult,

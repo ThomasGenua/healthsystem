@@ -11,6 +11,16 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Durable patient–clinic messaging.** A thread is the record of a
+  question, not a portal and not a delivery claim. Patient or proxy
+  writing is `awaiting-clinic` and assigned to the MRP when there is one;
+  unowned threads are a list. Closing needs a reason; closing while the
+  patient is still waiting needs to say what was done. Replies on a
+  closed thread are refused. The chart and the worklist surface open
+  threads. Hazards H-49–H-50.
+
+  519 → 526 tests.
+
 - **The next slice of the longitudinal chart.** Immunizations and vitals
   are typed writes onto the existing clinical log — a refusal needs a
   reason, blood pressure needs both numbers, a laboratory Observation is

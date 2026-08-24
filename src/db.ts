@@ -72,6 +72,9 @@ export const TENANT_SCOPED_TABLES = [
   "directory_identifiers",
   "care_team",
   "coverage",
+  "patient_threads",
+  "patient_messages",
+  "patient_thread_events",
 ] as const;
 
 /**
@@ -1093,6 +1096,55 @@ CREATE TABLE IF NOT EXISTS coverage (
   PRIMARY KEY (tenant_id, id)
 );
 
+-- Correspondence between a patient and the clinic.
+--
+-- Not the integration messages table, and not a portal. A thread is the
+-- durable record of a question; closing it needs a reason so a click is
+-- not indistinguishable from an answer. Nothing is deleted.
+CREATE TABLE IF NOT EXISTS patient_threads (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  -- awaiting-clinic | awaiting-patient | closed
+  status TEXT NOT NULL,
+  priority TEXT NOT NULL DEFAULT 'routine',
+  owner_id TEXT,
+  opened_by TEXT NOT NULL,
+  opened_kind TEXT NOT NULL,
+  opened_at TEXT NOT NULL,
+  closed_at TEXT,
+  closed_by TEXT,
+  close_reason TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS patient_messages (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  author_id TEXT NOT NULL,
+  -- patient | proxy | practitioner | clerk
+  author_kind TEXT NOT NULL,
+  body TEXT NOT NULL,
+  recorded_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS patient_thread_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  event TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_kind TEXT NOT NULL,
+  detail TEXT
+);
+
 -- A patient's instruction about who may see their record.
 --
 -- Provincial EHRs call this a consent directive or a lockbox: a patient may
@@ -1313,6 +1365,10 @@ CREATE INDEX IF NOT EXISTS idx_directory_identifier ON directory_identifiers(ten
 CREATE INDEX IF NOT EXISTS idx_care_team_patient ON care_team(tenant_id, patient_id, active_to);
 CREATE INDEX IF NOT EXISTS idx_care_team_practitioner ON care_team(tenant_id, practitioner_id, active_to);
 CREATE INDEX IF NOT EXISTS idx_coverage_patient ON coverage(tenant_id, patient_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_threads_patient ON patient_threads(tenant_id, patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_threads_inbox ON patient_threads(tenant_id, owner_id, status, priority);
+CREATE INDEX IF NOT EXISTS idx_thread_messages ON patient_messages(tenant_id, thread_id, recorded_at);
+CREATE INDEX IF NOT EXISTS idx_thread_events ON patient_thread_events(tenant_id, thread_id, seq);
 CREATE INDEX IF NOT EXISTS idx_directives_patient ON consent_directives(tenant_id, patient_id, status);
 CREATE INDEX IF NOT EXISTS idx_directives_target ON consent_directives(tenant_id, target_id, status);
 CREATE INDEX IF NOT EXISTS idx_breakglass_review ON break_glass(tenant_id, reviewed_at, declared_at);

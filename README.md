@@ -59,6 +59,7 @@ v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A restore that has actually been rehearsed**, to somewhere the database has never been, with a measured RTO — because a verified snapshot only proves the bytes hashed correctly when they were written.
 - **A snapshot that leaves the machine**, encrypted, put, read back and walked again, so the stated RPO is not only for failures that spare the backup directory.
 - **A chart that can say whether anyone asked about immunizations or took a vital**, and that names a primary provider and a coverage claim without overwriting the last ones. Blood pressure is two numbers; a second current MRP is refused; today's appointments sit on the worklist. This is still not a provincial EMR — see [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
+- **Durable patient–clinic messaging.** A question is a thread that cannot be deleted. Closing it needs a reason. Awaiting the clinic and belonging to nobody are lists. This is not a portal and not a claim that anything was delivered.
 
 519 tests. Backend first, then the interface that makes the backend's honesty visible.
 
@@ -585,7 +586,15 @@ A failing store does not take the chart down — six panels beat an error page �
 
 Allergy, immunization and vital-sign status are carried to the top of the summary rather than left inside their panels, and read from the stores rather than inferred from the panel's contents. Inferring them would undo the distinction those stores exist for: a clinician scanning a chart has to see "never asked" or "never measured" without interpreting an empty box. A chart with no current primary or no coverage claim says so in `omissions` the same way.
 
-`worklist()` is the same idea across the day rather than across one patient. A clinician's work is not one queue — today's appointments, results, referrals, tasks, and each system reports its own as though it were the whole picture. The value of a single view is that nothing is owed to them somewhere they are not looking, which is only true if the view says what it could not reach. Today's list is that clinician's booked and attended appointments on the UTC day of `asOf`, not every empty slot in the diary.
+`worklist()` is the same idea across the day rather than across one patient. A clinician's work is not one queue — today's appointments, messages awaiting a reply, unowned messages, results, referrals, tasks, and each system reports its own as though it were the whole picture. The value of a single view is that nothing is owed to them somewhere they are not looking, which is only true if the view says what it could not reach. Today's list is that clinician's booked and attended appointments on the UTC day of `asOf`, not every empty slot in the diary.
+
+### Patient messaging
+
+Section 11 asks for secure messaging; section 8 asks that clinically important work not disappear. The failure is the phone message on a sticky note: the patient asked, somebody heard, and the next shift has no record.
+
+So a thread is append-only. Status follows the last speaker — a patient or proxy writing is `awaiting-clinic`, a practitioner or clerk writing is `awaiting-patient`. Closing needs a reason, and closing while the patient is still waiting needs to say what was done instead of a written reply. If the patient has a current primary, an incoming question is assigned to them; if not, it sits on `unassigned()` rather than vanishing.
+
+This is the record of the conversation. It is not a patient portal, not email, and not a claim that a notification reached a phone. Portage still does not know how to reach a patient. A future portal would write through this store.
 
 The module owns no data and keeps no second copy of anything. It assembles from the stores that already exist, declares what it assembled, and is honest about the rest.
 
@@ -623,7 +632,7 @@ The same parties are served on the FHIR facade as `Practitioner`, `PractitionerR
 
 ## The clinical API, and audit by construction
 
-Everything above — the chart, the patient index, medications, allergies, immunizations, vitals, care team, coverage, orders, results, referrals, tasks, notes and the assembled summary — is served under `/api/clinical/*`, behind the `admin` scope and inside the caller's tenant like the rest of the API.
+Everything above — the chart, the patient index, medications, allergies, immunizations, vitals, care team, coverage, orders, results, referrals, tasks, notes, message threads and the assembled summary — is served under `/api/clinical/*`, behind the `admin` scope and inside the caller's tenant like the rest of the API.
 
 Exposing it is the moment the audit requirement in §18 starts to bite. Until now the clinical stores were libraries: nothing reached them over a network, so nothing went unrecorded. A route is a way in, and **an audit guarantee that depends on each new route remembering to call `audit()` is one that holds until somebody forgets** — and the forgetting is invisible, because the route works, the data is served, and nothing anywhere says the trail is short.
 
@@ -1507,6 +1516,6 @@ a scope-narrowed directive withholds its section rather than the chart around it
 
 **Smaller, from review.** [#26](https://github.com/ThomasGenua/healthsystem/issues/26) and [#27](https://github.com/ThomasGenua/healthsystem/issues/27) are done: a store refusal is not a 400-and-outcome-8, and the `migrate()` rebuild turns foreign keys off around the copy.
 
-**The chart, further.** Immunizations, vitals, care team, coverage and today's appointments are in. That is priority 3 of the production build, not the provincial platform. The distance is [docs/PROVINCIAL.md](docs/PROVINCIAL.md). Patient messaging, laboratory vendor interfaces, a mounted portal, AI and migration tooling are still the later numbered priorities, in that order.
+**The chart, further.** Immunizations, vitals, care team, coverage, today's appointments and durable patient messaging are in. That is priorities 3 and 5 of the production build, not the provincial platform. The distance is [docs/PROVINCIAL.md](docs/PROVINCIAL.md). Laboratory vendor interfaces, a mounted portal, AI and migration tooling are still the later numbered priorities, in that order.
 
 **Deliberately not next.** Machine learning and broad decision-support content wait for validated data, licensed content and a clinical-governance process. The decision-support mechanism ships without content on purpose, and shipping content without that process would be the most consequential version of the failure this codebase spends its time refusing: a system answering a clinical question that nobody actually answered.

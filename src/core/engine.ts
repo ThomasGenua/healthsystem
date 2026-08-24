@@ -38,6 +38,7 @@ import { ChannelNoticeDispatcher } from "../patient/notice.ts";
 import { Schedule } from "../schedule/store.ts";
 import { Registry } from "../population/registry.ts";
 import { ConsentDirectives } from "../patient/consent.ts";
+import { PatientMessaging } from "../patient/messaging.ts";
 import { RetentionRunner, type RetentionPolicy } from "./retention.ts";
 import { buildAck, getHl7, parseHl7, serializeHl7 } from "../hl7/parser.ts";
 import { startMllpServer, type MllpServerHandle } from "../hl7/mllp.ts";
@@ -93,6 +94,7 @@ export interface TenantView {
   referrals: ReferralStore;
   tasks: TaskStore;
   schedule: Schedule;
+  messaging: PatientMessaging;
   registry: Registry;
   consent: ConsentDirectives;
   /** The assembled chart, over exactly the stores above. */
@@ -250,6 +252,7 @@ export class Engine {
     const careTeam = new CareTeam(db);
     const coverage = new Coverage(db);
     const schedule = new Schedule(db);
+    const messaging = new PatientMessaging(db);
     // No interaction database unless a deployment supplies one. The safety
     // check reports interactions as unchecked rather than clear, which is the
     // honest answer and the one src/meds/safety.ts is built to give.
@@ -286,6 +289,7 @@ export class Engine {
       referrals,
       tasks,
       schedule,
+      messaging,
       registry: new Registry(db),
       consent: new ConsentDirectives(db, {
         ...(this.noticeChannel ? { dispatcher: new ChannelNoticeDispatcher(db, this.noticeChannel) } : {}),
@@ -302,6 +306,7 @@ export class Engine {
         careTeam,
         coverage,
         schedule,
+        messaging,
       }),
       encounters,
       directory,
