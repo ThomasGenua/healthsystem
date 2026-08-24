@@ -24,7 +24,7 @@ though it did.
 | 6 | FHIR integration service | Present (R4 facade, mappings, subscriptions) |
 | 7 | Laboratory and provincial-system sandboxes | **Not present.** No Dynacare, LifeLabs, OLIS, DHDR, HRM, eConsult or ONE ID interface is claimed. |
 | 8 | Medication and result management | Present in-store. Pharmacy transmission is [#40](https://github.com/ThomasGenua/healthsystem/issues/40). |
-| 9 | Patient access | Store built (`src/patient/access.ts`). **Not mounted.** [#24](https://github.com/ThomasGenua/healthsystem/issues/24). |
+| 9 | Patient access | **Backend boundary present.** `/patient/*` is OAuth-only; every chart is bound through an active grant with explicit proxy scope, purpose and expiry. Patient-safe summary, held results, appointments, messages, delegates, access log, access/correction requests. No patient application, enrolment/identity proofing, French parity, notifications or accessibility claim. |
 | 10 | Population-health reporting | Partial (cohorts, gaps, measures). Equity, outreach campaigns and burden measures are not. |
 | 11 | Privacy, security and assurance operations | Partial (directives, break-glass, audit chain, auth). No assurance centre, PIA tracker, subprocessor register or SIEM product. |
 | 12 | Source-linked AI assistance | **Deliberately later.** |
@@ -46,7 +46,7 @@ though it did.
 | 8 | Inbox and tasks | Unified stores; evidence to close; unassigned list; escalation/deadline on referrals and results; patient-message threads on the worklist | Forms, privacy-request and portal-submission queues as first-class item kinds |
 | 9 | Referrals | Closed-loop statuses, stalled chase, redirect with correlation, required documents | Specialist directory beyond the local one; eReferral/eConsult networks; wait-time reporting product |
 | 10 | Scheduling | Slots, bookings, DNA follow-up, diary, today's list | Online booking, reminders, rooms/resources, waitlists, group visits, clinic status board |
-| 11 | Patient and caregiver access | Proxy grants with expiry; result holds; consent; durable message threads a future portal can write | Mounted portal; EN/FR parity; caregiver UX; correction requests; delivery to a phone or inbox the patient owns |
+| 11 | Patient and caregiver access | Separate patient/proxy OAuth API; explicit delegated scope/purpose/expiry; result release/visible holds; appointments; durable messages; access log; delegate review/revoke; access and correction requests | Patient application; identity-proofing enrolment; EN/FR parity; caregiver UX; document downloads; delivery to a phone or inbox the patient owns |
 | 12 | Population health | Cohort, gap, measure with honest denominators | Outreach campaigns, equity stratification, burden measures, governed exports |
 | 13 | Multi-tenant provincial architecture | Tenant isolation, shared schema, no per-clinic fork | Provincial config baseline overlays, feature flags, conformance monitoring, tenant rollback product |
 | 14 | Interoperability | HL7 v2, FHIR R4, REST, OAuth/SMART, mTLS, idempotent delivery, DLQ | ONE ID, OLIS, DHDR, HRM, eConsult, pharmacy networks, contract-test harness for those |
@@ -62,12 +62,16 @@ though it did.
 
 ## What this increment added
 
-**Patient messaging** — a durable thread, not a portal. A patient or proxy
-writing makes the thread `awaiting-clinic` and assigns the most-responsible
-provider when there is one. Closing needs a reason; closing while the
-patient is still waiting needs to say what was done. Unowned threads are a
-list. Nothing is deleted. The chart and the clinician worklist surface
-open threads. Delivery to a phone or a patient-owned inbox is not claimed.
+**Patient access boundary.** SMART `patient/*` is no longer general FHIR
+read; it reaches only `/patient/*`. An OAuth subject still needs a live
+authority grant for the named chart and the exact capability. Proxy scope,
+purpose and expiry are explicit. Patient-safe summary, held results,
+appointments, messages, access log, delegate review/revoke and durable
+access/correction requests are mounted. An access/correction request is also
+a privacy task on the clinic's unassigned inbox.
+
+The JSON API is not a patient application. Identity-proofing enrolment,
+English/French UX, notifications and accessibility testing remain.
 
 The previous slice (immunizations, vitals, care team, coverage, today's
 appointments) is already on `main`.
@@ -76,7 +80,7 @@ appointments) is already on `main`.
 
 - A complete provincial EMR
 - A Dynacare or LifeLabs interface
-- A patient portal
+- A patient portal application (the patient/proxy JSON boundary exists)
 - AI drafting or summarization
 - Certified Ontario profiles or ONE ID
 - 99.8% multi-region availability

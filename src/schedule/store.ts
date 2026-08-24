@@ -440,6 +440,76 @@ export class Schedule {
       .all(this.db.tenantId, patientId) as unknown as BookingRow[];
   }
 
+  /**
+   * A patient's appointments with the time and service they need to attend.
+   *
+   * `forPatient()` predates the patient surface and returns only bookings; a
+   * booking without its slot tells the patient they have an appointment and
+   * not when it is. The join remains tenant-bound on both sides so a reused
+   * slot id at another custodian cannot supply its time.
+   */
+  appointmentsForPatient(
+    patientId: string,
+    opts: { includeCancelled?: boolean } = {}
+  ): Array<{ booking: BookingRow; slot: SlotRow }> {
+    const rows = this.db.sql
+      .prepare(
+        `SELECT
+           b.tenant_id AS b_tenant_id, b.id AS b_id, b.slot_id AS b_slot_id,
+           b.patient_id AS b_patient_id, b.seat AS b_seat, b.status AS b_status,
+           b.reason AS b_reason, b.priority AS b_priority, b.correlation_id AS b_correlation_id,
+           b.referral_id AS b_referral_id, b.booked_by AS b_booked_by, b.booked_at AS b_booked_at,
+           b.cancelled_by AS b_cancelled_by, b.cancelled_at AS b_cancelled_at,
+           b.cancel_reason AS b_cancel_reason, b.outcome_at AS b_outcome_at,
+           b.outcome_by AS b_outcome_by, b.created_at AS b_created_at,
+           s.tenant_id AS s_tenant_id, s.id AS s_id, s.resource_id AS s_resource_id,
+           s.resource_kind AS s_resource_kind, s.service AS s_service, s.starts_at AS s_starts_at,
+           s.ends_at AS s_ends_at, s.capacity AS s_capacity, s.status AS s_status,
+           s.block_reason AS s_block_reason, s.created_at AS s_created_at
+         FROM schedule_bookings b
+         JOIN schedule_slots s ON s.tenant_id = b.tenant_id AND s.id = b.slot_id
+        WHERE b.tenant_id = ? AND b.patient_id = ?
+          ${opts.includeCancelled ? "" : "AND b.status != 'cancelled'"}
+        ORDER BY s.starts_at DESC`
+      )
+      .all(this.db.tenantId, patientId) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      booking: {
+        tenant_id: String(r.b_tenant_id),
+        id: String(r.b_id),
+        slot_id: String(r.b_slot_id),
+        patient_id: String(r.b_patient_id),
+        seat: Number(r.b_seat),
+        status: r.b_status as BookingStatus,
+        reason: String(r.b_reason),
+        priority: r.b_priority as Priority,
+        correlation_id: (r.b_correlation_id as string | null) ?? null,
+        referral_id: (r.b_referral_id as string | null) ?? null,
+        booked_by: String(r.b_booked_by),
+        booked_at: String(r.b_booked_at),
+        cancelled_by: (r.b_cancelled_by as string | null) ?? null,
+        cancelled_at: (r.b_cancelled_at as string | null) ?? null,
+        cancel_reason: (r.b_cancel_reason as string | null) ?? null,
+        outcome_at: (r.b_outcome_at as string | null) ?? null,
+        outcome_by: (r.b_outcome_by as string | null) ?? null,
+        created_at: String(r.b_created_at),
+      },
+      slot: {
+        tenant_id: String(r.s_tenant_id),
+        id: String(r.s_id),
+        resource_id: String(r.s_resource_id),
+        resource_kind: String(r.s_resource_kind),
+        service: String(r.s_service),
+        starts_at: String(r.s_starts_at),
+        ends_at: String(r.s_ends_at),
+        capacity: Number(r.s_capacity),
+        status: r.s_status as SlotStatus,
+        block_reason: (r.s_block_reason as string | null) ?? null,
+        created_at: String(r.s_created_at),
+      },
+    }));
+  }
+
   slot(id: string): SlotRow | undefined {
     return this.db.sql
       .prepare("SELECT * FROM schedule_slots WHERE tenant_id = ? AND id = ?")

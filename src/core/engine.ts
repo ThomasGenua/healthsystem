@@ -39,6 +39,7 @@ import { Schedule } from "../schedule/store.ts";
 import { Registry } from "../population/registry.ts";
 import { ConsentDirectives } from "../patient/consent.ts";
 import { PatientMessaging } from "../patient/messaging.ts";
+import { PatientAccess } from "../patient/access.ts";
 import { RetentionRunner, type RetentionPolicy } from "./retention.ts";
 import { buildAck, getHl7, parseHl7, serializeHl7 } from "../hl7/parser.ts";
 import { startMllpServer, type MllpServerHandle } from "../hl7/mllp.ts";
@@ -95,6 +96,7 @@ export interface TenantView {
   tasks: TaskStore;
   schedule: Schedule;
   messaging: PatientMessaging;
+  patientAccess: PatientAccess;
   registry: Registry;
   consent: ConsentDirectives;
   /** The assembled chart, over exactly the stores above. */
@@ -260,6 +262,7 @@ export class Engine {
     const orders = new OrderStore(db);
     const referrals = new ReferralStore(db);
     const tasks = new TaskStore(db);
+    const patientAccess = new PatientAccess(db, orders, tasks);
     const encounters = new Encounters(db);
     // Built here rather than inline in the view because the key store needs it
     // too: issuing a credential for an organization nobody has registered is a
@@ -290,6 +293,7 @@ export class Engine {
       tasks,
       schedule,
       messaging,
+      patientAccess,
       registry: new Registry(db),
       consent: new ConsentDirectives(db, {
         ...(this.noticeChannel ? { dispatcher: new ChannelNoticeDispatcher(db, this.noticeChannel) } : {}),

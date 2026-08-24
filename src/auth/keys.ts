@@ -81,6 +81,13 @@ export class ApiKeyStore {
     scopes: string[] = ALL_SCOPES,
     opts: { expiresAt?: string; organizationId?: string } = {}
   ): IssuedKey {
+    // `patient` is deliberately OAuth-only. An API key identifies a service
+    // or operator, not a natural person whose subject can be checked against a
+    // proxy grant. Silently dropping it while keeping another scope would make
+    // a mis-issued key look successful, so refuse the request explicitly.
+    if (scopes.includes("patient")) {
+      throw new Error("patient scope requires an OAuth identity and cannot be issued on an API key");
+    }
     const requested = scopes.filter(isScope);
     if (requested.length === 0) throw new Error(`no valid scopes in [${scopes.join(", ")}]`);
     if (opts.expiresAt && new Date(opts.expiresAt).getTime() <= Date.now()) {

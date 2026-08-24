@@ -21,6 +21,8 @@ test("route scope map: public routes, admin surface, and read/write split", () =
   assert.equal(requiredScope("GET", "/fhir/Patient/abc"), "read");
   assert.equal(requiredScope("POST", "/fhir/Patient"), "write");
   assert.equal(requiredScope("POST", "/ingest/lab"), "write");
+  assert.equal(requiredScope("GET", "/patient/summary"), "patient");
+  assert.equal(requiredScope("POST", "/patient/thread-open"), "patient");
 
   // Subscriptions are administration, not clinical traffic, in every verb.
   // This line previously read `write`, which is what a feed is given — so the
@@ -57,6 +59,12 @@ test("SMART scopes translate, and admin implies read and write", () => {
 
   const admin = scopesFromSmart(["portage/admin"]);
   assert.ok(admin.has("admin") && admin.has("read") && admin.has("write"));
+  assert.ok(!admin.has("patient"), "an operator is not the patient");
+
+  const patient = scopesFromSmart(["patient/*.rs"]);
+  assert.ok(patient.has("patient"));
+  assert.ok(!patient.has("read"), "patient context must never become read of the whole FHIR facade");
+  assert.ok(!patient.has("write"));
 
   assert.equal(scopesFromSmart(["openid", "profile", "nonsense"]).size, 0);
 });
@@ -136,6 +144,11 @@ test("keys are stored hashed, revocation takes effect immediately", async () => 
 
   assert.ok(engine.keys.verify(issued.key));
   assert.equal(engine.keys.verify("ptg_not-a-real-key"), null);
+  assert.throws(
+    () => engine.keys.issue("not-a-person", ["patient"]),
+    /requires an OAuth identity/,
+    "a copied service secret cannot be minted as a patient's identity"
+  );
 
   assert.equal(engine.keys.revoke(issued.id), true);
   assert.equal(engine.keys.verify(issued.key), null, "a revoked key must stop working at once");

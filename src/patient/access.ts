@@ -44,9 +44,30 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "../db.ts";
 import type { OrderStore, ResultRow } from "../orders/store.ts";
+import type { TaskStore } from "../work/tasks.ts";
 
 export type Relationship = "self" | "parent-guardian" | "substitute-decision-maker" | "representative";
 export type Extent = "full" | "summary";
+
+/**
+ * Capabilities a patient or proxy grant may exercise.
+ *
+ * A proxy's scope has to be data, not prose. "Help with appointments" must
+ * not quietly become access to result values or private message bodies. The
+ * patient themselves receive all of these; delegated grants name an explicit
+ * subset and may never delegate again.
+ */
+export const PATIENT_PERMISSIONS = [
+  "summary",
+  "results",
+  "appointments",
+  "messages",
+  "access-log",
+  "requests",
+  "delegates",
+] as const;
+export type PatientPermission = (typeof PATIENT_PERMISSIONS)[number];
+const PROXY_PERMISSIONS = PATIENT_PERMISSIONS.filter((p) => p !== "delegates");
 
 /**
  * Why a result is being held, as a category the patient is shown.
@@ -71,6 +92,10 @@ export interface AuthorityRow {
   subject_id: string;
   relationship: Relationship;
   extent: Extent;
+  /** JSON array. Nullable only on rows written before scoped grants existed. */
+  permissions: string | null;
+  /** Why this delegated access exists, separate from its scope and expiry. */
+  purpose: string | null;
   expires_at: string | null;
   revoked_at: string | null;
   revoked_by: string | null;
@@ -84,6 +109,24 @@ export interface AuthorityRow {
 export interface Actor {
   actorId: string;
   actorKind: string;
+}
+
+export type PatientRequestKind = "access" | "correction";
+export interface PatientRequestRow {
+  tenant_id: string;
+  id: string;
+  patient_id: string;
+  kind: PatientRequestKind;
+  target: string | null;
+  detail: string;
+  status: "submitted" | "completed" | "declined";
+  submitted_by: string;
+  relationship: Relationship;
+  submitted_at: string;
+  task_id: string;
+  completed_at: string | null;
+  outcome: string | null;
+  created_at: string;
 }
 
 /** What a patient sees of one result. */
@@ -102,10 +145,12 @@ export interface PatientResult {
 export class PatientAccess {
   private db: Db;
   private orders: OrderStore;
+  private tasks: TaskStore | null;
 
-  constructor(db: Db, orders: OrderStore) {
+  constructor(db: Db, orders: OrderStore, tasks: TaskStore | null = null) {
     this.db = db;
     this.orders = orders;
+    this.tasks = tasks;
   }
 
   // ---- authority ---------------------------------------------------------
@@ -117,6 +162,8 @@ export class PatientAccess {
       subjectId,
       relationship: "self",
       extent: "full",
+      permissions: [...PATIENT_PERMISSIONS],
+      purpose: "patient access to own record",
       expiresAt: null,
       by,
     });
@@ -137,14 +184,27 @@ export class PatientAccess {
     relationship: Exclude<Relationship, "self">;
     expiresAt: string;
     by: Actor;
+    /** What this proxy may do. Explicit; no default broad grant. */
+    permissions: PatientPermission[];
+    /** Why the proxy needs access. Explicit and shown in the patient's review. */
+    purpose: string;
     extent?: Extent;
-    reason?: string;
   }): AuthorityRow {
     if (!input.expiresAt) {
       throw new Error("delegated access needs an expiry; an authority that never ends is the failure this guards against");
     }
     if (new Date(input.expiresAt).getTime() <= Date.now()) {
       throw new Error("that expiry is already past");
+    }
+    if (!input.purpose.trim()) {
+      throw new Error("delegated access needs a purpose the patient can review");
+    }
+    if (!Array.isArray(input.permissions) || input.permissions.length === 0) {
+      throw new Error("delegated access needs at least one explicit permission");
+    }
+    const unknown = input.permissions.filter((p) => !(PROXY_PERMISSIONS as readonly string[]).includes(p));
+    if (unknown.length > 0) {
+      throw new Error(`proxy permission not allowed: ${unknown.join(", ")}`);
     }
     return this.insertGrant({ ...input, expiresAt: input.expiresAt });
   }
@@ -179,6 +239,49 @@ export class PatientAccess {
       )
       .all(this.db.tenantId, subjectId, patientId, asOf) as unknown as AuthorityRow[];
     return rows[0];
+  }
+
+  /** Every chart this OAuth subject may act for right now. */
+  forSubject(subjectId: string, asOf = new Date().toISOString()): AuthorityRow[] {
+    return this.db.sql
+      .prepare(
+        `SELECT * FROM patient_authority
+          WHERE tenant_id = ? AND subject_id = ? AND revoked_at IS NULL
+            AND (expires_at IS NULL OR expires_at > ?)
+          ORDER BY relationship, granted_at`
+      )
+      .all(this.db.tenantId, subjectId, asOf) as unknown as AuthorityRow[];
+  }
+
+  /**
+   * Whether one live grant contains one capability.
+   *
+   * Old self grants are all-capability because they are the patient's own.
+   * Pre-scope proxy rows fail narrow: summary grants get summary,
+   * appointments and released results; old full grants additionally get
+   * messages, requests and the access log. Neither can manage delegates.
+   */
+  allows(authority: AuthorityRow, permission: PatientPermission): boolean {
+    return this.permissionsFor(authority).includes(permission);
+  }
+
+  permissionsFor(authority: AuthorityRow): PatientPermission[] {
+    if (authority.permissions) {
+      try {
+        const parsed = JSON.parse(authority.permissions) as unknown;
+        if (Array.isArray(parsed)) {
+          return parsed.filter(
+            (p): p is PatientPermission =>
+              typeof p === "string" && (PATIENT_PERMISSIONS as readonly string[]).includes(p)
+          );
+        }
+      } catch {
+        // Fall through to the deliberately narrow legacy interpretation.
+      }
+    }
+    if (authority.relationship === "self") return [...PATIENT_PERMISSIONS];
+    const summary: PatientPermission[] = ["summary", "results", "appointments"];
+    return authority.extent === "summary" ? summary : [...summary, "messages", "access-log", "requests"];
   }
 
   /**
@@ -343,7 +446,8 @@ export class PatientAccess {
   logAccess(input: {
     patientId: string;
     subjectId: string;
-    relationship: Relationship;
+    /** `none` records an OAuth subject that had no live grant. */
+    relationship: Relationship | "none";
     action: string;
     outcome: "allowed" | "refused";
     resource?: string;
@@ -395,23 +499,137 @@ export class PatientAccess {
       .all(this.db.tenantId, patientId, limit) as never;
   }
 
+  // ---- access and correction requests -----------------------------------
+
+  /**
+   * Gives the patient a durable request and the clinic durable work.
+   *
+   * A web form stored only in the portal is a receipt nobody owes. The
+   * request row is what the patient can see; the linked privacy-request task
+   * is what appears in the clinic's unassigned inbox and cannot be completed
+   * without evidence.
+   */
+  submitRequest(input: {
+    patientId: string;
+    kind: PatientRequestKind;
+    target?: string;
+    detail: string;
+    by: { subjectId: string; relationship: Relationship };
+  }): PatientRequestRow {
+    if (input.kind !== "access" && input.kind !== "correction") {
+      throw new Error("a patient request must be access or correction");
+    }
+    if (!input.detail.trim()) throw new Error("a patient request needs detail");
+    if (input.kind === "correction" && !input.target?.trim()) {
+      throw new Error("a correction request needs to identify what should be corrected");
+    }
+    if (!this.tasks) throw new Error("patient request inbox is not configured");
+
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    return this.db.transaction(() => {
+      const task = this.tasks!.create({
+        kind: "privacy-request",
+        title: input.kind === "access" ? "Patient access request" : "Patient correction request",
+        patientId: input.patientId,
+        priority: "routine",
+        source: "patient-access",
+        correlationId: id,
+        by: { actorId: input.by.subjectId, actorKind: input.by.relationship === "self" ? "patient" : "proxy" },
+      });
+      this.db.sql
+        .prepare(
+          `INSERT INTO patient_requests
+             (tenant_id, id, patient_id, kind, target, detail, status,
+              submitted_by, relationship, submitted_at, task_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'submitted', ?, ?, ?, ?, ?)`
+        )
+        .run(
+          this.db.tenantId,
+          id,
+          input.patientId,
+          input.kind,
+          input.target?.trim() || null,
+          input.detail.trim(),
+          input.by.subjectId,
+          input.by.relationship,
+          now,
+          task.id,
+          now
+        );
+      this.requestEvent(id, "submitted", { actorId: input.by.subjectId, actorKind: input.by.relationship }, input.detail);
+      return this.request(id)!;
+    });
+  }
+
+  request(id: string): PatientRequestRow | undefined {
+    return this.db.sql
+      .prepare("SELECT * FROM patient_requests WHERE tenant_id = ? AND id = ?")
+      .get(this.db.tenantId, id) as unknown as PatientRequestRow | undefined;
+  }
+
+  requestsFor(patientId: string): PatientRequestRow[] {
+    return this.db.sql
+      .prepare("SELECT * FROM patient_requests WHERE tenant_id = ? AND patient_id = ? ORDER BY submitted_at DESC")
+      .all(this.db.tenantId, patientId) as unknown as PatientRequestRow[];
+  }
+
+  completeRequest(id: string, by: Actor & { outcome: string }): PatientRequestRow {
+    if (!by.outcome.trim()) throw new Error("completing a patient request needs to say what was provided or corrected");
+    const row = this.request(id);
+    if (!row) throw new Error(`no patient request ${id}`);
+    if (row.status !== "submitted") throw new Error(`that patient request is already ${row.status}`);
+    if (!this.tasks) throw new Error("patient request inbox is not configured");
+    return this.db.transaction(() => {
+      this.tasks!.complete(row.task_id, { ...by, evidence: by.outcome.trim() });
+      const now = new Date().toISOString();
+      this.db.sql
+        .prepare(
+          "UPDATE patient_requests SET status = 'completed', completed_at = ?, outcome = ? WHERE tenant_id = ? AND id = ?"
+        )
+        .run(now, by.outcome.trim(), this.db.tenantId, id);
+      this.requestEvent(id, "completed", by, by.outcome.trim());
+      return this.request(id)!;
+    });
+  }
+
+  declineRequest(id: string, by: Actor & { reason: string }): PatientRequestRow {
+    if (!by.reason.trim()) throw new Error("declining a patient request needs a reason");
+    const row = this.request(id);
+    if (!row) throw new Error(`no patient request ${id}`);
+    if (row.status !== "submitted") throw new Error(`that patient request is already ${row.status}`);
+    if (!this.tasks) throw new Error("patient request inbox is not configured");
+    return this.db.transaction(() => {
+      this.tasks!.cancel(row.task_id, { ...by, reason: by.reason.trim() });
+      const now = new Date().toISOString();
+      this.db.sql
+        .prepare(
+          "UPDATE patient_requests SET status = 'declined', completed_at = ?, outcome = ? WHERE tenant_id = ? AND id = ?"
+        )
+        .run(now, by.reason.trim(), this.db.tenantId, id);
+      this.requestEvent(id, "declined", by, by.reason.trim());
+      return this.request(id)!;
+    });
+  }
+
   private insertGrant(input: {
     patientId: string;
     subjectId: string;
     relationship: Relationship;
     extent?: Extent;
+    permissions: PatientPermission[];
+    purpose: string;
     expiresAt: string | null;
     by: Actor;
-    reason?: string;
   }): AuthorityRow {
     const id = randomUUID();
     const now = new Date().toISOString();
     this.db.sql
       .prepare(
         `INSERT INTO patient_authority
-           (tenant_id, id, patient_id, subject_id, relationship, extent, expires_at,
+           (tenant_id, id, patient_id, subject_id, relationship, extent, permissions, purpose, expires_at,
             granted_by, granted_at, reason, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         this.db.tenantId,
@@ -420,12 +638,24 @@ export class PatientAccess {
         input.subjectId,
         input.relationship,
         input.extent ?? "full",
+        JSON.stringify([...new Set(input.permissions)]),
+        input.purpose.trim(),
         input.expiresAt,
         input.by.actorId,
         now,
-        input.reason ?? null,
+        input.purpose.trim(),
         now
       );
     return this.authority(id)!;
+  }
+
+  private requestEvent(requestId: string, event: string, by: Actor, detail: string): void {
+    this.db.sql
+      .prepare(
+        `INSERT INTO patient_request_events
+           (tenant_id, request_id, at, event, actor_id, actor_kind, detail)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(this.db.tenantId, requestId, new Date().toISOString(), event, by.actorId, by.actorKind, detail);
   }
 }

@@ -11,6 +11,26 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **The patient/proxy identity boundary** (#24 backend). SMART
+  `patient/*` is a fourth, OAuth-only scope and never becomes general FHIR
+  `read`; admin does not imply it and API keys cannot carry it. Every
+  `/patient/*` request binds the token subject to a live grant for the
+  named chart and checks an explicit capability. Proxy scope, purpose and
+  expiry are required, and proxies cannot delegate onwards.
+
+  The patient-safe surface serves summary data (not the clinician
+  Workspace), visibly held results, appointments with their slots,
+  messages whose speaker is derived from the grant, access history and
+  delegate review/revocation. Access and correction requests leave a
+  patient receipt and an unassigned clinic privacy task. Patient writes
+  and both access trails commit together.
+
+  This is a JSON boundary, not a patient application. Identity-proofing
+  enrolment, EN/FR UX, notifications and accessibility validation remain.
+  Hazards H-51–H-54.
+
+  526 → 538 tests.
+
 - **Durable patient–clinic messaging.** A thread is the record of a
   question, not a portal and not a delivery claim. Patient or proxy
   writing is `awaiting-clinic` and assigned to the MRP when there is one;

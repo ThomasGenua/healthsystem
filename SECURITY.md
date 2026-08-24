@@ -120,9 +120,12 @@ discussion, but they will not be treated as advisories:
 - **Single node.** One process owns a database file, enforced with a lock.
   There is no clustering, and a hardware failure is an outage until the standby
   is promoted by hand.
-- **No user interface for the clinical platform**, and no patient portal. The
-  patient-facing modules are built and deliberately not mounted, because a
-  portal is a different trust boundary and it has not been built yet.
+- **No user interface for the clinical platform and no patient application.**
+  The patient/proxy JSON boundary is mounted at `/patient/*`, but it is not an
+  enrolment or identity-proofing flow, an EN/FR user experience, notification
+  delivery, or an accessibility claim. It is OAuth-only; a patient-context
+  token cannot read the general FHIR facade, and each chart still needs a live,
+  explicitly scoped subject-to-patient grant.
 - **A credential that carries no organization is withheld from by every
   `withhold-from-organization` directive.** Credentials can now carry one, so a
   directive against one clinic no longer withholds from the whole territory —
