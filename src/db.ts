@@ -78,6 +78,8 @@ export const TENANT_SCOPED_TABLES = [
   "patient_messages",
   "patient_thread_events",
   "lab_identity_holds",
+  "prescriptions",
+  "prescription_events",
 ] as const;
 
 /**
@@ -666,6 +668,67 @@ CREATE TABLE IF NOT EXISTS medication_statements (
   source_message_id TEXT,
   created_at TEXT NOT NULL,
   PRIMARY KEY (tenant_id, id)
+);
+
+-- Getting a prescription to a pharmacy, and knowing whether it arrived.
+--
+-- A prescription recorded and then not sent anywhere is the failure here: the
+-- pharmacy writes it again at their end, and two records of one decision drift
+-- apart from the moment they are made.
+--
+-- The statuses exist to keep three things apart that otherwise look identical
+-- in a chart: transmitted and waiting, deliberately printed and handed to the
+-- patient, and never sent at all. The third is the one a patient discovers at
+-- the counter, so it has a queue of its own.
+CREATE TABLE IF NOT EXISTS prescriptions (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  -- The medication statement this prescribes. Taken rather than restated, so
+  -- the prescription and the medication list cannot disagree about the drug.
+  statement_id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  -- The directory organization it went to. Null until it goes anywhere.
+  pharmacy_id TEXT,
+  -- draft | transmitted | acknowledged | handed-out | failed | cancelled
+  status TEXT NOT NULL DEFAULT 'draft',
+  -- Written for the patient to follow, not for a pharmacy's parser.
+  instructions TEXT NOT NULL,
+  -- 1 for a narcotic or controlled drug. Electronic transmission of one is
+  -- separately regulated, so it is refused unless the deployment declares the
+  -- authority it holds — and the declaration is kept here where an audit can
+  -- read it.
+  controlled INTEGER NOT NULL DEFAULT 0,
+  controlled_authority TEXT,
+  prescriber_id TEXT NOT NULL,
+  written_at TEXT NOT NULL,
+  transmitted_at TEXT,
+  -- The message the transmission became, so it can be traced to a delivery,
+  -- a retry and a dead letter like any other clinical message.
+  message_id TEXT,
+  acknowledged_at TEXT,
+  acknowledged_by TEXT,
+  -- When the pharmacy's acknowledgement is owed by. "We sent it" is not
+  -- "they got it", and the gap is where a patient waits at a counter.
+  ack_due_by TEXT,
+  failure_reason TEXT,
+  cancelled_at TEXT,
+  cancel_reason TEXT,
+  -- The failed prescription this one replaces. The only safe retry: a
+  -- pharmacy receiving the same prescription twice may dispense it twice.
+  replaces TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS prescription_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  prescription_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  event TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_kind TEXT NOT NULL,
+  detail TEXT
 );
 
 -- Allergies and intolerances, including the assertion that there are none.
@@ -1420,6 +1483,10 @@ CREATE INDEX IF NOT EXISTS idx_patient_requests ON patient_requests(tenant_id, p
 CREATE INDEX IF NOT EXISTS idx_results_key ON order_results(tenant_id, result_key);
 CREATE INDEX IF NOT EXISTS idx_results_source ON order_results(tenant_id, source_system, reported_at);
 CREATE INDEX IF NOT EXISTS idx_lab_holds ON lab_identity_holds(tenant_id, resolved_at, received_at);
+CREATE INDEX IF NOT EXISTS idx_prescriptions_patient ON prescriptions(tenant_id, patient_id, written_at);
+-- The three chase lists: never sent, sent and unacknowledged, failed.
+CREATE INDEX IF NOT EXISTS idx_prescriptions_status ON prescriptions(tenant_id, status, written_at);
+CREATE INDEX IF NOT EXISTS idx_prescription_events ON prescription_events(tenant_id, prescription_id, seq);
 CREATE INDEX IF NOT EXISTS idx_patient_request_events ON patient_request_events(tenant_id, request_id, seq);
 -- The double-booking constraint. Partial, so a cancelled booking releases its
 -- seat while remaining on the record — a slot freed by deleting its booking

@@ -58,7 +58,7 @@ import { CHART_TYPES, WORKLIST_TYPES } from "../workspace/summary.ts";
 import { VISIT_TYPES } from "../workspace/visit.ts";
 import type { EncounterClass } from "../clinical/encounters.ts";
 import { DIRECTORY_KINDS, type PartyKind } from "../directory/store.ts";
-import { mapStoreError } from "../core/refusal.ts";
+import { mapStoreError, refuse } from "../core/refusal.ts";
 import type { AuthorityRow, PatientPermission } from "../patient/access.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
@@ -1786,6 +1786,100 @@ async function route(
           reason: body.reason!,
         })
       );
+    }
+    if (path === "/api/clinical/prescriptions" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi(
+        "MedicationRequest",
+        () => tenant.prescribing.forPatient(patient),
+        (rows) => rows.length
+      );
+    }
+    if (path === "/api/clinical/prescription-chase" && method === "GET") {
+      // The three ways a prescription is lost, as lists rather than as
+      // silence: written and never sent, sent and never acknowledged, failed
+      // and never retried — plus the worst one, cancelled after transmission
+      // with nobody having told the pharmacy.
+      return phi("MedicationRequest", () => ({
+        neverSent: filterByDirective(["MedicationRequest"], tenant.prescribing.neverSent()),
+        awaitingAcknowledgement: filterByDirective(
+          ["MedicationRequest"],
+          tenant.prescribing.awaitingAcknowledgement()
+        ),
+        failed: filterByDirective(["MedicationRequest"], tenant.prescribing.failed()),
+        cancellationsOwed: filterByDirective(["MedicationRequest"], tenant.prescribing.cancellationsOwed()),
+      }));
+    }
+    if (path === "/api/clinical/prescribe" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        statement?: string;
+        instructions?: string;
+        controlled?: boolean;
+      };
+      if (!body.statement || !body.instructions) {
+        return send(res, 400, { error: "statement and instructions required" });
+      }
+      const statement = tenant.meds.statement(body.statement);
+      if (!statement) return send(res, 404, { error: `no medication statement ${body.statement}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(statement.patient_id, "MedicationRequest", () =>
+        tenant.prescribing.write({
+          statementId: body.statement!,
+          instructions: body.instructions!,
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+          ...(body.controlled ? { controlled: true } : {}),
+        })
+      );
+    }
+    if (
+      method === "POST" &&
+      (path === "/api/clinical/prescription-transmit" ||
+        path === "/api/clinical/prescription-handout" ||
+        path === "/api/clinical/prescription-acknowledge" ||
+        path === "/api/clinical/prescription-fail" ||
+        path === "/api/clinical/prescription-replace" ||
+        path === "/api/clinical/prescription-cancel" ||
+        path === "/api/clinical/prescription-cancel-confirm")
+    ) {
+      const body = JSON.parse(await readBody(req)) as {
+        prescription?: string;
+        pharmacy?: string;
+        reason?: string;
+        detail?: string;
+      };
+      if (!body.prescription) return send(res, 400, { error: "prescription required" });
+      const row = tenant.prescribing.get(body.prescription);
+      if (!row) return send(res, 404, { error: `no prescription ${body.prescription}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      const by = { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      const id = body.prescription;
+      const { pharmacy, reason, detail } = body;
+      return phiFor(row.patient_id, "MedicationRequest", () => {
+        if (path.endsWith("-transmit")) {
+          if (!pharmacy) refuse("pharmacy required");
+          return tenant.prescribing.transmit(id, pharmacy, by);
+        }
+        if (path.endsWith("-handout")) {
+          return tenant.prescribing.handOut(id, { ...by, ...(reason ? { reason } : {}) });
+        }
+        if (path.endsWith("-acknowledge")) {
+          return tenant.prescribing.acknowledge(id, { ...by, ...(detail ? { detail } : {}) });
+        }
+        if (path.endsWith("-fail")) {
+          if (!reason) refuse("reason required");
+          return tenant.prescribing.fail(id, { ...by, reason });
+        }
+        if (path.endsWith("-replace")) {
+          if (!reason) refuse("reason required");
+          return tenant.prescribing.replaceFailed(id, { ...by, reason });
+        }
+        if (path.endsWith("-cancel-confirm")) {
+          if (!detail) refuse("detail required: how was the pharmacy told");
+          return tenant.prescribing.confirmCancellation(id, { ...by, detail });
+        }
+        if (!reason) refuse("reason required");
+        return tenant.prescribing.cancel(id, { ...by, reason });
+      });
     }
     if (path === "/api/clinical/lab-held" && method === "GET") {
       // Results the interface could not attribute to a chart. Spans patients
