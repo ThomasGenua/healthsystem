@@ -248,8 +248,10 @@ window.loadChart=async()=>{
     :status==="clear"?tag("no known allergies","ok"):tag(esc(String(status)),"warn");
 
   out.innerHTML=`
-    <div class="cards"><div class="card"><div class="n">${esc(p.family||"—")}, ${esc(p.given||"")}</div><div class="l">${esc(c.patientId)}${p.birthDate?" · born "+esc(p.birthDate):""}</div></div>
-      <div class="card"><div class="n">${statusTag}</div><div class="l">allergy status</div></div></div>
+    <div class="cards"><div class="card"><div class="n">${esc(p.family||"—")}, ${esc(p.given||"")}</div><div class="l">${esc(c.patientId)}${p.birthDate?" · born "+esc(p.birthDate):""}${p.preferredLanguage?" · "+esc(p.preferredLanguage):""}${p.phone?" · "+esc(p.phone):""}</div></div>
+      <div class="card"><div class="n">${statusTag}</div><div class="l">allergy status</div></div>
+      <div class="card"><div class="n">${c.immunizationStatus==="never-asked"?tag("never asked","bad"):tag(esc(String(c.immunizationStatus||"")),"ok")}</div><div class="l">immunization history</div></div>
+      <div class="card"><div class="n">${c.vitalStatus==="never-measured"?tag("never measured","bad"):tag(esc(String(c.vitalStatus||"")),"ok")}</div><div class="l">vital signs</div></div></div>
     ${c.complete?"":`<div class="banner"><b>This is not the whole chart.</b>
       <p>Do not read a panel below as "none" without checking why it is short.</p>
       <ul>${(c.omissions||[]).map(o=>`<li>${esc(o)}</li>`).join("")}</ul></div>`}
@@ -258,6 +260,10 @@ window.loadChart=async()=>{
         ${panel("Allergies",c.allergies,a=>`<li>${esc(a.display)} ${a.criticality?tag(a.criticality,a.criticality==="high"?"bad":"warn"):""} <span class="none">${esc(a.reaction||"")}</span></li>`)}
         ${panel("Medications",c.medications,x=>`<li>${esc(x.display)} <span class="none">${esc(x.adherence||"")}</span></li>`)}
         ${panel("Problems",c.problems,x=>{const b=body(x);return `<li>${esc((b.code&&(b.code.text||(b.code.coding&&b.code.coding[0]&&b.code.coding[0].display)))||b.resourceType||x.entry_type)}${b.clinicalStatus?" "+tag(esc(String(b.clinicalStatus.text||b.clinicalStatus)),"dim"):""}</li>`})}
+        ${panel("Immunizations",c.immunizations,x=>`<li>${esc(x.vaccine)} ${stTag(x.status)} <span class="none">${esc(x.occurrenceAt||"")}</span></li>`)}
+        ${panel("Vitals",c.vitals,x=>`<li>${esc(x.kind)} ${x.kind==="blood-pressure"?`<b>${esc(String(x.systolic))}/${esc(String(x.diastolic))}</b>`:`<b>${esc(String(x.value))}</b>`} <span class="none">${esc(x.unit||"")} ${when(x.takenAt)}</span></li>`)}
+        ${panel("Care team",c.careTeam,x=>`<li>${esc(x.role)} — ${esc(x.practitioner_id)}${x.active_to?" "+tag("ended","dim"):""}</li>`)}
+        ${panel("Coverage",c.coverage,x=>`<li>${esc(x.plan)} ${stTag(x.eligibility)} <span class="none">${esc(x.identifier_value||"")}</span></li>`)}
         ${panel("Recent notes",c.recentNotes,n=>`<li>${when(n.entry&&n.entry.recorded_at)} — ${esc((n.note&&(n.note.title||n.note.description))||"note")}</li>`)}
       </div>
       <div>
@@ -299,6 +305,9 @@ window.loadWorklist=async()=>{
     out.innerHTML=`
       ${w.complete?"":`<div class="banner"><b>This worklist is not complete.</b>
         <p>Something owed to you may not be on it.</p><ul>${(w.omissions||[]).map(o=>`<li>${esc(o)}</li>`).join("")}</ul></div>`}
+      ${panel("Today's appointments",w.today,x=>`<li>${when(x.slot&&x.slot.starts_at)} ${esc(x.slot&&x.slot.service||"")}
+        <a href="#" onclick="openChart('${esc(x.booking.patient_id)}');go('Chart');return false">${esc(x.booking.patient_id)}</a>
+        ${stTag(x.booking.status)} <span class="none">${esc(x.booking.reason||"")}</span></li>`)}
       ${res.withheldCount?`<div class="banner"><b>${res.withheldCount} result(s) withheld</b> by a patient directive.
         <p>A result withheld from the clinician responsible for reading it is a result now owed to nobody. Who they are is not shown, which is what the directive asked for — but somebody has to pick these up.</p></div>`:""}
       ${panel("Results you have not acknowledged",w.unacknowledgedResults,r=>`<li>

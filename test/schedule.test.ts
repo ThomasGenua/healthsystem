@@ -297,6 +297,49 @@ test("the schedule is confined to its tenant", () => {
   }
 });
 
+test("today lists booked and attended appointments for that clinician's UTC day", () => {
+  const { s, cleanup } = clinic();
+  try {
+    const morning = s.openSlot({
+      resourceId: "dr-tetso",
+      service: "GP review",
+      startsAt: "2026-08-24T10:00:00Z",
+      endsAt: "2026-08-24T10:30:00Z",
+    });
+    const later = s.openSlot({
+      resourceId: "dr-tetso",
+      service: "GP review",
+      startsAt: "2026-08-24T15:00:00Z",
+      endsAt: "2026-08-24T15:30:00Z",
+    });
+    const otherDay = s.openSlot({
+      resourceId: "dr-tetso",
+      service: "GP review",
+      startsAt: "2026-08-25T10:00:00Z",
+      endsAt: "2026-08-25T10:30:00Z",
+    });
+    const otherDoc = s.openSlot({
+      resourceId: "dr-hale",
+      service: "GP review",
+      startsAt: "2026-08-24T11:00:00Z",
+      endsAt: "2026-08-24T11:30:00Z",
+    });
+    s.book({ slotId: morning.id, patientId: P1, reason: "Review", by: CLERK });
+    const cancelled = s.book({ slotId: later.id, patientId: P2, reason: "Review", by: CLERK });
+    s.cancel(cancelled.id, { ...CLERK, reason: "patient called" });
+    s.book({ slotId: otherDay.id, patientId: P1, reason: "Review", by: CLERK });
+    s.book({ slotId: otherDoc.id, patientId: P2, reason: "Review", by: CLERK });
+
+    const today = s.today("dr-tetso", "2026-08-24T12:00:00Z");
+    assert.equal(today.length, 1);
+    assert.equal(today[0].booking.patient_id, P1);
+    assert.equal(s.today("dr-hale", "2026-08-24T12:00:00Z").length, 1);
+    assert.equal(s.today("dr-tetso", "2026-08-25T08:00:00Z").length, 1);
+  } finally {
+    cleanup();
+  }
+});
+
 test("error messages read as English, including where the vowel rule is wrong", () => {
   // An error message is part of the product: "a accepted referral cannot be
   // booked" is what a clerk sees at the moment something has gone wrong, and

@@ -386,6 +386,36 @@ export class Schedule {
     return this.db.sql.prepare(sql).all(...(args as never[])) as unknown as SlotRow[];
   }
 
+  /**
+   * This clinician's booked and attended appointments on a calendar day.
+   *
+   * The worklist's "today" queue. A diary is every slot, including empty
+   * ones; a worklist that listed empty slots would bury the people who are
+   * actually coming. Cancelled and did-not-attend stay off it — those have
+   * their own lists — and the day is the UTC date of `asOf`, because a
+   * server inventing a clinic timezone it was never told would be a
+   * quieter kind of wrong.
+   */
+  today(resourceId: string, asOf = new Date().toISOString()): Array<{ slot: SlotRow; booking: BookingRow }> {
+    const day = asOf.slice(0, 10);
+    const from = `${day}T00:00:00.000Z`;
+    const next = new Date(from);
+    next.setUTCDate(next.getUTCDate() + 1);
+    const out: Array<{ slot: SlotRow; booking: BookingRow }> = [];
+    for (const { slot, bookings } of this.diary(resourceId, from, next.toISOString())) {
+      for (const booking of bookings) {
+        if (booking.status === "booked" || booking.status === "attended") {
+          out.push({ slot, booking });
+        }
+      }
+    }
+    return out.sort(
+      (a, b) =>
+        a.slot.starts_at.localeCompare(b.slot.starts_at) ||
+        PRIORITY_RANK[a.booking.priority] - PRIORITY_RANK[b.booking.priority]
+    );
+  }
+
   /** A resource's diary for a window, bookings included. */
   diary(resourceId: string, from: string, to: string): Array<{ slot: SlotRow; bookings: BookingRow[] }> {
     const slots = this.db.sql

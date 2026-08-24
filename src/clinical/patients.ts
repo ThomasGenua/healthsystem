@@ -26,6 +26,9 @@ export interface PatientSummary {
   given: string | null;
   birthDate: string | null;
   gender: string | null;
+  preferredLanguage: string | null;
+  phone: string | null;
+  email: string | null;
   identifiers: Array<{ system: string; value: string }>;
   updatedAt: string;
 }
@@ -59,6 +62,31 @@ function readName(content: Record<string, unknown>): { family: string | null; gi
   };
 }
 
+function readLanguage(content: Record<string, unknown>): string | null {
+  const comm = Array.isArray(content.communication) ? (content.communication as Array<Record<string, unknown>>) : [];
+  if (comm.length === 0) return null;
+  const preferred = comm.find((c) => c.preferred === true) ?? comm[0];
+  const lang = preferred.language && typeof preferred.language === "object" ? (preferred.language as Record<string, unknown>) : undefined;
+  if (!lang) return null;
+  if (typeof lang.text === "string" && lang.text) return lang.text;
+  const coding = Array.isArray(lang.coding) ? (lang.coding[0] as Record<string, unknown> | undefined) : undefined;
+  if (typeof coding?.display === "string" && coding.display) return coding.display;
+  if (typeof coding?.code === "string" && coding.code) return coding.code;
+  return null;
+}
+
+function readTelecom(content: Record<string, unknown>): { phone: string | null; email: string | null } {
+  const raw = Array.isArray(content.telecom) ? (content.telecom as Array<Record<string, unknown>>) : [];
+  let phone: string | null = null;
+  let email: string | null = null;
+  for (const t of raw) {
+    if (typeof t.value !== "string" || !t.value) continue;
+    if (t.system === "phone" && !phone) phone = t.value;
+    if (t.system === "email" && !email) email = t.value;
+  }
+  return { phone, email };
+}
+
 function readIdentifiers(content: Record<string, unknown>): Array<{ system: string; value: string }> {
   const raw = Array.isArray(content.identifier) ? (content.identifier as Array<Record<string, unknown>>) : [];
   const out: Array<{ system: string; value: string }> = [];
@@ -87,13 +115,15 @@ export class PatientIndex {
    */
   index(patientId: string, content: Record<string, unknown>): void {
     const { family, given } = readName(content);
+    const { phone, email } = readTelecom(content);
     this.db.sql
       .prepare(
-        `INSERT INTO patient_index (tenant_id, patient_id, family, given, birth_date, gender, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        `INSERT INTO patient_index (tenant_id, patient_id, family, given, birth_date, gender, preferred_language, phone, email, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
          ON CONFLICT(tenant_id, patient_id) DO UPDATE SET
            family = excluded.family, given = excluded.given, birth_date = excluded.birth_date,
-           gender = excluded.gender, updated_at = excluded.updated_at`
+           gender = excluded.gender, preferred_language = excluded.preferred_language,
+           phone = excluded.phone, email = excluded.email, updated_at = excluded.updated_at`
       )
       .run(
         this.db.tenantId,
@@ -101,7 +131,10 @@ export class PatientIndex {
         family,
         given,
         typeof content.birthDate === "string" ? content.birthDate : null,
-        typeof content.gender === "string" ? content.gender : null
+        typeof content.gender === "string" ? content.gender : null,
+        readLanguage(content),
+        phone,
+        email
       );
 
     const ins = this.db.sql.prepare(
@@ -116,7 +149,17 @@ export class PatientIndex {
     const row = this.db.sql
       .prepare("SELECT * FROM patient_index WHERE tenant_id = ? AND patient_id = ?")
       .get(this.db.tenantId, patientId) as
-      | { patient_id: string; family: string | null; given: string | null; birth_date: string | null; gender: string | null; updated_at: string }
+      | {
+          patient_id: string;
+          family: string | null;
+          given: string | null;
+          birth_date: string | null;
+          gender: string | null;
+          preferred_language: string | null;
+          phone: string | null;
+          email: string | null;
+          updated_at: string;
+        }
       | undefined;
     return row ? this.summary(row) : undefined;
   }
@@ -171,6 +214,9 @@ export class PatientIndex {
       given: string | null;
       birth_date: string | null;
       gender: string | null;
+      preferred_language: string | null;
+      phone: string | null;
+      email: string | null;
       updated_at: string;
     }>;
     return rows.map((r) => this.summary(r));
@@ -253,6 +299,9 @@ export class PatientIndex {
     given: string | null;
     birth_date: string | null;
     gender: string | null;
+    preferred_language?: string | null;
+    phone?: string | null;
+    email?: string | null;
     updated_at: string;
   }): PatientSummary {
     const identifiers = this.db.sql
@@ -264,6 +313,9 @@ export class PatientIndex {
       given: row.given,
       birthDate: row.birth_date,
       gender: row.gender,
+      preferredLanguage: row.preferred_language ?? null,
+      phone: row.phone ?? null,
+      email: row.email ?? null,
       identifiers,
       updatedAt: row.updated_at,
     };

@@ -25,6 +25,12 @@ import { OrderStore } from "../src/orders/store.ts";
 import { ReferralStore } from "../src/work/referrals.ts";
 import { TaskStore } from "../src/work/tasks.ts";
 import { Workspace } from "../src/workspace/summary.ts";
+import { Immunizations } from "../src/clinical/immunizations.ts";
+import { Vitals } from "../src/clinical/vitals.ts";
+import { CareTeam } from "../src/clinical/careteam.ts";
+import { Coverage } from "../src/clinical/coverage.ts";
+import { Schedule } from "../src/schedule/store.ts";
+import { Directory } from "../src/directory/store.ts";
 
 const P = "NT123456";
 const GP = { actorId: "dr-tetso", actorKind: "practitioner" };
@@ -43,6 +49,12 @@ function ward() {
   const orders = new OrderStore(db);
   const referrals = new ReferralStore(db);
   const tasks = new TaskStore(db);
+  const immunizations = new Immunizations(record);
+  const vitals = new Vitals(record);
+  const careTeam = new CareTeam(db);
+  const coverage = new Coverage(db);
+  const schedule = new Schedule(db);
+  new Directory(db).addPractitioner({ id: "dr-tetso", family: "Tetso", given: "Jean" });
   return {
     db,
     record,
@@ -51,7 +63,24 @@ function ward() {
     orders,
     referrals,
     tasks,
-    ws: new Workspace({ record, notes, meds, orders, referrals, tasks }),
+    immunizations,
+    vitals,
+    careTeam,
+    coverage,
+    schedule,
+    ws: new Workspace({
+      record,
+      notes,
+      meds,
+      orders,
+      referrals,
+      tasks,
+      immunizations,
+      vitals,
+      careTeam,
+      coverage,
+      schedule,
+    }),
     cleanup: () => {
       db.close();
       rmSync(dir, { recursive: true, force: true });
@@ -128,6 +157,29 @@ function populate(w: ReturnType<typeof ward>) {
   w.tasks.create({ kind: "result-review", title: "Review potassium", by: GP, patientId: P, ownerId: "dr-tetso" });
   const note = w.notes.draft({ patientId: P, noteType: "SOAP", sections: { plan: "Repeat bloods" }, author: GP_AUTHOR });
   w.notes.sign(note.record_id, GP_AUTHOR);
+  w.immunizations.record({
+    patientId: P,
+    vaccine: "MMR",
+    occurrenceAt: "2010-06-01T00:00:00Z",
+    by: GP_AUTHOR,
+  });
+  w.vitals.record({
+    patientId: P,
+    kind: "heart-rate",
+    value: 72,
+    unit: "/min",
+    takenAt: "2026-08-24T10:00:00Z",
+    by: GP_AUTHOR,
+  });
+  w.careTeam.assign({ patientId: P, practitionerId: "dr-tetso", role: "primary", by: { actorId: "ops" } });
+  w.coverage.record({
+    patientId: P,
+    plan: "NIHB",
+    eligibility: "eligible",
+    by: { actorId: "ops" },
+    identifierSystem: "urn:jhn",
+    identifierValue: P,
+  });
   return { order, pending, ref };
 }
 
@@ -151,6 +203,12 @@ test("the assembled chart pulls every store into one view", () => {
     assert.equal(chart.openTasks.items.length, 1);
     assert.equal(chart.recentNotes.items.length, 1);
     assert.equal(chart.problems.items.length, 1);
+    assert.equal(chart.immunizationStatus, "documented");
+    assert.equal(chart.immunizations.items[0].vaccine, "MMR");
+    assert.equal(chart.vitalStatus, "documented");
+    assert.equal(chart.vitals.items[0].value, 72);
+    assert.equal(chart.careTeam.items[0].role, "primary");
+    assert.equal(chart.coverage.items[0].plan, "NIHB");
 
     assert.equal(chart.complete, true, "and it says it is whole");
     assert.deepEqual(chart.omissions, []);
@@ -260,7 +318,10 @@ test("a patient nobody asked about allergies is flagged at the top of the chart"
     w.meds.recordNoKnownAllergies(P, NURSE);
     const asked = w.ws.chart(P);
     assert.equal(asked.allergyStatus, "none-documented");
-    assert.deepEqual(asked.omissions, [], "and now the same empty panel means none");
+    assert.ok(
+      !asked.omissions.some((o) => o.startsWith("Allergies:")),
+      "and now the same empty allergy panel means none"
+    );
   } finally {
     w.cleanup();
   }
@@ -316,11 +377,55 @@ test("the worklist gathers what is owed across every kind of work", () => {
     assert.equal(list.ordersAwaitingResult.items[0].display, "Chest X-ray", "and the answered potassium is not here");
     assert.equal(list.tasks.items.length, 1);
     assert.equal(list.incompleteReconciliations.items.length, 1);
+    assert.equal(list.today.complete, true, "today's diary loaded even when it is empty");
     assert.equal(list.complete, true);
 
     // Another clinician's list is not this one's.
     assert.equal(w.ws.worklist("dr-hale").unacknowledgedResults.items.length, 0);
     assert.equal(w.ws.worklist("dr-hale").tasks.items.length, 0);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("an empty immunization panel is never-asked, not none", () => {
+  const w = ward();
+  try {
+    w.meds.recordNoKnownAllergies(P, NURSE);
+    w.coverage.record({ patientId: P, plan: "OHIP", eligibility: "eligible", by: { actorId: "ops" } });
+    w.careTeam.assign({ patientId: P, practitionerId: "dr-tetso", role: "primary", by: { actorId: "ops" } });
+    const chart = w.ws.chart(P);
+    assert.equal(chart.immunizationStatus, "never-asked");
+    assert.equal(chart.immunizations.items.length, 0);
+    assert.equal(chart.immunizations.complete, true);
+    assert.ok(chart.omissions.includes("Immunizations: no immunization history has ever been recorded for this patient"));
+    assert.equal(chart.vitalStatus, "never-measured");
+    assert.ok(chart.omissions.includes("Vitals: no vital signs have ever been recorded for this patient"));
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("today's appointments appear on the clinician's worklist, not another clinician's", () => {
+  const w = ward();
+  try {
+    populate(w);
+    const slot = w.schedule.openSlot({
+      resourceId: "dr-tetso",
+      service: "GP review",
+      startsAt: "2026-08-24T14:00:00Z",
+      endsAt: "2026-08-24T14:30:00Z",
+    });
+    w.schedule.book({
+      slotId: slot.id,
+      patientId: P,
+      reason: "Diabetes review",
+      by: GP,
+    });
+    const list = w.ws.worklist("dr-tetso", { asOf: "2026-08-24T12:00:00Z" });
+    assert.equal(list.today.items.length, 1);
+    assert.equal(list.today.items[0].booking.patient_id, P);
+    assert.equal(w.ws.worklist("dr-hale", { asOf: "2026-08-24T12:00:00Z" }).today.items.length, 0);
   } finally {
     w.cleanup();
   }

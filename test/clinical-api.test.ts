@@ -85,6 +85,23 @@ async function boot() {
   t.tasks.create({ kind: "result-review", title: "Review potassium", by: GP, patientId: P, ownerId: "dr-tetso" });
   const note = t.notes.draft({ patientId: P, noteType: "SOAP", sections: { plan: "Repeat" }, author: GP_AUTHOR });
   t.notes.sign(note.record_id, GP_AUTHOR);
+  t.directory.addPractitioner({ id: "dr-tetso", family: "Tetso", given: "Jean" });
+  t.immunizations.record({
+    patientId: P,
+    vaccine: "MMR",
+    occurrenceAt: "2010-06-01T00:00:00Z",
+    by: GP_AUTHOR,
+  });
+  t.vitals.record({
+    patientId: P,
+    kind: "heart-rate",
+    value: 72,
+    unit: "/min",
+    takenAt: "2026-08-24T10:00:00Z",
+    by: GP_AUTHOR,
+  });
+  t.careTeam.assign({ patientId: P, practitionerId: "dr-tetso", role: "primary", by: { actorId: "ops" } });
+  t.coverage.record({ patientId: P, plan: "NIHB", eligibility: "eligible", by: { actorId: "ops" } });
 
   return {
     engine,
@@ -310,6 +327,12 @@ test("every clinical route leaves an audit row, including ones added later", asy
       startsAt: "2026-09-01T10:00:00Z",
       endsAt: "2026-09-01T10:30:00Z",
     });
+    const membership = s.engine.forTenant("default").careTeam.assign({
+      patientId: P,
+      practitionerId: "dr-tetso",
+      role: "allied",
+      by: { actorId: "ops" },
+    });
 
     const standing = s.engine.forTenant("default").consent.breakGlass({
       patientId: P,
@@ -350,6 +373,15 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/encounter-close": "POST",
       "/api/clinical/encounter-cancel": "POST",
       "/api/clinical/book": "POST",
+      "/api/clinical/immunizations": `?patient=${P}`,
+      "/api/clinical/vitals": `?patient=${P}`,
+      "/api/clinical/care-team": `?patient=${P}`,
+      "/api/clinical/coverage": `?patient=${P}`,
+      "/api/clinical/immunization-record": "POST",
+      "/api/clinical/vital-record": "POST",
+      "/api/clinical/care-team-assign": "POST",
+      "/api/clinical/care-team-retire": "POST",
+      "/api/clinical/coverage-record": "POST",
     };
 
     /** The body each POST route needs to do real work. */
@@ -381,6 +413,21 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/encounter-close": { id: visit.id, disposition: "home with advice" },
       "/api/clinical/encounter-cancel": { id: toCancel.id, reason: "rebooked" },
       "/api/clinical/book": { slot: slot.id, patient: P, reason: "Follow-up" },
+      "/api/clinical/immunization-record": {
+        patient: P,
+        vaccine: "Influenza",
+        occurrenceAt: "2025-10-01T00:00:00Z",
+      },
+      "/api/clinical/vital-record": {
+        patient: P,
+        kind: "heart-rate",
+        value: 72,
+        unit: "/min",
+        takenAt: "2026-08-24T10:00:00Z",
+      },
+      "/api/clinical/care-team-assign": { patient: P, practitioner: "dr-tetso", role: "covering" },
+      "/api/clinical/care-team-retire": { id: membership.id },
+      "/api/clinical/coverage-record": { patient: P, plan: "NIHB", eligibility: "eligible" },
     };
 
     const unlisted = paths.filter((p) => !(p in args));
@@ -439,7 +486,7 @@ test("a patient directive stops the chart at the API, and the refusal is on the 
       assert.match(row.detail ?? "", /withheld by patient directive/);
 
       // Every patient-scoped route, not just the chart.
-      for (const p of ["medications", "allergies", "orders", "notes", "appointments"]) {
+      for (const p of ["medications", "allergies", "orders", "notes", "appointments", "immunizations", "vitals", "care-team", "coverage"]) {
         assert.equal((await s.get(`/api/clinical/${p}?patient=${P}`)).status, 403, `${p} honoured the directive`);
       }
     } finally {

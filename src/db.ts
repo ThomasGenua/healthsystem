@@ -70,6 +70,8 @@ export const TENANT_SCOPED_TABLES = [
   "directory_services",
   "directory_roles",
   "directory_identifiers",
+  "care_team",
+  "coverage",
 ] as const;
 
 /**
@@ -1050,6 +1052,47 @@ CREATE TABLE IF NOT EXISTS directory_identifiers (
   PRIMARY KEY (tenant_id, party_kind, party_id, system, value)
 );
 
+-- Who is responsible for this patient, and in what role. Effective-dated:
+-- a locum covering a month is not the MRP, and retiring the MRP must not
+-- erase that they were the MRP. The directory says who the person is; this
+-- says they belong on this chart.
+CREATE TABLE IF NOT EXISTS care_team (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  practitioner_id TEXT NOT NULL,
+  organization_id TEXT,
+  role TEXT NOT NULL,
+  active_from TEXT NOT NULL,
+  active_to TEXT,
+  asserted_by TEXT NOT NULL,
+  asserted_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Provincial coverage and eligibility. A health-card number is also an
+-- identifier on the patient; this is the claim about whether it is currently
+-- good, which changes independently of who the patient is. New rows supersede
+-- old ones; nothing is updated in place.
+CREATE TABLE IF NOT EXISTS coverage (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  plan TEXT NOT NULL,
+  identifier_system TEXT,
+  identifier_value TEXT,
+  eligibility TEXT NOT NULL,
+  eligibility_detail TEXT,
+  effective_from TEXT,
+  effective_to TEXT,
+  supersedes TEXT,
+  asserted_by TEXT NOT NULL,
+  asserted_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
 -- A patient's instruction about who may see their record.
 --
 -- Provincial EHRs call this a consent directive or a lockbox: a patient may
@@ -1152,6 +1195,9 @@ CREATE TABLE IF NOT EXISTS patient_index (
   given TEXT,
   birth_date TEXT,
   gender TEXT,
+  preferred_language TEXT,
+  phone TEXT,
+  email TEXT,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (tenant_id, patient_id)
 );
@@ -1264,6 +1310,9 @@ CREATE INDEX IF NOT EXISTS idx_directory_roles_org ON directory_roles(tenant_id,
 -- The lookup that matters for #17: a credential carries an identifier, and
 -- this is what turns it into a party.
 CREATE INDEX IF NOT EXISTS idx_directory_identifier ON directory_identifiers(tenant_id, system, value);
+CREATE INDEX IF NOT EXISTS idx_care_team_patient ON care_team(tenant_id, patient_id, active_to);
+CREATE INDEX IF NOT EXISTS idx_care_team_practitioner ON care_team(tenant_id, practitioner_id, active_to);
+CREATE INDEX IF NOT EXISTS idx_coverage_patient ON coverage(tenant_id, patient_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_directives_patient ON consent_directives(tenant_id, patient_id, status);
 CREATE INDEX IF NOT EXISTS idx_directives_target ON consent_directives(tenant_id, target_id, status);
 CREATE INDEX IF NOT EXISTS idx_breakglass_review ON break_glass(tenant_id, reviewed_at, declared_at);
@@ -1339,6 +1388,9 @@ const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
   { table: "break_glass", column: "notice_dispatched_at", type: "TEXT" },
   { table: "break_glass", column: "notice_message_id", type: "TEXT" },
   { table: "break_glass", column: "notice_error", type: "TEXT" },
+  { table: "patient_index", column: "preferred_language", type: "TEXT" },
+  { table: "patient_index", column: "phone", type: "TEXT" },
+  { table: "patient_index", column: "email", type: "TEXT" },
   // Tenancy. NOT NULL with a default, so existing rows land in the default
   // tenant rather than becoming unreachable, and a deployment that never
   // configures a second tenant is unaffected.

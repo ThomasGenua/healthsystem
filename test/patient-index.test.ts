@@ -62,11 +62,43 @@ test("a patient is findable by identifier, name and birth date", () => {
     const summary = idx.get("NT123456")!;
     assert.equal(summary.given, "Marie Louise");
     assert.equal(summary.gender, "female");
+    assert.equal(summary.preferredLanguage, null);
+    assert.equal(summary.phone, null);
+    assert.equal(summary.email, null);
     assert.deepEqual(
       summary.identifiers.map((i) => i.value).sort(),
       ["NT123456", "NT123456"],
       "the chart key is itself a way in, alongside the health number"
     );
+  } finally {
+    cleanup();
+  }
+});
+
+test("preferred language and telecom are recovered from the Patient entry", () => {
+  const { rec, cleanup } = chart();
+  try {
+    patient(rec, "NT123456", {
+      ...BEAULIEU,
+      telecom: [
+        { system: "phone", value: "867-555-0100" },
+        { system: "email", value: "marie@example.net" },
+      ],
+      communication: [
+        { language: { text: "fr-CA" }, preferred: true },
+        { language: { text: "en" } },
+      ],
+    });
+    const summary = rec.patientIndex.get("NT123456")!;
+    assert.equal(summary.preferredLanguage, "fr-CA");
+    assert.equal(summary.phone, "867-555-0100");
+    assert.equal(summary.email, "marie@example.net");
+
+    rec.patientIndex.rebuild(rec);
+    const again = rec.patientIndex.get("NT123456")!;
+    assert.equal(again.preferredLanguage, "fr-CA");
+    assert.equal(again.phone, "867-555-0100");
+    assert.equal(again.email, "marie@example.net");
   } finally {
     cleanup();
   }

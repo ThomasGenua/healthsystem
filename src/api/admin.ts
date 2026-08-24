@@ -1003,6 +1003,37 @@ async function route(
         (rows) => rows.length
       );
     }
+    if (path === "/api/clinical/immunizations" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("Immunization", () => ({
+        status: tenant.immunizations.historyStatus(patient),
+        immunizations: tenant.immunizations.forPatient(patient),
+      }));
+    }
+    if (path === "/api/clinical/vitals" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("Observation", () => ({
+        status: tenant.vitals.historyStatus(patient),
+        latest: tenant.vitals.latest(patient),
+        vitals: tenant.vitals.forPatient(patient, {
+          ...(url.searchParams.get("encounter") ? { encounterId: url.searchParams.get("encounter")! } : {}),
+        }),
+      }));
+    }
+    if (path === "/api/clinical/care-team" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("CareTeam", () => ({
+        primary: tenant.careTeam.primary(patient) ?? null,
+        members: tenant.careTeam.forPatient(patient, { includeRetired: url.searchParams.get("retired") === "true" }),
+      }));
+    }
+    if (path === "/api/clinical/coverage" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("Coverage", () => ({
+        current: tenant.coverage.current(patient) ?? null,
+        history: tenant.coverage.history(patient),
+      }));
+    }
     if (path === "/api/clinical/appointments" && method === "GET") {
       if (!patient) return send(res, 400, { error: "patient required" });
       return phi("Appointment", () => tenant.schedule.forPatient(patient), (rows) => rows.length);
@@ -1322,6 +1353,127 @@ async function route(
       // consults their allergies and their medication list.
       audit({ action: "R", outcome: 0, resourceType: "AllergyIntolerance", patient: p, detail: `safety check: ${ingredient}` });
       return send(res, 200, tenant.meds.check(p, { ingredient, display }));
+    }
+    if (path === "/api/clinical/immunization-record" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        vaccine?: string;
+        occurrenceAt?: string;
+        status?: "given" | "refused" | "not-done";
+        vaccineCode?: string;
+        vaccineSystem?: string;
+        lot?: string;
+        site?: string;
+        doseNumber?: number;
+        reason?: string;
+        encounter?: string;
+      };
+      if (!body.patient || !body.vaccine || !body.occurrenceAt) {
+        return send(res, 400, { error: "patient, vaccine and occurrenceAt required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(body.patient, "Immunization", () =>
+        tenant.immunizations.record({
+          patientId: body.patient!,
+          vaccine: body.vaccine!,
+          occurrenceAt: body.occurrenceAt!,
+          by: { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown" },
+          ...(body.status ? { status: body.status } : {}),
+          ...(body.vaccineCode ? { vaccineCode: body.vaccineCode } : {}),
+          ...(body.vaccineSystem ? { vaccineSystem: body.vaccineSystem } : {}),
+          ...(body.lot ? { lot: body.lot } : {}),
+          ...(body.site ? { site: body.site } : {}),
+          ...(body.doseNumber !== undefined ? { doseNumber: body.doseNumber } : {}),
+          ...(body.reason ? { reason: body.reason } : {}),
+          ...(body.encounter ? { encounterId: body.encounter } : {}),
+        })
+      );
+    }
+    if (path === "/api/clinical/vital-record" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        kind?: "blood-pressure" | "heart-rate" | "temperature" | "oxygen-saturation" | "body-weight" | "body-height" | "respiratory-rate" | "pain-score";
+        takenAt?: string;
+        value?: number;
+        unit?: string;
+        systolic?: number;
+        diastolic?: number;
+        encounter?: string;
+      };
+      if (!body.patient || !body.kind || !body.takenAt) {
+        return send(res, 400, { error: "patient, kind and takenAt required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(body.patient, "Observation", () =>
+        tenant.vitals.record({
+          patientId: body.patient!,
+          kind: body.kind!,
+          takenAt: body.takenAt!,
+          by: { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown" },
+          ...(body.value !== undefined ? { value: body.value } : {}),
+          ...(body.unit ? { unit: body.unit } : {}),
+          ...(body.systolic !== undefined ? { systolic: body.systolic } : {}),
+          ...(body.diastolic !== undefined ? { diastolic: body.diastolic } : {}),
+          ...(body.encounter ? { encounterId: body.encounter } : {}),
+        })
+      );
+    }
+    if (path === "/api/clinical/care-team-assign" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        practitioner?: string;
+        role?: "primary" | "covering" | "consultant" | "allied" | "other";
+        organization?: string;
+      };
+      if (!body.patient || !body.practitioner || !body.role) {
+        return send(res, 400, { error: "patient, practitioner and role required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(body.patient, "CareTeam", () =>
+        tenant.careTeam.assign({
+          patientId: body.patient!,
+          practitionerId: body.practitioner!,
+          role: body.role!,
+          by: { actorId: who },
+          ...(body.organization ? { organizationId: body.organization } : {}),
+        })
+      );
+    }
+    if (path === "/api/clinical/care-team-retire" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      const row = tenant.careTeam.get(body.id);
+      if (!row) return send(res, 404, { error: `no care-team membership ${body.id}` });
+      return phiFor(row.patient_id, "CareTeam", () => tenant.careTeam.retire(body.id!));
+    }
+    if (path === "/api/clinical/coverage-record" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        plan?: string;
+        eligibility?: "eligible" | "ineligible" | "pending" | "unknown";
+        identifierSystem?: string;
+        identifierValue?: string;
+        detail?: string;
+        effectiveFrom?: string;
+        effectiveTo?: string;
+      };
+      if (!body.patient || !body.plan || !body.eligibility) {
+        return send(res, 400, { error: "patient, plan and eligibility required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(body.patient, "Coverage", () =>
+        tenant.coverage.record({
+          patientId: body.patient!,
+          plan: body.plan!,
+          eligibility: body.eligibility!,
+          by: { actorId: who },
+          ...(body.identifierSystem ? { identifierSystem: body.identifierSystem } : {}),
+          ...(body.identifierValue ? { identifierValue: body.identifierValue } : {}),
+          ...(body.detail ? { detail: body.detail } : {}),
+          ...(body.effectiveFrom ? { effectiveFrom: body.effectiveFrom } : {}),
+          ...(body.effectiveTo ? { effectiveTo: body.effectiveTo } : {}),
+        })
+      );
     }
     return send(res, 404, { error: "not found" });
   }
