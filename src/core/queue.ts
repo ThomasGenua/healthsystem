@@ -10,6 +10,8 @@ import { request as httpsRequest } from "node:https";
 import { readFileSync } from "node:fs";
 import { orderingKey, type Db } from "../db.ts";
 import type { ClinicalRecord, EntryType } from "../clinical/record.ts";
+import type { LabIntake } from "../orders/intake.ts";
+import type { LabProfile } from "../orders/hl7.ts";
 import type { DeliveryRow, DestinationConfig, DestinationTlsConfig } from "../types.ts";
 import type { FhirStore } from "../fhir/store.ts";
 import { mllpSend } from "../hl7/mllp.ts";
@@ -22,7 +24,14 @@ const DEFAULTS = {
 };
 
 /** Where a delivery for a given tenant should be written. */
-export type StoreResolver = (tenantId: string) => { fhir: FhirStore; clinical: ClinicalRecord };
+export type StoreResolver = (tenantId: string) => {
+  fhir: FhirStore;
+  clinical: ClinicalRecord;
+  labIntake: LabIntake;
+};
+
+/** Laboratory dialects a `labresults` destination can name. */
+export type LabProfileResolver = (id: string) => LabProfile | undefined;
 
 /**
  * Reads a dotted path with array indexes, e.g. "identifier[0].value".
@@ -65,6 +74,8 @@ export class DeliveryWorker {
   /** Messages one ordered key may send per pass, so no key starves the rest. */
   private drainLimit: number;
   private stopping = false;
+  /** Laboratory dialects, so a `labresults` destination can name one. */
+  private labProfiles: LabProfileResolver = () => undefined;
 
   constructor(db: Db, tickMs = 250, batch = 25, stores?: StoreResolver, drainLimit = 500) {
     this.db = db;
@@ -72,6 +83,11 @@ export class DeliveryWorker {
     this.batch = batch;
     this.stores = stores;
     this.drainLimit = drainLimit;
+  }
+
+  /** Registers the profile lookup a `labresults` destination resolves against. */
+  setLabProfiles(resolver: LabProfileResolver): void {
+    this.labProfiles = resolver;
   }
 
   registerDestination(tenantId: string, channelId: string, dest: DestinationConfig, index: number): string {
@@ -245,6 +261,29 @@ export class DeliveryWorker {
         ...(dest.effectivePath ? { effectiveAt: readPath(resource, dest.effectivePath) ?? undefined } : {}),
       });
       return `${entryType} ${r.outcome}${r.entry ? ` v${r.entry.version}` : ""}`;
+    }
+
+    if (dest.type === "labresults") {
+      if (!this.stores) throw new Error("clinical stores not attached to this worker");
+      // A named profile that does not exist is a failure, not a reason to fall
+      // back to the generic reading. A site that configured "dynacare" and
+      // silently got the generic dialect would be told its vendor interface was
+      // working.
+      let profile: LabProfile | undefined;
+      if (dest.profile) {
+        profile = this.labProfiles(dest.profile);
+        if (!profile) throw new Error(`unknown laboratory profile '${dest.profile}'`);
+      }
+      const report = this.stores(tenantId).labIntake.ingest(payload, {
+        ...(profile ? { profile } : {}),
+        sourceMessageId: messageId,
+      });
+      // The ack a delivery records is what an operator reads when they ask what
+      // an interface did, so it says the outcome per observation rather than
+      // only that the message was accepted.
+      const summary = report.results.map((r) => r.outcome).join(",");
+      const tz = report.timezoneAssumed ? " [observation time had no timezone]" : "";
+      return `${report.patientId ?? "unidentified"} ${summary}${tz}`;
     }
 
     if (dest.type === "http") {

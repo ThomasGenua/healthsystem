@@ -286,11 +286,40 @@ export interface ClinicalDestinationConfig {
   backoffCapMs?: number;
 }
 
+/**
+ * File an HL7 v2 ORU^R01 against the order it answers.
+ *
+ * Distinct from `fhirstore` and from `clinical`, and the distinction is the
+ * point. Those two store a copy of a value. This one closes an order, starts
+ * an acknowledgement clock, tells a retransmission from a correction, and
+ * holds a result whose patient cannot be identified instead of guessing.
+ *
+ * The payload is raw HL7, not mapped JSON, so this destination takes the
+ * message before any `transform.mapping` step. A channel that wants both a
+ * filed result and a facade Observation lists two destinations.
+ */
+export interface LabResultDestinationConfig {
+  id?: string;
+  type: "labresults";
+  /**
+   * The laboratory dialect to read this feed with. Names a profile registered
+   * on the engine; absent means the generic ORU reading, which is honest for a
+   * standards-conformant sender and reports what it had to assume.
+   */
+  profile?: string;
+  ordered?: boolean;
+  skipOnDead?: boolean;
+  maxAttempts?: number;
+  backoffBaseMs?: number;
+  backoffCapMs?: number;
+}
+
 export type DestinationConfig =
   | HttpDestinationConfig
   | MllpDestinationConfig
   | FhirStoreDestinationConfig
-  | ClinicalDestinationConfig;
+  | ClinicalDestinationConfig
+  | LabResultDestinationConfig;
 
 export interface ChannelConfig {
   id: string;
