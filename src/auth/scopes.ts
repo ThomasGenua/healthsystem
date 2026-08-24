@@ -1,24 +1,28 @@
 /**
  * The scope model and the route-to-scope map.
  *
- * Three scopes, deliberately coarse. A health interface engine has three kinds
- * of caller — an operator running the engine, a consumer reading the facade,
- * and a feed pushing messages in — and splitting further would invent
- * distinctions the API does not actually make.
+ * Four scopes. The first three are system scopes; `patient` is deliberately a
+ * separate trust boundary. A SMART `patient/*.read` token must never become a
+ * general `read` token: the latter can read every Patient on the FHIR facade,
+ * while the former may reach only records for which its OAuth subject has a
+ * live patient_authority grant.
  *
  *   admin   operate the engine: channels, messages, the delivery queue, keys
  *   read    read the FHIR facade and the terminology/conformance lookups
  *   write   push messages in through an ingest or FHIR source
+ *   patient reach the patient/proxy surface, still subject to a live grant
  *
- * `admin` implies the other two: an operator that can rewrite a channel can
- * already route anything anywhere, so withholding read from it buys nothing.
+ * `admin` implies the other system scopes. It does not imply `patient`: an
+ * operator is not the patient, and the separate surface refuses API keys even
+ * if one is mis-issued with that word on it.
  */
-export type Scope = "admin" | "read" | "write";
+export type Scope = "admin" | "read" | "write" | "patient";
 
+/** Scopes that may be put on service/API-key credentials. */
 export const ALL_SCOPES: Scope[] = ["admin", "read", "write"];
 
 export function isScope(s: string): s is Scope {
-  return s === "admin" || s === "read" || s === "write";
+  return s === "admin" || s === "read" || s === "write" || s === "patient";
 }
 
 /** Expands implied scopes: admin covers everything. */
@@ -55,9 +59,19 @@ export function scopesFromSmart(raw: Iterable<string>): Set<Scope> {
       out.add("admin");
       continue;
     }
-    const m = /^(?:system|user|patient)\/[^.]+\.(.+)$/.exec(s);
+    const m = /^(system|user|patient)\/[^.]+\.(.+)$/.exec(s);
     if (!m) continue;
-    const verb = m[1];
+    const context = m[1];
+    const verb = m[2];
+    // The most important line in this map. Patient-context scopes are not a
+    // small spelling of system read/write; they open only /patient/*, where a
+    // subject-to-patient authority check runs again on every request.
+    if (context === "patient") {
+      if (verb === "*" || verb === "read" || verb === "write" || /^[cruds]+$/.test(verb)) {
+        out.add("patient");
+      }
+      continue;
+    }
     if (verb === "*") {
       out.add("read");
       out.add("write");
@@ -92,6 +106,7 @@ export function requiredScope(method: string, path: string): Scope | null {
   if (method === "GET" && path === "/metrics") return null;
   if (method === "GET" && path === "/fhir/metadata") return null;
 
+  if (path === "/patient" || path.startsWith("/patient/")) return "patient";
   if (path.startsWith("/api/")) return "admin";
   if (path.startsWith("/ingest/")) return "write";
 

@@ -139,6 +139,13 @@ export class AuthGate {
     if (!principal.scopes.has(need)) {
       return { ok: false, status: 403, error: `scope '${need}' required`, principal };
     }
+    // A patient-context scope is useful only when it names a person at an
+    // identity provider. API keys identify systems and operators; binding one
+    // to patient_authority would turn a copied secret into a person's identity
+    // and defeat the boundary this scope exists to create.
+    if (need === "patient" && principal.kind !== "oauth") {
+      return { ok: false, status: 403, error: "patient access requires an OAuth identity", principal };
+    }
     return { ok: true, principal: { ...principal, purposeOfUse: purposeOfUse(headers) } };
   }
 

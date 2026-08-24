@@ -26,11 +26,16 @@ import { join } from "node:path";
 import { Db } from "../src/db.ts";
 import { OrderStore } from "../src/orders/store.ts";
 import { PatientAccess } from "../src/patient/access.ts";
+import { TaskStore } from "../src/work/tasks.ts";
 
 const CHILD = "NT-child";
 const P = "NT123456";
 const CLERK = { actorId: "registration-desk", actorKind: "practitioner" };
 const GP = { actorId: "dr-tetso", actorKind: "practitioner" };
+const PROXY = {
+  permissions: ["summary", "results", "appointments", "messages", "access-log", "requests"] as const,
+  purpose: "help the patient manage their care",
+};
 
 const YEAR = 365 * 86_400_000;
 const inDays = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString();
@@ -39,10 +44,12 @@ function portal() {
   const dir = mkdtempSync(join(tmpdir(), "portage-pa-"));
   const db = new Db(join(dir, "portage.db"));
   const orders = new OrderStore(db);
+  const tasks = new TaskStore(db);
   return {
     db,
     orders,
-    pa: new PatientAccess(db, orders),
+    tasks,
+    pa: new PatientAccess(db, orders, tasks),
     cleanup: () => {
       db.close();
       rmSync(dir, { recursive: true, force: true });
@@ -77,7 +84,8 @@ test("a parent's access lapses on the day it was set to, with nothing having to 
       relationship: "parent-guardian",
       expiresAt: majority,
       by: CLERK,
-      reason: "parent of a minor",
+      permissions: [...PROXY.permissions],
+      purpose: "parent of a minor",
     });
 
     assert.ok(pa.may("parent-1", CHILD), "entitled today");
@@ -109,6 +117,8 @@ test("delegated access without an expiry is refused, not defaulted", () => {
           relationship: "parent-guardian",
           expiresAt: "",
           by: CLERK,
+          permissions: [...PROXY.permissions],
+          purpose: PROXY.purpose,
         }),
       /needs an expiry; an authority that never ends is the failure this guards against/
     );
@@ -120,6 +130,8 @@ test("delegated access without an expiry is refused, not defaulted", () => {
           relationship: "parent-guardian",
           expiresAt: inDays(-1),
           by: CLERK,
+          permissions: [...PROXY.permissions],
+          purpose: PROXY.purpose,
         }),
       /already past/
     );
@@ -134,14 +146,93 @@ test("delegated access without an expiry is refused, not defaulted", () => {
   }
 });
 
+test("a proxy grant names scope, purpose and expiry, and cannot delegate again", () => {
+  const { pa, cleanup } = portal();
+  try {
+    assert.throws(
+      () =>
+        pa.grantProxy({
+          patientId: CHILD,
+          subjectId: "parent-1",
+          relationship: "parent-guardian",
+          expiresAt: inDays(30),
+          by: CLERK,
+          permissions: [],
+          purpose: "appointments",
+        }),
+      /explicit permission/
+    );
+    assert.throws(
+      () =>
+        pa.grantProxy({
+          patientId: CHILD,
+          subjectId: "parent-1",
+          relationship: "parent-guardian",
+          expiresAt: inDays(30),
+          by: CLERK,
+          permissions: ["summary"],
+          purpose: "  ",
+        }),
+      /needs a purpose/
+    );
+    assert.throws(
+      () =>
+        pa.grantProxy({
+          patientId: CHILD,
+          subjectId: "parent-1",
+          relationship: "parent-guardian",
+          expiresAt: inDays(30),
+          by: CLERK,
+          permissions: ["delegates"],
+          purpose: "manage everyone else",
+        }),
+      /not allowed/
+    );
+
+    const grant = pa.grantProxy({
+      patientId: CHILD,
+      subjectId: "parent-1",
+      relationship: "parent-guardian",
+      expiresAt: inDays(30),
+      by: CLERK,
+      permissions: ["summary", "appointments"],
+      purpose: "book and prepare for visits",
+    });
+    assert.equal(pa.allows(grant, "summary"), true);
+    assert.equal(pa.allows(grant, "appointments"), true);
+    assert.equal(pa.allows(grant, "results"), false, "appointments did not quietly become result access");
+    assert.equal(pa.allows(grant, "delegates"), false);
+    assert.deepEqual(pa.permissionsFor(grant), ["summary", "appointments"]);
+    assert.equal(grant.purpose, "book and prepare for visits");
+  } finally {
+    cleanup();
+  }
+});
+
 test("a grant about to lapse is surfaced, so renewal is a decision and not a discovery", () => {
   // A parent who still needs access to a disabled adult child's chart should
   // be asked, not silently cut off. And one who should not have it should
   // stop, on the day.
   const { pa, cleanup } = portal();
   try {
-    pa.grantProxy({ patientId: CHILD, subjectId: "soon", relationship: "parent-guardian", expiresAt: inDays(10), by: CLERK });
-    pa.grantProxy({ patientId: CHILD, subjectId: "later", relationship: "representative", expiresAt: inDays(200), by: CLERK });
+    pa.grantProxy({
+      patientId: CHILD,
+      subjectId: "soon",
+      relationship: "parent-guardian",
+      expiresAt: inDays(10),
+      by: CLERK,
+      permissions: [...PROXY.permissions],
+      purpose: PROXY.purpose,
+    });
+    pa.grantProxy({
+      patientId: CHILD,
+      subjectId: "later",
+      relationship: "representative",
+      expiresAt: inDays(200),
+      by: CLERK,
+      permissions: [...PROXY.permissions],
+      purpose: PROXY.purpose,
+    });
     pa.grantSelf(P, "patient-marie", CLERK);
 
     assert.deepEqual(pa.expiring(30).map((a) => a.subject_id), ["soon"]);
@@ -161,6 +252,8 @@ test("access can be withdrawn early, with a reason", () => {
       relationship: "representative",
       expiresAt: inDays(300),
       by: CLERK,
+      permissions: [...PROXY.permissions],
+      purpose: PROXY.purpose,
     });
     assert.ok(pa.may("ex-spouse", P));
 
@@ -319,6 +412,44 @@ test("a patient can see who looked at their record, proxies included", () => {
   }
 });
 
+test("an access or correction request is a receipt for the patient and work for the clinic", () => {
+  const { pa, tasks, cleanup } = portal();
+  try {
+    const correction = pa.submitRequest({
+      patientId: P,
+      kind: "correction",
+      target: "Medication metformin",
+      detail: "The dose shown is 500 mg; I take 1000 mg at supper.",
+      by: { subjectId: "patient-marie", relationship: "self" },
+    });
+    assert.equal(correction.status, "submitted");
+    assert.equal(correction.target, "Medication metformin");
+    assert.equal(tasks.unassigned({ kind: "privacy-request" })[0].correlation_id, correction.id);
+
+    const completed = pa.completeRequest(correction.id, {
+      ...CLERK,
+      outcome: "clinician reviewed; medication amended to 1000 mg at supper",
+    });
+    assert.equal(completed.status, "completed");
+    assert.match(completed.outcome ?? "", /amended/);
+    assert.equal(tasks.get(correction.task_id)?.status, "completed");
+    assert.equal(pa.requestsFor(P)[0].id, correction.id, "the patient keeps the receipt");
+
+    assert.throws(
+      () =>
+        pa.submitRequest({
+          patientId: P,
+          kind: "correction",
+          detail: "Something is wrong.",
+          by: { subjectId: "patient-marie", relationship: "self" },
+        }),
+      /identify what/
+    );
+  } finally {
+    cleanup();
+  }
+});
+
 test("authority and holds are confined to their tenant", () => {
   const dir = mkdtempSync(join(tmpdir(), "portage-pa-iso-"));
   const root = new Db(join(dir, "portage.db"));
@@ -335,6 +466,8 @@ test("authority and holds are confined to their tenant", () => {
       relationship: "parent-guardian",
       expiresAt: inDays(300),
       by: CLERK,
+      permissions: [...PROXY.permissions],
+      purpose: PROXY.purpose,
     });
     const r = aResult(nOrders);
     north.hold({ resultId: r.id, category: "clinician-will-discuss", releaseAt: inDays(3), by: GP, reason: "x" });

@@ -3,7 +3,9 @@
  *
  * Every request passes one authentication gate before any route runs (see
  * auth/gate.ts). Scopes: /api/* needs `admin`, GET /fhir/* needs `read`,
- * writes need `write`. The UI shell, /api/health and /fhir/metadata are open.
+ * writes need `write`, and /patient/* needs the OAuth-only `patient` scope
+ * plus a live subject-to-chart grant. The UI shell, /api/health and
+ * /fhir/metadata are open.
  *
  * GET  /api/health                       liveness, counters and alertable signals
  * GET  /metrics                          Prometheus exposition (public, no patient data)
@@ -57,6 +59,7 @@ import { VISIT_TYPES } from "../workspace/visit.ts";
 import type { EncounterClass } from "../clinical/encounters.ts";
 import { DIRECTORY_KINDS, type PartyKind } from "../directory/store.ts";
 import { mapStoreError } from "../core/refusal.ts";
+import type { AuthorityRow, PatientPermission } from "../patient/access.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
 import { VERSION } from "../version.ts";
@@ -473,6 +476,317 @@ async function route(
         return send(res, 400, { error: (err as Error).message });
       }
     }
+  }
+
+  /**
+   * The patient/proxy boundary.
+   *
+   * The gate has already required the OAuth-only `patient` scope. That is not
+   * enough: a token names a person, not a chart. Every route below calls
+   * patientPhi(), which binds the token subject to the requested patient
+   * through a live, unrevoked, unexpired authority grant and checks the
+   * grant's explicit permission.
+   *
+   * This is deliberately not the clinician Workspace. It includes internal
+   * tasks and unacknowledged results. Patient results come only through
+   * PatientAccess.resultsFor(), where a bounded hold is visible but its value
+   * is not.
+   */
+  if (path === "/patient" || path.startsWith("/patient/")) {
+    // AuthGate normally enforces this with the patient scope. Keep the check
+    // here as well because an embedding can deliberately construct an
+    // authentication-disabled gate; that may open an integration demo, but it
+    // must never turn the synthetic `anonymous` principal into a patient.
+    if (auth.principal.kind !== "oauth") {
+      audit({
+        action: verbToAction(method),
+        outcome: 4,
+        resourceType: "Patient",
+        detail: "patient boundary requires an OAuth identity",
+      });
+      return send(res, 403, { error: "patient access requires an OAuth identity" });
+    }
+    const subject = auth.principal.id;
+    const access = tenant.patientAccess;
+
+    const authorityView = (row: AuthorityRow) => ({
+      id: row.id,
+      patientId: row.patient_id,
+      relationship: row.relationship,
+      permissions: access.permissionsFor(row),
+      purpose: row.purpose ?? row.reason,
+      expiresAt: row.expires_at,
+      grantedAt: row.granted_at,
+    });
+
+    const patientPhi = <T>(
+      patientId: string,
+      permission: PatientPermission,
+      resourceType: string,
+      action: string,
+      produce: (authority: AuthorityRow) => T,
+      status = 200
+    ): void => {
+      const authority = access.may(subject, patientId);
+      if (!authority || !access.allows(authority, permission)) {
+        tenant.db.transaction(() => {
+          access.logAccess({
+            patientId,
+            subjectId: subject,
+            relationship: authority?.relationship ?? "none",
+            action,
+            outcome: "refused",
+            resource: resourceType,
+            detail: authority ? `grant does not include ${permission}` : "no live authority",
+          });
+          audit({
+            action: verbToAction(method),
+            outcome: 4,
+            resourceType,
+            patient: patientId,
+            detail: authority ? `patient grant lacks ${permission}` : "no live patient authority",
+          });
+        });
+        return send(res, 403, { error: "not authorized for this patient resource" });
+      }
+
+      let value: T;
+      try {
+        // Writes and both trails commit together. A message reply that
+        // persisted while its access-log insert failed would be a patient
+        // action with no accountable actor — a worse outcome than refusing
+        // the request and letting it be retried.
+        value = tenant.db.transaction(() => {
+          const produced = produce(authority);
+          access.logAccess({
+            patientId,
+            subjectId: subject,
+            relationship: authority.relationship,
+            action,
+            outcome: "allowed",
+            resource: resourceType,
+          });
+          audit({ action: verbToAction(method), outcome: 0, resourceType, patient: patientId });
+          return produced;
+        });
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        if (mapped.outcome === 8) console.error(`patient ${resourceType}: ${mapped.detail}`);
+        tenant.db.transaction(() => {
+          access.logAccess({
+            patientId,
+            subjectId: subject,
+            relationship: authority.relationship,
+            action,
+            outcome: "refused",
+            resource: resourceType,
+            detail: mapped.detail,
+          });
+          audit({
+            action: verbToAction(method),
+            outcome: mapped.outcome,
+            resourceType,
+            patient: patientId,
+            detail: mapped.detail,
+          });
+        });
+        return send(res, mapped.status, { error: mapped.error });
+      }
+      return send(res, status, value);
+    };
+
+    if ((path === "/patient" || path === "/patient/authorities") && method === "GET") {
+      const live = access.forSubject(subject);
+      const rows = tenant.db.transaction(() => {
+        for (const row of live) {
+          access.logAccess({
+            patientId: row.patient_id,
+            subjectId: subject,
+            relationship: row.relationship,
+            action: "list-authorities",
+            outcome: "allowed",
+            resource: "Consent",
+          });
+          audit({ action: "R", outcome: 0, resourceType: "Consent", patient: row.patient_id });
+        }
+        if (live.length === 0) audit({ action: "R", outcome: 0, resourceType: "Consent", count: 0 });
+        return live.map(authorityView);
+      });
+      return send(res, 200, { authorities: rows });
+    }
+
+    if (path === "/patient/summary" && method === "GET") {
+      const patientId = url.searchParams.get("patient");
+      if (!patientId) return send(res, 400, { error: "patient required" });
+      return patientPhi(patientId, "summary", "Composition", "view-summary", () => ({
+        patient: tenant.clinical.patientIndex.get(patientId) ?? null,
+        allergies: {
+          status: tenant.meds.allergyStatus(patientId),
+          items: tenant.meds.allergies(patientId),
+        },
+        medications: {
+          taking: tenant.meds.current(patientId),
+          prescribed: tenant.meds.current(patientId, { asPrescribed: true }),
+        },
+        immunizations: {
+          status: tenant.immunizations.historyStatus(patientId),
+          items: tenant.immunizations.forPatient(patientId),
+        },
+        latestVitals: tenant.vitals.latest(patientId),
+        careTeam: tenant.careTeam.forPatient(patientId),
+        coverage: tenant.coverage.current(patientId) ?? null,
+      }));
+    }
+
+    if (path === "/patient/results" && method === "GET") {
+      const patientId = url.searchParams.get("patient");
+      if (!patientId) return send(res, 400, { error: "patient required" });
+      return patientPhi(patientId, "results", "DiagnosticReport", "view-results", () => access.resultsFor(patientId));
+    }
+
+    if (path === "/patient/appointments" && method === "GET") {
+      const patientId = url.searchParams.get("patient");
+      if (!patientId) return send(res, 400, { error: "patient required" });
+      return patientPhi(patientId, "appointments", "Appointment", "view-appointments", () =>
+        tenant.schedule.appointmentsForPatient(patientId, {
+          includeCancelled: url.searchParams.get("cancelled") === "true",
+        })
+      );
+    }
+
+    if (path === "/patient/threads" && method === "GET") {
+      const patientId = url.searchParams.get("patient");
+      if (!patientId) return send(res, 400, { error: "patient required" });
+      return patientPhi(patientId, "messages", "Communication", "view-messages", () =>
+        tenant.messaging.forPatient(patientId, { includeClosed: url.searchParams.get("closed") === "true" })
+      );
+    }
+
+    if (path === "/patient/thread" && method === "GET") {
+      const id = url.searchParams.get("id");
+      if (!id) return send(res, 400, { error: "id required" });
+      const thread = tenant.messaging.get(id);
+      if (!thread) return send(res, 404, { error: `no message thread ${id}` });
+      return patientPhi(thread.patient_id, "messages", "Communication", "view-message-thread", () => ({
+        thread,
+        messages: tenant.messaging.messages(id),
+      }));
+    }
+
+    if (path === "/patient/thread-open" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        subject?: string;
+        body?: string;
+        priority?: "routine" | "urgent" | "stat";
+      };
+      if (!body.patient || !body.subject || !body.body) {
+        return send(res, 400, { error: "patient, subject and body required" });
+      }
+      return patientPhi(
+        body.patient,
+        "messages",
+        "Communication",
+        "open-message-thread",
+        (authority) =>
+          tenant.messaging.open({
+            patientId: body.patient!,
+            subject: body.subject!,
+            body: body.body!,
+            authorKind: authority.relationship === "self" ? "patient" : "proxy",
+            by: { actorId: subject, actorKind: "oauth" },
+            ...(body.priority ? { priority: body.priority } : {}),
+          }),
+        201
+      );
+    }
+
+    if (path === "/patient/thread-reply" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; body?: string };
+      if (!body.id || !body.body) return send(res, 400, { error: "id and body required" });
+      const thread = tenant.messaging.get(body.id);
+      if (!thread) return send(res, 404, { error: `no message thread ${body.id}` });
+      return patientPhi(thread.patient_id, "messages", "Communication", "reply-to-message", (authority) =>
+        tenant.messaging.reply(body.id!, {
+          body: body.body!,
+          authorKind: authority.relationship === "self" ? "patient" : "proxy",
+          by: { actorId: subject, actorKind: "oauth" },
+        })
+      );
+    }
+
+    if (path === "/patient/access-log" && method === "GET") {
+      const patientId = url.searchParams.get("patient");
+      if (!patientId) return send(res, 400, { error: "patient required" });
+      return patientPhi(patientId, "access-log", "AuditEvent", "view-access-log", () =>
+        access.accessLog(patientId, num(url.searchParams.get("limit")) ?? 100)
+      );
+    }
+
+    if (path === "/patient/delegates" && method === "GET") {
+      const patientId = url.searchParams.get("patient");
+      if (!patientId) return send(res, 400, { error: "patient required" });
+      return patientPhi(patientId, "delegates", "Consent", "view-delegates", (authority) => {
+        if (authority.relationship !== "self") throw new Error("only the patient may review delegated access");
+        return access.whoCanSee(patientId).map(authorityView);
+      });
+    }
+
+    if (path === "/patient/delegate-revoke" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { patient?: string; authority?: string; reason?: string };
+      if (!body.patient || !body.authority || !body.reason) {
+        return send(res, 400, { error: "patient, authority and reason required" });
+      }
+      return patientPhi(body.patient, "delegates", "Consent", "revoke-delegate", (self) => {
+        if (self.relationship !== "self") throw new Error("only the patient may revoke delegated access");
+        const delegated = access.authority(body.authority!);
+        if (!delegated || delegated.patient_id !== body.patient || delegated.relationship === "self") {
+          throw new Error("that is not a delegated authority for this patient");
+        }
+        return authorityView(
+          access.revoke(body.authority!, {
+            actorId: subject,
+            actorKind: "oauth",
+            reason: body.reason!,
+          })
+        );
+      });
+    }
+
+    if (path === "/patient/requests" && method === "GET") {
+      const patientId = url.searchParams.get("patient");
+      if (!patientId) return send(res, 400, { error: "patient required" });
+      return patientPhi(patientId, "requests", "Task", "view-patient-requests", () => access.requestsFor(patientId));
+    }
+
+    if (path === "/patient/request" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        kind?: "access" | "correction";
+        target?: string;
+        detail?: string;
+      };
+      if (!body.patient || !body.kind || !body.detail) {
+        return send(res, 400, { error: "patient, kind and detail required" });
+      }
+      return patientPhi(
+        body.patient,
+        "requests",
+        "Task",
+        "submit-patient-request",
+        (authority) =>
+          access.submitRequest({
+            patientId: body.patient!,
+            kind: body.kind!,
+            detail: body.detail!,
+            ...(body.target ? { target: body.target } : {}),
+            by: { subjectId: subject, relationship: authority.relationship },
+          }),
+        201
+      );
+    }
+
+    return send(res, 404, { error: "not found" });
   }
 
   if (path === "/api/channels" && method === "GET") {
@@ -1359,6 +1673,120 @@ async function route(
       audit({ action: "R", outcome: 0, resourceType: "Consent", patient });
       return send(res, 200, tenant.consent.directivesFor(patient));
     }
+    if (path === "/api/clinical/authorities" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("Consent", () =>
+        tenant.patientAccess.whoCanSee(patient).map((row) => ({
+          ...row,
+          permissions: tenant.patientAccess.permissionsFor(row),
+        }))
+      );
+    }
+    if (path === "/api/clinical/authority-self" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { patient?: string; subject?: string };
+      if (!body.patient || !body.subject) return send(res, 400, { error: "patient and subject required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(body.patient, "Consent", () =>
+        tenant.patientAccess.grantSelf(body.patient!, body.subject!, {
+          actorId: who,
+          actorKind: auth.ok ? auth.principal.kind : "unknown",
+        })
+      );
+    }
+    if (path === "/api/clinical/authority-proxy" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        subject?: string;
+        relationship?: "parent-guardian" | "substitute-decision-maker" | "representative";
+        expiresAt?: string;
+        permissions?: PatientPermission[];
+        purpose?: string;
+      };
+      if (
+        !body.patient ||
+        !body.subject ||
+        !body.relationship ||
+        !body.expiresAt ||
+        !body.permissions ||
+        !body.purpose
+      ) {
+        return send(res, 400, {
+          error: "patient, subject, relationship, expiresAt, permissions and purpose required",
+        });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(body.patient, "Consent", () =>
+        tenant.patientAccess.grantProxy({
+          patientId: body.patient!,
+          subjectId: body.subject!,
+          relationship: body.relationship!,
+          expiresAt: body.expiresAt!,
+          permissions: body.permissions!,
+          purpose: body.purpose!,
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+        })
+      );
+    }
+    if (path === "/api/clinical/authority-revoke" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { authority?: string; reason?: string };
+      if (!body.authority || !body.reason) return send(res, 400, { error: "authority and reason required" });
+      const row = tenant.patientAccess.authority(body.authority);
+      if (!row) return send(res, 404, { error: `no authority ${body.authority}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(row.patient_id, "Consent", () =>
+        tenant.patientAccess.revoke(body.authority!, {
+          actorId: who,
+          actorKind: auth.ok ? auth.principal.kind : "unknown",
+          reason: body.reason!,
+        })
+      );
+    }
+    if (path === "/api/clinical/patient-requests" && method === "GET") {
+      if (patient) {
+        return phi("Task", () => tenant.patientAccess.requestsFor(patient), (rows) => rows.length);
+      }
+      // The unified task queue remains the cross-patient inbox. This route is
+      // the request detail behind those task correlation ids.
+      return phi(
+        "Task",
+        () => {
+          const tasks = tenant.tasks.unassigned({ kind: "privacy-request" });
+          const requests = tasks
+            .map((task) => (task.correlation_id ? tenant.patientAccess.request(task.correlation_id) : undefined))
+            .filter((row): row is NonNullable<typeof row> => row !== undefined);
+          return filterByDirective(["Task"], requests);
+        },
+        (r) => r.rows.length
+      );
+    }
+    if (
+      method === "POST" &&
+      (path === "/api/clinical/patient-request-complete" || path === "/api/clinical/patient-request-decline")
+    ) {
+      const body = JSON.parse(await readBody(req)) as { request?: string; outcome?: string; reason?: string };
+      if (!body.request) return send(res, 400, { error: "request required" });
+      const row = tenant.patientAccess.request(body.request);
+      if (!row) return send(res, 404, { error: `no patient request ${body.request}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      if (path.endsWith("-complete")) {
+        if (!body.outcome) return send(res, 400, { error: "outcome required" });
+        return phiFor(row.patient_id, "Task", () =>
+          tenant.patientAccess.completeRequest(body.request!, {
+            actorId: who,
+            actorKind: auth.ok ? auth.principal.kind : "unknown",
+            outcome: body.outcome!,
+          })
+        );
+      }
+      if (!body.reason) return send(res, 400, { error: "reason required" });
+      return phiFor(row.patient_id, "Task", () =>
+        tenant.patientAccess.declineRequest(body.request!, {
+          actorId: who,
+          actorKind: auth.ok ? auth.principal.kind : "unknown",
+          reason: body.reason!,
+        })
+      );
+    }
     if (path === "/api/clinical/gaps" && method === "POST") {
       // A cohort definition and a gap rule come in the body because they are
       // structured, not because this writes anything: it reads a population.
@@ -1928,6 +2356,7 @@ function listFixtures(): Array<{ name: string; content: string }> {
 function touchesPatientData(path: string): boolean {
   if (path.startsWith("/api/messages")) return true;
   if (path.startsWith("/api/clinical/")) return true;
+  if (path === "/patient" || path.startsWith("/patient/")) return true;
   if (path.startsWith("/ingest/")) return true;
   if (path === "/fhir/metadata" || path.startsWith("/fhir/AuditEvent")) return false;
   return path.startsWith("/fhir/");

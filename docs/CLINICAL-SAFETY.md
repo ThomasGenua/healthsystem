@@ -23,7 +23,8 @@ test is gone.
 the post-0.5.0 line: v0.5.0 plus off-machine backup, organization identity
 on credentials, break-glass notice dispatch, encounters, the provider
 directory, FHIR projection of that directory, the refusal/fault split
-in `phi()`, the longitudinal-chart increment, and durable patient messaging).
+in `phi()`, the longitudinal-chart increment, durable patient messaging,
+and the OAuth patient/proxy boundary).
 **Last reviewed:** 2026-08-24.
 **Reviewer of this draft:** the author of the controls, not an independent
 clinical safety officer. That gap is residual risk R-01.
@@ -55,7 +56,7 @@ In scope, as stores and an authenticated HTTP API:
 - medications, allergies, a safety check, and reconciliation
 - referrals and a unified work inbox
 - a schedule that cannot double-book a seat
-- consent directives, break-glass, and (built, not mounted) patient access
+- consent directives, break-glass, and an OAuth/grant-bound patient API
 - a FHIR R4 facade, including the local provider directory as resources
 - hash-chained message lineage and a hash-chained access audit
 - verified backup, including an off-machine replica when configured
@@ -67,7 +68,7 @@ These are not gaps discovered later. They are scope:
 | Out of scope | Why that is a clinical statement |
 |---|---|
 | A clinician user interface | The chart is an API. "A clinician can use this today" is not claimed. A consumer that ignores `complete === false` reintroduces H-06. |
-| A patient portal | `src/patient/access.ts` is built and not mounted. A portal is a different trust boundary. |
+| A patient application | The OAuth/grant JSON boundary exists; identity-proofing enrolment, usable EN/FR UX, notifications and accessibility validation do not. |
 | Clinical decision-support *content* | The check is here; the interaction table is not. An 80% complete table is one prescribers learn to trust. |
 | Machine learning | Nothing in this repository infers, predicts or scores. No output should be read as though it did. |
 | A certified PSI / Projectathon result | Conformance packs encode published profiles and pass shipped fixtures. |
@@ -223,6 +224,10 @@ makes the control a fact rather than a comment.
 | H-29 | Clinical route serves a record without an audit row | A new endpoint forgets to audit | A privacy office cannot see who looked | Major | Low | `phi()` audits first; source-reading test drives every route | `test/clinical-api.test.ts` — "every clinical route leaves an audit row, including ones added later" |
 | H-30 | Delegated access that never ends | A parent grant with no expiry | An adolescent's notes remain readable after entitlement ended | Major | Medium | Delegated grant without expiry is refused; clock-based lapse | `test/patient-access.test.ts` — "a parent's access lapses on the day it was set to, with nothing having to run" |
 | H-31 | Held result looks like no result | A hold without a visible state | The patient thinks nothing came back | Moderate | Medium | A hold is visible as held; it ends by the clock | `test/patient-access.test.ts` — "a held result is visible as held, never simply absent" |
+| H-51 | Patient SMART token becomes general FHIR read | `patient/*.read` collapsed into the system `read` scope | One patient can enumerate the provincial facade | Catastrophic | Low | Separate OAuth-only `patient` scope; it never implies FHIR read | `test/patient-api.test.ts` — "patient SMART scope cannot read the general FHIR facade" |
+| H-52 | Patient or proxy names another chart | Route trusts a patient id in the query/body | Another person's results, messages or appointments are disclosed | Catastrophic | Low | Every route binds OAuth subject to a live patient_authority grant | `test/patient-api.test.ts` — "an OAuth subject still needs a live authority for the named chart" |
+| H-53 | Appointment proxy gains results or messages | One coarse delegated-access flag | Sensitive information disclosed beyond the patient's purpose | Major | Low | Explicit grant permissions; proxy cannot delegate onward | `test/patient-api.test.ts` — "a proxy permission stays narrow" |
+| H-54 | Authentication-off mode turns anonymous into a patient | Synthetic anonymous principal bypasses the scope map | Unauthenticated chart access | Catastrophic | Low | Route-level OAuth check in addition to the gate | `test/patient-api.test.ts` — "authentication-off mode never turns anonymous into a patient" |
 | H-32 | Cross-custodian read on a shared node | A query that omits `tenant_id` | Another organization's chart | Catastrophic | Low | Tenant in every statement; source-reading test | `test/tenant-scoping.test.ts` — "no statement reads or writes tenant-scoped data without naming a tenant" |
 | H-33 | Feed credential subscribes its way to the record | `write` on `/fhir/` included Subscription | A lab key becomes a standing read | Catastrophic | Low | Subscription is admin-scoped | `test/subscription-scope.test.ts` — "a feed credential cannot subscribe its way to the clinical record" |
 | H-34 | Admin path reached without admin scope | Gate and router disagree on spelling | Unauthorized PHI or operator action | Catastrophic | Low | One gate; adversarial path spellings | `test/auth-bypass.test.ts` — "no spelling of an admin path reaches admin data without the admin scope" |
@@ -255,7 +260,7 @@ twice.
 |---|---|---|---|
 | R-01 | This case has not been signed by an independent CSO | The repository can write the log; it cannot appoint the clinician | Name a CSO before go-live; treat this file as the manufacturer's draft |
 | R-02 | No clinician UI | Backend first. A renderer that ignores `complete === false` reintroduces H-06 | Do not put an untested consumer in front of a prescriber |
-| R-03 | No patient portal | Different trust boundary; the store is built and not mounted | Do not serve `src/patient/access.ts` from an `admin` key |
+| R-03 | No patient application or enrolment flow | The OAuth/grant JSON boundary is mounted; identity proofing, usable EN/FR UX, notifications and accessibility validation are not | Do not call the API a portal or enrol a real patient without an approved proofing process |
 | R-04 | Decision-support mechanism without content (H-20) | A partial table is more dangerous than a small one | Licence an interaction source, or accept that interactions are unchecked |
 | R-05 | No machine learning | Section 7 asked; nothing here does it | Do not read any output as a prediction |
 | R-06 | MLLP is unauthenticated (H-43) | The protocol has nothing to hook | VPN, private APN, or transport mTLS — not Portage |

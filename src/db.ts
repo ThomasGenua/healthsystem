@@ -56,6 +56,8 @@ export const TENANT_SCOPED_TABLES = [
   "patient_authority",
   "result_release",
   "patient_access_log",
+  "patient_requests",
+  "patient_request_events",
   "schedule_slots",
   "schedule_bookings",
   "schedule_events",
@@ -745,6 +747,13 @@ CREATE TABLE IF NOT EXISTS patient_authority (
   relationship TEXT NOT NULL,
   -- full | summary. A proxy is often entitled to less than the patient is.
   extent TEXT NOT NULL DEFAULT 'full',
+  -- Explicit capability list. JSON array of summary, results, appointments,
+  -- messages, access-log, requests, delegates. Null only on legacy rows,
+  -- which the store interprets narrowly.
+  permissions TEXT,
+  -- Why the delegated access exists. Scope, purpose and expiry are three
+  -- separate decisions and a review needs all three.
+  purpose TEXT,
   -- Null only for the patient's own access. Every delegated grant has an end,
   -- because the failure being guarded against is one that never ends.
   expires_at TEXT,
@@ -808,6 +817,39 @@ CREATE TABLE IF NOT EXISTS patient_access_log (
   action TEXT NOT NULL,
   resource TEXT,
   outcome TEXT NOT NULL,
+  detail TEXT
+);
+
+-- Requests made through the patient boundary. The request is durable data;
+-- the task is the clinic's work to answer it. Keeping both lets the patient
+-- see what they asked while the unified inbox keeps it from disappearing.
+CREATE TABLE IF NOT EXISTS patient_requests (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  -- access | correction
+  kind TEXT NOT NULL,
+  target TEXT,
+  detail TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'submitted',
+  submitted_by TEXT NOT NULL,
+  relationship TEXT NOT NULL,
+  submitted_at TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  completed_at TEXT,
+  outcome TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS patient_request_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  event TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_kind TEXT NOT NULL,
   detail TEXT
 );
 
@@ -1336,6 +1378,8 @@ CREATE INDEX IF NOT EXISTS idx_authority_subject ON patient_authority(tenant_id,
 CREATE INDEX IF NOT EXISTS idx_authority_patient ON patient_authority(tenant_id, patient_id);
 CREATE INDEX IF NOT EXISTS idx_release_patient ON result_release(tenant_id, patient_id, state);
 CREATE INDEX IF NOT EXISTS idx_patient_access ON patient_access_log(tenant_id, patient_id, seq);
+CREATE INDEX IF NOT EXISTS idx_patient_requests ON patient_requests(tenant_id, patient_id, submitted_at);
+CREATE INDEX IF NOT EXISTS idx_patient_request_events ON patient_request_events(tenant_id, request_id, seq);
 -- The double-booking constraint. Partial, so a cancelled booking releases its
 -- seat while remaining on the record — a slot freed by deleting its booking
 -- would lose the fact that somebody cancelled, which is what a pattern of
@@ -1447,6 +1491,8 @@ const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
   { table: "patient_index", column: "preferred_language", type: "TEXT" },
   { table: "patient_index", column: "phone", type: "TEXT" },
   { table: "patient_index", column: "email", type: "TEXT" },
+  { table: "patient_authority", column: "permissions", type: "TEXT" },
+  { table: "patient_authority", column: "purpose", type: "TEXT" },
   // Tenancy. NOT NULL with a default, so existing rows land in the default
   // tenant rather than becoming unreachable, and a deployment that never
   // configures a second tenant is unaffected.

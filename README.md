@@ -22,7 +22,7 @@ The design targets the interoperability posture Canadian jurisdictions are conve
 
 v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources; filter, split, mapping and validation pipeline; retrying ordered destinations with DLQ and replay; hash-chained lineage; FHIR R4 facade; terminology service; PS-CA / CA:FeX / CA:eReC conformance packs; rest-hook Subscriptions; satellite outage demo; admin UI) plus:
 
-- **Authentication and authorisation.** API keys and OAuth 2.0 / SMART on FHIR bearer tokens, three scopes, one gate ahead of every route. On by default.
+- **Authentication and authorisation.** API keys and OAuth 2.0 / SMART on FHIR bearer tokens, three system scopes plus a separate OAuth-only patient scope, one gate ahead of every route. On by default.
 - **Mutual TLS**, for node-to-node links, inbound and outbound.
 - **Conformance validation on facade writes**, not only in-pipeline and on demand.
 - **Native SFTP, Postgres and MySQL sources**, and cron scheduling for any polling source.
@@ -60,8 +60,9 @@ v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A snapshot that leaves the machine**, encrypted, put, read back and walked again, so the stated RPO is not only for failures that spare the backup directory.
 - **A chart that can say whether anyone asked about immunizations or took a vital**, and that names a primary provider and a coverage claim without overwriting the last ones. Blood pressure is two numbers; a second current MRP is refused; today's appointments sit on the worklist. This is still not a provincial EMR — see [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
 - **Durable patient–clinic messaging.** A question is a thread that cannot be deleted. Closing it needs a reason. Awaiting the clinic and belonging to nobody are lists. This is not a portal and not a claim that anything was delivered.
+- **An OAuth-only patient/proxy API.** A patient-context SMART token cannot read the general FHIR facade; every chart is authorized again through an active grant with explicit scope, purpose and expiry. Held results, appointments, messages, access history, delegates and requests are patient-safe views, not the clinician Workspace.
 
-526 tests. Backend first, then the interface that makes the backend's honesty visible.
+538 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -73,7 +74,7 @@ Honest limits, so nobody discovers them in production:
 - **The database file is not encrypted.** `node:sqlite` cannot encrypt, so the control that fits a single-file store is an encrypted volume underneath it. Portage does not assume one is there: it checks at boot and on `/api/health`, and says so loudly when it cannot find one. See [Encryption at rest](#encryption-at-rest).
 - **The conformance packs are not certified.** They encode the published profiles as data and pass the shipped fixtures, but no projectathon has scored them.
 - **The clinical platform has no user interface.** Every module described below — the chart, medications, orders, referrals, scheduling, registries — is a store and an HTTP API with tests. The admin UI covers interface operations only. This is deliberate ordering, not an oversight, but "a clinician can use this today" is not a claim being made.
-- **No patient portal.** `src/patient/access.ts` and `src/patient/consent.ts` are built and tested and are not mounted on the API, because a portal is a different trust boundary — a patient authenticating as themselves, and a proxy as somebody entitled to act for them, neither of which is an operator with an `admin` key. Serving them from an admin-scoped API would make the scope model say something false about who is calling.
+- **No patient portal UI.** The JSON patient/proxy boundary is mounted at `/patient/*`; it is OAuth-only and checks a live, explicitly scoped authority grant on every chart. There is no patient application, identity-proofing enrolment flow, Canadian-French interface, notification delivery, or accessibility claim. The API being safe to call is not the same thing as a portal people can use.
 - **No clinical decision support content.** The medication safety mechanism is here — the check, the severities, the override with its record — and ships a deliberately small cross-reactivity set covering the classes with the clearest consensus. Drug interactions come from a licensed database through the `InteractionSource` seam. An interaction table that is 80% complete is one prescribers learn to trust, and the missing 20% is then invisible.
 - **Nothing here uses machine learning.** Section 7 of the requirements asks for it; nothing in this repository does anything of the sort, and no output should be read as though it did.
 
@@ -117,7 +118,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 526 tests
+npm test          # 538 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -133,13 +134,16 @@ Two credential schemes, either or both, chosen with `PORTAGE_AUTH_MODE`:
 | `apikey+oauth` | both accepted |
 | `off` | no authentication; logs a warning at boot |
 
-Three scopes, deliberately coarse — the API has three kinds of caller, and finer distinctions would be invented rather than real:
+Four scopes. The first three are system scopes; `patient` is a separate trust boundary:
 
 | scope | reaches |
 |---|---|
-| `admin` | `/api/*`: channels, messages, the delivery queue, keys. Also `/fhir/AuditEvent` and `/fhir/Subscription`. Implies the other two. |
+| `admin` | `/api/*`: channels, messages, the delivery queue, keys. Also `/fhir/AuditEvent` and `/fhir/Subscription`. Implies `read` and `write`, never `patient`. |
 | `read` | `GET /fhir/*` and the terminology and conformance lookups, except `/fhir/AuditEvent` and `/fhir/Subscription` |
 | `write` | `POST /ingest/:path`, `POST /fhir/:resourceType` |
+| `patient` | `/patient/*`, OAuth only, then narrowed again by the subject's live `patient_authority` grant |
+
+A SMART `patient/*.read` token maps only to `patient`. It does **not** map to `read`: doing that would let a patient-context token query every Patient on the general FHIR facade. API keys cannot be issued the patient scope. Authentication-off mode still refuses `/patient/*`; the synthetic anonymous principal never becomes a patient.
 
 Two things under `/fhir/` are not clinical traffic and sit with the operator rather than the consumer. `AuditEvent` records who looked at whom, so read access to the facade must not also disclose the access history of everyone in it. `Subscription` is a standing instruction to send patient records to an address — a routing decision of the same kind `POST /api/channels` makes. Left under the general `/fhir/` rule it needed only `write`, which is exactly what a feed is given, so the credential a lab uses to file results could have registered a rest-hook of its own and turned push-only access into a continuous read of the record. See [Subscriptions](#subscriptions).
 
@@ -710,11 +714,17 @@ A chart that is short says so at the top, above the panels: *"This is not the wh
 
 Hostile content in this console runs in the browser session of the person holding an admin key, so `test/ui-xss.test.ts` drives all three tabs in a real Chromium against genuinely hostile input — a patient's name from an ADT feed, and the free text a clerk types into a referral, a task or a break-glass reason — and asserts both that nothing executed and that the payloads actually reached the DOM.
 
-### What is deliberately not on this API
+### What is deliberately not on the clinical API
 
-**The patient-facing surface.** `src/patient/access.ts` is built and tested, and it is not mounted here, because a patient portal is a different trust boundary — a patient authenticating as themselves, and a proxy authenticating as somebody entitled to act for them, neither of which is an operator holding an `admin` key. Bolting those endpoints onto an admin-scoped API would make the scope model say something false about who is calling.
+**The patient-facing surface is separate.** `/api/clinical/*` remains for
+operators and clinicians. `/patient/*` requires an OAuth patient-context
+token, then binds that token's subject to a live `patient_authority` grant on
+every request. A patient scope cannot read `/fhir/*`; an admin scope does not
+imply patient; an API key cannot be issued patient scope.
 
-That surface needs its own authentication (patient identity, not an issued operator credential), its own scope vocabulary, and `PatientAccess.may()` consulted on every request rather than a scope check. It is the next thing to build, not something already here under a different name.
+The surface is JSON only. There is still no patient application, enrolment or
+identity-proofing workflow, French UI, notification delivery, or accessibility
+claim.
 
 ## Patient access
 
@@ -729,10 +739,38 @@ The same shape covers a substitute decision-maker whose authority ended when cap
 So authority is time-bounded by construction:
 
 - **A delegated grant without an expiry is refused, not defaulted.** A default would be this module's guess written into the record as somebody's decision — and the decision, *when does this end*, is the entire safeguard. For a parent it is the age of majority in the jurisdiction; for a substitute decision-maker it is a review date. Neither is something a library should choose.
+- **Scope, purpose and expiry are separate required fields.** A representative allowed to manage appointments does not gain result or message access. A proxy can never receive `delegates` and therefore cannot grant access onwards.
 - **The check is against the clock, not a status.** A grant that expired yesterday is not authority, whether or not any sweep has run.
 - **`expiring()` surfaces grants about to lapse**, so a renewal is a decision somebody makes rather than a lapse somebody discovers. A parent who still needs access to a disabled adult child's chart should be asked; one who should not have it should stop, on the day.
 
 The expired grant row stays. Who was entitled when is not something to delete — it simply stops being authority.
+
+### The patient/proxy API
+
+`GET /patient/authorities` is the starting point: the charts this OAuth subject
+may act for and the relationship, permissions, purpose and expiry of each
+grant. Every other route takes one of those patient ids and checks it again;
+accepting a patient id is not accepting its authority.
+
+- `/patient/summary` — demographics, allergy status, medication lists,
+  immunizations, latest vitals, current care team and coverage. It is not the
+  clinician Workspace: no internal tasks and no unacknowledged result values.
+- `/patient/results` — only `PatientAccess.resultsFor()`, so a held result is
+  visible while its value is not.
+- `/patient/appointments` — bookings joined to their time and service.
+- `/patient/threads`, `/patient/thread-open`, `/patient/thread-reply` —
+  messaging where speaker identity is derived from the grant, never accepted
+  from the request body.
+- `/patient/access-log`, `/patient/delegates`,
+  `/patient/delegate-revoke` — accountable access and patient-controlled
+  revocation.
+- `/patient/request`, `/patient/requests` — access and correction requests.
+  The patient receives a durable receipt and the clinic receives a linked,
+  unassigned privacy task that cannot be completed without evidence.
+
+The patient-facing access row and the tamper-evident audit row commit in the
+same database transaction as a patient write. A message reply cannot persist
+without both trails.
 
 ### Release timing
 
@@ -1497,7 +1535,7 @@ a scope-narrowed directive withholds its section rather than the chart around it
 
 - [#35 An access review a privacy officer can actually run](https://github.com/ThomasGenua/healthsystem/issues/35) — the audit trail records and proves, and answers none of the questions a privacy office asks. A chain nobody reads proves only that nobody tampered with a log nobody reads.
 - [#23 Validate the conformance packs against the published Projectathon scripts](https://github.com/ThomasGenua/healthsystem/issues/23) — the packs validate against this project's reading of the specifications, which is not the same as conforming to them.
-- [#24 The patient-facing surface, and its separate identity boundary](https://github.com/ThomasGenua/healthsystem/issues/24) — the hard part is built and deliberately not mounted, because a portal is a different trust boundary.
+- [#24 The patient-facing surface, and its separate identity boundary](https://github.com/ThomasGenua/healthsystem/issues/24) — the backend boundary is done: OAuth-only patient scope, live subject-to-chart grants, explicit proxy scope/purpose/expiry, patient-safe summaries, held results, appointments, messages, delegates, access logs and requests. What remains is the patient application, enrolment/identity proofing, French parity, notification delivery and accessibility validation.
 - [#40 Transmit a prescription to a pharmacy](https://github.com/ThomasGenua/healthsystem/issues/40) — a prescription is recorded carefully and then goes nowhere, so it is written out a second time somewhere else and the two records disagree.
 
 **Built for where it actually runs.**

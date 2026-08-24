@@ -370,6 +370,29 @@ test("every clinical route leaves an audit row, including ones added later", asy
       authorKind: "patient",
       by: { actorId: "NT-msg", actorKind: "patient" },
     }).thread;
+    const patientAccess = s.engine.forTenant("default").patientAccess;
+    const authorityToRevoke = patientAccess.grantProxy({
+      patientId: P,
+      subjectId: "proxy-old",
+      relationship: "representative",
+      expiresAt: "2027-08-24T00:00:00Z",
+      permissions: ["appointments"],
+      purpose: "book appointments",
+      by: GP,
+    });
+    const requestToComplete = patientAccess.submitRequest({
+      patientId: P,
+      kind: "access",
+      detail: "Please provide a copy of my chart.",
+      by: { subjectId: P, relationship: "self" },
+    });
+    const requestToDecline = patientAccess.submitRequest({
+      patientId: P,
+      kind: "correction",
+      target: "Medication list",
+      detail: "Please correct the historical medication.",
+      by: { subjectId: P, relationship: "self" },
+    });
 
     const standing = s.engine.forTenant("default").consent.breakGlass({
       patientId: P,
@@ -427,6 +450,13 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/thread-close": "POST",
       "/api/clinical/thread-reopen": "POST",
       "/api/clinical/thread-assign": "POST",
+      "/api/clinical/authorities": `?patient=${P}`,
+      "/api/clinical/authority-self": "POST",
+      "/api/clinical/authority-proxy": "POST",
+      "/api/clinical/authority-revoke": "POST",
+      "/api/clinical/patient-requests": "",
+      "/api/clinical/patient-request-complete": "POST",
+      "/api/clinical/patient-request-decline": "POST",
     };
 
     /** The body each POST route needs to do real work. */
@@ -490,6 +520,24 @@ test("every clinical route leaves an audit row, including ones added later", asy
       },
       "/api/clinical/thread-reopen": { id: toReopen.id, reason: "patient called back with a new question" },
       "/api/clinical/thread-assign": { id: toAssign.id, owner: "dr-tetso", reason: "picked up from the unowned queue" },
+      "/api/clinical/authority-self": { patient: P, subject: "patient-oauth-subject" },
+      "/api/clinical/authority-proxy": {
+        patient: P,
+        subject: "proxy-oauth-subject",
+        relationship: "representative",
+        expiresAt: "2027-08-24T00:00:00Z",
+        permissions: ["appointments", "messages"],
+        purpose: "book appointments and exchange messages",
+      },
+      "/api/clinical/authority-revoke": { authority: authorityToRevoke.id, reason: "patient withdrew access" },
+      "/api/clinical/patient-request-complete": {
+        request: requestToComplete.id,
+        outcome: "encrypted chart export provided to the patient",
+      },
+      "/api/clinical/patient-request-decline": {
+        request: requestToDecline.id,
+        reason: "the historical entry is accurate; explanation sent to the patient",
+      },
     };
 
     const unlisted = paths.filter((p) => !(p in args));

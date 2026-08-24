@@ -67,7 +67,7 @@ The escape hatch is break-glass, which is loud and recorded — see
 git clone https://github.com/ThomasGenua/healthsystem.git portage
 cd portage
 npm ci
-npm run typecheck && npm test    # 526 tests; do not deploy a node that fails one
+npm run typecheck && npm test    # 538 tests; do not deploy a node that fails one
 
 export PORTAGE_DATA=/var/lib/portage
 export PORTAGE_PORT=8686
@@ -78,6 +78,8 @@ Then, before any real feed is pointed at it:
 
 1. **Set `PORTAGE_AUTH_MODE`.** It defaults to `apikey`. `off` exists for
    development and must never reach a machine that can see a real feed.
+   The patient boundary additionally requires `oauth` and a configured OIDC
+   issuer; API keys and authentication-off mode can never act as patients.
 2. **Issue an admin key** and store it in whatever your site uses for secrets,
    not in a shell history. See [API keys](../README.md#api-keys).
 3. **Turn on TLS** (`PORTAGE_TLS_CERT` / `_KEY`), and mutual TLS if the
