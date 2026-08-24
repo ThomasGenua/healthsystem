@@ -80,6 +80,9 @@ export const TENANT_SCOPED_TABLES = [
   "lab_identity_holds",
   "prescriptions",
   "prescription_events",
+  "migration_runs",
+  "migration_records",
+  "migration_declarations",
 ] as const;
 
 /**
@@ -1374,6 +1377,74 @@ CREATE TABLE IF NOT EXISTS break_glass (
   PRIMARY KEY (tenant_id, id)
 );
 
+-- Loading a caseload out of an incumbent system.
+--
+-- What makes migration dangerous is that you cannot tell whether it worked by
+-- whether it errored. A run that loads 96% of the allergies and reports
+-- success is the catastrophe: no error anywhere, plausible counts, clinicians
+-- at work, and the missing 4% invisible until somebody prescribes into a gap.
+--
+-- So completeness is declared and then checked, not inferred from the absence
+-- of exceptions. migration_declarations holds what the source system says it
+-- has; the report compares.
+CREATE TABLE IF NOT EXISTS migration_runs (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  source_system TEXT NOT NULL,
+  -- trial | cutover | delta. A trial is disposable, which is the only way
+  -- anybody finds the mapping errors. A cutover is not.
+  mode TEXT NOT NULL,
+  -- open | completed | rolled-back | abandoned
+  status TEXT NOT NULL DEFAULT 'open',
+  started_by TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  completed_at TEXT,
+  -- The run a delta follows, so a delta cannot sit on top of a rollback.
+  follows TEXT,
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- One row per source record, whatever happened to it.
+--
+-- The payload is kept even on success, because a migrated record that cannot
+-- be traced back to the row it came from cannot be checked against the source
+-- system — and checking against the source is the only way a mapping error is
+-- ever found. On a rejection it is the difference between "37 allergies
+-- failed" and 37 rows somebody can open.
+CREATE TABLE IF NOT EXISTS migration_records (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  source_system TEXT NOT NULL,
+  -- Stable in the source. With record_type and source_system this is the
+  -- idempotency key: a resumed run or an unchanged delta row writes nothing.
+  source_id TEXT NOT NULL,
+  record_type TEXT NOT NULL,
+  -- The chart entry or statement it became. Null on a rejection.
+  target_id TEXT,
+  patient_id TEXT,
+  -- loaded | unchanged | rejected
+  outcome TEXT NOT NULL,
+  reason TEXT,
+  payload TEXT NOT NULL,
+  loaded_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- What the source system says it holds. Without this the report can count what
+-- arrived and cannot say whether that is all of it.
+CREATE TABLE IF NOT EXISTS migration_declarations (
+  tenant_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  record_type TEXT NOT NULL,
+  source_count INTEGER NOT NULL,
+  declared_by TEXT NOT NULL,
+  declared_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, run_id, record_type)
+);
+
 -- Lookup index over the charts.
 --
 -- Derived, not authoritative. Every column here is recoverable from the
@@ -1487,6 +1558,11 @@ CREATE INDEX IF NOT EXISTS idx_prescriptions_patient ON prescriptions(tenant_id,
 -- The three chase lists: never sent, sent and unacknowledged, failed.
 CREATE INDEX IF NOT EXISTS idx_prescriptions_status ON prescriptions(tenant_id, status, written_at);
 CREATE INDEX IF NOT EXISTS idx_prescription_events ON prescription_events(tenant_id, prescription_id, seq);
+-- The idempotency lookup every migrated record does.
+CREATE INDEX IF NOT EXISTS idx_migration_source
+  ON migration_records(tenant_id, source_system, record_type, source_id);
+CREATE INDEX IF NOT EXISTS idx_migration_run ON migration_records(tenant_id, run_id, record_type, outcome);
+CREATE INDEX IF NOT EXISTS idx_migration_patient ON migration_records(tenant_id, patient_id, loaded_at);
 CREATE INDEX IF NOT EXISTS idx_patient_request_events ON patient_request_events(tenant_id, request_id, seq);
 -- The double-booking constraint. Partial, so a cancelled booking releases its
 -- seat while remaining on the record — a slot freed by deleting its booking

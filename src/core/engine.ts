@@ -40,6 +40,7 @@ import { ingestFhir } from "../directory/fhir.ts";
 import { ChannelNoticeDispatcher } from "../patient/notice.ts";
 import { Schedule } from "../schedule/store.ts";
 import { Registry } from "../population/registry.ts";
+import { Migration } from "../migrate/run.ts";
 import { ConsentDirectives } from "../patient/consent.ts";
 import { PatientMessaging } from "../patient/messaging.ts";
 import { PatientAccess } from "../patient/access.ts";
@@ -105,6 +106,8 @@ export interface TenantView {
   messaging: PatientMessaging;
   patientAccess: PatientAccess;
   registry: Registry;
+  /** Bulk loads from an incumbent system, and whether they were complete. */
+  migration: Migration;
   consent: ConsentDirectives;
   /** The assembled chart, over exactly the stores above. */
   workspace: Workspace;
@@ -342,6 +345,7 @@ export class Engine {
       messaging,
       patientAccess,
       registry: new Registry(db),
+      migration: new Migration(db, { clinical, meds }),
       consent: new ConsentDirectives(db, {
         ...(this.noticeChannel ? { dispatcher: new ChannelNoticeDispatcher(db, this.noticeChannel) } : {}),
       }),

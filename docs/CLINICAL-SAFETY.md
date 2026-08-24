@@ -25,7 +25,7 @@ on credentials, break-glass notice dispatch, encounters, the provider
 directory, FHIR projection of that directory, the refusal/fault split
 in `phi()`, the longitudinal-chart increment, durable patient messaging,
 the OAuth patient/proxy boundary, the laboratory result bridge, and
-pharmacy transmission).
+pharmacy transmission, and the migration loader).
 **Last reviewed:** 2026-08-24.
 **Reviewer of this draft:** the author of the controls, not an independent
 clinical safety officer. That gap is residual risk R-01.
@@ -252,6 +252,11 @@ makes the control a fact rather than a comment.
 | H-37 | `cp` of a live database offered as a backup | File copy during WAL writes | Restore is corrupt; RPO was fiction | Catastrophic | Low | SQLite backup API; verify chains; remote read-back | `test/backup.test.ts` — "a copied file is not a backup, but a snapshot of the same database is" |
 | H-38 | Restore of a snapshot that cannot come up | Swap first, discover later | The live file is gone and the replacement will not open | Catastrophic | Low | Preflight migrate of a scratch copy; keep the displaced file | `test/restore.test.ts` — "a snapshot that cannot come up is refused before anything is displaced" |
 | H-39 | Two engines on one database | Overlapping deploy | Duplicate in-flight messages; split-brain writes | Major | Low | Instance lock; restore clears a stale lock | `test/instance-lock.test.ts` — "without the lock a second instance duplicates a message in flight" |
+| H-65 | Migration reports success having dropped records | Completeness inferred from the absence of errors | 4% of allergies missing and invisible; a prescriber acts into the gap | Catastrophic | High | Source counts declared then checked; `complete` is never true because nothing threw; closing over a gap needs a written reason | `test/migration-load.test.ts` — "a run cannot call itself complete because nothing threw" |
+| H-66 | Migrated record rejected and lost | Rejection reported as a count | A row nobody can go and look at | Major | Medium | Rejects keep the whole payload and reason in a queue | `test/migration-load.test.ts` — "a record that cannot be loaded is rejected with its payload, not thrown away" |
+| H-67 | Resumed migration doubles the caseload | No idempotency on source identity | Duplicate allergies and medications on every chart | Major | Medium | Keyed on source system, type and source id; a re-run records `unchanged` | `test/migration-load.test.ts` — "loading is idempotent, so a resumed run does not double what it already did" |
+| H-68 | Rollback deletes records a clinician's note refers to | Cutover rolled back after go-live | The chart loses what a note was written about | Major | Low | A cutover with clinical activity since refuses, naming who wrote; rollback is retraction, not deletion | `test/migration-load.test.ts` — "a cutover cannot be rolled back once a clinician has written into a chart" |
+| H-69 | Migrated drug read as this clinic's prescription | Everything loaded as `prescribed` | Provenance lost; the list asserts prescriptions nobody wrote | Major | Medium | Migrated medications are `external-record` with `unknown` adherence | `test/migration-load.test.ts` — "a migrated medication is external-record, never prescribed" |
 | H-40 | Retention sweep ages out the chart | Operator thinks "retention" means the record | Allergies and meds gone; ops reports success | Catastrophic | Low | Retention is the message log only | `test/retention-boundary.test.ts` — "a retention sweep ages out the message log and leaves the record alone" |
 | H-41 | Quality measure drops the untested from the denominator | "Assessable only" rate | The worst-managed patients vanish; the rate improves | Major | Medium | Unclassified stay in; rate is refused when it cannot stand | `test/registry.test.ts` — "patients nobody tested are in the denominator, not dropped from it" |
 | H-42 | Store fault returned as HTTP 400 | `phi()` mapped every throw to 400 | A client gives up on a disk error it should have retried | Moderate | Low | `Refusal` vs fault: 4xx vs 500; outcome 4 vs 8 | `test/refusal.test.ts` — "a store refusal is 4xx the caller can read, and a fault is a 500 they cannot" |
@@ -277,7 +282,7 @@ twice.
 | R-06 | MLLP is unauthenticated (H-43) | The protocol has nothing to hook | VPN, private APN, or transport mTLS — not Portage |
 | R-07 | Database file is not encrypted (H-44) | `node:sqlite` cannot | Encrypted volume; do not deploy if `/api/health` says the volume is not |
 | R-08 | Single writer, one node | Scale is last on the roadmap | Size the site to one writer, or wait for #25 |
-| R-09 | No bulk migration | A real cutover has no tool | Do not cut over a caseload this cannot load (#20) |
+| R-09 | Migration loads, but does not extract | The declare-and-check loader exists (#20); getting data out of the incumbent is that vendor's export or a negotiation, and inventory, cutover scheduling and stabilisation are a plan a person writes | Do not treat a green reconciliation as a validated migration; read the sample against the source |
 | R-18 | No vendor laboratory interface has exchanged a message | The ORU bridge is built and tested against synthetic messages; no Dynacare or LifeLabs sandbox has been connected | Do not present the generic profile as a vendor interface; obtain a conformance guide, sandbox, credentials and a signed test result |
 | R-10 | Conformance packs are not certified | Fixtures are not a Projectathon | #23 before a claim of conformity |
 | R-11 | Demo terminology pack | Licensed distributions are not shipped | Load a licensed release before coding decisions rest on it |

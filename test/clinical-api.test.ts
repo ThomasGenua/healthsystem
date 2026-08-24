@@ -448,6 +448,16 @@ test("every clinical route leaves an audit row, including ones added later", asy
     rx.transmit(rxToConfirm, "yk-pharmacy", GP);
     rx.cancel(rxToConfirm, { ...GP, reason: "started on insulin instead" });
 
+    // Migration runs, one per route that changes a run's state.
+    const migration = s.engine.forTenant("default").migration;
+    const migrationRun = migration.begin({ sourceSystem: "legacy-emr", mode: "trial", by: { actorId: "ops" } });
+    const migrationToClose = migration.begin({ sourceSystem: "legacy-emr", mode: "trial", by: { actorId: "ops" } });
+    const migrationToRollBack = migration.begin({
+      sourceSystem: "legacy-emr",
+      mode: "trial",
+      by: { actorId: "ops" },
+    });
+
     const standing = s.engine.forTenant("default").consent.breakGlass({
       patientId: P,
       by: { actorId: "dr-hale", actorKind: "practitioner" },
@@ -524,6 +534,15 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/prescription-replace": "POST",
       "/api/clinical/prescription-cancel": "POST",
       "/api/clinical/prescription-cancel-confirm": "POST",
+      "/api/clinical/migrations": "",
+      "/api/clinical/migration-report": `?run=${migrationRun.id}`,
+      "/api/clinical/migration-rejects": `?run=${migrationRun.id}`,
+      "/api/clinical/migration-sample": `?run=${migrationRun.id}`,
+      "/api/clinical/migration-begin": "POST",
+      "/api/clinical/migration-declare": "POST",
+      "/api/clinical/migration-load": "POST",
+      "/api/clinical/migration-complete": "POST",
+      "/api/clinical/migration-rollback": "POST",
     };
 
     /** The body each POST route needs to do real work. */
@@ -617,6 +636,22 @@ test("every clinical route leaves an audit row, including ones added later", asy
         prescription: rxToConfirm,
         detail: "telephoned the pharmacist, who withdrew it",
       },
+      "/api/clinical/migration-begin": { source: "legacy-emr", mode: "trial" },
+      "/api/clinical/migration-declare": { run: migrationRun.id, recordType: "condition", sourceCount: 1 },
+      "/api/clinical/migration-load": {
+        run: migrationRun.id,
+        records: [
+          {
+            sourceId: "CO-API-1",
+            recordType: "condition",
+            sourcePatientId: P,
+            content: { code: { text: "Migrated problem" } },
+          },
+        ],
+      },
+      // Separate runs, so no route depends on the state another left behind.
+      "/api/clinical/migration-complete": { run: migrationToClose.id, acceptGapsBecause: "trial run, counts not declared" },
+      "/api/clinical/migration-rollback": { run: migrationToRollBack.id, reason: "trial finished" },
     };
 
     const unlisted = paths.filter((p) => !(p in args));
