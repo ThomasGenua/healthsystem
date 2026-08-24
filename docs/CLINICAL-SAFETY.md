@@ -23,8 +23,7 @@ test is gone.
 the post-0.5.0 line: v0.5.0 plus off-machine backup, organization identity
 on credentials, break-glass notice dispatch, encounters, the provider
 directory, FHIR projection of that directory, the refusal/fault split
-in `phi()`, and the longitudinal-chart increment — immunizations, vitals,
-care team, coverage, and today's appointments).
+in `phi()`, the longitudinal-chart increment, and durable patient messaging).
 **Last reviewed:** 2026-08-24.
 **Reviewer of this draft:** the author of the controls, not an independent
 clinical safety officer. That gap is residual risk R-01.
@@ -173,6 +172,8 @@ makes the control a fact rather than a comment.
 | H-46 | Half a blood pressure filed as a vital | Systolic stored without diastolic | A trend and a dose are calculated from one number | Major | Low | Blood pressure refused unless both numbers arrive together | `test/vitals.test.ts` — "blood pressure needs both systolic and diastolic" |
 | H-47 | Two current primary providers | A locum assigned as MRP without retiring the last | A result is routed to neither inbox | Major | Low | At most one current primary; retire before assigning another | `test/careteam.test.ts` — "a second current primary is refused until the first is retired" |
 | H-48 | Coverage overwritten in place | Eligibility `UPDATE`d when the card changes | "Were they covered when this visit happened" is unanswerable | Major | Low | New row supersedes; the previous claim stays | `test/coverage.test.ts` — "a change of eligibility keeps the previous claim" |
+| H-49 | Patient message closed without saying what was done | Inbox cleared with a click | A renewal or a result question is treated as finished | Major | Medium | Close needs a reason; a waiting patient needs a longer one | `test/messaging.test.ts` — "closing a thread the patient is still waiting on needs to say what was done" |
+| H-50 | Unowned patient message is nobody's work | No owner, no list | The question sits until it is stale | Major | Medium | `unassigned()` is a queue; open assigns the MRP when there is one | `test/messaging.test.ts` — "an unowned patient message is a list, not a missing inbox" |
 
 ### Visits and the diary
 

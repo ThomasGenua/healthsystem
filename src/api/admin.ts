@@ -1034,6 +1034,36 @@ async function route(
         history: tenant.coverage.history(patient),
       }));
     }
+    if (path === "/api/clinical/threads" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi(
+        "Communication",
+        () => tenant.messaging.forPatient(patient, { includeClosed: url.searchParams.get("closed") === "true" }),
+        (rows) => rows.length
+      );
+    }
+    if (path === "/api/clinical/thread" && method === "GET") {
+      const id = url.searchParams.get("id");
+      if (!id) return send(res, 400, { error: "id required" });
+      const thread = tenant.messaging.get(id);
+      if (!thread) return send(res, 404, { error: `no message thread ${id}` });
+      return phiFor(thread.patient_id, "Communication", () => ({
+        thread,
+        messages: tenant.messaging.messages(id),
+        history: tenant.messaging.history(id),
+      }));
+    }
+    if (path === "/api/clinical/messages-awaiting" && method === "GET") {
+      const clinician = url.searchParams.get("clinician");
+      return phi(
+        "Communication",
+        () => {
+          const rows = clinician ? tenant.messaging.inbox(clinician) : tenant.messaging.unassigned();
+          return filterByDirective(["Communication"], rows);
+        },
+        (r) => r.rows.length
+      );
+    }
     if (path === "/api/clinical/appointments" && method === "GET") {
       if (!patient) return send(res, 400, { error: "patient required" });
       return phi("Appointment", () => tenant.schedule.forPatient(patient), (rows) => rows.length);
@@ -1472,6 +1502,95 @@ async function route(
           ...(body.detail ? { detail: body.detail } : {}),
           ...(body.effectiveFrom ? { effectiveFrom: body.effectiveFrom } : {}),
           ...(body.effectiveTo ? { effectiveTo: body.effectiveTo } : {}),
+        })
+      );
+    }
+    if (path === "/api/clinical/thread-open" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        subject?: string;
+        body?: string;
+        authorKind?: "patient" | "proxy" | "practitioner" | "clerk";
+        priority?: "routine" | "urgent" | "stat";
+        owner?: string;
+      };
+      if (!body.patient || !body.subject || !body.body || !body.authorKind) {
+        return send(res, 400, { error: "patient, subject, body and authorKind required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(body.patient, "Communication", () =>
+        tenant.messaging.open({
+          patientId: body.patient!,
+          subject: body.subject!,
+          body: body.body!,
+          authorKind: body.authorKind!,
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+          ...(body.priority ? { priority: body.priority } : {}),
+          ...(body.owner ? { ownerId: body.owner } : {}),
+        })
+      );
+    }
+    if (path === "/api/clinical/thread-reply" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        id?: string;
+        body?: string;
+        authorKind?: "patient" | "proxy" | "practitioner" | "clerk";
+      };
+      if (!body.id || !body.body || !body.authorKind) {
+        return send(res, 400, { error: "id, body and authorKind required" });
+      }
+      const thread = tenant.messaging.get(body.id);
+      if (!thread) return send(res, 404, { error: `no message thread ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(thread.patient_id, "Communication", () =>
+        tenant.messaging.reply(body.id!, {
+          body: body.body!,
+          authorKind: body.authorKind!,
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+        })
+      );
+    }
+    if (path === "/api/clinical/thread-close" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; reason?: string };
+      if (!body.id || !body.reason) return send(res, 400, { error: "id and reason required" });
+      const thread = tenant.messaging.get(body.id);
+      if (!thread) return send(res, 404, { error: `no message thread ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(thread.patient_id, "Communication", () =>
+        tenant.messaging.close(body.id!, {
+          actorId: who,
+          actorKind: auth.ok ? auth.principal.kind : "unknown",
+          reason: body.reason!,
+        })
+      );
+    }
+    if (path === "/api/clinical/thread-reopen" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; reason?: string };
+      if (!body.id || !body.reason) return send(res, 400, { error: "id and reason required" });
+      const thread = tenant.messaging.get(body.id);
+      if (!thread) return send(res, 404, { error: `no message thread ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(thread.patient_id, "Communication", () =>
+        tenant.messaging.reopen(body.id!, {
+          actorId: who,
+          actorKind: auth.ok ? auth.principal.kind : "unknown",
+          reason: body.reason!,
+        })
+      );
+    }
+    if (path === "/api/clinical/thread-assign" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; owner?: string; reason?: string };
+      if (!body.id || !body.owner || !body.reason) {
+        return send(res, 400, { error: "id, owner and reason required" });
+      }
+      const thread = tenant.messaging.get(body.id);
+      if (!thread) return send(res, 404, { error: `no message thread ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(thread.patient_id, "Communication", () =>
+        tenant.messaging.assign(body.id!, body.owner!, {
+          actorId: who,
+          actorKind: auth.ok ? auth.principal.kind : "unknown",
+          reason: body.reason!,
         })
       );
     }

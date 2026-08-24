@@ -31,6 +31,7 @@ import { CareTeam } from "../src/clinical/careteam.ts";
 import { Coverage } from "../src/clinical/coverage.ts";
 import { Schedule } from "../src/schedule/store.ts";
 import { Directory } from "../src/directory/store.ts";
+import { PatientMessaging } from "../src/patient/messaging.ts";
 
 const P = "NT123456";
 const GP = { actorId: "dr-tetso", actorKind: "practitioner" };
@@ -54,6 +55,7 @@ function ward() {
   const careTeam = new CareTeam(db);
   const coverage = new Coverage(db);
   const schedule = new Schedule(db);
+  const messaging = new PatientMessaging(db);
   new Directory(db).addPractitioner({ id: "dr-tetso", family: "Tetso", given: "Jean" });
   return {
     db,
@@ -68,6 +70,7 @@ function ward() {
     careTeam,
     coverage,
     schedule,
+    messaging,
     ws: new Workspace({
       record,
       notes,
@@ -80,6 +83,7 @@ function ward() {
       careTeam,
       coverage,
       schedule,
+      messaging,
     }),
     cleanup: () => {
       db.close();
@@ -180,7 +184,14 @@ function populate(w: ReturnType<typeof ward>) {
     identifierSystem: "urn:jhn",
     identifierValue: P,
   });
-  return { order, pending, ref };
+  const thread = w.messaging.open({
+    patientId: P,
+    subject: "Renewal — metformin",
+    body: "Please renew, last fill six weeks ago.",
+    authorKind: "patient",
+    by: { actorId: P, actorKind: "patient" },
+  });
+  return { order, pending, ref, thread: thread.thread };
 }
 
 test("the assembled chart pulls every store into one view", () => {
@@ -209,6 +220,7 @@ test("the assembled chart pulls every store into one view", () => {
     assert.equal(chart.vitals.items[0].value, 72);
     assert.equal(chart.careTeam.items[0].role, "primary");
     assert.equal(chart.coverage.items[0].plan, "NIHB");
+    assert.equal(chart.openThreads.items[0].subject, "Renewal — metformin");
 
     assert.equal(chart.complete, true, "and it says it is whole");
     assert.deepEqual(chart.omissions, []);
@@ -378,6 +390,8 @@ test("the worklist gathers what is owed across every kind of work", () => {
     assert.equal(list.tasks.items.length, 1);
     assert.equal(list.incompleteReconciliations.items.length, 1);
     assert.equal(list.today.complete, true, "today's diary loaded even when it is empty");
+    assert.equal(list.awaitingMessages.items.length, 1);
+    assert.equal(list.awaitingMessages.items[0].subject, "Renewal — metformin");
     assert.equal(list.complete, true);
 
     // Another clinician's list is not this one's.
