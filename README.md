@@ -12,7 +12,7 @@ The design targets the interoperability posture Canadian jurisdictions are conve
 
 **Privacy and access** — [Security](#security) · [Encryption at rest](#encryption-at-rest) · [Key lifecycle](#key-lifecycle) · [Audit trail](#audit-trail) · [Patient access](#patient-access) · [Consent directives and breaking glass](#consent-directives-and-breaking-glass) · [The clinical API, and audit by construction](#the-clinical-api-and-audit-by-construction) · [Retention](#retention) · [What the chains prove](#what-the-chains-prove) · [Tenancy](#tenancy)
 
-**Running it** — [Runbook](docs/RUNBOOK.md) · [Clinical safety](docs/CLINICAL-SAFETY.md) · [Upgrading](#upgrading) · [Backup](#backup) · [Monitoring](#monitoring) · [Throughput](#throughput) · [Durability under failure](#durability-under-failure) · [Crash recovery](#crash-recovery)
+**Running it** — [Runbook](docs/RUNBOOK.md) · [Clinical safety](docs/CLINICAL-SAFETY.md) · [Provincial gap map](docs/PROVINCIAL.md) · [Upgrading](#upgrading) · [Backup](#backup) · [Monitoring](#monitoring) · [Throughput](#throughput) · [Durability under failure](#durability-under-failure) · [Crash recovery](#crash-recovery)
 
 **Project** — [Changelog](CHANGELOG.md) · [Security policy](SECURITY.md) · [Licence](#licence) · [Contributing](#contributing)
 
@@ -58,8 +58,9 @@ v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A lockbox that can cover part of a chart**, where the locked panel says a directive withheld it rather than rendering as "none" — so a patient can withhold one section without taking the rest of their chart away from the clinician treating them.
 - **A restore that has actually been rehearsed**, to somewhere the database has never been, with a measured RTO — because a verified snapshot only proves the bytes hashed correctly when they were written.
 - **A snapshot that leaves the machine**, encrypted, put, read back and walked again, so the stated RPO is not only for failures that spare the backup directory.
+- **A chart that can say whether anyone asked about immunizations or took a vital**, and that names a primary provider and a coverage claim without overwriting the last ones. Blood pressure is two numbers; a second current MRP is refused; today's appointments sit on the worklist. This is still not a provincial EMR — see [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
 
-498 tests. Backend first, then the interface that makes the backend's honesty visible.
+519 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -115,7 +116,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 498 tests
+npm test          # 519 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -445,6 +446,16 @@ Every criterion given must match — a search that widened as the clinician supp
 
 **Duplicates are surfaced, never merged.** A shared identifier is close to conclusive: one health number should not name two charts. A matching name and birth date is a prompt rather than a finding — twins exist, and so do fathers and sons with one name between them. Both are reported with their evidence, and a human decides. Automatic merging is how a chart acquires someone else's allergies, and there is no honest way to unmerge afterwards.
 
+The index also carries preferred language and telecom, recovered from the Patient resource the same way the name is. A rebuild still reproduces them, so they are not a second source of truth.
+
+### Immunizations, vitals, care team and coverage
+
+Four things a primary-care chart has to be able to say, and that used to live only as untyped entries or as a string on a note.
+
+**Immunizations and vitals write onto the clinical log.** They are not a second table. A given dose needs a vaccine and a date; a refusal needs a reason; blood pressure needs both numbers. A laboratory Observation is not a vital — mixing them would make a potassium look like a pulse. History is three-valued, the same way allergies are: `never-asked` and `never-measured` are findings, not empty panels.
+
+**Care team and coverage are their own tables**, because a relationship and an eligibility claim are not generic chart entries. At most one *current* primary: two people who both believe they are most responsible is how a result goes to neither inbox. Retiring a membership sets an end date; the visits they attended stay theirs. A coverage change is a new row that supersedes the last one, so "were they covered when this visit happened" stays answerable. `unknown` is a recorded eligibility, not a missing field.
+
 ### Documentation, signatures and addenda
 
 Section 3 turns on the difference between a draft and an attestation. A draft is working text. A signature says: this is what I found, this is what I decided, my name is on it.
@@ -572,9 +583,9 @@ Every section therefore carries its own completeness, and the summary carries `c
 
 A failing store does not take the chart down — six panels beat an error page — but the panel it leaves behind never passes for "none". `complete === false` is the flag a renderer must surface, not a detail it may ignore.
 
-Allergy status is carried to the top of the summary rather than left inside its panel, and read from the store rather than inferred from the panel's contents. Inferring it would undo the distinction §5 exists for: a clinician scanning a chart has to see "never asked" without interpreting an empty box.
+Allergy, immunization and vital-sign status are carried to the top of the summary rather than left inside their panels, and read from the stores rather than inferred from the panel's contents. Inferring them would undo the distinction those stores exist for: a clinician scanning a chart has to see "never asked" or "never measured" without interpreting an empty box. A chart with no current primary or no coverage claim says so in `omissions` the same way.
 
-`worklist()` is the same idea across the day rather than across one patient. A clinician's work is not one queue — results wait in one place, referrals in another, tasks in a third, and each system reports its own as though it were the whole picture. The value of a single view is that nothing is owed to them somewhere they are not looking, which is only true if the view says what it could not reach.
+`worklist()` is the same idea across the day rather than across one patient. A clinician's work is not one queue — today's appointments, results, referrals, tasks, and each system reports its own as though it were the whole picture. The value of a single view is that nothing is owed to them somewhere they are not looking, which is only true if the view says what it could not reach. Today's list is that clinician's booked and attended appointments on the UTC day of `asOf`, not every empty slot in the diary.
 
 The module owns no data and keeps no second copy of anything. It assembles from the stores that already exist, declares what it assembled, and is honest about the rest.
 
@@ -612,7 +623,7 @@ The same parties are served on the FHIR facade as `Practitioner`, `PractitionerR
 
 ## The clinical API, and audit by construction
 
-Everything above — the chart, the patient index, medications, allergies, orders, results, referrals, tasks, notes and the assembled summary — is served under `/api/clinical/*`, behind the `admin` scope and inside the caller's tenant like the rest of the API.
+Everything above — the chart, the patient index, medications, allergies, immunizations, vitals, care team, coverage, orders, results, referrals, tasks, notes and the assembled summary — is served under `/api/clinical/*`, behind the `admin` scope and inside the caller's tenant like the rest of the API.
 
 Exposing it is the moment the audit requirement in §18 starts to bite. Until now the clinical stores were libraries: nothing reached them over a network, so nothing went unrecorded. A route is a way in, and **an audit guarantee that depends on each new route remembering to call `audit()` is one that holds until somebody forgets** — and the forgetting is invisible, because the route works, the data is served, and nothing anywhere says the trail is short.
 
@@ -1495,5 +1506,7 @@ a scope-narrowed directive withholds its section rather than the chart around it
 - [#25 Horizontal operation](https://github.com/ThomasGenua/healthsystem/issues/25) — a single writer suits a community site and not a territorial hub. Last, because scaling a system nobody can load data into and whose recovery has never been rehearsed is optimising the wrong axis.
 
 **Smaller, from review.** [#26](https://github.com/ThomasGenua/healthsystem/issues/26) and [#27](https://github.com/ThomasGenua/healthsystem/issues/27) are done: a store refusal is not a 400-and-outcome-8, and the `migrate()` rebuild turns foreign keys off around the copy.
+
+**The chart, further.** Immunizations, vitals, care team, coverage and today's appointments are in. That is priority 3 of the production build, not the provincial platform. The distance is [docs/PROVINCIAL.md](docs/PROVINCIAL.md). Patient messaging, laboratory vendor interfaces, a mounted portal, AI and migration tooling are still the later numbered priorities, in that order.
 
 **Deliberately not next.** Machine learning and broad decision-support content wait for validated data, licensed content and a clinical-governance process. The decision-support mechanism ships without content on purpose, and shipping content without that process would be the most consequential version of the failure this codebase spends its time refusing: a system answering a clinical question that nobody actually answered.

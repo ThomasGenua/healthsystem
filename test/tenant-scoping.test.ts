@@ -40,6 +40,8 @@ const SQL_SOURCES = [
   "../src/schedule/store.ts",
   "../src/patient/consent.ts",
   "../src/directory/store.ts",
+  "../src/clinical/careteam.ts",
+  "../src/clinical/coverage.ts",
 ];
 
 /**

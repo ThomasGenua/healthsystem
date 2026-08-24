@@ -22,9 +22,10 @@ test is gone.
 **Version this case describes:** the `main` it is committed on (currently
 the post-0.5.0 line: v0.5.0 plus off-machine backup, organization identity
 on credentials, break-glass notice dispatch, encounters, the provider
-directory, FHIR projection of that directory, and the refusal/fault split
-in `phi()`).
-**Last reviewed:** 2026-08-23.
+directory, FHIR projection of that directory, the refusal/fault split
+in `phi()`, and the longitudinal-chart increment — immunizations, vitals,
+care team, coverage, and today's appointments).
+**Last reviewed:** 2026-08-24.
 **Reviewer of this draft:** the author of the controls, not an independent
 clinical safety officer. That gap is residual risk R-01.
 
@@ -168,6 +169,10 @@ makes the control a fact rather than a comment.
 | H-05 | Automatic merge of two charts | An algorithm decides they are the same person | One chart acquires the other's allergies; unmerge is not honest | Catastrophic | Low | `duplicates()` reports; nothing merges | `test/patient-index.test.ts` — "one identifier naming two charts is surfaced, not merged" |
 | H-06 | Empty chart panel read as "none" | A store threw, a list was cut, a section was withheld — and the renderer shows a blank | Prescribe against an allergy list that failed to load | Catastrophic | Medium | Every section carries `complete` / incompleteness (`unavailable`, `truncated`, `withheld`) | `test/workspace.test.ts` — "a section that fails is empty and says why, rather than reading as none" |
 | H-07 | Empty visit read as "nothing happened" | Failed section or missing encounter rendered blank | Handover misses the orders and results of the visit | Major | Medium | Visit assembly is honest; membership is by encounter, not a time window | `test/encounters.test.ts` — "the assembled visit says a section failed, rather than rendering as nothing happened" |
+| H-45 | Empty immunization panel read as "none" | Never asked and documented-empty render the same | A child is assumed vaccinated when nobody asked | Major | Medium | `never-asked` is a status; a refusal needs a reason | `test/immunizations.test.ts` — "nobody asked and a documented history are different answers" |
+| H-46 | Half a blood pressure filed as a vital | Systolic stored without diastolic | A trend and a dose are calculated from one number | Major | Low | Blood pressure refused unless both numbers arrive together | `test/vitals.test.ts` — "blood pressure needs both systolic and diastolic" |
+| H-47 | Two current primary providers | A locum assigned as MRP without retiring the last | A result is routed to neither inbox | Major | Low | At most one current primary; retire before assigning another | `test/careteam.test.ts` — "a second current primary is refused until the first is retired" |
+| H-48 | Coverage overwritten in place | Eligibility `UPDATE`d when the card changes | "Were they covered when this visit happened" is unanswerable | Major | Low | New row supersedes; the previous claim stays | `test/coverage.test.ts` — "a change of eligibility keeps the previous claim" |
 
 ### Visits and the diary
 

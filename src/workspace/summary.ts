@@ -32,6 +32,11 @@ import type { OrderStore, OrderRow, ResultRow } from "../orders/store.ts";
 import type { ReferralStore, ReferralRow } from "../work/referrals.ts";
 import type { TaskStore, TaskRow } from "../work/tasks.ts";
 import type { ClinicalNotes, NoteContent } from "../clinical/notes.ts";
+import type { Immunizations, ImmunizationView, ImmunizationHistory } from "../clinical/immunizations.ts";
+import type { Vitals, VitalView, VitalHistory } from "../clinical/vitals.ts";
+import type { CareTeam, CareTeamRow } from "../clinical/careteam.ts";
+import type { Coverage, CoverageRow } from "../clinical/coverage.ts";
+import type { Schedule, SlotRow, BookingRow } from "../schedule/store.ts";
 
 /**
  * Why a section is not the whole truth.
@@ -73,9 +78,15 @@ export interface ChartSummary {
    * "never asked" without reading a panel that looks empty.
    */
   allergyStatus: AllergyStatus | "unavailable";
+  immunizationStatus: ImmunizationHistory | "unavailable";
+  vitalStatus: VitalHistory | "unavailable";
 
   allergies: Section<AllergyRow>;
   medications: Section<MedRow>;
+  immunizations: Section<ImmunizationView>;
+  vitals: Section<VitalView>;
+  careTeam: Section<CareTeamRow>;
+  coverage: Section<CoverageRow>;
   /** Reported and not yet read by anybody, worst first. */
   unacknowledgedResults: Section<ResultRow>;
   openOrders: Section<OrderRow>;
@@ -119,6 +130,11 @@ export interface WorkspaceSources {
   orders?: OrderStore;
   referrals?: ReferralStore;
   tasks?: TaskStore;
+  immunizations?: Immunizations;
+  vitals?: Vitals;
+  careTeam?: CareTeam;
+  coverage?: Coverage;
+  schedule?: Schedule;
 }
 
 /**
@@ -175,6 +191,10 @@ export function describe(name: string, s: Section<unknown>): string | null {
 export const SECTION_TYPES = {
   allergies: "AllergyIntolerance",
   medications: "MedicationStatement",
+  immunizations: "Immunization",
+  vitals: "Observation",
+  careTeam: "CareTeam",
+  coverage: "Coverage",
   unacknowledgedResults: "Observation",
   openOrders: "ServiceRequest",
   openReferrals: "ServiceRequest",
@@ -194,7 +214,13 @@ export const CHART_TYPES: readonly string[] = [...new Set(Object.values(SECTION_
  * anyway so the route says what it serves, and so a kind of work added to it
  * later is covered rather than quietly exempt.
  */
-export const WORKLIST_TYPES: readonly string[] = ["Observation", "ServiceRequest", "Task", "MedicationStatement"];
+export const WORKLIST_TYPES: readonly string[] = [
+  "Observation",
+  "ServiceRequest",
+  "Task",
+  "MedicationStatement",
+  "Appointment",
+];
 
 /**
  * Replaces a section with the fact that it was withheld.
@@ -224,7 +250,7 @@ export class Workspace {
    * seen everything.
    */
   chart(patientId: string, opts: SummaryOptions = {}): ChartSummary {
-    const { record, notes, meds, orders, referrals, tasks } = this.sources;
+    const { record, notes, meds, orders, referrals, tasks, immunizations, vitals, careTeam, coverage } = this.sources;
     const limit = opts.limit ?? 50;
     const noteLimit = opts.noteLimit ?? 10;
 
@@ -257,6 +283,10 @@ export class Workspace {
     const openTasks = sect("openTasks", tasks ? () => tasks.forPatient(patientId) : undefined, limit);
     const recentNotes = sect("recentNotes", notes ? () => notes.forPatient(patientId) : undefined, noteLimit);
     const problems = sect("problems", record ? () => record.chart(patientId, { entryType: "Condition" }) : undefined, limit);
+    const immunizationSection = sect("immunizations", immunizations ? () => immunizations.forPatient(patientId) : undefined, limit);
+    const vitalSection = sect("vitals", vitals ? () => vitals.forPatient(patientId) : undefined, limit);
+    const careTeamSection = sect("careTeam", careTeam ? () => careTeam.forPatient(patientId, { includeRetired: true }) : undefined, limit);
+    const coverageSection = sect("coverage", coverage ? () => coverage.history(patientId) : undefined, limit);
 
     // Allergy status is read from the store rather than inferred from the
     // section: an empty list and a never-asked patient are the distinction
@@ -276,6 +306,24 @@ export class Workspace {
       }
     }
 
+    let immunizationStatus: ImmunizationHistory | "unavailable" = "unavailable";
+    if (immunizations && !hidden.has(SECTION_TYPES.immunizations)) {
+      try {
+        immunizationStatus = immunizations.historyStatus(patientId);
+      } catch {
+        immunizationStatus = "unavailable";
+      }
+    }
+
+    let vitalStatus: VitalHistory | "unavailable" = "unavailable";
+    if (vitals && !hidden.has(SECTION_TYPES.vitals)) {
+      try {
+        vitalStatus = vitals.historyStatus(patientId);
+      } catch {
+        vitalStatus = "unavailable";
+      }
+    }
+
     let patient: PatientSummary | undefined;
     try {
       patient = record?.patientIndex.get(patientId);
@@ -286,6 +334,10 @@ export class Workspace {
     const sections: Array<[string, Section<unknown>]> = [
       ["Allergies", allergies],
       ["Medications", medications],
+      ["Immunizations", immunizationSection],
+      ["Vitals", vitalSection],
+      ["Care team", careTeamSection],
+      ["Coverage", coverageSection],
       ["Unacknowledged results", unacknowledgedResults],
       ["Open orders", openOrders],
       ["Open referrals", openReferrals],
@@ -302,14 +354,37 @@ export class Workspace {
       // technical fault and send somebody looking for a bug.
       omissions.push("Allergies: allergy status could not be determined");
     }
+    if (immunizationStatus === "never-asked") {
+      omissions.push("Immunizations: no immunization history has ever been recorded for this patient");
+    } else if (immunizationStatus === "unavailable" && !hidden.has(SECTION_TYPES.immunizations)) {
+      omissions.push("Immunizations: immunization history could not be determined");
+    }
+    if (vitalStatus === "never-measured") {
+      omissions.push("Vitals: no vital signs have ever been recorded for this patient");
+    } else if (vitalStatus === "unavailable" && !hidden.has(SECTION_TYPES.vitals)) {
+      omissions.push("Vitals: vital-sign history could not be determined");
+    }
+    if (careTeam && careTeamSection.complete && !hidden.has(SECTION_TYPES.careTeam)) {
+      const currentPrimary = careTeamSection.items.find((r) => r.role === "primary" && !r.active_to);
+      if (!currentPrimary) omissions.push("Care team: no current primary provider is assigned");
+    }
+    if (coverage && coverageSection.complete && !hidden.has(SECTION_TYPES.coverage) && !coverage.current(patientId)) {
+      omissions.push("Coverage: no provincial coverage or eligibility has been recorded");
+    }
 
     return {
       patientId,
       patient,
       generatedAt: new Date().toISOString(),
       allergyStatus,
+      immunizationStatus,
+      vitalStatus,
       allergies,
       medications,
+      immunizations: immunizationSection,
+      vitals: vitalSection,
+      careTeam: careTeamSection,
+      coverage: coverageSection,
       unacknowledgedResults,
       openOrders,
       openReferrals,
@@ -322,7 +397,9 @@ export class Workspace {
       // before they act on it, even though nothing has gone wrong.
       complete:
         sections.every(([, s]) => s.complete) &&
-        (allergyStatus !== "unavailable" || hidden.has(SECTION_TYPES.allergies)),
+        (allergyStatus !== "unavailable" || hidden.has(SECTION_TYPES.allergies)) &&
+        (immunizationStatus !== "unavailable" || hidden.has(SECTION_TYPES.immunizations)) &&
+        (vitalStatus !== "unavailable" || hidden.has(SECTION_TYPES.vitals)),
       omissions,
     };
   }
@@ -344,11 +421,12 @@ export class Workspace {
     stalledReferrals: Section<ReferralRow>;
     ordersAwaitingResult: Section<OrderRow>;
     tasks: Section<TaskRow>;
+    today: Section<{ slot: SlotRow; booking: BookingRow }>;
     incompleteReconciliations: Section<{ id: string; patient_id: string; transition: string; started_at: string }>;
     complete: boolean;
     omissions: string[];
   } {
-    const { orders, referrals, tasks, meds } = this.sources;
+    const { orders, referrals, tasks, meds, schedule } = this.sources;
     const limit = opts.limit ?? 50;
     const asOf = opts.asOf ?? new Date().toISOString();
 
@@ -366,8 +444,10 @@ export class Workspace {
     );
     const taskSection = section(tasks ? () => tasks.inbox(clinicianId) : undefined, limit);
     const incompleteReconciliations = section(meds ? () => meds.incompleteReconciliations() : undefined, limit);
+    const today = section(schedule ? () => schedule.today(clinicianId, asOf) : undefined, limit);
 
     const named: Array<[string, Section<unknown>]> = [
+      ["Today's appointments", today],
       ["Unacknowledged results", unacknowledgedResults],
       ["Stalled referrals", stalledReferrals],
       ["Orders awaiting a result", ordersAwaitingResult],
@@ -375,6 +455,7 @@ export class Workspace {
       ["Incomplete reconciliations", incompleteReconciliations],
     ];
     return {
+      today,
       unacknowledgedResults,
       stalledReferrals,
       ordersAwaitingResult,

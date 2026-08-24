@@ -11,6 +11,22 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **The next slice of the longitudinal chart.** Immunizations and vitals
+  are typed writes onto the existing clinical log — a refusal needs a
+  reason, blood pressure needs both numbers, a laboratory Observation is
+  not a vital, and `never-asked` / `never-measured` are statuses rather
+  than empty panels. Care team and coverage are their own tables: at most
+  one current primary, retirement is an end date, a coverage change
+  supersedes rather than overwrites. The patient index carries preferred
+  language and telecom and still rebuilds from the log. Today's
+  appointments sit on the clinician worklist. The chart, the HTTP API and
+  the console surface all four. The provincial specification is not
+  claimed; [docs/PROVINCIAL.md](docs/PROVINCIAL.md) is the gap map.
+
+  Hazards H-45–H-48 in the safety case.
+
+  498 → 519 tests.
+
 - **A clinical safety case and hazard log** (#21). The hazards were already
   in the module headers; they had no severity, no likelihood, no named
   owner and no evidence trail a safety officer could follow.

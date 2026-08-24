@@ -25,6 +25,7 @@ import type { ClinicalRecord, ClinicalEntry } from "../clinical/record.ts";
 import type { MedicationStore, MedRow } from "../meds/store.ts";
 import type { OrderStore, OrderRow, ResultRow } from "../orders/store.ts";
 import type { Encounters, EncounterRow, ParticipantRow } from "../clinical/encounters.ts";
+import { Vitals, type VitalView } from "../clinical/vitals.ts";
 import { type Section, section, describe } from "./summary.ts";
 
 export interface VisitSources {
@@ -58,6 +59,8 @@ export interface VisitSummary {
   results: Section<ResultRow>;
   medications: Section<MedRow>;
   notes: Section<ClinicalEntry>;
+  /** Vital signs taken at this visit. Empty here is ordinary, not "never measured". */
+  vitals: Section<VitalView>;
   /** Problems, observations and procedures recorded against this visit. */
   findings: Section<ClinicalEntry>;
 
@@ -73,6 +76,7 @@ export const VISIT_SECTION_TYPES = {
   results: "Observation",
   medications: "MedicationStatement",
   notes: "DocumentReference",
+  vitals: "Observation",
   findings: "Condition",
 } as const;
 
@@ -141,6 +145,15 @@ export class VisitView {
       patientId ? "not configured in this deployment" : "the encounter could not be read, so its notes cannot be found"
     );
 
+    // Taken at this visit only. "Never measured" belongs on the chart, not
+    // here: a visit with no vitals is ordinary, and saying otherwise would
+    // flag every telephone review as a gap.
+    const vitals = sect<VitalView>(
+      "vitals",
+      record && patientId ? () => new Vitals(record).forPatient(patientId, { encounterId }) : undefined,
+      patientId ? "not configured in this deployment" : "the encounter could not be read, so its vitals cannot be found"
+    );
+
     const findings = sect<ClinicalEntry>(
       "findings",
       record && patientId
@@ -158,6 +171,7 @@ export class VisitView {
       ["results", results],
       ["medications", medications],
       ["notes", notes],
+      ["vitals", vitals],
       ["findings", findings],
     ];
     const omissions = sections.map(([name, s]) => describe(name, s)).filter((d): d is string => d !== null);
@@ -172,6 +186,7 @@ export class VisitView {
       results,
       medications,
       notes,
+      vitals,
       findings,
       complete: omissions.length === 0,
       omissions,

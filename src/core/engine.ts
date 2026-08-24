@@ -20,6 +20,10 @@ import { ApiKeyStore } from "../auth/keys.ts";
 import { AuditStore } from "../audit/store.ts";
 import { ClinicalRecord } from "../clinical/record.ts";
 import { ClinicalNotes } from "../clinical/notes.ts";
+import { Immunizations } from "../clinical/immunizations.ts";
+import { Vitals } from "../clinical/vitals.ts";
+import { CareTeam } from "../clinical/careteam.ts";
+import { Coverage } from "../clinical/coverage.ts";
 import { MedicationStore } from "../meds/store.ts";
 import type { InteractionSource } from "../meds/safety.ts";
 import { OrderStore } from "../orders/store.ts";
@@ -80,6 +84,10 @@ export interface TenantView {
   audit: AuditStore;
   clinical: ClinicalRecord;
   notes: ClinicalNotes;
+  immunizations: Immunizations;
+  vitals: Vitals;
+  careTeam: CareTeam;
+  coverage: Coverage;
   meds: MedicationStore;
   orders: OrderStore;
   referrals: ReferralStore;
@@ -237,6 +245,11 @@ export class Engine {
     const db = this.db.forTenant(tenantId);
     const clinical = new ClinicalRecord(db);
     const notes = new ClinicalNotes(clinical);
+    const immunizations = new Immunizations(clinical);
+    const vitals = new Vitals(clinical);
+    const careTeam = new CareTeam(db);
+    const coverage = new Coverage(db);
+    const schedule = new Schedule(db);
     // No interaction database unless a deployment supplies one. The safety
     // check reports interactions as unchecked rather than clear, which is the
     // honest answer and the one src/meds/safety.ts is built to give.
@@ -264,16 +277,32 @@ export class Engine {
       audit: new AuditStore(db),
       clinical,
       notes,
+      immunizations,
+      vitals,
+      careTeam,
+      coverage,
       meds,
       orders,
       referrals,
       tasks,
-      schedule: new Schedule(db),
+      schedule,
       registry: new Registry(db),
       consent: new ConsentDirectives(db, {
         ...(this.noticeChannel ? { dispatcher: new ChannelNoticeDispatcher(db, this.noticeChannel) } : {}),
       }),
-      workspace: new Workspace({ record: clinical, notes, meds, orders, referrals, tasks }),
+      workspace: new Workspace({
+        record: clinical,
+        notes,
+        meds,
+        orders,
+        referrals,
+        tasks,
+        immunizations,
+        vitals,
+        careTeam,
+        coverage,
+        schedule,
+      }),
       encounters,
       directory,
       visits: new VisitView({ encounters, record: clinical, meds, orders }),
