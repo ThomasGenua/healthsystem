@@ -60,6 +60,27 @@ though it did.
 | 22 | Roadmap | See README. Phases 0–5 in the specification are a procurement timeline, not a commitment this file can make. | |
 | 23 | Immediate priorities | The table above. | |
 
+## What is left, and why most of it is not code
+
+Priorities 1–9 and 13 are done or substantially done. What remains divides
+into three kinds of work, and only one of them is programming:
+
+**Needs a counterparty.** Every vendor and provincial interface — Dynacare,
+LifeLabs, OLIS, DHDR, HRM, eConsult, ONE ID, a pharmacy network — needs their
+conformance guide, a sandbox, credentials, and a test executed *with* them
+producing a signed result. The bridges are built and tested against synthetic
+messages; no amount of further coding turns that into an interface.
+
+**Needs a person who is not the author.** Accessibility against a real screen
+reader, Canadian-French parity, a penetration test by somebody who does not
+share the author's model of an attack, and a named clinical safety officer to
+sign the hazard log (R-01). A clinical pilot needs all four first.
+
+**Is genuinely code, and is deliberately later.** Population-health outreach
+and equity stratification, the provincial administration console, the
+assurance centre, horizontal scale (#25), and AI — which stays last on
+purpose, because deterministic workflows must be the authoritative ones.
+
 ## What a real vendor interface still needs
 
 The ORU bridge is built and tested against synthetic messages. Turning it into

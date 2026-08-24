@@ -1604,7 +1604,7 @@ a scope-narrowed directive withholds its section rather than the chart around it
 - [#35 An access review a privacy officer can actually run](https://github.com/ThomasGenua/healthsystem/issues/35) — the audit trail records and proves, and answers none of the questions a privacy office asks. A chain nobody reads proves only that nobody tampered with a log nobody reads.
 - [#23 Validate the conformance packs against the published Projectathon scripts](https://github.com/ThomasGenua/healthsystem/issues/23) — the packs validate against this project's reading of the specifications, which is not the same as conforming to them.
 - [#24 The patient-facing surface, and its separate identity boundary](https://github.com/ThomasGenua/healthsystem/issues/24) — the backend boundary is done: OAuth-only patient scope, live subject-to-chart grants, explicit proxy scope/purpose/expiry, patient-safe summaries, held results, appointments, messages, delegates, access logs and requests. What remains is the patient application, enrolment/identity proofing, French parity, notification delivery and accessibility validation.
-- [#40 Transmit a prescription to a pharmacy](https://github.com/ThomasGenua/healthsystem/issues/40) — a prescription is recorded carefully and then goes nowhere, so it is written out a second time somewhere else and the two records disagree.
+[#40](https://github.com/ThomasGenua/healthsystem/issues/40) is done: a prescription has a transmission lifecycle, a second transmission is refused because a pharmacy may dispense twice, and each way one is lost — never sent, sent and unacknowledged, failed, cancelled without telling the pharmacy — is a chase list. No pharmacy network has received a message.
 
 **Built for where it actually runs.**
 
@@ -1617,11 +1617,14 @@ a scope-narrowed directive withholds its section rather than the chart around it
 
 **Then scale.**
 
-- [#20 §15 bulk migration from incumbent systems, with a reconciliation report](https://github.com/ThomasGenua/healthsystem/issues/20) — how a real deployment starts, and completely absent.
-- [#25 Horizontal operation](https://github.com/ThomasGenua/healthsystem/issues/25) — a single writer suits a community site and not a territorial hub. Last, because scaling a system nobody can load data into and whose recovery has never been rehearsed is optimising the wrong axis.
+[#20](https://github.com/ThomasGenua/healthsystem/issues/20) is done for the half that carries the clinical risk: a loader whose completeness is declared and then checked, so a run cannot report success having dropped 4% of the allergies. It is not an extractor, and inventory, cutover scheduling and stabilisation are a plan a person writes.
+
+- [#25 Horizontal operation](https://github.com/ThomasGenua/healthsystem/issues/25) — a single writer suits a community site and not a territorial hub. Last, because scaling a system whose recovery has never been rehearsed is optimising the wrong axis.
 
 **Smaller, from review.** [#26](https://github.com/ThomasGenua/healthsystem/issues/26) and [#27](https://github.com/ThomasGenua/healthsystem/issues/27) are done: a store refusal is not a 400-and-outcome-8, and the `migrate()` rebuild turns foreign keys off around the copy.
 
-**The chart, further.** Immunizations, vitals, care team, coverage, today's appointments and durable patient messaging are in. That is priorities 3 and 5 of the production build, not the provincial platform. The distance is [docs/PROVINCIAL.md](docs/PROVINCIAL.md). Laboratory vendor interfaces, a mounted portal, AI and migration tooling are still the later numbered priorities, in that order.
+**Where the production build has reached.** Priorities 1–9 and 13 of the immediate list are done or substantially done: the chart, documentation, inbox, scheduling, patient messaging, the FHIR service, an inbound laboratory bridge, medications with pharmacy transmission, the patient access boundary, and a migration loader. The distance to the provincial specification is [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
+
+What is left is mostly not code. Vendor and provincial interfaces (Dynacare, LifeLabs, OLIS, DHDR, HRM, eConsult, ONE ID) each need a conformance guide, a sandbox, credentials and a signed test result — none of which can be written from inside this repository. Accessibility and Canadian-French parity need a person with a screen reader and a translator. A penetration test needs somebody who does not share the author's model of an attack. A clinical pilot needs a named safety officer.
 
 **Deliberately not next.** Machine learning and broad decision-support content wait for validated data, licensed content and a clinical-governance process. The decision-support mechanism ships without content on purpose, and shipping content without that process would be the most consequential version of the failure this codebase spends its time refusing: a system answering a clinical question that nobody actually answered.
