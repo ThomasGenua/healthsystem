@@ -63,7 +63,7 @@ v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **An OAuth-only patient/proxy API.** A patient-context SMART token cannot read the general FHIR facade; every chart is authorized again through an active grant with explicit scope, purpose and expiry. Held results, appointments, messages, access history, delegates and requests are patient-safe views, not the clinician Workspace.
 - **A laboratory result bridge that closes the order loop**, not just a mapping onto the facade: a resend writes nothing, a correction supersedes and arrives unacknowledged, a stale preliminary is ignored, and a result whose patient cannot be identified is held for a person rather than filed against a guess. No vendor interface is claimed — see [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
 
-566 tests. Backend first, then the interface that makes the backend's honesty visible.
+579 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -119,7 +119,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 566 tests
+npm test          # 579 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -589,6 +589,22 @@ Findings are ordered worst-first, independently of the order the check discovers
 Admission, transfer and discharge are where lists diverge. A reconciliation is seeded from the current list rather than starting empty — an empty form is completed by doing nothing — and **cannot be completed while any line is undecided**, with the unresolved medications named in the refusal so it is actionable.
 
 That refusal is the point. A reconciliation marked done with lines nobody resolved is worse than one never started, because the chart now says the work happened and the next clinician has no reason to look again. Decisions are applied to the list on completion, which is what makes it a reconciliation rather than a questionnaire, and one left open appears in `incompleteReconciliations()` rather than sitting invisibly.
+
+### Getting a prescription to a pharmacy
+
+A prescription was recorded carefully and then went nowhere. The clinician wrote it into the chart, printed it or read it down the phone, and the pharmacy wrote it again at their end — two records of one decision, drifting apart from the moment they were made. A "sent" flag does not fix that; four distinctions do.
+
+**Not transmitted is a state, not an absence.** Printing a prescription and handing it to the patient is how most prescriptions in most places still travel, so `handOut()` records exactly that and nothing waits on an acknowledgement afterwards. What is refused is the third state — neither transmitted nor deliberately printed, sitting in the chart looking finished. `neverSent()` is that queue, because it is the one the patient discovers at the counter.
+
+**Transmitting twice is a double dispense.** A pharmacy that receives the same prescription twice may dispense it twice, and for an opioid that is a serious adverse event with no error attached anywhere. A second transmission is refused. The only retry is `replaceFailed()`, which writes a new prescription naming the one it replaces — so a pharmacy receiving both can tell they are one decision, and a reviewer can see a retry rather than two prescriptions of unknown relationship.
+
+**Sent is not received.** Portage does not know how to talk to a pharmacy network and does not pretend to: the transmission becomes a message on a channel the deployment configures, carried by the same ordered, retried, dead-lettered machinery as everything else. Until an acknowledgement is recorded the prescription is outstanding, and `awaitingAcknowledgement()` is what stops "we sent it" being the end of the story. With no channel configured, `transmit()` **refuses** rather than recording one as sent.
+
+**A controlled substance is not an ordinary prescription.** Electronic prescribing of narcotics is separately regulated. It is refused unless the deployment declares the authority it holds — a licence or programme name, not a boolean — and the declaration goes on the prescription where an audit can read it.
+
+The most dangerous list is `cancellationsOwed()`: a prescription cancelled after transmission, with nobody having confirmed the pharmacy was told. The chart says stopped, the pharmacy's screen says dispense, and the patient is the one who finds out.
+
+A prescription is written against a **medication statement** rather than restating a drug, so the prescription and the medication list cannot disagree about what was prescribed. Only a `prescribed` statement qualifies: transmitting a patient-reported drug would be this system inventing a prescriber's decision.
 
 ### What is deliberately not here
 

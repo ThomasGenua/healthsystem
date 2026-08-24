@@ -24,7 +24,8 @@ the post-0.5.0 line: v0.5.0 plus off-machine backup, organization identity
 on credentials, break-glass notice dispatch, encounters, the provider
 directory, FHIR projection of that directory, the refusal/fault split
 in `phi()`, the longitudinal-chart increment, durable patient messaging,
-the OAuth patient/proxy boundary, and the laboratory result bridge).
+the OAuth patient/proxy boundary, the laboratory result bridge, and
+pharmacy transmission).
 **Last reviewed:** 2026-08-24.
 **Reviewer of this draft:** the author of the controls, not an independent
 clinical safety officer. That gap is residual risk R-01.
@@ -211,6 +212,10 @@ makes the control a fact rather than a comment.
 | H-20 | Partial interaction table trusted as complete | An 80% table ships as the check | The missing 20% is invisible; trust is learned | Major | High | Deliberately small shipped set; licensed DB through a seam | `test/medications.test.ts` — "prescribing past a contraindication needs an override, and the override is the record" |
 | H-21 | Stopped drug vanishes | Delete or silent status | Next prescriber cannot tell stop from mistake | Moderate | Low | Stop needs a reason; the row stays | `test/medications.test.ts` — "a stopped drug leaves the list, with a reason, and stays readable" |
 | H-22 | Reconciliation closed with undecided meds | Complete clicked to clear a queue | The transition list is a guess | Major | Medium | Complete refused while items are unresolved | `test/medications.test.ts` — "a reconciliation cannot be completed with medications nobody decided about" |
+| H-61 | Prescription transmitted twice, dispensed twice | A retry on an already-sent prescription | A double dispense; for an opioid, a serious adverse event with no error recorded | Catastrophic | Low | A second transmit is refused; the only retry is `replaceFailed`, which names what it replaces | `test/prescribe.test.ts` — "transmitting the same prescription twice is refused, because a pharmacy may dispense twice" |
+| H-62 | Prescription looks sent and went nowhere | No pharmacy channel, or a silent dispatch failure | The patient arrives at a counter with nothing waiting | Major | High | Transmit refuses without a channel; a failed dispatch is `failed`, not left as a draft; `neverSent()` is a queue | `test/prescribe.test.ts` — "with no pharmacy channel a prescription cannot be transmitted, and must be recorded as printed" |
+| H-63 | Cancelled prescription still standing at the pharmacy | Chart says stopped, pharmacy screen says dispense | The patient collects a drug their clinician withdrew | Major | Medium | `cancellationsOwed()` until somebody records how the pharmacy was told | `test/prescribe.test.ts` — "cancelling a transmitted prescription owes the pharmacy a message until somebody confirms it" |
+| H-64 | Controlled substance transmitted without authority | Narcotic e-prescribing is separately regulated | The deployment is in breach and was not told | Major | Low | Refused unless the deployment declares its authority, which is recorded | `test/prescribe.test.ts` — "a controlled substance is not transmitted unless the deployment declares its authority" |
 
 ### Work and referrals
 

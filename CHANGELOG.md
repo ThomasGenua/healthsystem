@@ -11,6 +11,36 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Prescriptions that reach a pharmacy, or say why not** (#40). A
+  prescription was recorded carefully and then went nowhere; the pharmacy
+  wrote it again at their end and the two records drifted apart. Four
+  distinctions rather than a "sent" flag.
+
+  **Not transmitted is a state.** `handOut()` records a prescription
+  printed for the patient, and nothing then waits on an acknowledgement.
+  What is refused is the third state — neither sent nor deliberately
+  printed — and `neverSent()` is that queue.
+
+  **Transmitting twice is a double dispense**, so a second transmission
+  is refused. The only retry is `replaceFailed()`, which names the
+  prescription it replaces so a pharmacy receiving both can tell they are
+  one decision.
+
+  **Sent is not received.** The transmission publishes onto a channel and
+  is carried by the ordinary delivery machinery; until an
+  acknowledgement is recorded it is on `awaitingAcknowledgement()`. With
+  no channel configured, transmit refuses rather than recording it as
+  sent. `cancellationsOwed()` is the worst list: cancelled after
+  transmission with nobody having told the pharmacy.
+
+  **A controlled substance** is refused unless the deployment declares
+  the authority it holds, which is recorded on the prescription.
+
+  No pharmacy network interface has exchanged a message. Hazards
+  H-61–H-64.
+
+  566 → 579 tests.
+
 - **A laboratory result bridge that closes the order loop.** There was a
   channel mapping ORU messages onto the FHIR facade, and it was easy to
   mistake for a laboratory interface: it stored a copy of a value and left

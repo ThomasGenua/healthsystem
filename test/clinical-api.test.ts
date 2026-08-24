@@ -25,8 +25,21 @@ const GP = { actorId: "dr-tetso", actorKind: "practitioner" };
 const GP_AUTHOR = { authorId: "dr-tetso", authorKind: "practitioner" };
 
 async function boot() {
-  const engine = new Engine({ dbPath: ":memory:", tickMs: 15 });
+  // A pharmacy channel, so the prescription routes exercise the transmit path
+  // rather than the refusal a deployment without one gets.
+  const engine = new Engine({ dbPath: ":memory:", tickMs: 15, pharmacyChannel: "pharmacy-out" });
   await engine.start();
+  engine.db.upsertChannel(
+    "pharmacy-out",
+    "Pharmacy transmissions",
+    true,
+    JSON.stringify({
+      id: "pharmacy-out",
+      name: "Pharmacy transmissions",
+      source: { type: "http", path: "pharmacy-out" },
+      destinations: [{ id: "pharmacy", type: "http", url: "http://127.0.0.1:1/pharmacy" }],
+    })
+  );
   const adminKey = engine.keys.issue("ops", ["admin"]);
   const admin = adminKey.key;
   const reader = engine.keys.issue("consumer", ["read"]).key;
@@ -406,6 +419,35 @@ test("every clinical route leaves an audit row, including ones added later", asy
     );
     const heldResult = s.engine.forTenant("default").labIntake.heldForIdentity()[0];
 
+    // Prescriptions, one row per route so no route depends on what another did
+    // to it first. The engine was booted with a pharmacy channel, so the
+    // transmit path is the real one rather than the refusal.
+    const rx = s.engine.forTenant("default").prescribing;
+    s.engine.forTenant("default").directory.addOrganization({ id: "yk-pharmacy", name: "Yellowknife Pharmacy" });
+    const statement = s.engine.forTenant("default").meds.record({
+      patientId: P,
+      code: "860975",
+      display: "Metformin 500mg tablet",
+      ingredient: "metformin",
+      source: "prescribed",
+      adherence: "taking",
+      by: GP,
+    });
+    const writeRx = (): string => rx.write({ statementId: statement.id, instructions: "One twice daily", by: GP }).id;
+    const rxToTransmit = writeRx();
+    const rxToHandOut = writeRx();
+    const rxToCancel = writeRx();
+    const rxToAcknowledge = writeRx();
+    rx.transmit(rxToAcknowledge, "yk-pharmacy", GP);
+    const rxToFail = writeRx();
+    rx.transmit(rxToFail, "yk-pharmacy", GP);
+    const rxToReplace = writeRx();
+    rx.transmit(rxToReplace, "yk-pharmacy", GP);
+    rx.fail(rxToReplace, { ...GP, reason: "pharmacy rejected it" });
+    const rxToConfirm = writeRx();
+    rx.transmit(rxToConfirm, "yk-pharmacy", GP);
+    rx.cancel(rxToConfirm, { ...GP, reason: "started on insulin instead" });
+
     const standing = s.engine.forTenant("default").consent.breakGlass({
       patientId: P,
       by: { actorId: "dr-hale", actorKind: "practitioner" },
@@ -472,6 +514,16 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/lab-held": "",
       "/api/clinical/lab-reconcile": "",
       "/api/clinical/lab-resolve": "POST",
+      "/api/clinical/prescriptions": `?patient=${P}`,
+      "/api/clinical/prescription-chase": "",
+      "/api/clinical/prescribe": "POST",
+      "/api/clinical/prescription-transmit": "POST",
+      "/api/clinical/prescription-handout": "POST",
+      "/api/clinical/prescription-acknowledge": "POST",
+      "/api/clinical/prescription-fail": "POST",
+      "/api/clinical/prescription-replace": "POST",
+      "/api/clinical/prescription-cancel": "POST",
+      "/api/clinical/prescription-cancel-confirm": "POST",
     };
 
     /** The body each POST route needs to do real work. */
@@ -554,6 +606,17 @@ test("every clinical route leaves an audit row, including ones added later", asy
         reason: "the historical entry is accurate; explanation sent to the patient",
       },
       "/api/clinical/lab-resolve": { hold: heldResult.id, patient: P },
+      "/api/clinical/prescribe": { statement: statement.id, instructions: "One tablet twice daily with food" },
+      "/api/clinical/prescription-transmit": { prescription: rxToTransmit, pharmacy: "yk-pharmacy" },
+      "/api/clinical/prescription-handout": { prescription: rxToHandOut, reason: "printed for the patient" },
+      "/api/clinical/prescription-acknowledge": { prescription: rxToAcknowledge, detail: "pharmacy reference 8812" },
+      "/api/clinical/prescription-fail": { prescription: rxToFail, reason: "pharmacy rejected: unknown patient" },
+      "/api/clinical/prescription-replace": { prescription: rxToReplace, reason: "sending to the usual pharmacy" },
+      "/api/clinical/prescription-cancel": { prescription: rxToCancel, reason: "changed the plan" },
+      "/api/clinical/prescription-cancel-confirm": {
+        prescription: rxToConfirm,
+        detail: "telephoned the pharmacist, who withdrew it",
+      },
     };
 
     const unlisted = paths.filter((p) => !(p in args));

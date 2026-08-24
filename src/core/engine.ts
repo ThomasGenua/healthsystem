@@ -26,6 +26,7 @@ import { CareTeam } from "../clinical/careteam.ts";
 import { Coverage } from "../clinical/coverage.ts";
 import { MedicationStore } from "../meds/store.ts";
 import type { InteractionSource } from "../meds/safety.ts";
+import { ChannelPharmacyDispatcher, Prescribing } from "../meds/prescribe.ts";
 import { OrderStore } from "../orders/store.ts";
 import { LabIntake } from "../orders/intake.ts";
 import { GENERIC_LAB_PROFILE, type LabProfile } from "../orders/hl7.ts";
@@ -93,6 +94,8 @@ export interface TenantView {
   careTeam: CareTeam;
   coverage: Coverage;
   meds: MedicationStore;
+  /** Prescriptions, and whether they reached a pharmacy. */
+  prescribing: Prescribing;
   orders: OrderStore;
   /** Inbound laboratory results, and the queue of ones nobody could identify. */
   labIntake: LabIntake;
@@ -151,6 +154,24 @@ export interface EngineOptions {
    * somebody's private business to a stranger.
    */
   breakGlassNoticeChannel?: string;
+  /**
+   * The channel prescriptions are transmitted to a pharmacy on.
+   *
+   * Unset means prescriptions cannot be transmitted, and `transmit()` refuses
+   * with that reason rather than recording one as sent. A deployment without a
+   * pharmacy interface records prescriptions as printed, which is honest and is
+   * how most prescriptions in most places still travel.
+   */
+  pharmacyChannel?: string;
+  /**
+   * What authorises this deployment to transmit controlled substances
+   * electronically — a licence or programme name, not a boolean.
+   *
+   * Unset means it may not. Narcotic e-prescribing is separately regulated, and
+   * a system that transmitted one because it technically could would put a
+   * deployment in breach without telling it.
+   */
+  controlledSubstanceAuthority?: string;
 }
 
 export class Engine {
@@ -181,6 +202,10 @@ export class Engine {
   private interactions: InteractionSource | null;
   /** The channel break-glass notices go to, when a deployment configures one. */
   private noticeChannel: string | null;
+  /** The channel prescriptions are transmitted on, when one is configured. */
+  private pharmacyChannel: string | null;
+  /** What authorises transmitting a controlled substance, when anything does. */
+  private controlledAuthority: string | null;
   private lockStaleMs: number;
   private lockHeartbeatMs: number;
   private holdsLock = false;
@@ -216,6 +241,8 @@ export class Engine {
     };
     this.interactions = opts.interactions ?? null;
     this.noticeChannel = opts.breakGlassNoticeChannel ?? null;
+    this.pharmacyChannel = opts.pharmacyChannel ?? null;
+    this.controlledAuthority = opts.controlledSubstanceAuthority ?? null;
     this.lockStaleMs = opts.lockStaleMs ?? 20_000;
     // Comfortably inside the staleness window, so a slow moment never costs a
     // running engine its own claim.
@@ -270,6 +297,12 @@ export class Engine {
     // check reports interactions as unchecked rather than clear, which is the
     // honest answer and the one src/meds/safety.ts is built to give.
     const meds = new MedicationStore(db, this.interactions);
+    const prescribing = new Prescribing(db, meds, {
+      // Absent unless a deployment configures a channel, and absence is a
+      // refusal at transmit time rather than a prescription that looks sent.
+      ...(this.pharmacyChannel ? { dispatcher: new ChannelPharmacyDispatcher(db, this.pharmacyChannel) } : {}),
+      ...(this.controlledAuthority ? { controlledSubstanceAuthority: this.controlledAuthority } : {}),
+    });
     const orders = new OrderStore(db);
     const labIntake = new LabIntake(db, orders, clinical.patientIndex);
     const referrals = new ReferralStore(db);
@@ -300,6 +333,7 @@ export class Engine {
       careTeam,
       coverage,
       meds,
+      prescribing,
       orders,
       labIntake,
       referrals,
