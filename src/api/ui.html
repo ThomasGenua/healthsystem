@@ -107,11 +107,17 @@ const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&
 const KEY="portage.apikey";
 const apiKey=()=>localStorage.getItem(KEY)||"";
 const j=async(url,opts={})=>{
+  // `allow403` is for the caller that renders a 403 itself. A 403 is two
+  // different sentences — "this key lacks the scope" and "a patient
+  // directive withholds this record" — and the chart tab has to read the
+  // body to say the second one and offer break-glass for the right chart.
+  // Every other caller keeps the thrown scope error.
+  const {allow403,...rest}=opts;
   const key=apiKey();
-  const headers={...(opts.headers||{}),...(key?{authorization:"Bearer "+key}:{})};
-  const r=await fetch(url,{...opts,headers});
+  const headers={...(rest.headers||{}),...(key?{authorization:"Bearer "+key}:{})};
+  const r=await fetch(url,{...rest,headers});
   const b=await r.text();let d;try{d=JSON.parse(b)}catch{d=b}
-  if(r.status===401||r.status===403)throw new Error(r.status===401?"not authenticated — set an API key above":"this key lacks the scope for that");
+  if(r.status===401||(r.status===403&&!allow403))throw new Error(r.status===401?"not authenticated — set an API key above":"this key lacks the scope for that");
   if(!r.ok&&!(d&&typeof d==="object"))throw new Error(r.status+" "+b);
   return{status:r.status,data:d};
 };
@@ -227,14 +233,16 @@ window.loadChart=async()=>{
   out.innerHTML=`<p class="none">loading…</p>`;
   let c;
   try{
-    const r=await j("/api/clinical/chart?patient="+encodeURIComponent(id));
+    const r=await j("/api/clinical/chart?patient="+encodeURIComponent(id),{allow403:true});
     if(r.status===403){
+      // A 403 with no break-glass pointer is the gate, not a directive.
+      if(!(r.data&&r.data.breakGlass)){out.innerHTML=`<p class="err">this key lacks the scope for that</p>`;return}
       // The refusal names the way through, and so does this. A clinician who
       // needs the record in an emergency should not have to know the API.
       // Break-glass is declared per chart, so the form targets the chart the
       // directive is actually on — for a linked chart that is the withheld
       // member, and overriding the queried id would lift nothing.
-      const target=(r.data&&r.data.withheldMember)||id;
+      const target=r.data.withheldMember||id;
       const linkedNote=target!==id?`<p>The directive is on <b>${esc(target)}</b>, a chart linked to this one — the override is declared for that chart, and lifts only it.</p>`:"";
       out.innerHTML=`<div class="banner bad"><b>This record is withheld by a patient directive.</b>
         <p>The patient has asked that this record not be shown. If the clinical situation warrants overriding that, declare it — the declaration is recorded, the patient is told, and somebody reviews it.</p>${linkedNote}

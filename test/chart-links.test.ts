@@ -11,6 +11,7 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import { Db } from "../src/db.ts";
 import { Engine } from "../src/core/engine.ts";
 import { startApi } from "../src/api/admin.ts";
@@ -553,6 +554,26 @@ test("a partly withheld assembled chart says so on every member's audit row", as
   } finally {
     await s.close();
   }
+});
+
+test("the console's chart loader can see a directive 403", () => {
+  // The console helper throws on every 403 so its tabs render scope errors —
+  // and when that arrived (merged from the privacy office branch), it
+  // silently killed the chart tab's break-glass banner, the only UI path
+  // that declares an override: a directive refusal rendered as a false
+  // "lacks the scope". The helper now lets a caller opt in to reading a 403
+  // body, and the chart loader must stay such a caller, telling the gate's
+  // 403 from a directive's by the break-glass pointer only the directive
+  // path carries.
+  const ui = readFileSync(new URL("../src/api/ui.html", import.meta.url), "utf8");
+  assert.match(
+    ui,
+    /chart\?patient="\+encodeURIComponent\(id\),\{allow403:true\}/,
+    "the chart fetch opts in to reading the 403 body"
+  );
+  assert.match(ui, /r\.status===403&&!allow403/, "and the helper honors the opt-in");
+  assert.match(ui, /r\.data\.breakGlass/, "the banner is gated on the directive's break-glass pointer");
+  assert.match(ui, /r\.data\.withheldMember\|\|id/, "and targets the member the refusal names");
 });
 
 test("the patient portal never assembles across a link", async () => {
