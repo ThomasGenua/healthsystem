@@ -24,9 +24,10 @@ the post-0.5.0 line: v0.5.0 plus off-machine backup, organization identity
 on credentials, break-glass notice dispatch, encounters, the provider
 directory, FHIR projection of that directory, the refusal/fault split
 in `phi()`, the longitudinal-chart increment, durable patient messaging,
-the OAuth patient/proxy boundary, the laboratory result bridge, and
-pharmacy transmission, and the migration loader).
-**Last reviewed:** 2026-08-24.
+the OAuth patient/proxy boundary, the laboratory result bridge,
+pharmacy transmission, the migration loader, the privacy office, and the
+patient HTML shell at `/me`).
+**Last reviewed:** 2026-08-25.
 **Reviewer of this draft:** the author of the controls, not an independent
 clinical safety officer. That gap is residual risk R-01.
 
@@ -58,6 +59,7 @@ In scope, as stores and an authenticated HTTP API:
 - referrals and a unified work inbox
 - a schedule that cannot double-book a seat
 - consent directives, break-glass, and an OAuth/grant-bound patient API
+- a privacy office: reviews, legal holds, incidents, access clocks, disclosures, an assurance catalogue
 - a FHIR R4 facade, including the local provider directory as resources
 - hash-chained message lineage and a hash-chained access audit
 - verified backup, including an off-machine replica when configured
@@ -69,13 +71,13 @@ These are not gaps discovered later. They are scope:
 | Out of scope | Why that is a clinical statement |
 |---|---|
 | A clinician user interface | The chart is an API. "A clinician can use this today" is not claimed. A consumer that ignores `complete === false` reintroduces H-06. |
-| A patient application | The OAuth/grant JSON boundary exists; identity-proofing enrolment, usable EN/FR UX, notifications and accessibility validation do not. |
+| A patient application | `GET /me` is chrome (EN/FR, landmarks, an honest banner). Identity-proofing enrolment, notifications and accessibility validation are not. Do not call it a portal. |
 | Clinical decision-support *content* | The check is here; the interaction table is not. An 80% complete table is one prescribers learn to trust. |
 | Machine learning | Nothing in this repository infers, predicts or scores. No output should be read as though it did. |
 | A certified PSI / Projectathon result | Conformance packs encode published profiles and pass shipped fixtures. |
 | Authoritative provincial directories | The local registry is maintained here. Syncing from a provincial source is a later question. |
 | Horizontal multi-writer scale | One writer per database. A territorial hub is #25, last on purpose. |
-| Bulk migration from an incumbent | How a real deployment starts, and absent (#20). |
+| Extraction from an incumbent | The declare-and-check loader exists (#20). Getting data out of the incumbent is that vendor's export. |
 
 ---
 
@@ -243,6 +245,18 @@ makes the control a fact rather than a comment.
 | H-33 | Feed credential subscribes its way to the record | `write` on `/fhir/` included Subscription | A lab key becomes a standing read | Catastrophic | Low | Subscription is admin-scoped | `test/subscription-scope.test.ts` — "a feed credential cannot subscribe its way to the clinical record" |
 | H-34 | Admin path reached without admin scope | Gate and router disagree on spelling | Unauthorized PHI or operator action | Catastrophic | Low | One gate; adversarial path spellings | `test/auth-bypass.test.ts` — "no spelling of an admin path reaches admin data without the admin scope" |
 
+### Privacy office and assurance
+
+| ID | Hazard | Cause | Effect on a patient | Sev. | Like. | Control | Evidence |
+|---|---|---|---|---|---|---|---|
+| H-70 | Review closed with unaddressed flags | Close clicked to empty a queue | An unreviewed break-glass teaches the ward that breaking glass costs nothing | Major | Medium | Close refused while flags are open; addressing needs a written reason | `test/privacy-office.test.ts` — "closing a review with unaddressed flags is refused" |
+| H-71 | Retention sweep runs through a legal hold | Sweep does not consult holds | The message log is destroyed while a matter is live | Catastrophic | Low | Any active hold on the tenant skips the whole sweep; messages are not patient-keyed | `test/privacy-office.test.ts` — "an active legal hold skips the retention sweep" |
+| H-72 | Access request completed with no disclosure record | `completeRequest` remains possible without one | A privacy office cannot say what left the building | Major | Medium | `fulfillAccess` records a disclosure; completing without one is flagged, not blocked | `test/privacy-office.test.ts` — "fulfilling an access request records a disclosure" |
+| H-73 | Incident closed without saying whether patients were told | Close to empty the queue | A notification duty is silently unmet | Major | Medium | Close refused without told/not-told; not-told needs a written why | `test/privacy-office.test.ts` — "closing an incident without saying whether patients were told is refused" |
+| H-74 | Active subprocessor with no hosting region | Register a vendor without saying where the disks are | PHI leaves the country unnoticed | Major | Low | Active status refused without a region; a candidate may have none | `test/privacy-office.test.ts` — "an active subprocessor without a hosting region is refused" |
+| H-75 | Finding closed by forgetting it | Status flipped with no remediation | The catalogue says a control is in-place when it is not | Major | Medium | Close needs remediation or an accepted residual risk; BACKUP-02 stays partial | `test/privacy-office.test.ts` — "closing a finding without remediation or residual risk is refused" |
+| H-76 | After-hours decided from the wall clock | Review uses local time at the moment of the review | A 03:00 UTC read is missed because the officer opened the review at noon | Moderate | Medium | UTC timestamp of the access, not `Date.now()` | `test/privacy-office.test.ts` — "after-hours is decided from a UTC timestamp, not the wall clock" |
+
 ### Interface, backup, measurement
 
 | ID | Hazard | Cause | Effect on a patient | Sev. | Like. | Control | Evidence |
@@ -276,7 +290,7 @@ twice.
 |---|---|---|---|
 | R-01 | This case has not been signed by an independent CSO | The repository can write the log; it cannot appoint the clinician | Name a CSO before go-live; treat this file as the manufacturer's draft |
 | R-02 | No clinician UI | Backend first. A renderer that ignores `complete === false` reintroduces H-06 | Do not put an untested consumer in front of a prescriber |
-| R-03 | No patient application or enrolment flow | The OAuth/grant JSON boundary is mounted; identity proofing, usable EN/FR UX, notifications and accessibility validation are not | Do not call the API a portal or enrol a real patient without an approved proofing process |
+| R-03 | No certified patient portal or enrolment flow | `GET /me` is static chrome; the OAuth/grant JSON boundary is mounted; identity proofing, notifications and accessibility validation are not | Do not call `/me` a portal or enrol a real patient without an approved proofing process |
 | R-04 | Decision-support mechanism without content (H-20) | A partial table is more dangerous than a small one | Licence an interaction source, or accept that interactions are unchecked |
 | R-05 | No machine learning | Section 7 asked; nothing here does it | Do not read any output as a prediction |
 | R-06 | MLLP is unauthenticated (H-43) | The protocol has nothing to hook | VPN, private APN, or transport mTLS — not Portage |
@@ -292,6 +306,7 @@ twice.
 | R-15 | Duplicate charts are detected, not linked (#34) | Auto-merge is H-05 | A person decides; there is no reversible link yet |
 | R-16 | Remote backup unconfigured is a posture, not degraded | A missing replica is a choice | Configure `PORTAGE_BACKUP_REMOTE` or accept that RPO is the local disk |
 | R-17 | Worklists only work if someone opens them (H-11, H-13, H-23, H-24) | The product can put a row on a list; it cannot make a person look | Staff the chase lists; do not treat an empty personal inbox as "nothing owed" |
+| R-19 | After-hours uses UTC, not clinic-local time (H-76) | A single-zone engine; tests pin UTC timestamps | Do not staff the after-hours queue as if it were local clinic hours |
 
 ---
 

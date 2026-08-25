@@ -67,7 +67,7 @@ The escape hatch is break-glass, which is loud and recorded — see
 git clone https://github.com/ThomasGenua/healthsystem.git portage
 cd portage
 npm ci
-npm run typecheck && npm test    # 596 tests; do not deploy a node that fails one
+npm run typecheck && npm test    # 611 tests; do not deploy a node that fails one
 
 export PORTAGE_DATA=/var/lib/portage
 export PORTAGE_PORT=8686
@@ -95,7 +95,8 @@ Then, before any real feed is pointed at it:
 5. **Decide retention deliberately.** `PORTAGE_REDACT_AFTER_DAYS` and
    `PORTAGE_PURGE_AFTER_DAYS` are unset by default and affect the *message
    log only* — never the chart, medications, allergies, orders, results or
-   referrals. See [What retention does not touch](../README.md#what-retention-does-not-touch).
+   referrals. An active legal hold on the tenant skips the whole sweep:
+   messages are not patient-keyed. See [What retention does not touch](../README.md#what-retention-does-not-touch).
 6. **Point monitoring at `/api/health` and `/metrics`** before the first feed,
    so you have a baseline.
 7. **Declare `expectMessageEverySec` on every channel you would notice the

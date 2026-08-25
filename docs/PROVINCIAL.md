@@ -24,9 +24,9 @@ though it did.
 | 6 | FHIR integration service | Present (R4 facade, mappings, subscriptions) |
 | 7 | Laboratory and provincial-system sandboxes | **Inbound result bridge present, vendor interfaces absent.** An ORU^R01 closes the order it answers, deduplicates retransmissions, supersedes on correction, ignores stale preliminaries and holds unidentifiable results for a person. Dialects are configuration (`labs/`). **No Dynacare, LifeLabs, OLIS, DHDR, HRM, eConsult or ONE ID interface has exchanged a message**, and none is claimed — that needs a conformance guide, a sandbox, credentials and a signed test result. |
 | 8 | Medication and result management | Present. Pharmacy transmission ([#40](https://github.com/ThomasGenua/healthsystem/issues/40)) is done as a lifecycle: draft / transmitted / acknowledged / handed-out / failed / cancelled, with a refusal on double transmission and chase lists for each way it is lost. **No pharmacy network interface has exchanged a message** — the transmission publishes onto a channel a deployment configures. |
-| 9 | Patient access | **Backend boundary present.** `/patient/*` is OAuth-only; every chart is bound through an active grant with explicit proxy scope, purpose and expiry. Patient-safe summary, held results, appointments, messages, delegates, access log, access/correction requests. No patient application, enrolment/identity proofing, French parity, notifications or accessibility claim. |
+| 9 | Patient access | **Backend boundary present; `GET /me` is chrome, not a portal.** `/patient/*` is OAuth-only; every chart is bound through an active grant with explicit proxy scope, purpose and expiry. Patient-safe summary, held results, appointments, messages, delegates, access log, access/correction requests. `/me` has English/French copy, a skip link and landmarks, and says it is not certified. No identity-proofing enrolment, notifications or WCAG/AODA claim. |
 | 10 | Population-health reporting | Partial (cohorts, gaps, measures). Equity, outreach campaigns and burden measures are not. |
-| 11 | Privacy, security and assurance operations | Partial (directives, break-glass, audit chain, auth). No assurance centre, PIA tracker, subprocessor register or SIEM product. |
+| 11 | Privacy, security and assurance operations | **Privacy office present.** Reviews, flags that cannot be closed by forgetting them, legal holds that skip the retention sweep, incidents that cannot close without saying whether patients were told, access clocks, disclosures, an in-code assurance catalogue (BACKUP-02 stays partial), findings, restore-drill exercises, a subprocessor register that refuses an active vendor with no region. Directives, break-glass and the audit chain were already here. Not a SIEM, not a PIA tracker, not a signed assurance programme. After-hours is UTC. |
 | 12 | Source-linked AI assistance | **Deliberately later.** |
 | 13 | Migration tooling | **Loader present** ([#20](https://github.com/ThomasGenua/healthsystem/issues/20)): trial/cutover/delta runs, idempotent on source identity, declared-then-checked completeness, rejects with payloads, source-code provenance, validation samples, constrained rollback. **Not an extractor** — getting data out of the incumbent is that vendor's export. Inventory, cutover scheduling and stabilisation are a plan, not code. |
 | 14 | Accessibility, security and clinical-safety testing | Safety case: [CLINICAL-SAFETY.md](CLINICAL-SAFETY.md). WCAG/AODA and an external pentest ([#22](https://github.com/ThomasGenua/healthsystem/issues/22)) need people. |
@@ -46,23 +46,23 @@ though it did.
 | 8 | Inbox and tasks | Unified stores; evidence to close; unassigned list; escalation/deadline on referrals and results; patient-message threads on the worklist | Forms, privacy-request and portal-submission queues as first-class item kinds |
 | 9 | Referrals | Closed-loop statuses, stalled chase, redirect with correlation, required documents | Specialist directory beyond the local one; eReferral/eConsult networks; wait-time reporting product |
 | 10 | Scheduling | Slots, bookings, DNA follow-up, diary, today's list | Online booking, reminders, rooms/resources, waitlists, group visits, clinic status board |
-| 11 | Patient and caregiver access | Separate patient/proxy OAuth API; explicit delegated scope/purpose/expiry; result release/visible holds; appointments; durable messages; access log; delegate review/revoke; access and correction requests | Patient application; identity-proofing enrolment; EN/FR parity; caregiver UX; document downloads; delivery to a phone or inbox the patient owns |
+| 11 | Patient and caregiver access | Separate patient/proxy OAuth API; explicit delegated scope/purpose/expiry; result release/visible holds; appointments; durable messages; access log; delegate review/revoke; access and correction requests; `GET /me` EN/FR chrome with landmarks | Identity-proofing enrolment; a certified portal; caregiver UX; document downloads; delivery to a phone or inbox the patient owns; WCAG/AODA claim |
 | 12 | Population health | Cohort, gap, measure with honest denominators | Outreach campaigns, equity stratification, burden measures, governed exports |
 | 13 | Multi-tenant provincial architecture | Tenant isolation, shared schema, no per-clinic fork | Provincial config baseline overlays, feature flags, conformance monitoring, tenant rollback product |
 | 14 | Interoperability | HL7 v2, FHIR R4, REST, OAuth/SMART, mTLS, idempotent delivery, DLQ | ONE ID, OLIS, DHDR, HRM, eConsult, pharmacy networks, contract-test harness for those |
 | 15 | Migration and portability | Backup/restore; FHIR/HL7 ingest; trial/delta/cutover runs; declared-then-checked completeness; reject queue with payloads; preserved source codes; validation samples; rollback constrained by clinical activity | Extraction from incumbent systems; a mapping workbench; source-system inventory; a customer-facing bulk export product at contract termination |
-| 16 | Privacy operations | Directives, break-glass, disclosure-ish audit, access log | SAR/correction workflows, complaint/incident products, PIA, legal hold, de-identification |
+| 16 | Privacy operations | Directives, break-glass, hash-chained access trail; privacy-office reviews/flags; legal hold that skips the message-log sweep; incident close with notification; SAR clocks as a queue; disclosures as section names and counts; access/correction requests | Complaint product, PIA tracker, de-identification product, SIEM |
 | 17 | Security | API keys, OAuth, scopes, tenant auth, audit chain, at-rest volume check, remote backup | ONE ID, phishing-resistant MFA, PAM, Canadian KMS product, SBOM/pen-test programme |
-| 18 | Audit and assurance centre | Hash-chained access trail | Certification/finding/remediation tracker, DR-exercise log, vendor reviews |
+| 18 | Audit and assurance centre | Hash-chained access trail; in-code catalogue; findings that cannot close without remediation or residual risk; restore-drill exercises with measured RTO; subprocessor register | A signed certification programme, vendor-review product, SIEM |
 | 19 | Provincial administration | Tenant create/suspend in the store | Ontario Health operator console, release cohorts, terminology governance UI |
-| 20 | Accessibility and language | Not demonstrated | WCAG 2.1 AA, AODA, EN/FR parity, accessible PDFs |
+| 20 | Accessibility and language | `GET /me` has EN/FR copy, a skip link, `<main>`, labels and `aria-live` | WCAG 2.1 AA, AODA, accessible PDFs, a certified bilingual portal |
 | 21 | Reliability | Single-node SQLite, verified backup, rehearsed restore, instance lock | 99.8% multi-region, horizontal scale ([#25](https://github.com/ThomasGenua/healthsystem/issues/25)), synthetic transactions as a product |
 | 22 | Roadmap | See README. Phases 0–5 in the specification are a procurement timeline, not a commitment this file can make. | |
 | 23 | Immediate priorities | The table above. | |
 
 ## What is left, and why most of it is not code
 
-Priorities 1–9 and 13 are done or substantially done. What remains divides
+Priorities 1–9, 11 and 13 are done or substantially done. What remains divides
 into three kinds of work, and only one of them is programming:
 
 **Needs a counterparty.** Every vendor and provincial interface — Dynacare,
@@ -77,8 +77,8 @@ share the author's model of an attack, and a named clinical safety officer to
 sign the hazard log (R-01). A clinical pilot needs all four first.
 
 **Is genuinely code, and is deliberately later.** Population-health outreach
-and equity stratification, the provincial administration console, the
-assurance centre, horizontal scale (#25), and AI — which stays last on
+and equity stratification, the provincial administration console,
+horizontal scale (#25), and AI — which stays last on
 purpose, because deterministic workflows must be the authoritative ones.
 
 ## What a real vendor interface still needs
@@ -119,8 +119,13 @@ appointments, messages, access log, delegate review/revoke and durable
 access/correction requests are mounted. An access/correction request is also
 a privacy task on the clinic's unassigned inbox.
 
-The JSON API is not a patient application. Identity-proofing enrolment,
-English/French UX, notifications and accessibility testing remain.
+The JSON API is not a patient application. `GET /me` is chrome. Identity-proofing enrolment,
+notification delivery and accessibility testing remain.
+
+**Privacy office.** Reviews, legal holds, incidents, access clocks, disclosures
+and an assurance catalogue a finding cannot close by forgetting. Privacy-office
+HTTP does not apply a patient lockbox. After-hours is UTC. Not a SIEM, not a
+PIA product, not a signed assurance programme.
 
 The previous slice (immunizations, vitals, care team, coverage, today's
 appointments) is already on `main`.
@@ -129,7 +134,7 @@ appointments) is already on `main`.
 
 - A complete provincial EMR
 - A Dynacare or LifeLabs interface (the ORU bridge exists; no vendor message has ever been exchanged)
-- A patient portal application (the patient/proxy JSON boundary exists)
+- A patient portal application (`GET /me` is chrome; the patient/proxy JSON boundary exists)
 - AI drafting or summarization
 - Certified Ontario profiles or ONE ID
 - 99.8% multi-region availability
