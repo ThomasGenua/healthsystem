@@ -331,3 +331,139 @@ test("the engine records a version on every change, and rollback restarts the ch
     await engine.stop();
   }
 });
+
+// ---- regressions from review: the four Bugbot findings on this PR ----------
+
+import { startApi } from "../src/api/admin.ts";
+
+const DOC = (over: Partial<ChannelDocument> = {}): ChannelDocument => ({
+  id: "adt",
+  name: "Admissions",
+  enabled: true,
+  config: {
+    id: "adt",
+    name: "Admissions",
+    source: { type: "http", path: "adt" },
+    destinations: [{ type: "http", url: "http://127.0.0.1:1/sink" }],
+  },
+  ...over,
+});
+
+async function bootApi() {
+  const engine = new Engine({ dbPath: ":memory:", tickMs: 15 });
+  await engine.start();
+  const api = await startApi(engine, 0, "127.0.0.1");
+  const base = `http://127.0.0.1:${api.port}`;
+  return {
+    engine,
+    base,
+    post: (p: string, body: unknown) =>
+      fetch(`${base}${p}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    close: async () => {
+      await api.close();
+      await engine.stop();
+    },
+  };
+}
+
+test("an import that disables a channel is not switched back on by its own restart", async () => {
+  // Bugbot's High finding, confirmed: the restart loop went through
+  // addChannel, which re-derives enabled from the config blob — so applying a
+  // document with enabled:false wrote the ledger correctly and then recorded
+  // a second version turning the channel back on.
+  const s = await bootApi();
+  try {
+    await s.post("/api/channels/import", { channels: [DOC()], apply: true, note: "bring it up" });
+    const res = await s.post("/api/channels/import", {
+      channels: [DOC({ enabled: false })],
+      apply: true,
+      note: "wind it down",
+    });
+    assert.equal(res.status, 200);
+
+    const live = s.engine.db.getChannel("adt")!;
+    assert.equal(live.enabled, 0, "disabled means disabled");
+    const history = s.engine.channelVersions.history("adt");
+    assert.equal(history[0].enabled, 0);
+    assert.equal(history[0].origin, "import", "and no phantom edit version was recorded by the restart");
+    assert.equal(history.length, 2);
+    assert.ok(!s.engine.listChannels().find((c) => c.id === "adt")!.running, "the runtime followed the row");
+  } finally {
+    await s.close();
+  }
+});
+
+test("re-importing a deleted channel's last shape recreates it", async () => {
+  // Bugbot's finding, confirmed: the delete marker stores the final shape
+  // with enabled off, so re-importing that same disabled shape matched the
+  // head, wrote nothing, and left the channel absent while the plan said
+  // create.
+  const db = new Db(":memory:");
+  try {
+    const versions = new ChannelVersions(db);
+    versions.commit({ channelId: "adt", name: "Admissions", enabled: false, config: CFG(), by: "ops", note: "v1" });
+    versions.markDeleted("adt", { actorId: "ops", note: "gone" });
+    db.deleteChannel("adt");
+
+    const doc: ChannelDocument = {
+      id: "adt",
+      name: "Admissions",
+      enabled: false,
+      config: JSON.parse(CFG()) as Record<string, unknown>,
+    };
+    const plan = versions.apply([doc], { actorId: "ops", note: "bring it back" });
+    assert.equal(plan.entries[0].action, "create");
+    assert.ok(db.getChannel("adt"), "the channel exists again — apply did what the plan said");
+    assert.equal(versions.history("adt")[0].origin, "import");
+  } finally {
+    db.close();
+  }
+});
+
+test("a rollback refusal keeps its status instead of arriving as a 500", async () => {
+  const s = await bootApi();
+  try {
+    await s.post("/api/channels/import", { channels: [DOC()], apply: true });
+
+    const missing = await s.post("/api/channels/adt/rollback", { to: 99 });
+    assert.equal(missing.status, 404);
+    assert.match(((await missing.json()) as { error: string }).error, /no version 99/);
+
+    const noop = await s.post("/api/channels/adt/rollback", { to: 1 });
+    assert.equal(noop.status, 409);
+    assert.match(((await noop.json()) as { error: string }).error, /already at the shape/);
+
+    const badDiff = await fetch(`${s.base}/api/channels/adt/diff?from=1&to=99`);
+    assert.equal(badDiff.status, 404);
+  } finally {
+    await s.close();
+  }
+});
+
+test("an invalid document is refused whole, before anything is planned or written", async () => {
+  // Validation used to run inside the restart, after the ledger and live rows
+  // were already updated — the worst moment to learn the document is bad.
+  const s = await bootApi();
+  try {
+    await s.post("/api/channels/import", { channels: [DOC()], apply: true, note: "good" });
+
+    const bad = DOC();
+    (bad.config as { destinations?: unknown }).destinations = [];
+    const res = await s.post("/api/channels/import", { channels: [bad], apply: true, note: "bad" });
+    assert.equal(res.status, 400);
+    assert.match(((await res.json()) as { error: string }).error, /channel adt: .*destination/i);
+
+    assert.equal(s.engine.channelVersions.history("adt").length, 1, "nothing was written");
+
+    // The dry run refuses the same way: a plan for an unloadable document is
+    // not a plan.
+    const dry = await s.post("/api/channels/import", { channels: [bad] });
+    assert.equal(dry.status, 400);
+  } finally {
+    await s.close();
+  }
+});

@@ -513,10 +513,26 @@ export class Engine {
       actorId: opts.by ?? "system",
       note: opts.note ?? `rollback to version ${toVersion}`,
     });
-    const config = JSON.parse(restored.config) as ChannelConfig;
+    await this.refreshChannel(id);
+    return JSON.parse(restored.config) as ChannelConfig;
+  }
+
+  /**
+   * Makes the runtime match the stored row, and writes nothing.
+   *
+   * The row's `enabled` column is the authority, not the blob's `enabled`
+   * field: an import can disable a channel at the document level while the
+   * blob says nothing, and a restart that re-derived enabled from the blob
+   * would turn the channel back on — recording a second version nobody asked
+   * for while it did it. Reactivation after a ledger write goes through here
+   * so the ledger stays the only writer.
+   */
+  async refreshChannel(id: string): Promise<void> {
     if (this.channels.has(id)) await this.deactivate(id);
-    if (restored.enabled === 1) await this.activate(config);
-    return config;
+    const row = this.db.getChannel(id);
+    if (row && row.enabled === 1) {
+      await this.activate(JSON.parse(row.config) as ChannelConfig);
+    }
   }
 
   listChannels(): Array<{ id: string; name: string; enabled: boolean; running: boolean; source: string; mllpPort?: number }> {

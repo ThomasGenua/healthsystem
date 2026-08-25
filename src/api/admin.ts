@@ -70,6 +70,8 @@ import type { AuditAction, AuditEntry } from "../audit/store.ts";
 import type { TlsConfig } from "./tls.ts";
 import type { ChannelConfig, MappingDoc, MessageRow } from "../types.ts";
 import type { ChannelDocument } from "../core/channel-versions.ts";
+import { validateChannel } from "../core/engine.ts";
+import { Refusal } from "../core/refusal.ts";
 
 let UI_HTML: string | null = null;
 function uiHtml(): string {
@@ -837,6 +839,19 @@ async function route(
       note?: string;
     };
     if (!Array.isArray(body.channels)) return send(res, 400, { error: "channels required" });
+    // Validated before anything is planned, let alone written. Validation
+    // inside the restart used to run after the ledger and live rows were
+    // already updated, which is the worst possible moment to learn a document
+    // is malformed: the database applied, the runtime half restarted.
+    for (const doc of body.channels) {
+      try {
+        validateChannel(doc.config as unknown as ChannelConfig);
+      } catch (err) {
+        return send(res, 400, {
+          error: `channel ${doc?.id ?? "(no id)"}: ${err instanceof Error ? err.message : "invalid config"}`,
+        });
+      }
+    }
     // A plan unless apply is said outright. The plan is the review: what
     // would be created, what would change and exactly how, what the document
     // does not mention — and a dry run writes nothing at all.
@@ -848,11 +863,13 @@ async function route(
       note: body.note ?? "(no note given)",
     });
     // The live engine follows the ledger: anything the import changed is
-    // restarted on its new configuration.
+    // restarted to match the stored row. Not through addChannel — that
+    // re-derives enabled and name from the config blob and records a second
+    // version doing it, so an import that disabled a channel would have been
+    // switched back on by its own restart.
     for (const entry of plan.entries) {
       if (entry.action === "unchanged") continue;
-      const cfg = engine.getChannelConfig(entry.channelId);
-      if (cfg) await engine.addChannel(cfg, { by: auth.ok ? auth.principal.id : "unauthenticated" });
+      await engine.refreshChannel(entry.channelId);
     }
     audit({
       action: "U",
@@ -879,16 +896,30 @@ async function route(
     if (!Number.isInteger(from) || !Number.isInteger(to)) {
       return send(res, 400, { error: "from and to versions required" });
     }
-    return send(res, 200, { channelId: m[1], from, to, diff: engine.channelVersions.diff(m[1], from, to) });
+    try {
+      return send(res, 200, { channelId: m[1], from, to, diff: engine.channelVersions.diff(m[1], from, to) });
+    } catch (err) {
+      // A missing version is the operator's 404, not a server fault.
+      if (err instanceof Refusal) return send(res, err.status, { error: err.message });
+      throw err;
+    }
   }
   m = /^\/api\/channels\/([a-z0-9-]+)\/rollback$/.exec(path);
   if (m && method === "POST") {
     const body = JSON.parse(await readBody(req)) as { to?: number; note?: string };
     if (!Number.isInteger(body.to)) return send(res, 400, { error: "to version required" });
-    const config = await engine.rollbackChannel(m[1], body.to!, {
-      by: auth.ok ? auth.principal.id : "unauthenticated",
-      ...(body.note ? { note: body.note } : {}),
-    });
+    let config: ChannelConfig;
+    try {
+      config = await engine.rollbackChannel(m[1], body.to!, {
+        by: auth.ok ? auth.principal.id : "unauthenticated",
+        ...(body.note ? { note: body.note } : {}),
+      });
+    } catch (err) {
+      // "No such version", "that is the deletion marker", "already at that
+      // shape" — refusals with the status they chose, not 500s wearing them.
+      if (err instanceof Refusal) return send(res, err.status, { error: err.message });
+      throw err;
+    }
     audit({
       action: "U",
       resourceType: "Channel",

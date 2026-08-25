@@ -121,7 +121,12 @@ export class ChannelVersions {
       }
 
       const prior = this.head(input.channelId);
-      if (prior && sameShape(prior, input)) {
+      // "Unchanged" requires a live row saying the same thing, not just a
+      // matching head. After a deletion the head is the delete marker — which
+      // stores the final shape with enabled off — and treating a matching
+      // re-import as a no-op would leave the channel absent while the plan
+      // said create. A missing row always writes.
+      if (prior && prior.origin !== "delete" && this.db.getChannel(input.channelId) && sameShape(prior, input)) {
         return { version: prior, changed: false };
       }
 
