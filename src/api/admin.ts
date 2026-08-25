@@ -4,8 +4,8 @@
  * Every request passes one authentication gate before any route runs (see
  * auth/gate.ts). Scopes: /api/* needs `admin`, GET /fhir/* needs `read`,
  * writes need `write`, and /patient/* needs the OAuth-only `patient` scope
- * plus a live subject-to-chart grant. The UI shell, /api/health and
- * /fhir/metadata are open.
+ * plus a live subject-to-chart grant. The UI shell, the patient HTML shell
+ * at GET /me (static chrome, no PHI), /api/health and /fhir/metadata are open.
  *
  * GET  /api/health                       liveness, counters and alertable signals
  * GET  /metrics                          Prometheus exposition (public, no patient data)
@@ -42,6 +42,7 @@
  *   GET /api/conformance/capability?pack=
  * Subscriptions: GET|POST /fhir/Subscription, GET|DELETE /fhir/Subscription/:id
  * Admin UI:     GET / (single-file, no build step)
+ * Patient shell: GET /me (EN/FR chrome; not a certified portal)
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { encryptionAtRest } from "../core/atrest.ts";
@@ -78,6 +79,18 @@ function uiHtml(): string {
     }
   }
   return UI_HTML;
+}
+
+let PATIENT_HTML: string | null = null;
+function patientHtml(): string {
+  if (PATIENT_HTML === null) {
+    try {
+      PATIENT_HTML = readFileSync(new URL("./patient.html", import.meta.url), "utf8");
+    } catch {
+      PATIENT_HTML = "<h1>Portage</h1><p>patient.html not found</p>";
+    }
+  }
+  return PATIENT_HTML;
 }
 
 const MAX_BODY = 25 * 1024 * 1024;
@@ -225,6 +238,15 @@ async function route(
 
   if (method === "GET" && (path === "/" || path === "/ui")) {
     const html = uiHtml();
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(html) });
+    res.end(html);
+    return;
+  }
+
+  // Static chrome, no PHI. Chart access is /patient/* plus OAuth. Unauthenticated
+  // GETs must not be audited as a reach for a patient record.
+  if (method === "GET" && path === "/me") {
+    const html = patientHtml();
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(html) });
     res.end(html);
     return;
@@ -1156,6 +1178,49 @@ async function route(
       count?: (v: T) => number,
       covers: readonly string[] = [resourceType]
     ): void => phiFor(patient, resourceType, produce, count, covers);
+
+    /**
+     * Privacy-office reads and writes. Audits, then sends, like `phi` — but
+     * does not apply patient lockboxes. A directive that hid the office from
+     * the record it is charged with reviewing would be a lock with no key.
+     * Still tenant-scoped; the trail says the directive was not applied.
+     */
+    const phiOffice = <T,>(
+      resourceType: string,
+      produce: () => T,
+      count?: (v: T) => number,
+      subject?: string
+    ): void => {
+      let value: T;
+      try {
+        value = produce();
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        if (mapped.outcome === 8) console.error(`phiOffice ${resourceType}: ${mapped.detail}`);
+        audit({
+          action: verbToAction(method),
+          outcome: mapped.outcome,
+          resourceType,
+          patient: subject,
+          detail: mapped.detail,
+        });
+        return send(res, mapped.status, { error: mapped.error });
+      }
+      audit({
+        action: verbToAction(method),
+        outcome: 0,
+        resourceType,
+        patient: subject,
+        ...(count ? { count: count(value) } : {}),
+        detail: "privacy office; patient directive not applied",
+      });
+      return send(res, 200, value);
+    };
+
+    const officeActor = () => ({
+      actorId: auth.ok ? auth.principal.id : "unauthenticated",
+      actorKind: auth.ok ? auth.principal.kind : "unknown",
+    });
 
     if (path === "/api/clinical/chart" && method === "GET") {
       if (!patient) return send(res, 400, { error: "patient required" });
@@ -2227,6 +2292,220 @@ async function route(
           actorKind: auth.ok ? auth.principal.kind : "unknown",
           reason: body.reason!,
         })
+      );
+    }
+
+    // Privacy office. Lockboxes are not applied: the office cannot be hidden
+    // from the record it is charged with reviewing. HTTP still audits once.
+    if (path === "/api/clinical/privacy-inbox" && method === "GET") {
+      return phiOffice("Bundle", () => tenant.privacy.inbox());
+    }
+    if (path === "/api/clinical/privacy-reviews" && method === "GET") {
+      return phiOffice("Bundle", () => tenant.privacy.listReviews(), (rows) => rows.length);
+    }
+    if (path === "/api/clinical/privacy-review" && method === "GET") {
+      const id = url.searchParams.get("id");
+      if (!id) return send(res, 400, { error: "id required" });
+      return phiOffice("Bundle", () => tenant.privacy.getReview(id));
+    }
+    if (path === "/api/clinical/privacy-review-open" && method === "POST") {
+      await readBody(req);
+      return phiOffice("Bundle", () => tenant.privacy.openReview(officeActor()));
+    }
+    if (path === "/api/clinical/privacy-review-address" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        flag?: string;
+        status?: "accepted" | "escalated";
+        reason?: string;
+      };
+      if (!body.flag || !body.status || !body.reason) {
+        return send(res, 400, { error: "flag, status and reason required" });
+      }
+      return phiOffice("Bundle", () =>
+        tenant.privacy.addressFlag(body.flag!, { status: body.status!, reason: body.reason! }, officeActor())
+      );
+    }
+    if (path === "/api/clinical/privacy-review-close" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; conclusion?: string };
+      if (!body.id || !body.conclusion) return send(res, 400, { error: "id and conclusion required" });
+      return phiOffice("Bundle", () => tenant.privacy.closeReview(body.id!, { conclusion: body.conclusion! }, officeActor()));
+    }
+    if (path === "/api/clinical/legal-holds" && method === "GET") {
+      return phiOffice("Bundle", () => tenant.privacy.listHolds(), (rows) => rows.length);
+    }
+    if (path === "/api/clinical/legal-hold" && method === "GET") {
+      const id = url.searchParams.get("id");
+      if (!id) return send(res, 400, { error: "id required" });
+      return phiOffice("Bundle", () => tenant.privacy.getHold(id));
+    }
+    if (path === "/api/clinical/legal-hold-place" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { patientId?: string; reason?: string };
+      if (!body.reason) return send(res, 400, { error: "reason required" });
+      return phiOffice("Bundle", () =>
+        tenant.privacy.placeHold({ reason: body.reason!, ...(body.patientId ? { patientId: body.patientId } : {}) }, officeActor())
+      );
+    }
+    if (path === "/api/clinical/legal-hold-release" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; reason?: string };
+      if (!body.id || !body.reason) return send(res, 400, { error: "id and reason required" });
+      return phiOffice("Bundle", () => tenant.privacy.releaseHold(body.id!, { reason: body.reason! }, officeActor()));
+    }
+    if (path === "/api/clinical/privacy-incidents" && method === "GET") {
+      return phiOffice("Bundle", () => tenant.privacy.listIncidents(), (rows) => rows.length);
+    }
+    if (path === "/api/clinical/privacy-incident" && method === "GET") {
+      const id = url.searchParams.get("id");
+      if (!id) return send(res, 400, { error: "id required" });
+      return phiOffice("Bundle", () => tenant.privacy.getIncident(id));
+    }
+    if (path === "/api/clinical/privacy-incident-open" && method === "POST") {
+      await readBody(req);
+      return phiOffice("Bundle", () => tenant.privacy.openIncident(officeActor()));
+    }
+    if (path === "/api/clinical/privacy-incident-close" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        id?: string;
+        whatHappened?: string;
+        affectedPatients?: string[];
+        noneAffected?: boolean;
+        notification?: "told" | "not-told";
+        notificationReason?: string;
+      };
+      if (!body.id || !body.whatHappened || !body.notification) {
+        return send(res, 400, { error: "id, whatHappened and notification required" });
+      }
+      return phiOffice("Bundle", () =>
+        tenant.privacy.closeIncident(
+          body.id!,
+          {
+            whatHappened: body.whatHappened!,
+            notification: body.notification!,
+            ...(body.affectedPatients ? { affectedPatients: body.affectedPatients } : {}),
+            ...(body.noneAffected !== undefined ? { noneAffected: body.noneAffected } : {}),
+            ...(body.notificationReason ? { notificationReason: body.notificationReason } : {}),
+          },
+          officeActor()
+        )
+      );
+    }
+    if (path === "/api/clinical/disclosures" && method === "GET") {
+      return phiOffice("Bundle", () => tenant.privacy.listDisclosures(), (rows) => rows.length);
+    }
+    if (path === "/api/clinical/disclosure" && method === "GET") {
+      const id = url.searchParams.get("id");
+      if (!id) return send(res, 400, { error: "id required" });
+      return phiOffice("Bundle", () => tenant.privacy.getDisclosure(id));
+    }
+    if (path === "/api/clinical/privacy-fulfill" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        request?: string;
+        sections?: { name: string; count: number }[];
+        purpose?: string;
+      };
+      if (!body.request || !Array.isArray(body.sections)) {
+        return send(res, 400, { error: "request and sections required" });
+      }
+      return phiOffice("Bundle", () =>
+        tenant.privacy.fulfillAccess(
+          body.request!,
+          { sections: body.sections!, ...(body.purpose ? { purpose: body.purpose } : {}) },
+          officeActor()
+        )
+      );
+    }
+    if (path === "/api/clinical/privacy-deadline" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { request?: string; until?: string; reason?: string };
+      if (!body.request || !body.until || !body.reason) {
+        return send(res, 400, { error: "request, until and reason required" });
+      }
+      return phiOffice("Bundle", () => {
+        tenant.privacy.extendDeadline(body.request!, { until: body.until!, reason: body.reason! }, officeActor());
+        return { request: body.request, until: body.until };
+      });
+    }
+    if (path === "/api/clinical/assurance" && method === "GET") {
+      return phiOffice("Bundle", () => ({
+        catalogue: tenant.privacy.catalogue(),
+        findings: tenant.privacy.listFindings(),
+        exercises: tenant.privacy.listExercises(),
+      }));
+    }
+    if (path === "/api/clinical/assurance-finding" && method === "GET") {
+      const id = url.searchParams.get("id");
+      if (!id) return send(res, 400, { error: "id required" });
+      return phiOffice("Bundle", () => tenant.privacy.getFinding(id));
+    }
+    if (path === "/api/clinical/assurance-finding-close" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        id?: string;
+        remediation?: string;
+        residualRisk?: string;
+      };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      return phiOffice("Bundle", () =>
+        tenant.privacy.closeFinding(
+          body.id!,
+          {
+            ...(body.remediation ? { remediation: body.remediation } : {}),
+            ...(body.residualRisk ? { residualRisk: body.residualRisk } : {}),
+          },
+          officeActor()
+        )
+      );
+    }
+    if (path === "/api/clinical/assurance-exercise" && method === "GET") {
+      const id = url.searchParams.get("id");
+      if (!id) return send(res, 400, { error: "id required" });
+      return phiOffice("Bundle", () => tenant.privacy.getExercise(id));
+    }
+    if (path === "/api/clinical/assurance-exercise-close" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        id?: string;
+        rtoSeconds?: number;
+        outcome?: "passed" | "failed";
+        notes?: string;
+      };
+      if (!body.id || body.rtoSeconds === undefined || !body.outcome) {
+        return send(res, 400, { error: "id, rtoSeconds and outcome required" });
+      }
+      return phiOffice("Bundle", () =>
+        tenant.privacy.closeExercise(
+          body.id!,
+          { rtoSeconds: body.rtoSeconds!, outcome: body.outcome!, ...(body.notes ? { notes: body.notes } : {}) },
+          officeActor()
+        )
+      );
+    }
+    if (path === "/api/clinical/subprocessors" && method === "GET") {
+      return phiOffice("Bundle", () => tenant.privacy.listSubprocessors(), (rows) => rows.length);
+    }
+    if (path === "/api/clinical/subprocessor" && method === "GET") {
+      const id = url.searchParams.get("id");
+      if (!id) return send(res, 400, { error: "id required" });
+      return phiOffice("Bundle", () => tenant.privacy.getSubprocessor(id));
+    }
+    if (path === "/api/clinical/subprocessor" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        id?: string;
+        name?: string;
+        purpose?: string;
+        region?: string;
+        status?: "candidate" | "active" | "inactive";
+      };
+      if (!body.name || !body.purpose || !body.status) {
+        return send(res, 400, { error: "name, purpose and status required" });
+      }
+      return phiOffice("Bundle", () =>
+        tenant.privacy.upsertSubprocessor(
+          {
+            name: body.name!,
+            purpose: body.purpose!,
+            status: body.status!,
+            ...(body.id ? { id: body.id } : {}),
+            ...(body.region ? { region: body.region } : {}),
+          },
+          officeActor()
+        )
       );
     }
     return send(res, 404, { error: "not found" });

@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Portage — patient access</title>
+<link rel="icon" href="data:,">
+<style>
+:root{--bg:#f4f1ea;--panel:#fff;--line:#d7d0c4;--text:#1f1b16;--dim:#5c564c;--acc:#1d4f8c;--warn:#8a5a12;font-size:18px}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:1rem/1.55 Georgia,Cambria,"Times New Roman",serif}
+a{color:var(--acc)}
+.skip{position:absolute;left:-999px;top:auto;width:1px;height:1px;overflow:hidden}
+.skip:focus{position:static;width:auto;height:auto;padding:8px 12px;background:#fff;border:2px solid var(--acc)}
+header{display:flex;flex-wrap:wrap;align-items:baseline;gap:12px;padding:16px 20px;border-bottom:1px solid var(--line);background:var(--panel)}
+header h1{margin:0;font-size:1.15rem}
+.sub{color:var(--dim);font-size:.9rem}
+main{max-width:42rem;margin:0 auto;padding:20px}
+.banner{border:1px solid var(--line);border-left:4px solid var(--warn);background:#fff8ea;padding:12px 14px;margin-bottom:1.2rem}
+.banner h2{margin:0 0 .4rem;font-size:1.05rem}
+label{display:block;margin:.4rem 0 .2rem;font-weight:bold}
+button{font:inherit;padding:6px 12px;cursor:pointer}
+.lang{margin-left:auto;display:flex;gap:8px;align-items:center}
+[hidden]{display:none !important}
+footer{max-width:42rem;margin:0 auto;padding:12px 20px 28px;color:var(--dim);font-size:.9rem}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to main content / Aller au contenu principal</a>
+<header>
+  <h1>Portage</h1>
+  <span class="sub" data-en="Patient access shell" data-fr="Espace d’accès patient">Patient access shell</span>
+  <div class="lang">
+    <label for="lang">Language / Langue</label>
+    <select id="lang" aria-controls="main">
+      <option value="en" selected>English</option>
+      <option value="fr">Français</option>
+    </select>
+  </div>
+</header>
+<main id="main" tabindex="-1">
+  <div class="banner" role="status">
+    <h2 data-en="This is not a certified patient portal" data-fr="Ceci n’est pas un portail patient certifié">This is not a certified patient portal</h2>
+    <p data-en="There is no identity-proofing, no notification that a result or message reached you, and no WCAG or AODA claim. A chart is reached only through the signed /patient API with a live grant." data-fr="Il n’y a ni preuve d’identité, ni avis qu’un résultat ou un message vous a atteint, ni revendication WCAG ou AODA. Le dossier n’est accessible que par l’API signée /patient avec une autorisation en vigueur.">There is no identity-proofing, no notification that a result or message reached you, and no WCAG or AODA claim. A chart is reached only through the signed /patient API with a live grant.</p>
+  </div>
+  <p data-en="To see your record you sign in with the identity your clinic issued, then call the patient API. This page is chrome: language, landmarks, and the limits stated above." data-fr="Pour voir votre dossier, vous vous connectez avec l’identité délivrée par la clinique, puis vous appelez l’API patient. Cette page n’est que l’enveloppe : la langue, les points de repère, et les limites ci-dessus.">To see your record you sign in with the identity your clinic issued, then call the patient API. This page is chrome: language, landmarks, and the limits stated above.</p>
+  <p id="status" aria-live="polite"></p>
+</main>
+<footer>
+  <p data-en="Chart access is /patient/* with OAuth. This shell does not load a chart." data-fr="L’accès au dossier passe par /patient/* avec OAuth. Cette page ne charge pas de dossier.">Chart access is /patient/* with OAuth. This shell does not load a chart.</p>
+</footer>
+<script>
+const copy={
+  en:{
+    title:"Portage — patient access",
+    sub:"Patient access shell",
+    heading:"This is not a certified patient portal",
+    banner:"There is no identity-proofing, no notification that a result or message reached you, and no WCAG or AODA claim. A chart is reached only through the signed /patient API with a live grant.",
+    body:"To see your record you sign in with the identity your clinic issued, then call the patient API. This page is chrome: language, landmarks, and the limits stated above.",
+    live:"Language set to English.",
+    foot:"Chart access is /patient/* with OAuth. This shell does not load a chart."
+  },
+  fr:{
+    title:"Portage — accès patient",
+    sub:"Espace d’accès patient",
+    heading:"Ceci n’est pas un portail patient certifié",
+    banner:"Il n’y a ni preuve d’identité, ni avis qu’un résultat ou un message vous a atteint, ni revendication WCAG ou AODA. Le dossier n’est accessible que par l’API signée /patient avec une autorisation en vigueur.",
+    body:"Pour voir votre dossier, vous vous connectez avec l’identité délivrée par la clinique, puis vous appelez l’API patient. Cette page n’est que l’enveloppe : la langue, les points de repère, et les limites ci-dessus.",
+    live:"Langue réglée sur le français.",
+    foot:"L’accès au dossier passe par /patient/* avec OAuth. Cette page ne charge pas de dossier."
+  }
+};
+function apply(lang){
+  const t=copy[lang]||copy.en;
+  document.documentElement.lang=lang;
+  document.title=t.title;
+  document.querySelectorAll("[data-en]").forEach(el=>{
+    const v=el.getAttribute(lang==="fr"?"data-fr":"data-en");
+    if(v)el.textContent=v;
+  });
+  const live=document.getElementById("status");
+  if(live)live.textContent=t.live;
+}
+const sel=document.getElementById("lang");
+sel.addEventListener("change",()=>apply(sel.value));
+</script>
+</body>
+</html>

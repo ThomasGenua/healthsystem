@@ -464,6 +464,51 @@ test("every clinical route leaves an audit row, including ones added later", asy
       reason: "unresponsive on arrival, no collateral history, need the allergy list",
     });
 
+    // Privacy-office fixtures. Dedicated rows so no route depends on what
+    // another did first — including the standing override, which the
+    // break-glass-review route consumes, and requestToComplete, which the
+    // patient-request-complete route consumes.
+    const tPriv = s.engine.forTenant("default");
+    const officer = { actorId: "privacy-officer", actorKind: "practitioner" };
+    tPriv.consent.breakGlass({
+      patientId: P,
+      by: { actorId: "dr-unreviewed", actorKind: "practitioner" },
+      reason: "unreviewed privacy-office fixture, need the allergy list now",
+    });
+    const requestToFulfill = tPriv.patientAccess.submitRequest({
+      patientId: P,
+      kind: "access",
+      detail: "Please provide a copy of my chart for the fulfill route.",
+      by: { subjectId: P, relationship: "self" },
+    });
+    const requestToExtend = tPriv.patientAccess.submitRequest({
+      patientId: P,
+      kind: "access",
+      detail: "Please provide a copy; this one is for the deadline route.",
+      by: { subjectId: P, relationship: "self" },
+    });
+    const reviewToAddress = tPriv.privacy.openReview(officer, { hours: { startHour: 0, endHour: 0 } });
+    const flagToAddress = reviewToAddress.flags.find((f) => f.status === "open");
+    assert.ok(flagToAddress, "the dedicated unreviewed override must produce a flag to address");
+    const reviewToClose = tPriv.privacy.openReview(officer, { hours: { startHour: 0, endHour: 24 } });
+    for (const f of reviewToClose.flags.filter((f) => f.status === "open")) {
+      tPriv.privacy.addressFlag(f.id, { status: "accepted", reason: "reviewed and accepted for close fixture" }, officer);
+    }
+    const holdToRelease = tPriv.privacy.placeHold(
+      { reason: "litigation hold for privacy office fixture" },
+      officer
+    );
+    const incidentToClose = tPriv.privacy.openIncident(officer);
+    const findingToClose = tPriv.privacy.openFinding(
+      { controlId: "BACKUP-02", description: "off-machine replica still operator-copied" },
+      officer
+    );
+    const exerciseToClose = tPriv.privacy.openExercise({ kind: "restore-drill" }, officer);
+    const disclosureToGet = tPriv.privacy.recordDisclosure(
+      { patientId: P, purpose: "access-request", sections: [{ name: "allergies", count: 1 }] },
+      officer
+    );
+
     // Arguments good enough for each route to do real work. A route that
     // needs one not listed here 400s, which this treats as a failure rather
     // than a pass — an untested route is the thing being guarded against.
@@ -543,6 +588,31 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/migration-load": "POST",
       "/api/clinical/migration-complete": "POST",
       "/api/clinical/migration-rollback": "POST",
+      "/api/clinical/privacy-inbox": "",
+      "/api/clinical/privacy-reviews": "",
+      "/api/clinical/privacy-review": `?id=${reviewToAddress.id}`,
+      "/api/clinical/privacy-review-open": "POST",
+      "/api/clinical/privacy-review-address": "POST",
+      "/api/clinical/privacy-review-close": "POST",
+      "/api/clinical/legal-holds": "",
+      "/api/clinical/legal-hold": `?id=${holdToRelease.id}`,
+      "/api/clinical/legal-hold-place": "POST",
+      "/api/clinical/legal-hold-release": "POST",
+      "/api/clinical/privacy-incidents": "",
+      "/api/clinical/privacy-incident": `?id=${incidentToClose.id}`,
+      "/api/clinical/privacy-incident-open": "POST",
+      "/api/clinical/privacy-incident-close": "POST",
+      "/api/clinical/disclosures": "",
+      "/api/clinical/disclosure": `?id=${disclosureToGet.id}`,
+      "/api/clinical/privacy-fulfill": "POST",
+      "/api/clinical/privacy-deadline": "POST",
+      "/api/clinical/assurance": "",
+      "/api/clinical/assurance-finding": `?id=${findingToClose.id}`,
+      "/api/clinical/assurance-finding-close": "POST",
+      "/api/clinical/assurance-exercise": `?id=${exerciseToClose.id}`,
+      "/api/clinical/assurance-exercise-close": "POST",
+      "/api/clinical/subprocessors": "",
+      "/api/clinical/subprocessor": "POST",
     };
 
     /** The body each POST route needs to do real work. */
@@ -652,6 +722,55 @@ test("every clinical route leaves an audit row, including ones added later", asy
       // Separate runs, so no route depends on the state another left behind.
       "/api/clinical/migration-complete": { run: migrationToClose.id, acceptGapsBecause: "trial run, counts not declared" },
       "/api/clinical/migration-rollback": { run: migrationToRollBack.id, reason: "trial finished" },
+      "/api/clinical/privacy-review-open": {},
+      "/api/clinical/privacy-review-address": {
+        flag: flagToAddress.id,
+        status: "accepted",
+        reason: "reviewed on the discovery pass, written reason attached",
+      },
+      "/api/clinical/privacy-review-close": {
+        id: reviewToClose.id,
+        conclusion: "flags addressed; no further action on this fixture review",
+      },
+      "/api/clinical/legal-hold-place": { reason: "discovery-test hold, tenant-wide, written reason" },
+      "/api/clinical/legal-hold-release": {
+        id: holdToRelease.id,
+        reason: "matter closed; release the fixture hold",
+      },
+      "/api/clinical/privacy-incident-open": {},
+      "/api/clinical/privacy-incident-close": {
+        id: incidentToClose.id,
+        whatHappened: "misdirected letter, retrieved the same day, envelope unopened",
+        noneAffected: true,
+        notification: "not-told",
+        notificationReason: "nobody's information left the building",
+      },
+      "/api/clinical/privacy-fulfill": {
+        request: requestToFulfill.id,
+        sections: [{ name: "allergies", count: 1 }, { name: "medications", count: 1 }],
+        purpose: "access-request",
+      },
+      "/api/clinical/privacy-deadline": {
+        request: requestToExtend.id,
+        until: "2027-01-15T00:00:00.000Z",
+        reason: "patient asked for more time to collect records",
+      },
+      "/api/clinical/assurance-finding-close": {
+        id: findingToClose.id,
+        residualRisk: "operator still copies the file; accepted until a second site exists",
+      },
+      "/api/clinical/assurance-exercise-close": {
+        id: exerciseToClose.id,
+        rtoSeconds: 900,
+        outcome: "passed",
+        notes: "restore rehearsal against a scratch file",
+      },
+      "/api/clinical/subprocessor": {
+        name: "Discovery backup vendor",
+        purpose: "off-machine replica",
+        region: "ca-central-1",
+        status: "active",
+      },
     };
 
     const unlisted = paths.filter((p) => !(p in args));

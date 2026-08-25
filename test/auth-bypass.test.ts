@@ -124,6 +124,7 @@ test("the scope map has no path that falls open", () => {
   const oddities = [
     "/",
     "/ui",
+    "/me",
     "/api",
     "/apix/channels",
     "/api-channels",
@@ -137,7 +138,8 @@ test("the scope map has no path that falls open", () => {
     "/%2e%2e",
   ];
   const open = oddities.filter((p) => requiredScope("GET", p) === null);
-  assert.deepEqual(open, ["/", "/ui"], `only the UI shell may be public, got: ${open.join(", ")}`);
+  // /me is a static shell with no PHI; chart access is /patient/* plus OAuth.
+  assert.deepEqual(open, ["/", "/ui", "/me"], `only the UI shells may be public, got: ${open.join(", ")}`);
 
   // The three genuinely public routes, and nothing else.
   assert.equal(requiredScope("GET", "/api/health"), null);
