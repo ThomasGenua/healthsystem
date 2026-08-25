@@ -11,6 +11,26 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Reversible chart linking** (#34). `duplicates()` finds two charts that may
+  be one person and declines to merge them, because merging is how a chart
+  acquires someone else's allergies and there is no honest way to unmerge. A
+  link is the assertion that objection leaves open: made by a person, on
+  evidence that is kept, withdrawn with a reason that is kept, never inferred.
+  The chart assembles across the members of a link with every row still
+  attributed to the chart it was written on — which is what makes an unlink
+  restore the prior view exactly. The assembled chart says on its face that
+  it is assembled; every summary status is the worst member's answer; a
+  directive on any member withholds or locks the assembly, break-glass lifts
+  only the member it was broken for, and the read lands on every member's
+  audit trail. The patient portal stays deliberately blind to links: a grant
+  names one chart and serves one chart. The medication safety check answers
+  for the person the link asserts — allergies and current medications union
+  across the members — and consent composes into it the way it composes into
+  the chart, member by member and section by section, the named patient
+  included: a whole-record directive refuses the check with the break-glass
+  path, a locked section stays out of the union, and every gap is a blocking
+  finding, never silence. The named chart's audit row lands on every answer,
+  even one the directives emptied.
 - **A privacy office a privacy officer can actually run** (#35). The
   audit trail records and proves, and answers none of the questions a
   privacy office asks. A chain nobody reads proves only that nobody
@@ -40,7 +60,8 @@ always forward-compatible and run automatically on open — see
   The clinician console gains a Privacy tab. Hazards H-70–H-76.
 
   596 → 611 tests for the office itself; 654 after merging the trail
-  join, travelling clinics, and the config ledger.
+  join, travelling clinics, and the config ledger. Its hazards are
+  H-70–H-76; chart linking's moved to H-77–H-82 when the two lines met.
 
 - **Channel configuration as a ledger** (#36). Everything else here is
   provenance-carrying — messages chain, the record is append-only, audit rows

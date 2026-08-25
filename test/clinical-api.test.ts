@@ -500,6 +500,21 @@ test("every clinical route leaves an audit row, including ones added later", asy
       waitlistId: wlResolve.id, slotId: tcResolve.slots[0].id, by: clinicBy,
     });
 
+    // A link to assert and a separate one to withdraw, so neither route
+    // depends on what the other did.
+    s.engine.forTenant("default").clinical.record({
+      entryType: "Patient",
+      patientId: "NT-LINK-B",
+      content: { resourceType: "Patient", identifier: [{ system: "urn:jhn", value: "NT-LINK-B" }] },
+      authorId: "adt-feed",
+      authorKind: "device",
+    });
+    const toUnlink = s.engine.forTenant("default").links.link("NT-LINK-C", "NT-LINK-D", {
+      actorId: "registrar",
+      actorKind: "staff",
+      evidence: "same JHN on both charts, confirmed with the patient by phone",
+    });
+
     const standing = s.engine.forTenant("default").consent.breakGlass({
       patientId: P,
       by: { actorId: "dr-hale", actorKind: "practitioner" },
@@ -576,6 +591,9 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/break-glass-dispatch": "POST",
       "/api/clinical/gaps": "POST",
       "/api/clinical/measure": "POST",
+      "/api/clinical/links": `?patient=${P}`,
+      "/api/clinical/link": "POST",
+      "/api/clinical/unlink": "POST",
       "/api/clinical/visits": "?service=TC%20repeat",
       "/api/clinical/visit-plan": "POST",
       "/api/clinical/visit-repeat": "POST",
@@ -690,6 +708,12 @@ test("every clinical route leaves an audit row, including ones added later", asy
         cohort: { id: "dm", name: "Diabetes", conditionCodes: ["diabetes"] },
         measure: { id: "hba1c-8", name: "HbA1c under 8", withinDays: 365, target: { code: "4548-4", below: 8 } },
       },
+      "/api/clinical/link": {
+        a: P,
+        b: "NT-LINK-B",
+        evidence: "same JHN on both charts, confirmed with the patient by phone",
+      },
+      "/api/clinical/unlink": { link: toUnlink.linkId, reason: "registered twice at intake; linked in error" },
       "/api/clinical/visit-plan": {
         resourceId: "dr-tetso",
         service: "TC plan",
@@ -854,10 +878,18 @@ test("every clinical route leaves an audit row, including ones added later", asy
           : await s.get(`${p}${args[p]}`);
 
       assert.ok(res.ok, `${p} did not serve: ${res.status} ${await res.text()}`);
-      assert.equal(s.trail().length, before + 1, `${p} served patient data without leaving an audit row`);
-      const row = s.trail()[0];
-      assert.equal(row.path, p);
-      assert.ok(row.resource_type, `${p} recorded no resource type`);
+      // At least one row — and every row this request added is attributed to
+      // it. Not exactly one: a route that discloses several patients in one
+      // response (linking two charts, a chart assembled across a link) audits
+      // once per patient, which is the guarantee working harder, not a route
+      // double-counting.
+      const after = s.trail();
+      const added = after.slice(0, after.length - before);
+      assert.ok(added.length >= 1, `${p} served patient data without leaving an audit row`);
+      for (const row of added) {
+        assert.equal(row.path, p, `${p} left a row attributed to ${row.path}`);
+        assert.ok(row.resource_type, `${p} recorded no resource type`);
+      }
     }
   } finally {
     await s.close();

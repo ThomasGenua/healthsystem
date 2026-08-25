@@ -41,6 +41,7 @@ import { ChannelNoticeDispatcher } from "../patient/notice.ts";
 import { AccessReview } from "../audit/review.ts";
 import { Clinics } from "../schedule/clinics.ts";
 import { ChannelVersions } from "./channel-versions.ts";
+import { PatientLinks } from "../clinical/links.ts";
 import { Schedule } from "../schedule/store.ts";
 import { Registry } from "../population/registry.ts";
 import { Migration } from "../migrate/run.ts";
@@ -125,6 +126,8 @@ export interface TenantView {
   review: AccessReview;
   /** Travelling-clinic visits and the waitlist. */
   clinics: Clinics;
+  /** Reversible assertions that two charts are one person. */
+  links: PatientLinks;
   /** The assembled visit, the encounter-scoped counterpart to `workspace`. */
   visits: VisitView;
 }
@@ -388,6 +391,7 @@ export class Engine {
       directory,
       review: new AccessReview(db),
       clinics: new Clinics(db),
+      links: new PatientLinks(db),
       visits: new VisitView({ encounters, record: clinical, meds, orders }),
     };
     this.views.set(tenantId, view);

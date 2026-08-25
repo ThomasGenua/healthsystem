@@ -83,6 +83,7 @@ export const TENANT_SCOPED_TABLES = [
   "schedule_waitlist",
   "schedule_offers",
   "channel_versions",
+  "patient_link_events",
   "prescriptions",
   "prescription_events",
   "migration_runs",
@@ -1792,6 +1793,28 @@ CREATE TABLE IF NOT EXISTS patient_index (
   email TEXT,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (tenant_id, patient_id)
+);
+
+-- The assertion that two charts are one person — as events, because the
+-- store's own docstring is the design brief: "there is no honest way to
+-- unmerge afterwards" is true of merging, and the answer is to never merge.
+-- A link is a row and an unlink is another row; nothing is rewritten, so
+-- undoing one is honest for the first time.
+CREATE TABLE IF NOT EXISTS patient_link_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  link_id TEXT NOT NULL,
+  -- linked | unlinked
+  event TEXT NOT NULL,
+  patient_a TEXT NOT NULL,
+  patient_b TEXT NOT NULL,
+  -- The evidence on a link, the reason on an unlink. Required either way:
+  -- an assertion that two charts are the same person is a clinical decision,
+  -- and a decision nobody can weigh afterwards is not one.
+  detail TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_kind TEXT NOT NULL,
+  at TEXT NOT NULL
 );
 
 -- Every identifier a chart is known by. A patient reaches a clinic with a
