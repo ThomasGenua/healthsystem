@@ -373,16 +373,34 @@ export class MedicationStore {
    * Never blocks and never decides. It reports, including reporting that it
    * could not check — `never-asked` allergies and an unavailable interaction
    * source are findings, not silence.
+   *
+   * `acrossMembers` are the other charts of a linked patient. A link asserts
+   * one person, so the check has to behave like it: allergies and current
+   * medications are the union across the members, and the allergy status is
+   * the worst member's answer — a person with an unasked chart is a person
+   * who was never fully asked. Without it, the assembled chart shows an
+   * allergy the safety check calls clear.
    */
-  check(patientId: string, proposed: { ingredient: string; display: string }): SafetyCheck {
-    const current = this.current(patientId, { asPrescribed: true })
+  check(
+    patientId: string,
+    proposed: { ingredient: string; display: string },
+    opts: { acrossMembers?: readonly string[] } = {}
+  ): SafetyCheck {
+    const ids = [patientId, ...(opts.acrossMembers ?? [])];
+    const current = ids
+      .flatMap((id) => this.current(id, { asPrescribed: true }))
       .filter((m) => m.status === "active" || m.status === "on-hold")
       .map((m) => ({ ingredient: m.ingredient ?? m.display, display: m.display }));
+    const statuses = ids.map((id) => this.allergyStatus(id));
     return assess({
       proposedIngredient: proposed.ingredient,
       proposedDisplay: proposed.display,
-      allergies: this.allergies(patientId).filter((a) => a.kind !== "no-known-allergies"),
-      allergyStatus: this.allergyStatus(patientId),
+      allergies: ids.flatMap((id) => this.allergies(id)).filter((a) => a.kind !== "no-known-allergies"),
+      allergyStatus: statuses.includes("never-asked")
+        ? "never-asked"
+        : statuses.includes("documented")
+          ? "documented"
+          : "none-documented",
       currentIngredients: current,
       interactions: this.interactions,
     });

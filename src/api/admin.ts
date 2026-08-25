@@ -67,6 +67,7 @@ import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
 import { VERSION } from "../version.ts";
 import type { AuditAction, AuditEntry } from "../audit/store.ts";
+import type { Finding } from "../meds/safety.ts";
 import type { TlsConfig } from "./tls.ts";
 import type { ChannelConfig, MappingDoc, MessageRow } from "../types.ts";
 import type { ChannelDocument } from "../core/channel-versions.ts";
@@ -1430,7 +1431,12 @@ async function route(
       // One row per member, because each member's record was disclosed and
       // each member's access review must see this read. A single row naming
       // only the queried id would hide the linked members' disclosure from
-      // exactly the report built to find it.
+      // exactly the report built to find it. A partly withheld assembly is
+      // recorded the way phi() records it — types only, never content — or
+      // the trail would say the directive did nothing here.
+      const withheldNote = withheldTypes.size
+        ? `; withheld by patient directive: ${[...withheldTypes].sort().join(", ")}`
+        : "";
       for (const member of members) {
         audit({
           action: "R",
@@ -1438,9 +1444,9 @@ async function route(
           resourceType: "Composition",
           patient: member,
           detail:
-            member === patient
+            (member === patient
               ? `chart assembled across ${members.length} linked charts`
-              : `served as a linked member of ${patient}'s chart`,
+              : `served as a linked member of ${patient}'s chart`) + withheldNote,
         });
       }
       return send(res, 200, assembled);
@@ -1483,7 +1489,10 @@ async function route(
         return send(res, 201, link);
       } catch (err) {
         const mapped = mapStoreError(err);
-        audit({ action: "C", outcome: mapped.outcome, resourceType: "Patient", patient: body.a, detail: mapped.detail });
+        // The attempt named both charts, so the refusal lands on both trails.
+        for (const id of [body.a, body.b]) {
+          audit({ action: "C", outcome: mapped.outcome, resourceType: "Patient", patient: id, detail: mapped.detail });
+        }
         return send(res, mapped.status, { error: mapped.error });
       }
     }
@@ -1503,7 +1512,18 @@ async function route(
         return send(res, 200, event);
       } catch (err) {
         const mapped = mapStoreError(err);
-        audit({ action: "U", outcome: mapped.outcome, resourceType: "Patient", detail: mapped.detail });
+        // A refused attempt to sever a link is part of both charts' stories —
+        // an access review that shows the withdrawal but not the refused try
+        // before it is missing a page. Only an id that never named a link has
+        // nobody to write it on, and that row stands without a patient.
+        const parties = tenant.links.patientsOf(body.link);
+        if (parties.length === 0) {
+          audit({ action: "U", outcome: mapped.outcome, resourceType: "Patient", detail: mapped.detail });
+        } else {
+          for (const id of parties) {
+            audit({ action: "U", outcome: mapped.outcome, resourceType: "Patient", patient: id, detail: mapped.detail });
+          }
+        }
         return send(res, mapped.status, { error: mapped.error });
       }
     }
@@ -2530,10 +2550,45 @@ async function route(
       const p = body.patient;
       const ingredient = body.ingredient;
       const display = body.display ?? body.ingredient;
-      // Audited as a read of the patient, because that is what it is: it
-      // consults their allergies and their medication list.
-      audit({ action: "R", outcome: 0, resourceType: "AllergyIntolerance", patient: p, detail: `safety check: ${ingredient}` });
-      return send(res, 200, tenant.meds.check(p, { ingredient, display }));
+      // A link asserts one person, so the check consults every member — a
+      // penicillin allergy documented on the linked chart has to fire here,
+      // or the assembled chart shows an allergy the safety check calls
+      // clear. A member the caller could not assemble (whole record
+      // withheld, no break-glass) is not consulted, because this route must
+      // not leak what the chart route refuses — and the answer then says the
+      // check is incomplete, since "clear" resting on a chart nobody read is
+      // exactly the reading the check exists to refuse.
+      const members = tenant.links.membersOf(p);
+      const consultable = members.filter((m) => {
+        if (m === p) return true;
+        const r = restrictions(m);
+        return r.underBreakGlass || !r.blocking;
+      });
+      // Audited as a read of each consulted member, because that is what it
+      // is: it consults their allergies and their medication list.
+      for (const member of consultable) {
+        audit({
+          action: "R",
+          outcome: 0,
+          resourceType: "AllergyIntolerance",
+          patient: member,
+          detail: member === p ? `safety check: ${ingredient}` : `safety check for linked chart ${p}: ${ingredient}`,
+        });
+      }
+      const result = tenant.meds.check(p, { ingredient, display }, { acrossMembers: consultable.filter((m) => m !== p) });
+      if (members.length > 1) result.across = [...consultable].sort();
+      const unconsulted = members.length - consultable.length;
+      if (unconsulted > 0) {
+        const finding: Finding = {
+          kind: "linked-chart-unavailable",
+          severity: "severe",
+          message: `${unconsulted} linked chart${unconsulted === 1 ? "" : "s"} withheld by a patient directive could not be consulted; the check is incomplete`,
+        };
+        result.findings.push(finding);
+        result.blocking.push(finding);
+        result.clear = false;
+      }
+      return send(res, 200, result);
     }
     if (path === "/api/clinical/immunization-record" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as {

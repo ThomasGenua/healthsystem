@@ -23,7 +23,10 @@ always forward-compatible and run automatically on open — see
   directive on any member withholds or locks the assembly, break-glass lifts
   only the member it was broken for, and the read lands on every member's
   audit trail. The patient portal stays deliberately blind to links: a grant
-  names one chart and serves one chart.
+  names one chart and serves one chart. The medication safety check answers
+  for the person the link asserts — allergies and current medications union
+  across the members the caller could assemble, and a member it could not
+  consult is a blocking finding, never silence.
 - **Channel configuration as a ledger** (#36). Everything else here is
   provenance-carrying — messages chain, the record is append-only, audit rows
   chain — and the configuration that decides how all of it is produced was

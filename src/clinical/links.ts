@@ -154,6 +154,19 @@ export class PatientLinks {
     return this.active().filter((l) => members.has(l.patientA) || members.has(l.patientB));
   }
 
+  /**
+   * The two charts a link id is or was about — withdrawn links included,
+   * because a failed attempt to touch a link still belongs on both charts'
+   * trails. An id that never named a link answers [], there being nobody to
+   * write it on.
+   */
+  patientsOf(linkId: string): string[] {
+    const row = this.db.sql
+      .prepare("SELECT patient_a, patient_b FROM patient_link_events WHERE tenant_id = ? AND link_id = ? LIMIT 1")
+      .get(this.db.tenantId, linkId) as { patient_a: string; patient_b: string } | undefined;
+    return row ? [row.patient_a, row.patient_b] : [];
+  }
+
   /** Every link and unlink that ever touched this chart, oldest first. */
   historyFor(patientId: string): LinkEvent[] {
     return this.db.sql

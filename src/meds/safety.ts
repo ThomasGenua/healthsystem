@@ -33,7 +33,8 @@ export type FindingKind =
   | "duplicate-therapy"
   | "interaction"
   | "allergy-history-not-taken"
-  | "interaction-source-unavailable";
+  | "interaction-source-unavailable"
+  | "linked-chart-unavailable";
 
 export interface Finding {
   kind: FindingKind;
@@ -59,6 +60,12 @@ export interface SafetyCheck {
   clear: boolean;
   /** Findings a prescriber must explicitly override to proceed. */
   blocking: Finding[];
+  /**
+   * When the patient's chart is linked, the member charts this answer
+   * consulted — set by the route, so the answer says on its face whose
+   * records it speaks for, the same way the assembled chart does.
+   */
+  across?: string[];
 }
 
 /** A licensed interaction database, or a fake in tests. */

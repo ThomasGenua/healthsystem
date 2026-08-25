@@ -315,6 +315,123 @@ test("links are confined to their custodian", () => {
   }
 });
 
+test("the safety check answers for the person the link asserts", async () => {
+  // The chart assembles across the members; a safety check that reads one
+  // chart would show the penicillin allergy on screen while calling a
+  // penicillin prescription clear — a false negative against the person the
+  // link asserts, which is the worst answer this system can give.
+  const s = await boot();
+  try {
+    const before = (await (await s.post("/api/clinical/safety-check", { patient: A, ingredient: "penicillin" })).json()) as {
+      findings: Array<{ kind: string }>;
+    };
+    assert.ok(!before.findings.some((f) => f.kind === "allergy"), "unlinked, A's chart alone has no allergy to find");
+
+    const link = s.t.links.link(A, B, { ...REGISTRAR, evidence: EVIDENCE });
+    const linked = (await (await s.post("/api/clinical/safety-check", { patient: A, ingredient: "penicillin" })).json()) as {
+      blocking: Array<{ kind: string; message: string }>;
+      clear: boolean;
+      across?: string[];
+    };
+    assert.equal(linked.clear, false);
+    assert.ok(
+      linked.blocking.some((f) => f.kind === "allergy" && /enicillin/.test(f.message)),
+      "B's penicillin allergy blocks a prescription proposed against A"
+    );
+    assert.deepEqual(linked.across, [A, B].sort(), "and the answer says whose charts it consulted");
+
+    // Consulting B's allergies is a read of B, and lands on B's trail.
+    const forB = s.t.audit.list({ patient: B, limit: 10 });
+    assert.ok(forB.some((r) => /safety check for linked chart/.test(r.detail ?? "")));
+
+    // Reversibility reaches the check too.
+    s.t.links.unlink(link.linkId, { ...REGISTRAR, reason: "linked in error; father and son" });
+    const after = (await (await s.post("/api/clinical/safety-check", { patient: A, ingredient: "penicillin" })).json()) as {
+      findings: Array<{ kind: string }>;
+      across?: string[];
+    };
+    assert.ok(!after.findings.some((f) => f.kind === "allergy"));
+    assert.equal(after.across, undefined);
+  } finally {
+    await s.close();
+  }
+});
+
+test("a withheld member is not consulted by the safety check — and the check says so", async () => {
+  // Fails closed in both directions at once: the directive keeps B's content
+  // out of the answer — the check must not leak what the chart route refuses
+  // — and the answer refuses to read as complete without it.
+  const s = await boot();
+  try {
+    s.t.links.link(A, B, { ...REGISTRAR, evidence: EVIDENCE });
+    s.t.consent.record({
+      patientId: B,
+      kind: "withhold-all",
+      by: { actorId: "privacy-office", actorKind: "practitioner" },
+    });
+
+    const res = (await (await s.post("/api/clinical/safety-check", { patient: A, ingredient: "penicillin" })).json()) as {
+      findings: Array<{ kind: string }>;
+      blocking: Array<{ kind: string }>;
+      clear: boolean;
+      across?: string[];
+    };
+    assert.ok(!res.findings.some((f) => f.kind === "allergy"), "the withheld chart's content stays withheld");
+    assert.equal(res.clear, false);
+    assert.ok(res.blocking.some((f) => f.kind === "linked-chart-unavailable"), "the gap is a blocking finding, not silence");
+    assert.deepEqual(res.across, [A], "the answer names only the chart it read");
+  } finally {
+    await s.close();
+  }
+});
+
+test("a refused unlink lands on both members' trails", async () => {
+  // The withdrawal audits both charts; an attempt that was refused is part
+  // of the same story, and an access review that shows one without the other
+  // is missing a page.
+  const s = await boot();
+  try {
+    const link = s.t.links.link(A, B, { ...REGISTRAR, evidence: EVIDENCE });
+    const res = await s.post("/api/clinical/unlink", { link: link.linkId, reason: "short" });
+    assert.equal(res.status, 400);
+    for (const member of [A, B]) {
+      const rows = s.t.audit.list({ patient: member, limit: 10 });
+      assert.ok(
+        rows.some((r) => /reason somebody can read/.test(r.detail ?? "")),
+        `the refused attempt is on ${member}'s trail`
+      );
+    }
+  } finally {
+    await s.close();
+  }
+});
+
+test("a partly withheld assembled chart says so on every member's audit row", async () => {
+  // phi() records which sections a directive locked; the multi-member path
+  // has to say the same thing on each member's row, or the trail reads as if
+  // the directive did nothing.
+  const s = await boot();
+  try {
+    s.t.links.link(A, B, { ...REGISTRAR, evidence: EVIDENCE });
+    s.t.consent.record({
+      patientId: B,
+      kind: "withhold-all",
+      scope: ["AllergyIntolerance"],
+      by: { actorId: "privacy-office", actorKind: "practitioner" },
+    });
+    await s.get(`/api/clinical/chart?patient=${A}`);
+    for (const member of [A, B]) {
+      const rows = s.t.audit.list({ patient: member, limit: 10 });
+      assert.ok(
+        rows.some((r) => /withheld by patient directive: AllergyIntolerance/.test(r.detail ?? "")),
+        `${member}'s row records that the read was partly withheld`
+      );
+    }
+  } finally {
+    await s.close();
+  }
+});
+
 test("the patient portal never assembles across a link", async () => {
   // A patient's or proxy's authority is granted per chart, and a link is a
   // clinician's identity assertion — letting it widen a proxy's grant would
