@@ -42,22 +42,30 @@ import type { PatientMessaging, ThreadRow } from "../patient/messaging.ts";
 /**
  * Why a section is not the whole truth.
  *
- * Three different problems, and a renderer must not merge them. `unavailable`
+ * Four different problems, and a renderer must not merge them. `unavailable`
  * means the panel is empty and should not be read as "none". `truncated` means
  * there is more below the fold. `withheld` means the patient asked for this
  * section not to be shown to this reader — which is neither a fault nor a
  * shortage, and showing it as one would be both wrong and quietly alarming.
+ * `stale` means the panel was assembled from a cache — a reading station
+ * during an outage — and everything in it is true as of the moment the cache
+ * was filled, not now.
  *
  * The clinical difference is the point of keeping them apart. An allergy panel
  * that failed to load is a reason to go and look somewhere else before
  * prescribing. One the patient has locked is a reason to have a conversation,
  * or to break glass if the situation warrants it — and the refusal names the
  * way through rather than leaving a clinician to guess why a panel is bare.
+ * A stale panel is a reason to ask the patient again: a cached "no known drug
+ * allergies" from before this morning's reaction is worse than no chart at
+ * all, because a clinician reads it as current and stops asking — which is
+ * why staleness is a first-class reason here and never a footnote.
  */
 export type Incompleteness =
   | { reason: "unavailable"; detail: string }
   | { reason: "truncated"; shown: number; total: number }
-  | { reason: "withheld"; detail: string };
+  | { reason: "withheld"; detail: string }
+  | { reason: "stale"; asOf: string; ageHours: number };
 
 export interface Section<T> {
   items: T[];
@@ -106,6 +114,14 @@ export interface ChartSummary {
   linked?: { members: string[]; note: string };
 
   /**
+   * Present when the chart was assembled from a cache. The disclosure that
+   * makes a cached chart survivable: the age is at the top of the summary,
+   * on every panel, and in the omissions — a renderer that ignores all
+   * three had to work at it.
+   */
+  stale?: { asOf: string; ageHours: number; note: string };
+
+  /**
    * Whether every section is complete.
    *
    * The single flag a renderer has to honour. False means the chart in front
@@ -140,6 +156,20 @@ export interface SummaryOptions {
    * against, with the direction reversed.
    */
   linkedMembers?: readonly string[];
+  /**
+   * When the stores being read are a cache rather than the primary — a
+   * reading station during an outage — the moment the cache was filled.
+   *
+   * Passed in like the rest: this module assembles and owns no opinion about
+   * where its stores came from; the caller that mounted a cache is the one
+   * that knows. When present, staleness goes on the face of every panel and
+   * the chart is never `complete`, because "complete as of 14 hours ago" and
+   * "complete" are different sentences and a renderer must not be able to
+   * confuse them. A value that does not parse as a timestamp throws: a cache
+   * that cannot establish its own age must not serve at all, and quietly
+   * serving it as fresh would be the worst of the available lies.
+   */
+  asOf?: string;
 }
 
 /** The stores a summary is assembled from. Any may be absent. */
@@ -197,6 +227,8 @@ export function describe(name: string, s: Section<unknown>): string | null {
       return `${name}: ${s.incomplete.detail}`;
     case "truncated":
       return `${name}: showing ${s.incomplete.shown} of ${s.incomplete.total}`;
+    case "stale":
+      return `${name}: as of ${s.incomplete.ageHours} hours ago — anything recorded since the cache was filled is not here`;
   }
 }
 
@@ -424,6 +456,36 @@ export class Workspace {
       omissions.push("Coverage: no provincial coverage or eligibility has been recorded");
     }
 
+    // A cached chart is honest only if its age is on the face of every
+    // panel. Staleness stamps the sections that would otherwise read as
+    // complete; a section already incomplete keeps its more specific reason
+    // — a failure or a lockbox is still that, cached or not — and the
+    // chart-level block plus the omissions line carry the age for all of
+    // them. This runs after the per-section omissions so the list gains one
+    // line about the whole chart rather than thirteen copies of it.
+    let stale: { asOf: string; ageHours: number; note: string } | undefined;
+    if (opts.asOf !== undefined) {
+      const asOfMs = Date.parse(opts.asOf);
+      if (Number.isNaN(asOfMs)) {
+        throw new Error(`a cache that cannot establish its own age must not serve: asOf is not a timestamp (${opts.asOf})`);
+      }
+      const ageHours = Math.max(0, Math.round(((Date.now() - asOfMs) / 36e5) * 10) / 10);
+      for (const [, s] of sections) {
+        if (s.complete) {
+          s.complete = false;
+          s.incomplete = { reason: "stale", asOf: opts.asOf, ageHours };
+        }
+      }
+      stale = {
+        asOf: opts.asOf,
+        ageHours,
+        note: `assembled from a cache as of ${ageHours} hours ago; anything recorded since is not here`,
+      };
+      omissions.push(
+        `Every panel: as of ${ageHours} hours ago — anything recorded since the cache was filled is not here`
+      );
+    }
+
     return {
       patientId,
       patient,
@@ -438,6 +500,7 @@ export class Workspace {
             },
           }
         : {}),
+      ...(stale ? { stale } : {}),
       allergyStatus,
       immunizationStatus,
       vitalStatus,

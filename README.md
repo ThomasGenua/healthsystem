@@ -1703,7 +1703,7 @@ a scope-narrowed directive withholds its section rather than the chart around it
 
 **Built for where it actually runs.**
 
-- [#38 A readable chart when the link is down](https://github.com/ThomasGenua/healthsystem/issues/38) — the outage demo covers the write path. During a 40-hour outage a nurse can queue what they write and see nothing of what is already known. A cache is a second copy of PHI that can be wrong, so it needs a design rather than a bolt-on.
+- [#38 A readable chart when the link is down](https://github.com/ThomasGenua/healthsystem/issues/38) — the design is written and the vocabulary it rests on is built: [docs/OFFLINE-CHART.md](docs/OFFLINE-CHART.md) answers what is cached, for whom, for how long, encrypted how and revoked how (a reading station fed by the verified snapshot machinery, read-only, with one serving budget bounding both directive freshness and key revocation), and `stale` is now a first-class incompleteness a cached chart wears on every panel. The station itself is not built, and R-19 says nothing may serve a cached chart until it is.
 [#39](https://github.com/ThomasGenua/healthsystem/issues/39) is done: a visit is planned, repeated, moved and cancelled as one thing, its slots stay ordinary rows under the same unique index, and cancelling it puts every booked patient on a waitlist whose ordering is stated policy — priority, then waited-longest from first asking, then most-bumped — with offers that resolve as accepted, declined or unreachable, because a community with one phone line is not a community that keeps saying no.
 
 
