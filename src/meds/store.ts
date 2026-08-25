@@ -374,33 +374,39 @@ export class MedicationStore {
    * could not check — `never-asked` allergies and an unavailable interaction
    * source are findings, not silence.
    *
-   * `acrossMembers` are the other charts of a linked patient. A link asserts
-   * one person, so the check has to behave like it: allergies and current
-   * medications are the union across the members, and the allergy status is
-   * the worst member's answer — a person with an unasked chart is a person
-   * who was never fully asked. Without it, the assembled chart shows an
-   * allergy the safety check calls clear.
+   * `allergyCharts` and `medicationCharts` are the charts each section may
+   * consult, defaulting to the named patient's own. A link asserts one
+   * person, so the caller passes every member the reader is allowed to see
+   * — allergies and current medications are then the union, and the allergy
+   * status is the worst consulted member's answer, because a person with an
+   * unasked chart is a person who was never fully asked. Which charts and
+   * sections a directive keeps out is the caller's decision; a section with
+   * no consultable chart at all answers `withheld`, never clear.
    */
   check(
     patientId: string,
     proposed: { ingredient: string; display: string },
-    opts: { acrossMembers?: readonly string[] } = {}
+    opts: { allergyCharts?: readonly string[]; medicationCharts?: readonly string[] } = {}
   ): SafetyCheck {
-    const ids = [patientId, ...(opts.acrossMembers ?? [])];
-    const current = ids
+    const allergyIds = opts.allergyCharts ?? [patientId];
+    const medIds = opts.medicationCharts ?? [patientId];
+    const current = medIds
       .flatMap((id) => this.current(id, { asPrescribed: true }))
       .filter((m) => m.status === "active" || m.status === "on-hold")
       .map((m) => ({ ingredient: m.ingredient ?? m.display, display: m.display }));
-    const statuses = ids.map((id) => this.allergyStatus(id));
+    const statuses = allergyIds.map((id) => this.allergyStatus(id));
     return assess({
       proposedIngredient: proposed.ingredient,
       proposedDisplay: proposed.display,
-      allergies: ids.flatMap((id) => this.allergies(id)).filter((a) => a.kind !== "no-known-allergies"),
-      allergyStatus: statuses.includes("never-asked")
-        ? "never-asked"
-        : statuses.includes("documented")
-          ? "documented"
-          : "none-documented",
+      allergies: allergyIds.flatMap((id) => this.allergies(id)).filter((a) => a.kind !== "no-known-allergies"),
+      allergyStatus:
+        allergyIds.length === 0
+          ? "withheld"
+          : statuses.includes("never-asked")
+            ? "never-asked"
+            : statuses.includes("documented")
+              ? "documented"
+              : "none-documented",
       currentIngredients: current,
       interactions: this.interactions,
     });

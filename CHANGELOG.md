@@ -25,8 +25,11 @@ always forward-compatible and run automatically on open — see
   audit trail. The patient portal stays deliberately blind to links: a grant
   names one chart and serves one chart. The medication safety check answers
   for the person the link asserts — allergies and current medications union
-  across the members the caller could assemble, and a member it could not
-  consult is a blocking finding, never silence.
+  across the members — and consent composes into it the way it composes into
+  the chart, member by member and section by section, the named patient
+  included: a whole-record directive refuses the check with the break-glass
+  path, a locked section stays out of the union, and every gap is a blocking
+  finding, never silence.
 - **Channel configuration as a ledger** (#36). Everything else here is
   provenance-carrying — messages chain, the record is append-only, audit rows
   chain — and the configuration that decides how all of it is produced was

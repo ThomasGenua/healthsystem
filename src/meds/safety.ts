@@ -34,7 +34,7 @@ export type FindingKind =
   | "interaction"
   | "allergy-history-not-taken"
   | "interaction-source-unavailable"
-  | "linked-chart-unavailable";
+  | "withheld-by-directive";
 
 export interface Finding {
   kind: FindingKind;
@@ -49,9 +49,12 @@ export interface Finding {
  * Whether the allergy question has been asked at all.
  *
  * `never-asked` is the outcome the module is built around, and it is not a
- * kind of `none`.
+ * kind of `none`. `withheld` is its consent twin: the history exists, and a
+ * patient directive keeps this caller from reading it — an answer, never a
+ * blank, because a check that renders it as "no allergies" is the same
+ * hazard wearing a lockbox.
  */
-export type AllergyStatus = "documented" | "none-documented" | "never-asked";
+export type AllergyStatus = "documented" | "none-documented" | "never-asked" | "withheld";
 
 export interface SafetyCheck {
   findings: Finding[];
@@ -149,6 +152,16 @@ export function assess(input: {
       // this system does not have.
       severity: "severe",
       message: "no allergy history has been recorded for this patient; the allergy check could not be performed",
+    });
+  }
+  if (input.allergyStatus === "withheld") {
+    findings.push({
+      kind: "withheld-by-directive",
+      // The same shape as never-asked, for the same reason: the check could
+      // not be performed, and this caller's way through is break-glass, not
+      // reading the answer as clear.
+      severity: "severe",
+      message: "the allergy list is withheld from this caller by a patient directive; the allergy check could not be performed",
     });
   }
 

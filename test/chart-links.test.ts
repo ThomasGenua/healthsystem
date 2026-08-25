@@ -378,8 +378,86 @@ test("a withheld member is not consulted by the safety check — and the check s
     };
     assert.ok(!res.findings.some((f) => f.kind === "allergy"), "the withheld chart's content stays withheld");
     assert.equal(res.clear, false);
-    assert.ok(res.blocking.some((f) => f.kind === "linked-chart-unavailable"), "the gap is a blocking finding, not silence");
+    assert.ok(res.blocking.some((f) => f.kind === "withheld-by-directive"), "the gap is a blocking finding, not silence");
     assert.deepEqual(res.across, [A], "the answer names only the chart it read");
+  } finally {
+    await s.close();
+  }
+});
+
+test("the safety check is inside the lockbox, with the same emergency path", async () => {
+  // A caller a directive excludes could otherwise enumerate the withheld
+  // allergy list one proposed ingredient at a time — the check as an oracle
+  // over exactly the content the chart refuses. Same refusal, same door.
+  const s = await boot();
+  try {
+    s.t.consent.record({
+      patientId: B,
+      kind: "withhold-all",
+      by: { actorId: "privacy-office", actorKind: "practitioner" },
+    });
+    const refused = await s.post("/api/clinical/safety-check", { patient: B, ingredient: "penicillin" });
+    assert.equal(refused.status, 403);
+    assert.equal(((await refused.json()) as { breakGlass: string }).breakGlass, "POST /api/clinical/break-glass");
+
+    s.t.consent.breakGlass({
+      patientId: B,
+      by: { actorId: s.admin.id, actorKind: "apikey" },
+      reason: "unresponsive on arrival, need the allergy list before giving anything",
+    });
+    const after = (await (await s.post("/api/clinical/safety-check", { patient: B, ingredient: "penicillin" })).json()) as {
+      blocking: Array<{ kind: string }>;
+    };
+    assert.ok(after.blocking.some((f) => f.kind === "allergy"), "break-glass reaches the check like any other read");
+  } finally {
+    await s.close();
+  }
+});
+
+test("a scoped lock on a member locks that section of the check", async () => {
+  // The chart locks B's allergy section across the assembled view; a check
+  // that unioned it anyway would read the locked section back to the caller
+  // one ingredient at a time. The section stays out, and its absence is a
+  // blocking finding — never a quieter "clear".
+  const s = await boot();
+  try {
+    s.t.links.link(A, B, { ...REGISTRAR, evidence: EVIDENCE });
+    s.t.consent.record({
+      patientId: B,
+      kind: "withhold-all",
+      scope: ["AllergyIntolerance"],
+      by: { actorId: "privacy-office", actorKind: "practitioner" },
+    });
+    const res = (await (await s.post("/api/clinical/safety-check", { patient: A, ingredient: "penicillin" })).json()) as {
+      findings: Array<{ kind: string; message: string }>;
+      blocking: Array<{ kind: string; message: string }>;
+      clear: boolean;
+    };
+    assert.ok(!res.findings.some((f) => f.kind === "allergy"), "the locked section's content stays locked");
+    assert.equal(res.clear, false);
+    assert.ok(
+      res.blocking.some((f) => f.kind === "withheld-by-directive" && /allergy list/.test(f.message)),
+      "and the gap names the section it could not read"
+    );
+
+    // An unlinked patient's own scoped lock composes the same way — and with
+    // no allergy chart consultable at all, the status itself says withheld,
+    // never a status quietly computed from nothing.
+    const C = "NT500009";
+    s.t.consent.record({
+      patientId: C,
+      kind: "withhold-all",
+      scope: ["AllergyIntolerance"],
+      by: { actorId: "privacy-office", actorKind: "practitioner" },
+    });
+    const own = (await (await s.post("/api/clinical/safety-check", { patient: C, ingredient: "penicillin" })).json()) as {
+      allergyStatus: string;
+      blocking: Array<{ kind: string }>;
+      clear: boolean;
+    };
+    assert.equal(own.allergyStatus, "withheld");
+    assert.equal(own.clear, false);
+    assert.ok(own.blocking.some((f) => f.kind === "withheld-by-directive"));
   } finally {
     await s.close();
   }

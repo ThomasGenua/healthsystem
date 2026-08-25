@@ -2553,20 +2553,46 @@ async function route(
       // A link asserts one person, so the check consults every member — a
       // penicillin allergy documented on the linked chart has to fire here,
       // or the assembled chart shows an allergy the safety check calls
-      // clear. A member the caller could not assemble (whole record
-      // withheld, no break-glass) is not consulted, because this route must
-      // not leak what the chart route refuses — and the answer then says the
-      // check is incomplete, since "clear" resting on a chart nobody read is
-      // exactly the reading the check exists to refuse.
+      // clear. And consent composes into the check exactly as it composes
+      // into that chart, member by member and section by section, the named
+      // patient included: a check that read what the chart refuses this
+      // caller would be a side door through the lockbox, and an
+      // ingredient-by-ingredient oracle over the withheld allergy list
+      // besides. Fail closed, say so in a blocking finding, break glass to
+      // lift — never silence, in either direction.
+      const own = restrictions(p);
+      if (own.blocking && !own.underBreakGlass) {
+        audit({
+          action: "R",
+          outcome: 4,
+          resourceType: "AllergyIntolerance",
+          patient: p,
+          detail: `safety check refused: withheld by patient directive ${own.blocking.id}`,
+        });
+        return send(res, 403, { error: "this record is withheld by a patient directive", breakGlass: "POST /api/clinical/break-glass" });
+      }
       const members = tenant.links.membersOf(p);
-      const consultable = members.filter((m) => {
-        if (m === p) return true;
-        const r = restrictions(m);
-        return r.underBreakGlass || !r.blocking;
-      });
-      // Audited as a read of each consulted member, because that is what it
-      // is: it consults their allergies and their medication list.
-      for (const member of consultable) {
+      const allergyCharts: string[] = [];
+      const medicationCharts: string[] = [];
+      let blockedMembers = 0;
+      let allergiesLocked = 0;
+      let medicationsLocked = 0;
+      for (const member of members) {
+        const r = member === p ? own : restrictions(member);
+        if (member !== p && r.blocking && !r.underBreakGlass) {
+          blockedMembers += 1;
+          continue;
+        }
+        if (r.withheldTypes.has("AllergyIntolerance")) allergiesLocked += 1;
+        else allergyCharts.push(member);
+        if (r.withheldTypes.has("MedicationStatement")) medicationsLocked += 1;
+        else medicationCharts.push(member);
+      }
+      // Audited as a read of each chart it consulted, because that is what
+      // it is: it reads their allergies and their medication list. A chart a
+      // directive kept out was not read, and stays off the trail.
+      const consulted = [...new Set([...allergyCharts, ...medicationCharts])].sort();
+      for (const member of consulted) {
         audit({
           action: "R",
           outcome: 0,
@@ -2575,14 +2601,25 @@ async function route(
           detail: member === p ? `safety check: ${ingredient}` : `safety check for linked chart ${p}: ${ingredient}`,
         });
       }
-      const result = tenant.meds.check(p, { ingredient, display }, { acrossMembers: consultable.filter((m) => m !== p) });
-      if (members.length > 1) result.across = [...consultable].sort();
-      const unconsulted = members.length - consultable.length;
-      if (unconsulted > 0) {
+      const result = tenant.meds.check(p, { ingredient, display }, { allergyCharts, medicationCharts });
+      if (members.length > 1) result.across = consulted;
+      const gaps: string[] = [];
+      if (blockedMembers > 0) gaps.push(`${blockedMembers} linked chart${blockedMembers === 1 ? "" : "s"}`);
+      // When no allergy chart was consultable at all, check() already
+      // answered `withheld` and assess() carries the finding; the fragment
+      // here covers the partial case, where some members' lists were read
+      // and a directive kept others out.
+      if (allergiesLocked > 0 && allergyCharts.length > 0) {
+        gaps.push(`the allergy list on ${allergiesLocked} chart${allergiesLocked === 1 ? "" : "s"}`);
+      }
+      if (medicationsLocked > 0) {
+        gaps.push(`the medication list on ${medicationsLocked} chart${medicationsLocked === 1 ? "" : "s"}`);
+      }
+      if (gaps.length > 0) {
         const finding: Finding = {
-          kind: "linked-chart-unavailable",
+          kind: "withheld-by-directive",
           severity: "severe",
-          message: `${unconsulted} linked chart${unconsulted === 1 ? "" : "s"} withheld by a patient directive could not be consulted; the check is incomplete`,
+          message: `${gaps.join(", ")} withheld by a patient directive and not consulted; the check is incomplete`,
         };
         result.findings.push(finding);
         result.blocking.push(finding);
