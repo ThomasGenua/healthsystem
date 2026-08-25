@@ -1469,6 +1469,14 @@ async function route(
         const r = restrictions(member);
         if (r.underBreakGlass) continue;
         if (r.blocking) {
+          // The refusal lands on both stories: the member whose directive
+          // spoke, with the directive id — and the chart the caller was
+          // opening, because an access review of the queried chart that
+          // cannot see the refused attempt is missing a page. The response
+          // names the withheld member, because break-glass is declared per
+          // member: overriding the queried id would lift nothing, and the
+          // membership itself is already served to this caller by
+          // /api/clinical/links.
           audit({
             action: "R",
             outcome: 4,
@@ -1476,8 +1484,18 @@ async function route(
             patient: member,
             detail: `linked chart withheld by patient directive ${r.blocking.id}`,
           });
+          if (member !== patient) {
+            audit({
+              action: "R",
+              outcome: 4,
+              resourceType: "Composition",
+              patient,
+              detail: "chart refused: a linked member's record is withheld by a patient directive",
+            });
+          }
           return send(res, 403, {
             error: "a linked chart is withheld by a patient directive",
+            withheldMember: member,
             breakGlass: "POST /api/clinical/break-glass",
           });
         }

@@ -231,10 +231,15 @@ window.loadChart=async()=>{
     if(r.status===403){
       // The refusal names the way through, and so does this. A clinician who
       // needs the record in an emergency should not have to know the API.
+      // Break-glass is declared per chart, so the form targets the chart the
+      // directive is actually on — for a linked chart that is the withheld
+      // member, and overriding the queried id would lift nothing.
+      const target=(r.data&&r.data.withheldMember)||id;
+      const linkedNote=target!==id?`<p>The directive is on <b>${esc(target)}</b>, a chart linked to this one — the override is declared for that chart, and lifts only it.</p>`:"";
       out.innerHTML=`<div class="banner bad"><b>This record is withheld by a patient directive.</b>
-        <p>The patient has asked that this record not be shown. If the clinical situation warrants overriding that, declare it — the declaration is recorded, the patient is told, and somebody reviews it.</p>
+        <p>The patient has asked that this record not be shown. If the clinical situation warrants overriding that, declare it — the declaration is recorded, the patient is told, and somebody reviews it.</p>${linkedNote}
         <div class="bar"><input id="bg-reason" placeholder="why you need it, and why now" style="width:420px">
-        <button class="act" onclick="declareGlass('${esc(id)}')">break glass</button></div>
+        <button class="act" onclick="declareGlass('${esc(target)}')">break glass</button></div>
         <p class="none">A one-word reason is refused. This row is what a privacy office reads when the patient asks who opened their record.</p>
         <div id="bg-out"></div></div>`;
       return;

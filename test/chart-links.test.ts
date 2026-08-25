@@ -239,10 +239,21 @@ test("a directive on either member withholds across the assembled view", async (
     });
 
     // The whole assembled chart refuses: there is no honest chart for "this
-    // person" that quietly omits a chart the person locked.
+    // person" that quietly omits a chart the person locked. The refusal
+    // names the withheld member, because break-glass is declared per chart
+    // and overriding the queried id would lift nothing — a refusal with no
+    // way forward is a dead end in exactly the emergency the override
+    // exists for.
     const res = await s.get(`/api/clinical/chart?patient=${A}`);
     assert.equal(res.status, 403);
-    assert.match(((await res.json()) as { error: string }).error, /linked chart is withheld/);
+    const body = (await res.json()) as { error: string; withheldMember: string };
+    assert.match(body.error, /linked chart is withheld/);
+    assert.equal(body.withheldMember, B);
+
+    // And the refused attempt is on the queried chart's trail too — an
+    // access review of A that cannot see the refusal is missing a page.
+    const forA = s.t.audit.list({ patient: A, limit: 10 });
+    assert.ok(forA.some((r) => /chart refused: a linked member's record is withheld/.test(r.detail ?? "")));
 
     // Break glass on the member the directive is on, and the assembled view
     // serves — the override lifts exactly the member it was declared for.
