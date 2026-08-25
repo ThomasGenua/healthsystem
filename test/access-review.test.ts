@@ -167,9 +167,12 @@ test("an access under a declared override is marked as such, not as snooping", a
   // access would train a privacy officer to ignore the flag that matters.
   const s = await boot();
   try {
+    // The clinical route stores the credential id as `subject_id`, not the
+    // practitioner. Matching only the latter would miss every production
+    // override and flag the emergency read as unexplained.
     s.t.consent.breakGlass({
       patientId: P,
-      by: { actorId: "dr-hale", actorKind: "practitioner" },
+      by: { actorId: s.stranger.id, actorKind: "apikey" },
       reason: "unresponsive on arrival, no collateral history, need the allergy list",
     });
     await s.get(`/api/clinical/chart?patient=${P}`, s.stranger.key);
