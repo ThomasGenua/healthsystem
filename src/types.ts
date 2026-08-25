@@ -379,6 +379,12 @@ export interface MessageRow {
   status: MessageStatus;
   error: string | null;
   meta: string | null;
+  /**
+   * The channel configuration version that processed this message, or null
+   * when the channel predated versioning. What makes "which rules were live
+   * when this went wrong" a lookup instead of an archaeology project.
+   */
+  config_version: number | null;
   hash: string;
   prev_hash: string | null;
 }
@@ -441,6 +447,15 @@ export interface ApiKeyRow {
    * withheld-one rather than as somebody else.
    */
   organization_id: string | null;
+  /**
+   * The practitioner this credential acts as, as a directory practitioner id.
+   *
+   * The join the audit trail was missing. Clinical stores record an actor and
+   * the trail records a credential; without this there is no way to ask whether
+   * whoever read a chart had any clinical relationship to that patient. Null
+   * for a system integration, which acts as nobody and should say so.
+   */
+  practitioner_id: string | null;
 }
 
 /** Declarative conformance pack: profile rules per resource type. */

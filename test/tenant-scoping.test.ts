@@ -48,6 +48,9 @@ const SQL_SOURCES = [
   "../src/migrate/run.ts",
   "../src/privacy/office.ts",
   "../src/core/retention.ts",
+  "../src/schedule/clinics.ts",
+  "../src/audit/review.ts",
+  "../src/core/channel-versions.ts",
 ];
 
 /**

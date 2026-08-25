@@ -41,6 +41,68 @@ always forward-compatible and run automatically on open — see
 
   596 → 611 tests.
 
+- **Channel configuration as a ledger** (#36). Everything else here is
+  provenance-carrying — messages chain, the record is append-only, audit rows
+  chain — and the configuration that decides how all of it is produced was
+  overwritten in place. Every change is now a version with who, when, why and
+  how it came to be; the first versioned change on a pre-existing channel
+  captures the state it found, so upgrading cannot destroy the last
+  unversioned config. Versions diff at the field. A rollback restores old
+  content as a new version — never by mutation — and brings a deleted channel
+  back, because deletion is a marker in the history rather than the end of
+  one. `GET /api/channels/export` and `POST /api/channels/import` move the
+  whole configuration as the document source control holds: the import is a
+  plan before it is an action, a dry run writes nothing, and what the
+  document does not mention is reported, never deleted.
+- **Every message records which configuration processed it.** The lineage
+  claim the rest of the system makes, extended to the config boundary: a
+  message that went wrong is traceable to the exact rules that were live when
+  it did, instead of to whatever the config says now.
+
+- **Travelling clinics** (#39). A visit — the block of slots a specialist's
+  two days in a community actually are — is planned, repeated ("the same as
+  last time" is one call), moved and cancelled as one thing. Its slots stay
+  ordinary rows guarded by the same partial unique index, so nothing downstream
+  knows visits exist. Cancelling a visit puts the common cause on every booking
+  and every booked patient on the waitlist, bump counted, wait dated from when
+  they first booked: the weather does not send anybody to the back of the line.
+- **A waitlist whose ordering is stated policy** rather than an accident of
+  insertion order: clinical priority, then waited-longest from first asking,
+  then most-bumped as the tiebreak, computed in one place on purpose. A seat is
+  offered to a specific patient and the offer resolves as accepted, declined or
+  unreachable — recorded as the different facts they are, because collapsing
+  "unreachable" into "declined" punishes people for where they live. A seat
+  taken while an offer was out lapses the offer rather than wedging the queue
+  or blaming the patient — and a seat withdrawn by the visit's own cancellation
+  lapses the same way. One cancelled visit is one bump, however many seats the
+  patient held on it; a seat for another service is refused rather than
+  clearing the wrong queue; removing somebody closes their open offer, so
+  resolving it later cannot write them back in; and an offer history presents
+  in the order offers were made, by ledger rather than by clock. Offers say
+  where the seat is, and say both places when the patient's community and the
+  seat's differ.
+
+- **An access review of the trail a privacy officer can run** (#35, trail
+  half). Complementary to the operational office above, not a substitute
+  for it. `GET /api/audit/review?patient=` answers what the trail held every
+  ingredient for
+  and could not be asked: who looked, under what declared purpose, whether
+  anything clinical linked them to that patient, and what deserves attention
+  first. Each flag — self-lookup, shared surname, no treatment relationship,
+  break-glass, out-of-hours, unusual volume against that person's own median —
+  says why it fired, and is a rule somebody can read and argue with rather than
+  a model, which is the right standard for something that can end in an HR
+  process. A flag is closed with a reason that is kept, because a review whose
+  judgements vanish re-raises the same question next month with nothing to say
+  it was answered. The chain's verification travels on the report: an extract
+  attached to an investigation is worth what its source is worth.
+- **Credentials carry a practitioner**, which is what made the above possible.
+  The clinical stores have always recorded an actor and the audit trail a
+  credential, with nothing joining them — so "did whoever read this chart have
+  any reason to" was unanswerable from inside the database. A credential naming
+  nobody is reported as `unattributable` rather than passed over: an access
+  nothing could check must not look like one that was checked and passed.
+
 - **Migration that cannot report success over a gap** (#20). What makes
   migration dangerous is that you cannot tell whether it worked by
   whether it errored: a run loading 96% of the allergies produces no

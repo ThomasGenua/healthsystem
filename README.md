@@ -65,6 +65,9 @@ v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A laboratory result bridge that closes the order loop**, not just a mapping onto the facade: a resend writes nothing, a correction supersedes and arrives unacknowledged, a stale preliminary is ignored, and a result whose patient cannot be identified is held for a person rather than filed against a guess. No vendor interface is claimed — see [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
 - **A privacy office a privacy officer can actually run.** Reviews cannot close with unaddressed flags. A legal hold skips the message-log retention sweep. An incident cannot close without saying whether patients were told. Access clocks queue; they do not hard-stop. Completing an access request without a disclosure is flagged, not blocked. The assurance catalogue cannot close a finding by forgetting the residual risk. `BACKUP-02` stays partial.
 - **A patient HTML shell at `GET /me`.** Language, landmarks, an honest banner. Not a certified portal: no identity-proofing, no notification that a result reached the patient, no WCAG claim. Chart access is `/patient/*` plus OAuth.
+- **An access review of the trail.** `GET /api/audit/review?patient=` joins who looked to whether anything clinical linked them, with flags a person can dismiss with a reason. Complementary to the operational office: this one reads the trail; that one runs the queues.
+- **Travelling clinics and a waitlist whose ordering is stated policy.** A visit is planned, repeated, moved and cancelled as one thing. Cancelling it puts every booked patient on a waitlist: priority, then waited-longest, then most-bumped. An offer resolves as accepted, declined or unreachable.
+- **Channel configuration as a ledger.** Every change is a version with who, when and why. Export and import go through the same store; a dry run writes nothing; every message records which configuration processed it.
 
 611 tests. Backend first, then the interface that makes the backend's honesty visible.
 
@@ -303,10 +306,13 @@ Canadian health privacy law — PHIPA in Ontario, HIA in Alberta, the Health Inf
 curl "localhost:8686/api/audit?patient=NT123456" -H "Authorization: Bearer $KEY"   # who read this record
 curl "localhost:8686/api/audit?failures=true"    -H "Authorization: Bearer $KEY"   # who was turned away
 curl "localhost:8686/api/audit/verify"           -H "Authorization: Bearer $KEY"   # has the trail been altered
+curl "localhost:8686/api/audit/review?patient=NT123456" -H "Authorization: Bearer $KEY"  # who looked, and whether they had a reason to
 curl "localhost:8686/fhir/AuditEvent"            -H "Authorization: Bearer $KEY"   # the same, as R4 AuditEvent
 ```
 
 **What is recorded.** Disclosure is the event that matters, so every read of patient data is: a facade read or search, and any look at a raw message, since an ER7 message identifies a patient as surely as anything in the facade. A search records how many records it returned — one that discloses nine hundred is not a read. Refused attempts are recorded too, because a trail that shows only successes cannot show someone trying doors. Key issue and revocation are recorded because they change who can open them.
+
+**What a privacy officer actually asks.** `/api/audit` answers "what rows are there". `GET /api/audit/review?patient=` answers who looked, whether anything clinical linked them to that patient, and what to look at first — self-lookup, surname match, no treatment relationship, break-glass, out-of-hours, unusual volume, or a credential that names nobody. Each flag says why it fired and can be dismissed with a reason that is kept. The chain's verification travels on the report. This is the trail half of the privacy office; the queues, holds and incidents live under `/api/clinical/privacy-*`. Credentials carry a practitioner so the join is possible.
 
 **What is not.** Internal writes are not duplicated here. Every message already carries hash-chained lineage with its pipeline steps and deliveries, which is a stronger record than an audit line, and repeating it would bury the disclosures in routine traffic.
 
@@ -785,6 +791,11 @@ They do **not** apply a patient lockbox. A directive that hid the office from
 the record it is charged with reviewing would be a lock with no key. The trail
 says the directive was not applied.
 
+`GET /api/audit/review?patient=` is the complementary surface: it reads the
+trail the queues above are not. One is who looked and whether they had a
+reason to; the other is the work of emptying reviews, holds, incidents and
+clocks. Neither substitutes for the other.
+
 What it refuses, because a queue that empties on a click teaches a ward that
 the queue was the work:
 
@@ -976,6 +987,21 @@ So `didNotAttend()` returns **what is owed**, not just a status:
 ```
 
 `unresolvedNonAttendance()` holds them until somebody says what they did about it — worst first, because a missed urgent appointment gets less recoverable with every week. Clearing one requires an action in words, for the same reason completing a task requires evidence.
+
+### A travelling clinic is one visit, not a pile of slots
+
+A specialist's two days in a community is one thing that happens to contain
+slots. `tenant.clinics` plans, repeats, moves and cancels that visit as one
+row; the slots stay ordinary rows under the same unique index, so nothing
+downstream has to know visits exist. Cancelling the visit puts every booked
+patient on a waitlist — bump counted, wait dated from when they first booked,
+so weather does not send anybody to the back of the line.
+
+The waitlist's order is stated policy rather than insertion order: clinical
+priority, then waited-longest from first asking, then most-bumped. A seat is
+offered to a named patient and resolves as accepted, declined or unreachable,
+because collapsing "unreachable" into "declined" punishes people for where
+they live.
 
 ## Consent directives and breaking glass
 
@@ -1332,6 +1358,7 @@ src/
   work/tasks.ts            the unified inbox
   work/referrals.ts        closed-loop referrals and the stalled query
   schedule/store.ts        slots and bookings, double-booking refused by an index
+  schedule/clinics.ts      travelling-clinic visits and the waitlist
   population/registry.ts   cohorts, care gaps, quality measures with honest denominators
   patient/access.ts        patient and proxy authority, result release timing
   patient/consent.ts       consent directives and break-glass
@@ -1348,6 +1375,8 @@ src/
   auth/jwt.ts         OAuth 2.0 / SMART bearer validation against a JWKS
   auth/gate.ts        the one check every request passes
   audit/store.ts      hash-chained access trail
+  audit/review.ts     who looked, and whether anything clinical linked them
+  core/channel-versions.ts  channel configuration as a ledger, not an overwrite
   core/text.ts        small helpers for messages people read
   core/atrest.ts      whether the data directory is on an encrypted volume
   core/retention.ts   payload redaction and purge under a retention policy
@@ -1459,6 +1488,10 @@ POST   /api/backup                          verified online snapshot; off-machin
 GET    /metrics                             Prometheus exposition (public, no patient data)
 GET    /api/audit?patient=&principal=&failures=  who accessed patient data
 GET    /api/audit/verify                    walk and verify the audit hash chain
+GET    /api/audit/review?patient=           who looked, flags, dismissible with a reason
+POST   /api/audit/review/dismiss            close a flag, with a reason that is kept
+GET    /api/channels/export                 the configuration as a versioned document
+POST   /api/channels/import                 a plan, then an action; a dry run writes nothing
 GET    /api/retention                       policy, and what a sweep would touch
 POST   /api/retention/run                   apply the retention policy now
 GET    /fhir/AuditEvent?patient=&_count=    the same trail as R4 AuditEvent (admin only)
@@ -1664,7 +1697,7 @@ a scope-narrowed directive withholds its section rather than the chart around it
 
 **Put it in front of a person.**
 
-[#35](https://github.com/ThomasGenua/healthsystem/issues/35) is done: a privacy officer can open a review of the last 24 hours, address flags with a written reason, place a legal hold that skips the retention sweep, record a disclosure when fulfilling an access request, and close an incident only after saying whether patients were told. The assurance catalogue cannot close a finding by forgetting it. It is not a SIEM, not a PIA product, and after-hours is UTC.
+[#35](https://github.com/ThomasGenua/healthsystem/issues/35) is done in two complementary pieces. A privacy officer can open a review of the last 24 hours, address flags with a written reason, place a legal hold that skips the retention sweep, record a disclosure when fulfilling an access request, and close an incident only after saying whether patients were told. The assurance catalogue cannot close a finding by forgetting it. Separately, `GET /api/audit/review?patient=` answers who looked, whether anything clinical linked them to the patient, and what to look at first — with each flag saying why it fired, dismissible with a reason that is kept, and the chain's verification attached to the report. Credentials carry a practitioner to make that join possible. It is not a SIEM, not a PIA product, and after-hours is UTC.
 
 - [#23 Validate the conformance packs against the published Projectathon scripts](https://github.com/ThomasGenua/healthsystem/issues/23) — the packs validate against this project's reading of the specifications, which is not the same as conforming to them.
 - [#24 The patient-facing surface, and its separate identity boundary](https://github.com/ThomasGenua/healthsystem/issues/24) — the backend boundary is done, and `GET /me` is chrome with English/French copy and landmarks. What remains is identity-proofing enrolment, notification delivery and accessibility validation. Do not call `/me` a portal.
@@ -1673,11 +1706,10 @@ a scope-narrowed directive withholds its section rather than the chart around it
 **Built for where it actually runs.**
 
 - [#38 A readable chart when the link is down](https://github.com/ThomasGenua/healthsystem/issues/38) — the outage demo covers the write path. During a 40-hour outage a nurse can queue what they write and see nothing of what is already known. A cache is a second copy of PHI that can be wrong, so it needs a design rather than a bolt-on.
-- [#39 Scheduling for travelling clinics, and a waitlist for when weather cancels one](https://github.com/ThomasGenua/healthsystem/issues/39) — a specialist flying in for two days a month is twenty hand-created slots, and when the plane does not fly there is no waitlist.
+[#39](https://github.com/ThomasGenua/healthsystem/issues/39) is done: a visit is planned, repeated, moved and cancelled as one thing, its slots stay ordinary rows under the same unique index, and cancelling it puts every booked patient on a waitlist whose ordering is stated policy — priority, then waited-longest from first asking, then most-bumped — with offers that resolve as accepted, declined or unreachable, because a community with one phone line is not a community that keeps saying no.
 
-**Operate it.**
 
-- [#36 Channel configuration as versioned, reviewable artifacts](https://github.com/ThomasGenua/healthsystem/issues/36) — messages chain, the record is append-only, audit rows chain, and the configuration that determines all of it is overwritten in place with no history, no diff and no way back.
+**Operate it.** [#36](https://github.com/ThomasGenua/healthsystem/issues/36) is done: every channel change is a version carrying who, when and why; two versions diff at the field; a rollback restores old content as a new version and can resurrect a deleted channel; an import is a plan before it is an action and a dry run writes nothing; and every message records which configuration processed it, so "which rules were live when this went wrong" is a lookup rather than an archaeology project.
 
 **Then scale.**
 
@@ -1687,7 +1719,7 @@ a scope-narrowed directive withholds its section rather than the chart around it
 
 **Smaller, from review.** [#26](https://github.com/ThomasGenua/healthsystem/issues/26) and [#27](https://github.com/ThomasGenua/healthsystem/issues/27) are done: a store refusal is not a 400-and-outcome-8, and the `migrate()` rebuild turns foreign keys off around the copy.
 
-**Where the production build has reached.** Priorities 1–9, 11 and 13 of the immediate list are done or substantially done: the chart, documentation, inbox, scheduling, patient messaging, the FHIR service, an inbound laboratory bridge, medications with pharmacy transmission, the patient access boundary, a privacy office a privacy officer can run, and a migration loader. The distance to the provincial specification is [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
+**Where the production build has reached.** Priorities 1–9, 11 and 13 of the immediate list are done or substantially done: the chart, documentation, inbox, scheduling (including travelling clinics and the waitlist), patient messaging, the FHIR service, an inbound laboratory bridge, medications with pharmacy transmission, the patient access boundary, a privacy office a privacy officer can run (queues *and* the trail join), a channel-configuration ledger, and a migration loader. The distance to the provincial specification is [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
 
 What is left is mostly not code. Vendor and provincial interfaces (Dynacare, LifeLabs, OLIS, DHDR, HRM, eConsult, ONE ID) each need a conformance guide, a sandbox, credentials and a signed test result — none of which can be written from inside this repository. Accessibility and Canadian-French parity need a person with a screen reader and a translator. A penetration test needs somebody who does not share the author's model of an attack. A clinical pilot needs a named safety officer.
 

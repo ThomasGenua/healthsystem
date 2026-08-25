@@ -78,6 +78,11 @@ export const TENANT_SCOPED_TABLES = [
   "patient_messages",
   "patient_thread_events",
   "lab_identity_holds",
+  "access_review_dismissals",
+  "schedule_visits",
+  "schedule_waitlist",
+  "schedule_offers",
+  "channel_versions",
   "prescriptions",
   "prescription_events",
   "migration_runs",
@@ -134,6 +139,37 @@ CREATE TABLE IF NOT EXISTS tenants (
   status TEXT NOT NULL DEFAULT 'active',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   suspended_at TEXT
+);
+
+-- Every shape a channel's configuration has ever had.
+--
+-- The channels row is the running state; this is its history. Messages chain,
+-- the clinical record is append-only, audit rows chain — and until this table
+-- the configuration that determines how all of those are produced was
+-- overwritten in place, with no record it ever said anything else. A mapping
+-- change that starts dropping a segment at 14:00 left an operator an
+-- updated_at, the current config, and their memory.
+CREATE TABLE IF NOT EXISTS channel_versions (
+  -- Ledger order across all channels, same reasoning as schedule_offers: two
+  -- versions in one millisecond are still two versions in an order.
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  -- Per-channel, counting from 1. What an operator says out loud: "roll adt
+  -- back to version 3".
+  version INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  enabled INTEGER NOT NULL,
+  config TEXT NOT NULL,
+  -- How this version came to be: baseline (the state found when versioning
+  -- first touched an existing channel), edit, import, rollback, or delete.
+  origin TEXT NOT NULL,
+  -- Set on a rollback: the version whose content was restored.
+  rollback_of INTEGER,
+  note TEXT NOT NULL,
+  changed_by TEXT NOT NULL,
+  changed_at TEXT NOT NULL,
+  UNIQUE (tenant_id, channel_id, version)
 );
 
 CREATE TABLE IF NOT EXISTS channels (
@@ -301,7 +337,15 @@ CREATE TABLE IF NOT EXISTS api_keys (
   -- when the key is issued. Null means the credential cannot say, which a
   -- withhold-from-organization directive treats as "possibly the withheld
   -- one" — over-restrictive on purpose rather than permissive by default.
-  organization_id TEXT
+  organization_id TEXT,
+  -- The practitioner this credential acts as, resolved against the directory.
+  --
+  -- Separate from the organization, and the join the audit trail was missing:
+  -- clinical stores record an actor ("dr-tetso") and the trail records a
+  -- credential, so before this there was no way to ask whether the person who
+  -- read a chart had any clinical relationship to that patient. Null for a
+  -- system integration, which genuinely acts as no one.
+  practitioner_id TEXT
 );
 
 -- Access audit trail, hash-chained like message lineage so a row cannot be
@@ -331,6 +375,9 @@ CREATE TABLE IF NOT EXISTS audit_events (
   -- organization looked" are different questions and a privacy review asks
   -- both; before this column the trail could only answer the first.
   organization_id TEXT,
+  -- Which person, where the credential acts as one. This is what makes
+  -- "did anybody with no reason to look at this chart look at it" answerable.
+  practitioner_id TEXT,
   hash TEXT NOT NULL,
   prev_hash TEXT
 );
@@ -998,6 +1045,10 @@ CREATE TABLE IF NOT EXISTS schedule_slots (
   -- that does not exist.
   status TEXT NOT NULL DEFAULT 'open',
   block_reason TEXT,
+  -- The travelling-clinic visit this slot belongs to, when it was planned as
+  -- part of one. Null for a slot opened on its own, which stays the ordinary
+  -- case; nothing downstream needs to know visits exist.
+  visit_id TEXT,
   created_at TEXT NOT NULL,
   PRIMARY KEY (tenant_id, id)
 );
@@ -1041,6 +1092,91 @@ CREATE TABLE IF NOT EXISTS schedule_events (
   actor_id TEXT NOT NULL,
   actor_kind TEXT NOT NULL,
   detail TEXT
+);
+
+-- A travelling clinic's visit: a block of slots planned, moved and cancelled
+-- as one thing. A specialist flying into a community for two days a month is
+-- the northern scheduling primitive, and without this it is twenty
+-- hand-created slots that can only be cancelled one at a time — leaving
+-- twenty orphaned cancellations with no record that the plane was the cause.
+CREATE TABLE IF NOT EXISTS schedule_visits (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  resource_id TEXT NOT NULL,
+  resource_kind TEXT NOT NULL,
+  service TEXT NOT NULL,
+  -- Where the visit happens, in words a patient recognises. What makes
+  -- "next available" honest: an offer that crosses communities has to be able
+  -- to say so, and it cannot if nothing records where the seats are.
+  community TEXT NOT NULL,
+  starts_on TEXT NOT NULL,
+  ends_on TEXT NOT NULL,
+  -- planned | cancelled. A cancelled visit keeps its rows: the fact that a
+  -- clinic was supposed to run is what a capacity report is made of.
+  status TEXT NOT NULL DEFAULT 'planned',
+  cancelled_at TEXT,
+  cancelled_by TEXT,
+  cancel_reason TEXT,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Who is waiting for a service, in an order that is policy rather than
+-- accident. The row keeps when they first asked and how many times a
+-- cancelled visit has bumped them, because both are inputs to who gets the
+-- next seat and neither survives being kept in somebody's head.
+CREATE TABLE IF NOT EXISTS schedule_waitlist (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  service TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  priority TEXT NOT NULL DEFAULT 'routine',
+  reason TEXT NOT NULL,
+  -- The community the patient is in, when known, so an offer that would send
+  -- them 900 km can be seen to before the phone call rather than during it.
+  community TEXT,
+  referral_id TEXT,
+  -- waiting | offered | booked | removed
+  status TEXT NOT NULL DEFAULT 'waiting',
+  -- How many cancelled visits have taken a booked seat back off this person.
+  -- Never reset: a patient bumped three times is a fact about the service,
+  -- not a counter to tidy.
+  bump_count INTEGER NOT NULL DEFAULT 0,
+  added_by TEXT NOT NULL,
+  added_at TEXT NOT NULL,
+  removed_at TEXT,
+  removed_by TEXT,
+  removed_reason TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- One offer of one seat to one waiting patient, and what came of it.
+-- "Unreachable" is a real outcome in a community with one phone line and is
+-- not the same fact as "declined"; a schedule that collapses them punishes
+-- people for where they live.
+CREATE TABLE IF NOT EXISTS schedule_offers (
+  -- The ledger order. Two offers made in the same millisecond are still two
+  -- offers made in an order, and a history sorted by a timestamp presents
+  -- them in whichever order the sort happened to leave them — an accident of
+  -- insertion order in the one module written against those.
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  waitlist_id TEXT NOT NULL,
+  slot_id TEXT NOT NULL,
+  -- Where the offered seat is, in words, recorded at offer time so the
+  -- conversation with the patient starts from the truth.
+  place TEXT NOT NULL,
+  made_by TEXT NOT NULL,
+  made_at TEXT NOT NULL,
+  -- accepted | declined | unreachable, null while the offer is out.
+  outcome TEXT,
+  outcome_at TEXT,
+  outcome_by TEXT,
+  note TEXT,
+  UNIQUE (tenant_id, id)
 );
 
 -- A visit: the thing clinical work actually happens inside.
@@ -1683,6 +1819,27 @@ CREATE TABLE IF NOT EXISTS clinical_counters (
 -- so a trail that has lost rows disagrees with it — the truncation check that
 -- SQLite's own AUTOINCREMENT mark used to serve before the trail became
 -- per-tenant and that mark started counting everybody.
+-- A privacy officer's judgement on a flagged access, so a review has a memory.
+--
+-- A flag that can only be looked at is a report; a flag somebody can close,
+-- with a reason, on a specific access, is a process. Dismissals are kept
+-- rather than deleting the flag because the flag is derived from the trail on
+-- every read — there is nothing to delete — and because "we looked at this and
+-- decided it was fine" is itself a fact a later review needs.
+CREATE TABLE IF NOT EXISTS access_review_dismissals (
+  tenant_id TEXT NOT NULL,
+  -- The audit row the flag was raised against, and which flag. One access can
+  -- raise several and they are dismissed one at a time: "yes, she is his
+  -- daughter" answers the surname match and says nothing about the fact that
+  -- there was no encounter.
+  audit_id TEXT NOT NULL,
+  flag TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  dismissed_by TEXT NOT NULL,
+  dismissed_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, audit_id, flag)
+);
+
 CREATE TABLE IF NOT EXISTS audit_counters (
   tenant_id TEXT PRIMARY KEY,
   issued INTEGER NOT NULL DEFAULT 0
@@ -1869,6 +2026,18 @@ const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
   // Dispatch, recorded separately from acknowledgement. An upgraded database's
   // existing overrides have all three NULL, which reads correctly: nothing was
   // sent, because before this there was nothing that could send.
+  // The credential-to-person join. Null on every existing row, which reads
+  // correctly: those credentials named nobody, and an access review says so
+  // rather than guessing at who was behind them.
+  { table: "api_keys", column: "practitioner_id", type: "TEXT" },
+  // Travelling clinics. Existing slots were not planned as part of a visit,
+  // and NULL says exactly that.
+  { table: "schedule_slots", column: "visit_id", type: "TEXT" },
+  // Config versioning. Null on existing rows reads correctly: written before
+  // any version existed.
+  { table: "channels", column: "config_version", type: "INTEGER" },
+  { table: "messages", column: "config_version", type: "INTEGER" },
+  { table: "audit_events", column: "practitioner_id", type: "TEXT" },
   { table: "break_glass", column: "notice_dispatched_at", type: "TEXT" },
   { table: "break_glass", column: "notice_message_id", type: "TEXT" },
   { table: "break_glass", column: "notice_error", type: "TEXT" },
@@ -1951,7 +2120,11 @@ const REBUILT_TABLES: Array<{ table: string; columns: string[]; ddl: string }> =
   },
   {
     table: "channels",
-    columns: ["tenant_id", "id", "name", "enabled", "config", "last_hash", "created_at", "updated_at"],
+    // config_version is here as well as in ADDED_COLUMNS, because the rebuild
+    // runs after the ALTERs and recreates the table from this DDL: a column
+    // listed only there would be added and then dropped by the copy, on
+    // exactly the upgraded databases it exists for.
+    columns: ["tenant_id", "id", "name", "enabled", "config", "last_hash", "created_at", "updated_at", "config_version"],
     ddl: `CREATE TABLE channels__new (
       tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
       id TEXT NOT NULL,
@@ -1961,6 +2134,7 @@ const REBUILT_TABLES: Array<{ table: string; columns: string[]; ddl: string }> =
       last_hash TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      config_version INTEGER,
       PRIMARY KEY (tenant_id, id)
     )`,
   },
@@ -2256,11 +2430,17 @@ export class Db {
       .run(this.tenantId, id, name, enabled ? 1 : 0, config);
   }
 
-  getChannel(id: string): { id: string; name: string; enabled: number; config: string; last_hash: string | null } | undefined {
+  getChannel(
+    id: string
+  ):
+    | { id: string; name: string; enabled: number; config: string; last_hash: string | null; config_version: number | null }
+    | undefined {
     return this.sql
-      .prepare("SELECT id, name, enabled, config, last_hash FROM channels WHERE tenant_id = ? AND id = ?")
+      .prepare(
+        "SELECT id, name, enabled, config, last_hash, config_version FROM channels WHERE tenant_id = ? AND id = ?"
+      )
       .get(this.tenantId, id) as
-      | { id: string; name: string; enabled: number; config: string; last_hash: string | null }
+      | { id: string; name: string; enabled: number; config: string; last_hash: string | null; config_version: number | null }
       | undefined;
   }
 
@@ -2299,8 +2479,9 @@ export class Db {
     const id = randomUUID();
     this.sql
       .prepare(
-        `INSERT INTO messages (tenant_id, id, channel_id, source_type, content_type, raw, meta, hash, prev_hash, raw_digest)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO messages (tenant_id, id, channel_id, source_type, content_type, raw, meta, hash, prev_hash,
+           raw_digest, config_version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         this.tenantId,
@@ -2312,7 +2493,12 @@ export class Db {
         meta ? JSON.stringify(meta) : null,
         hash,
         prev,
-        rawDigest
+        rawDigest,
+        // Which configuration processed this message. The lineage claim the
+        // rest of the system already makes, extended to the config boundary:
+        // a message that went wrong is traceable to the exact rules that were
+        // live when it did. Null means the channel predates versioning.
+        ch?.config_version ?? null
       );
     this.sql
       .prepare("UPDATE channels SET last_hash = ? WHERE tenant_id = ? AND id = ?")
@@ -3139,14 +3325,24 @@ export class Db {
     hash: string,
     scopes: string[],
     expiresAt?: string,
-    organizationId?: string
+    organizationId?: string,
+    practitionerId?: string
   ): void {
     this.sql
       .prepare(
-        `INSERT INTO api_keys (tenant_id, id, name, hash, scopes, expires_at, organization_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO api_keys (tenant_id, id, name, hash, scopes, expires_at, organization_id, practitioner_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(this.tenantId, id, name, hash, scopes.join(" "), expiresAt ?? null, organizationId ?? null);
+      .run(
+        this.tenantId,
+        id,
+        name,
+        hash,
+        scopes.join(" "),
+        expiresAt ?? null,
+        organizationId ?? null,
+        practitionerId ?? null
+      );
   }
 
   /**

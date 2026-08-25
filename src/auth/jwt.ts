@@ -83,6 +83,12 @@ export interface VerifiedToken {
    * issuer that already uses `organization` for something else.
    */
   organizationId?: string;
+  /**
+   * The practitioner the token acts as, from a claim the provider controls.
+   * `practitioner` by convention; `portage_practitioner` where an issuer
+   * already uses that name. Absent for a token that acts as no one.
+   */
+  practitionerId?: string;
 }
 
 export class JwtVerifier {
@@ -200,12 +206,16 @@ export class JwtVerifier {
     const orgClaim = [claims.portage_organization, claims.organization].find(
       (c) => typeof c === "string" && c.length > 0
     );
+    const practClaim = [claims.portage_practitioner, claims.practitioner].find(
+      (c) => typeof c === "string" && c.length > 0
+    );
     return {
       subject: typeof claims.sub === "string" ? claims.sub : "unknown",
       scopes: scopesFromSmart(rawScopes(claims)),
       claims,
       ...(typeof tenantClaim === "string" ? { tenantId: tenantClaim } : {}),
       ...(typeof orgClaim === "string" ? { organizationId: orgClaim } : {}),
+      ...(typeof practClaim === "string" ? { practitionerId: practClaim } : {}),
     };
   }
 }

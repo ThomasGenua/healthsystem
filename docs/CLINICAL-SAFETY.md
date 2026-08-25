@@ -25,8 +25,9 @@ on credentials, break-glass notice dispatch, encounters, the provider
 directory, FHIR projection of that directory, the refusal/fault split
 in `phi()`, the longitudinal-chart increment, durable patient messaging,
 the OAuth patient/proxy boundary, the laboratory result bridge,
-pharmacy transmission, the migration loader, the privacy office, and the
-patient HTML shell at `/me`).
+pharmacy transmission, the migration loader, the privacy office, the
+patient HTML shell at `/me`, the access-review join on the trail,
+travelling clinics and the waitlist, and channel configuration as a ledger).
 **Last reviewed:** 2026-08-25.
 **Reviewer of this draft:** the author of the controls, not an independent
 clinical safety officer. That gap is residual risk R-01.
@@ -60,6 +61,8 @@ In scope, as stores and an authenticated HTTP API:
 - a schedule that cannot double-book a seat
 - consent directives, break-glass, and an OAuth/grant-bound patient API
 - a privacy office: reviews, legal holds, incidents, access clocks, disclosures, an assurance catalogue
+- an access review of the trail (`GET /api/audit/review`), complementary to those queues
+- travelling-clinic visits and a waitlist whose order is stated policy
 - a FHIR R4 facade, including the local provider directory as resources
 - hash-chained message lineage and a hash-chained access audit
 - verified backup, including an off-machine replica when configured

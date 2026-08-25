@@ -13,6 +13,8 @@
  * POST /api/channels                     create or replace a channel
  * GET  /api/channels/:id                 channel configuration
  * DELETE /api/channels/:id               stop and remove a channel
+ * GET  /api/channels/export              the configuration as a versioned document
+ * POST /api/channels/import              a plan, then an action; a dry run writes nothing
  * GET  /api/messages?channel_id&status   browse messages
  * GET  /api/messages/:id                 message with steps and deliveries
  * GET  /api/deliveries?channel_id&state  browse deliveries (state=dead is the DLQ)
@@ -24,6 +26,8 @@
  * POST /api/retention/run                apply the policy now
  * GET  /api/audit?patient=&principal=&failures=  access trail (admin only)
  * GET  /api/audit/verify                 verify the audit hash chain
+ * GET  /api/audit/review?patient=         access review with flags (admin only)
+ * POST /api/audit/review/dismiss          close a flag, with a reason
  * GET  /fhir/AuditEvent                  the same trail as R4 AuditEvent (admin only)
  * GET  /api/keys                         list API keys (never the keys themselves)
  * POST /api/keys                         issue a key; the response is the only time it is shown
@@ -68,6 +72,9 @@ import { VERSION } from "../version.ts";
 import type { AuditAction, AuditEntry } from "../audit/store.ts";
 import type { TlsConfig } from "./tls.ts";
 import type { ChannelConfig, MappingDoc, MessageRow } from "../types.ts";
+import type { ChannelDocument } from "../core/channel-versions.ts";
+import { validateChannel } from "../core/engine.ts";
+import { Refusal } from "../core/refusal.ts";
 
 let UI_HTML: string | null = null;
 function uiHtml(): string {
@@ -190,6 +197,10 @@ async function route(
       // "did anyone at that clinic look at this record", and until this was
       // recorded the trail could not answer it.
       ...(auth.ok && auth.principal.organizationId ? { organizationId: auth.principal.organizationId } : {}),
+      // And which person. "Did anybody with no reason to look at this chart
+      // look at it" is the question an access review turns on, and it needs a
+      // name rather than a credential id to be answerable at all.
+      ...(auth.ok && auth.principal.practitionerId ? { practitionerId: auth.principal.practitionerId } : {}),
       ...entry,
     });
   };
@@ -818,18 +829,154 @@ async function route(
   if (path === "/api/channels" && method === "POST") {
     const body = await readBody(req);
     const config = JSON.parse(body) as ChannelConfig;
-    await engine.addChannel(config);
-    return send(res, 201, { ok: true, id: config.id });
+    // Who made the change comes from the credential; why comes from the
+    // x-change-note header, so the body stays exactly the channel document
+    // that source control holds. A change with no note is recorded as such
+    // rather than refused — but the version always says who and when.
+    const note = typeof req.headers["x-change-note"] === "string" ? req.headers["x-change-note"] : undefined;
+    await engine.addChannel(config, {
+      by: auth.ok ? auth.principal.id : "unauthenticated",
+      ...(note ? { note } : {}),
+    });
+    const v = engine.channelVersions.history(config.id)[0];
+    audit({
+      action: "U",
+      resourceType: "Channel",
+      resourceId: config.id,
+      detail: `configured as version ${v?.version ?? "?"}${note ? `: ${note}` : ""}`,
+    });
+    return send(res, 201, { ok: true, id: config.id, version: v?.version });
   }
 
-  let m = /^\/api\/channels\/([a-z0-9-]+)$/.exec(path);
+  // Exact paths first: "export" and "import" would otherwise match the
+  // one-segment channel-id pattern below and read as channels named that.
+  if (path === "/api/channels/export" && method === "GET") {
+    // The whole configuration in the form source control holds and an
+    // operator edits — which makes a config change reviewable as a pull
+    // request instead of as JSON edited in a database.
+    return send(res, 200, { channels: engine.channelVersions.exportAll() });
+  }
+  if (path === "/api/channels/import" && method === "POST") {
+    const body = JSON.parse(await readBody(req)) as {
+      channels?: ChannelDocument[];
+      apply?: boolean;
+      note?: string;
+    };
+    if (!Array.isArray(body.channels)) return send(res, 400, { error: "channels required" });
+    // Validated before anything is planned, let alone written. Validation
+    // inside the restart used to run after the ledger and live rows were
+    // already updated, which is the worst possible moment to learn a document
+    // is malformed: the database applied, the runtime half restarted.
+    for (const doc of body.channels) {
+      // The document id and the blob's id must agree: the row is stored under
+      // the document's, the runtime registers under the blob's, and letting
+      // them differ splits one channel into two half-identities — an orphaned
+      // runtime, a wrong running flag, and messages stamped against a row
+      // that does not exist.
+      const blobId = (doc?.config as { id?: unknown } | undefined)?.id;
+      if (blobId !== doc?.id) {
+        return send(res, 400, {
+          error: `channel ${doc?.id ?? "(no id)"}: document id and config.id disagree (${String(doc?.id)} vs ${String(blobId)})`,
+        });
+      }
+      try {
+        validateChannel(doc.config as unknown as ChannelConfig);
+      } catch (err) {
+        return send(res, 400, {
+          error: `channel ${doc?.id ?? "(no id)"}: ${err instanceof Error ? err.message : "invalid config"}`,
+        });
+      }
+    }
+    // A plan unless apply is said outright. The plan is the review: what
+    // would be created, what would change and exactly how, what the document
+    // does not mention — and a dry run writes nothing at all.
+    if (!body.apply) {
+      return send(res, 200, { applied: false, ...engine.channelVersions.plan(body.channels) });
+    }
+    const plan = engine.channelVersions.apply(body.channels, {
+      actorId: auth.ok ? auth.principal.id : "unauthenticated",
+      note: body.note ?? "(no note given)",
+    });
+    // The live engine follows the ledger: anything the import changed is
+    // restarted to match the stored row. Not through addChannel — that
+    // re-derives enabled and name from the config blob and records a second
+    // version doing it, so an import that disabled a channel would have been
+    // switched back on by its own restart.
+    for (const entry of plan.entries) {
+      if (entry.action === "unchanged") continue;
+      await engine.refreshChannel(entry.channelId);
+    }
+    audit({
+      action: "U",
+      resourceType: "Channel",
+      count: plan.entries.filter((e) => e.action !== "unchanged").length,
+      detail: `import applied${body.note ? `: ${body.note}` : ""}`,
+    });
+    return send(res, 200, { applied: true, ...plan });
+  }
+
+  let m = /^\/api\/channels\/([a-z0-9-]+)\/versions$/.exec(path);
+  if (m && method === "GET") {
+    return send(res, 200, engine.channelVersions.history(m[1]));
+  }
+  m = /^\/api\/channels\/([a-z0-9-]+)\/versions\/(\d+)$/.exec(path);
+  if (m && method === "GET") {
+    const v = engine.channelVersions.get(m[1], Number(m[2]));
+    return v ? send(res, 200, v) : send(res, 404, { error: "not found" });
+  }
+  m = /^\/api\/channels\/([a-z0-9-]+)\/diff$/.exec(path);
+  if (m && method === "GET") {
+    const from = Number(url.searchParams.get("from"));
+    const to = Number(url.searchParams.get("to"));
+    if (!Number.isInteger(from) || !Number.isInteger(to)) {
+      return send(res, 400, { error: "from and to versions required" });
+    }
+    try {
+      return send(res, 200, { channelId: m[1], from, to, diff: engine.channelVersions.diff(m[1], from, to) });
+    } catch (err) {
+      // A missing version is the operator's 404, not a server fault.
+      if (err instanceof Refusal) return send(res, err.status, { error: err.message });
+      throw err;
+    }
+  }
+  m = /^\/api\/channels\/([a-z0-9-]+)\/rollback$/.exec(path);
+  if (m && method === "POST") {
+    const body = JSON.parse(await readBody(req)) as { to?: number; note?: string };
+    if (!Number.isInteger(body.to)) return send(res, 400, { error: "to version required" });
+    let config: ChannelConfig;
+    try {
+      config = await engine.rollbackChannel(m[1], body.to!, {
+        by: auth.ok ? auth.principal.id : "unauthenticated",
+        ...(body.note ? { note: body.note } : {}),
+      });
+    } catch (err) {
+      // "No such version", "that is the deletion marker", "already at that
+      // shape" — refusals with the status they chose, not 500s wearing them.
+      if (err instanceof Refusal) return send(res, err.status, { error: err.message });
+      throw err;
+    }
+    audit({
+      action: "U",
+      resourceType: "Channel",
+      resourceId: m[1],
+      detail: `rolled back to version ${body.to}${body.note ? `: ${body.note}` : ""}`,
+    });
+    return send(res, 200, { ok: true, id: m[1], config });
+  }
+
+  m = /^\/api\/channels\/([a-z0-9-]+)$/.exec(path);
   if (m) {
     if (method === "GET") {
       const cfg = engine.getChannelConfig(m[1]);
       return cfg ? send(res, 200, cfg) : send(res, 404, { error: "not found" });
     }
     if (method === "DELETE") {
-      await engine.removeChannel(m[1]);
+      const note = typeof req.headers["x-change-note"] === "string" ? req.headers["x-change-note"] : undefined;
+      await engine.removeChannel(m[1], {
+        by: auth.ok ? auth.principal.id : "unauthenticated",
+        ...(note ? { note } : {}),
+      });
+      audit({ action: "D", resourceType: "Channel", resourceId: m[1], detail: note ?? "(no note given)" });
       return send(res, 200, { ok: true });
     }
   }
@@ -992,6 +1139,69 @@ async function route(
   }
   if (path === "/api/audit/verify" && method === "GET") {
     return send(res, 200, tenant.audit.verifyChain());
+  }
+  if (path === "/api/audit/review" && method === "GET") {
+    // The questions a privacy office actually asks. `/api/audit` answers "what
+    // rows are there"; this answers "who looked at this patient, did they have
+    // any reason to, and what should I look at first".
+    //
+    // Reading it is itself an access to something about a patient, so it is
+    // audited like any other — a review surface that read charts' access logs
+    // without leaving a trace would be the one privileged back door in a
+    // system whose whole argument is that there are none.
+    const patient = url.searchParams.get("patient");
+    if (!patient) return send(res, 400, { error: "patient required" });
+    const report = tenant.review.forPatient(patient, {
+      relationshipWindowDays: num(url.searchParams.get("window_days")),
+      limit: num(url.searchParams.get("limit")),
+    });
+    tenant.audit.record({
+      action: "R",
+      outcome: 0,
+      resourceType: "AuditEvent",
+      patient,
+      count: report.accesses.length,
+      principalId: auth.ok ? auth.principal.id : "unauthenticated",
+      principalKind: auth.ok ? auth.principal.kind : "unknown",
+      method,
+      path,
+      detail: "access review",
+      ...(auth.ok && auth.principal.organizationId ? { organizationId: auth.principal.organizationId } : {}),
+      ...(auth.ok && auth.principal.practitionerId ? { practitionerId: auth.principal.practitionerId } : {}),
+    });
+    return send(res, 200, report);
+  }
+  if (path === "/api/audit/review/dismiss" && method === "POST") {
+    // Closing a flag, with a reason that is itself kept. A review whose
+    // judgements vanish re-raises the same flag next month with nothing to say
+    // it was already answered, and the answer is usually the only place the
+    // context lives.
+    const body = JSON.parse(await readBody(req)) as { auditId?: string; flag?: string; reason?: string };
+    if (!body.auditId || !body.flag || !body.reason) {
+      return send(res, 400, { error: "auditId, flag and reason required" });
+    }
+    try {
+      tenant.review.dismiss({
+        auditId: body.auditId,
+        flag: body.flag as Parameters<typeof tenant.review.dismiss>[0]["flag"],
+        reason: body.reason,
+        by: auth.ok ? auth.principal.id : "unauthenticated",
+      });
+      tenant.audit.record({
+        action: "U",
+        outcome: 0,
+        resourceType: "AuditEvent",
+        resourceId: body.auditId,
+        principalId: auth.ok ? auth.principal.id : "unauthenticated",
+        principalKind: auth.ok ? auth.principal.kind : "unknown",
+        method,
+        path,
+        detail: `dismissed ${body.flag}: ${body.reason}`,
+      });
+      return send(res, 200, { ok: true });
+    } catch (err) {
+      return send(res, 400, { error: err instanceof Error ? err.message : "cannot dismiss" });
+    }
   }
   if (path === "/fhir/AuditEvent" && method === "GET") {
     const rows = tenant.audit.list({
@@ -1535,6 +1745,188 @@ async function route(
           reason: body.reason!,
           by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
           ...(body.priority ? { priority: body.priority } : {}),
+        })
+      );
+    }
+    if (path === "/api/clinical/visits" && method === "GET") {
+      // Travelling-clinic visits. No patient appears on a visit — it is a
+      // block of capacity, not a disclosure — but it is on the clinical
+      // surface so the audit-coverage guarantee holds for it like everything
+      // else here.
+      return phiFor(
+        undefined,
+        "Schedule",
+        () => tenant.clinics.visits({ service: url.searchParams.get("service") ?? undefined }),
+        (rows) => rows.length
+      );
+    }
+    if (path === "/api/clinical/visit-plan" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        resourceId?: string;
+        service?: string;
+        community?: string;
+        days?: Array<{ date: string; from: string; to: string }>;
+        slotMinutes?: number;
+        capacity?: number;
+      };
+      if (!body.resourceId || !body.service || !body.community || !body.days || !body.slotMinutes) {
+        return send(res, 400, { error: "resourceId, service, community, days and slotMinutes required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(
+        undefined,
+        "Schedule",
+        () =>
+          tenant.clinics.planVisit({
+            resourceId: body.resourceId!,
+            service: body.service!,
+            community: body.community!,
+            days: body.days!,
+            slotMinutes: body.slotMinutes!,
+            ...(body.capacity ? { capacity: body.capacity } : {}),
+            by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+          }),
+        (v) => v.slots.length
+      );
+    }
+    if (path === "/api/clinical/visit-repeat" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { visit?: string; firstDay?: string };
+      if (!body.visit || !body.firstDay) return send(res, 400, { error: "visit and firstDay required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(
+        undefined,
+        "Schedule",
+        () =>
+          tenant.clinics.repeatVisit(body.visit!, {
+            firstDay: body.firstDay!,
+            by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+          }),
+        (v) => v.slots.length
+      );
+    }
+    if (path === "/api/clinical/visit-cancel" && method === "POST") {
+      // The weather case. The response is the phone list — who lost a seat
+      // and where they now stand — so it is patient data and is filtered by
+      // directive like any other list of patients.
+      const body = JSON.parse(await readBody(req)) as { visit?: string; reason?: string };
+      if (!body.visit || !body.reason) return send(res, 400, { error: "visit and reason required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(
+        undefined,
+        "Appointment",
+        () => {
+          const r = tenant.clinics.cancelVisit(body.visit!, {
+            actorId: who,
+            actorKind: auth.ok ? auth.principal.kind : "unknown",
+            reason: body.reason!,
+          });
+          const filtered = filterByDirective(
+            ["Appointment"],
+            r.bumped.map((x) => ({ patient_id: x.booking.patient_id, ...x }))
+          );
+          return { visit: r.visit, bumped: filtered.rows, withheldCount: filtered.withheldCount };
+        },
+        (v) => v.bumped.length
+      );
+    }
+    if (path === "/api/clinical/visit-reschedule" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { visit?: string; toFirstDay?: string; reason?: string };
+      if (!body.visit || !body.toFirstDay || !body.reason) {
+        return send(res, 400, { error: "visit, toFirstDay and reason required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(
+        undefined,
+        "Appointment",
+        () => {
+          const r = tenant.clinics.rescheduleVisit(body.visit!, {
+            toFirstDay: body.toFirstDay!,
+            reason: body.reason!,
+            by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+          });
+          const filtered = filterByDirective(["Appointment"], r.toTell);
+          return { visit: r.visit, toTell: filtered.rows, withheldCount: filtered.withheldCount };
+        },
+        (v) => v.toTell.length
+      );
+    }
+    if (path === "/api/clinical/waitlist" && method === "GET") {
+      const service = url.searchParams.get("service");
+      if (!service) return send(res, 400, { error: "service required" });
+      return phi(
+        "Appointment",
+        () => filterByDirective(["Appointment"], tenant.clinics.waitlist(service)),
+        (r) => r.rows.length
+      );
+    }
+    if (path === "/api/clinical/waitlist-add" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        service?: string;
+        patient?: string;
+        reason?: string;
+        priority?: "routine" | "urgent" | "stat";
+        community?: string;
+        referral?: string;
+      };
+      if (!body.service || !body.patient || !body.reason) {
+        return send(res, 400, { error: "service, patient and reason required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(body.patient, "Appointment", () =>
+        tenant.clinics.addToWaitlist({
+          service: body.service!,
+          patientId: body.patient!,
+          reason: body.reason!,
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+          ...(body.priority ? { priority: body.priority } : {}),
+          ...(body.community ? { community: body.community } : {}),
+          ...(body.referral ? { referralId: body.referral } : {}),
+        })
+      );
+    }
+    if (path === "/api/clinical/waitlist-remove" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { entry?: string; reason?: string };
+      if (!body.entry || !body.reason) return send(res, 400, { error: "entry and reason required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      // The route learns whose record it is touching from the entry, the way
+      // the encounter routes do.
+      const entry = tenant.clinics.entry(body.entry);
+      return phiFor(entry?.patient_id, "Appointment", () =>
+        tenant.clinics.removeFromWaitlist(body.entry!, {
+          actorId: who,
+          actorKind: auth.ok ? auth.principal.kind : "unknown",
+          reason: body.reason!,
+        })
+      );
+    }
+    if (path === "/api/clinical/offer" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { entry?: string; slot?: string };
+      if (!body.entry || !body.slot) return send(res, 400, { error: "entry and slot required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      const entry = tenant.clinics.entry(body.entry);
+      return phiFor(entry?.patient_id, "Appointment", () =>
+        tenant.clinics.offerSeat({
+          waitlistId: body.entry!,
+          slotId: body.slot!,
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+        })
+      );
+    }
+    if (path === "/api/clinical/offer-resolve" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        offer?: string;
+        outcome?: "accepted" | "declined" | "unreachable";
+        note?: string;
+      };
+      if (!body.offer || !body.outcome) return send(res, 400, { error: "offer and outcome required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      const existing = tenant.clinics.offer(body.offer);
+      const entry = existing ? tenant.clinics.entry(existing.waitlist_id) : undefined;
+      return phiFor(entry?.patient_id, "Appointment", () =>
+        tenant.clinics.resolveOffer(body.offer!, {
+          outcome: body.outcome!,
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+          ...(body.note ? { note: body.note } : {}),
         })
       );
     }
@@ -2545,6 +2937,7 @@ async function route(
       scopes?: string[];
       expiresAt?: string;
       organizationId?: string;
+      practitionerId?: string;
     };
     if (!body.name) return send(res, 400, { error: "name required" });
     try {
@@ -2554,6 +2947,9 @@ async function route(
         // Checked against the directory inside `issue()`, so a credential
         // either names an organization that exists or names none at all.
         ...(body.organizationId ? { organizationId: body.organizationId } : {}),
+        // Likewise checked: a credential acting as a practitioner nobody has
+        // registered would stamp an unresolvable name on every row it produces.
+        ...(body.practitionerId ? { practitionerId: body.practitionerId } : {}),
       });
       audit({
         action: "C",
@@ -2561,7 +2957,8 @@ async function route(
         resourceId: issued.id,
         detail:
           `scopes: ${issued.scopes.join(" ")}` +
-          (issued.organizationId ? `; organization: ${issued.organizationId}` : "; no organization"),
+          (issued.organizationId ? `; organization: ${issued.organizationId}` : "; no organization") +
+          (issued.practitionerId ? `; practitioner: ${issued.practitionerId}` : ""),
       });
       return send(res, 201, issued);
     } catch (err) {
