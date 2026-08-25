@@ -69,7 +69,7 @@ v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Travelling clinics and a waitlist whose ordering is stated policy.** A visit is planned, repeated, moved and cancelled as one thing. Cancelling it puts every booked patient on a waitlist: priority, then waited-longest, then most-bumped. An offer resolves as accepted, declined or unreachable.
 - **Channel configuration as a ledger.** Every change is a version with who, when and why. Export and import go through the same store; a dry run writes nothing; every message records which configuration processed it.
 
-611 tests. Backend first, then the interface that makes the backend's honesty visible.
+654 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -125,7 +125,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 611 tests
+npm test          # 654 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```

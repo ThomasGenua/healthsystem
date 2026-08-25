@@ -39,7 +39,8 @@ always forward-compatible and run automatically on open — see
 
   The clinician console gains a Privacy tab. Hazards H-70–H-76.
 
-  596 → 611 tests.
+  596 → 611 tests for the office itself; 654 after merging the trail
+  join, travelling clinics, and the config ledger.
 
 - **Channel configuration as a ledger** (#36). Everything else here is
   provenance-carrying — messages chain, the record is append-only, audit rows
