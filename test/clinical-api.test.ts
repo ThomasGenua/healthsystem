@@ -479,14 +479,25 @@ test("every clinical route leaves an audit row, including ones added later", asy
     const wlOffer = clinics.addToWaitlist({
       service: "TC offer", patientId: P, reason: "Knee review", by: clinicBy,
     });
+    const tcOffer = clinics.planVisit({
+      resourceId: "dr-tetso", service: "TC offer", community: "Fort Smith",
+      days: [{ date: "2027-03-31", ...DAY }], slotMinutes: 30, by: clinicBy,
+    });
     const wlRemove = clinics.addToWaitlist({
       service: "TC remove", patientId: P, reason: "Knee review", by: clinicBy,
     });
     const wlResolve = clinics.addToWaitlist({
       service: "TC resolve", patientId: P, reason: "Knee review", by: clinicBy,
     });
+    // Its own visit, because a seat must be for the service the patient is
+    // waiting for — the cross-service shortcut this fixture used to take is
+    // now refused on purpose.
+    const tcResolve = clinics.planVisit({
+      resourceId: "dr-tetso", service: "TC resolve", community: "Fort Smith",
+      days: [{ date: "2027-03-30", ...DAY }], slotMinutes: 30, by: clinicBy,
+    });
     const offerOut = clinics.offerSeat({
-      waitlistId: wlResolve.id, slotId: tcMove.slots[1].id, by: clinicBy,
+      waitlistId: wlResolve.id, slotId: tcResolve.slots[0].id, by: clinicBy,
     });
 
     const standing = s.engine.forTenant("default").consent.breakGlass({
@@ -621,7 +632,7 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/visit-reschedule": { visit: tcMove.visit.id, toFirstDay: "2027-03-23", reason: "plane delayed a week" },
       "/api/clinical/waitlist-add": { service: "TC add", patient: P, reason: "Knee review" },
       "/api/clinical/waitlist-remove": { entry: wlRemove.id, reason: "seen elsewhere" },
-      "/api/clinical/offer": { entry: wlOffer.id, slot: tcRepeat.slots[0].id },
+      "/api/clinical/offer": { entry: wlOffer.id, slot: tcOffer.slots[0].id },
       "/api/clinical/offer-resolve": { offer: offerOut.id, outcome: "declined" },
       "/api/clinical/encounter-open": { patient: P, class: "in-person", reason: "Sore throat" },
       // One row each, so no route depends on what another did to it first.

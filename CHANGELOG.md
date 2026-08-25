@@ -25,8 +25,14 @@ always forward-compatible and run automatically on open — see
   unreachable — recorded as the different facts they are, because collapsing
   "unreachable" into "declined" punishes people for where they live. A seat
   taken while an offer was out lapses the offer rather than wedging the queue
-  or blaming the patient. Offers say where the seat is, and say both places
-  when the patient's community and the seat's differ.
+  or blaming the patient — and a seat withdrawn by the visit's own cancellation
+  lapses the same way. One cancelled visit is one bump, however many seats the
+  patient held on it; a seat for another service is refused rather than
+  clearing the wrong queue; removing somebody closes their open offer, so
+  resolving it later cannot write them back in; and an offer history presents
+  in the order offers were made, by ledger rather than by clock. Offers say
+  where the seat is, and say both places when the patient's community and the
+  seat's differ.
 
 - **An access review a privacy officer can run** (#35). `GET
   /api/audit/review?patient=` answers what the trail held every ingredient for

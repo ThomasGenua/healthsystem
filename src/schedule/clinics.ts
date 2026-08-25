@@ -95,6 +95,8 @@ export interface WaitlistRow {
 }
 
 export interface OfferRow {
+  /** Ledger order: the sequence offers were made in, whatever the clock says. */
+  seq: number;
   tenant_id: string;
   id: string;
   waitlist_id: string;
@@ -277,18 +279,34 @@ export class Clinics {
       const visit = this.requireVisit(visitId);
       if (visit.status === "cancelled") throw new Error("that visit is already cancelled");
 
-      const bumped: Array<{ booking: BookingRow; waitlistId: string; bumpCount: number }> = [];
+      // Every live booking is cancelled, but the bump is counted per patient:
+      // a patient holding two seats on the visit lost one visit, not two, and
+      // the stated policy counts cancelled visits. Their strongest booking is
+      // the one that carries priority and referral onto the waitlist.
+      const cancelledByPatient = new Map<string, BookingRow[]>();
       for (const slot of this.slotsOf(visitId)) {
         for (const b of this.schedule.liveBookings(slot.id)) {
           const cancelled = this.schedule.cancel(b.id, {
             ...by,
             reason: `visit cancelled: ${by.reason}`,
           });
-          const entry = this.bumpOntoWaitlist(cancelled, visit, by);
-          bumped.push({ booking: cancelled, waitlistId: entry.id, bumpCount: entry.bump_count });
+          cancelledByPatient.set(cancelled.patient_id, [
+            ...(cancelledByPatient.get(cancelled.patient_id) ?? []),
+            cancelled,
+          ]);
         }
         if (slot.status === "open") {
           this.schedule.blockSlot(slot.id, `visit cancelled: ${by.reason}`);
+        }
+      }
+      const bumped: Array<{ booking: BookingRow; waitlistId: string; bumpCount: number }> = [];
+      for (const bookings of cancelledByPatient.values()) {
+        const strongest = [...bookings].sort(
+          (a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]
+        )[0];
+        const entry = this.bumpOntoWaitlist(strongest, visit, by);
+        for (const booking of bookings) {
+          bumped.push({ booking, waitlistId: entry.id, bumpCount: entry.bump_count });
         }
       }
 
@@ -444,23 +462,37 @@ export class Clinics {
       (a, b) =>
         PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] ||
         a.added_at.localeCompare(b.added_at) ||
-        b.bump_count - a.bump_count
+        b.bump_count - a.bump_count ||
+        // Arbitrary but stable, so a full tie renders the same list twice.
+        a.id.localeCompare(b.id)
     );
   }
 
   removeFromWaitlist(id: string, by: Actor & { reason: string }): WaitlistRow {
     if (!by.reason.trim()) throw new Error("removing somebody from a waitlist needs a reason");
-    const entry = this.requireEntry(id);
-    if (entry.status === "booked" || entry.status === "removed") {
-      throw new Error(`a ${entry.status} entry cannot be removed`);
-    }
-    this.db.sql
-      .prepare(
-        `UPDATE schedule_waitlist SET status = 'removed', removed_at = ?, removed_by = ?, removed_reason = ?
-          WHERE tenant_id = ? AND id = ?`
-      )
-      .run(new Date().toISOString(), by.actorId, by.reason, this.db.tenantId, id);
-    return this.entry(id)!;
+    return this.db.transaction(() => {
+      const entry = this.requireEntry(id);
+      if (entry.status === "booked" || entry.status === "removed") {
+        throw new Error(`a ${entry.status} entry cannot be removed`);
+      }
+      // An open offer does not survive the entry it was made against. Left
+      // open, resolving it later would write the entry back to 'waiting' or
+      // book a patient somebody removed — resurrection by paperwork. Lapsed
+      // is the honest closing: the offer ended through no act of the patient.
+      this.db.sql
+        .prepare(
+          `UPDATE schedule_offers SET outcome = 'lapsed', outcome_at = ?, outcome_by = ?, note = ?
+            WHERE tenant_id = ? AND waitlist_id = ? AND outcome IS NULL`
+        )
+        .run(new Date().toISOString(), by.actorId, `removed from the waitlist: ${by.reason}`, this.db.tenantId, id);
+      this.db.sql
+        .prepare(
+          `UPDATE schedule_waitlist SET status = 'removed', removed_at = ?, removed_by = ?, removed_reason = ?
+            WHERE tenant_id = ? AND id = ?`
+        )
+        .run(new Date().toISOString(), by.actorId, by.reason, this.db.tenantId, id);
+      return this.entry(id)!;
+    });
   }
 
   entry(id: string): WaitlistRow | undefined {
@@ -491,6 +523,14 @@ export class Clinics {
       const slot = this.schedule.slot(input.slotId);
       if (!slot) throw new Error(`no slot ${input.slotId}`);
       if (slot.status === "blocked") throw new Error("that slot is blocked");
+      // The queue being cleared must be the queue for these seats. Offering a
+      // cardiology wait a dermatology slot empties the wrong list against the
+      // wrong capacity, and both lists then lie about how long they are.
+      if (slot.service !== entry.service) {
+        throw new Error(
+          `that seat is for ${slot.service}; this patient is waiting for ${entry.service}`
+        );
+      }
       if (this.schedule.liveBookings(slot.id).length >= slot.capacity) {
         throw new Error("that slot has no seat free");
       }
@@ -533,35 +573,62 @@ export class Clinics {
       const offer = this.requireOffer(offerId);
       if (offer.outcome) throw new Error(`that offer was already ${offer.outcome}`);
       const entry = this.requireEntry(offer.waitlist_id);
+      // Backstops against resurrection by paperwork. Removal closes open
+      // offers itself, so reaching either of these means a path nobody
+      // predicted — and the safe answer is still to refuse rather than to
+      // write a removed patient back into the queue or book them twice.
+      if (entry.status === "removed") {
+        throw new Refusal("this patient was removed from the waitlist; the offer cannot be resolved", 409);
+      }
+      if (input.outcome === "accepted" && entry.status === "booked") {
+        throw new Refusal("this patient was already booked through an earlier offer", 409);
+      }
 
       let booking: BookingRow | undefined;
       let outcome: OfferOutcome = input.outcome;
       let note = input.note ?? null;
-      let refused: SlotFull | undefined;
+      let refused: Refusal | undefined;
       if (input.outcome === "accepted") {
-        try {
-          booking = this.schedule.book({
-            slotId: offer.slot_id,
-            patientId: entry.patient_id,
-            reason: entry.reason,
-            by: input.by,
-            priority: entry.priority,
-            ...(entry.referral_id ? { referralId: entry.referral_id } : {}),
-          });
-        } catch (err) {
-          if (!(err instanceof SlotFull)) throw err;
-          // The seat went while the offer was out. That is the offer's
-          // outcome, not the patient's: it lapses, they keep their place, and
-          // the refusal still reaches the caller — an operator mid-phone-call
-          // needs to know the yes did not stick.
-          refused = err;
+        // A seat on a visit that was cancelled while the offer was out is the
+        // same event as a seat somebody else took: the offer lapses, the
+        // patient keeps their place, and the operator mid-phone-call is told
+        // the yes did not stick. Without this, acceptance hits the generic
+        // blocked-slot error, the transaction rolls back, and the entry is
+        // wedged in 'offered' — the exact wedge the lapsed path exists to
+        // close, reached by the other door.
+        const seat = this.schedule.slot(offer.slot_id);
+        if (seat && seat.status === "blocked") {
+          refused = new Refusal(`that seat is no longer available: ${seat.block_reason ?? "the slot was blocked"}`, 409);
           outcome = "lapsed";
-          note = "seat was taken while the offer was out";
+          note = `seat was withdrawn while the offer was out: ${seat.block_reason ?? "slot blocked"}`;
+        } else {
+          try {
+            booking = this.schedule.book({
+              slotId: offer.slot_id,
+              patientId: entry.patient_id,
+              reason: entry.reason,
+              by: input.by,
+              priority: entry.priority,
+              ...(entry.referral_id ? { referralId: entry.referral_id } : {}),
+            });
+          } catch (err) {
+            if (!(err instanceof SlotFull)) throw err;
+            refused = err;
+            outcome = "lapsed";
+            note = "seat was taken while the offer was out";
+          }
         }
       }
+      // 'offered' is the only state this resolution owns. A bump can have
+      // already returned the entry to 'waiting' with the offer still out, and
+      // a decline recorded afterwards must not overwrite what the bump did.
       this.db.sql
-        .prepare("UPDATE schedule_waitlist SET status = ? WHERE tenant_id = ? AND id = ?")
-        .run(booking ? "booked" : "waiting", this.db.tenantId, entry.id);
+        .prepare(
+          booking
+            ? "UPDATE schedule_waitlist SET status = 'booked' WHERE tenant_id = ? AND id = ?"
+            : "UPDATE schedule_waitlist SET status = 'waiting' WHERE tenant_id = ? AND id = ? AND status = 'offered'"
+        )
+        .run(this.db.tenantId, entry.id);
       this.db.sql
         .prepare(
           `UPDATE schedule_offers SET outcome = ?, outcome_at = ?, outcome_by = ?, note = ?
@@ -581,10 +648,15 @@ export class Clinics {
       .get(this.db.tenantId, id) as unknown as OfferRow | undefined;
   }
 
-  /** Every offer ever made against one waitlist entry, oldest first. */
+  /**
+   * Every offer ever made against one waitlist entry, in the order they were
+   * made. By the ledger, not the clock: two offers in one millisecond share a
+   * `made_at`, and a history that presents events in an order the sort
+   * happened to pick is the accident this module exists to refuse.
+   */
   offersFor(waitlistId: string): OfferRow[] {
     return this.db.sql
-      .prepare("SELECT * FROM schedule_offers WHERE tenant_id = ? AND waitlist_id = ? ORDER BY made_at")
+      .prepare("SELECT * FROM schedule_offers WHERE tenant_id = ? AND waitlist_id = ? ORDER BY seq")
       .all(this.db.tenantId, waitlistId) as unknown as OfferRow[];
   }
 

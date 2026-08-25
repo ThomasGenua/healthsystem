@@ -1114,6 +1114,11 @@ CREATE TABLE IF NOT EXISTS schedule_waitlist (
 -- not the same fact as "declined"; a schedule that collapses them punishes
 -- people for where they live.
 CREATE TABLE IF NOT EXISTS schedule_offers (
+  -- The ledger order. Two offers made in the same millisecond are still two
+  -- offers made in an order, and a history sorted by a timestamp presents
+  -- them in whichever order the sort happened to leave them — an accident of
+  -- insertion order in the one module written against those.
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
   tenant_id TEXT NOT NULL,
   id TEXT NOT NULL,
   waitlist_id TEXT NOT NULL,
@@ -1128,7 +1133,7 @@ CREATE TABLE IF NOT EXISTS schedule_offers (
   outcome_at TEXT,
   outcome_by TEXT,
   note TEXT,
-  PRIMARY KEY (tenant_id, id)
+  UNIQUE (tenant_id, id)
 );
 
 -- A visit: the thing clinical work actually happens inside.
