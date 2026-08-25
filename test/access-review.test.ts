@@ -186,6 +186,64 @@ test("an access under a declared override is marked as such, not as snooping", a
   }
 });
 
+test("an override declared over HTTP attaches to the reads it legitimises", async () => {
+  // The regression Bugbot caught after the first version merged. Over HTTP an
+  // override's subject_id is the credential id — the same join the consent
+  // system uses — and the review matched on the practitioner id instead, so a
+  // production emergency read lost its break-glass flag and was flagged as an
+  // unexplained access. The test that existed called the store directly with
+  // a practitioner actor, an id the route never passes; this one goes through
+  // the route, which is where the first version was wrong.
+  const s = await boot();
+  try {
+    const declared = await fetch(`${s.base}/api/clinical/break-glass`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${s.stranger.key}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        patient: P,
+        reason: "unresponsive on arrival, no collateral history, need the allergy list",
+      }),
+    });
+    assert.equal(declared.status, 201);
+
+    await s.get(`/api/clinical/chart?patient=${P}`, s.stranger.key);
+
+    const access = s.review().accesses.find((a) => a.practitionerId === "dr-hale" && a.path.includes("chart"));
+    const kinds = (access?.flags ?? []).map((f) => f.kind);
+    assert.ok(kinds.includes("break-glass"), `the emergency read carries its override; saw: ${kinds.join(", ")}`);
+    assert.ok(
+      !kinds.includes("no-treatment-relationship"),
+      "and is not flagged as an unexplained access — that is a false accusation on exactly the read the override exists to legitimise"
+    );
+  } finally {
+    await s.close();
+  }
+});
+
+test("somebody else's override does not launder an unrelated access", async () => {
+  // The first version's fallback attached any in-window override to a row with
+  // no practitioner. That was wrong in the quiet direction: a nightly feed
+  // reading during somebody's emergency would have inherited a break-glass
+  // flag it did not earn, which reads as an explanation for an access that has
+  // none.
+  const s = await boot();
+  try {
+    s.t.consent.breakGlass({
+      patientId: P,
+      by: { actorId: "dr-hale", actorKind: "practitioner" },
+      reason: "unresponsive on arrival, no collateral history, need the allergy list",
+    });
+    await s.get(`/api/clinical/chart?patient=${P}`, s.integration.key);
+
+    const access = s.review().accesses.find((a) => a.practitionerId === null && a.path.includes("chart"));
+    const kinds = (access?.flags ?? []).map((f) => f.kind);
+    assert.ok(!kinds.includes("break-glass"), "the feed's read is not explained by a clinician's override");
+    assert.ok(kinds.includes("unattributable"));
+  } finally {
+    await s.close();
+  }
+});
+
 test("a flag can be closed with a reason, and the reason is kept", async () => {
   // A review whose judgements vanish re-raises the same flag next month with
   // nothing to say it was answered.
