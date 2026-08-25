@@ -1542,6 +1542,188 @@ async function route(
         })
       );
     }
+    if (path === "/api/clinical/visits" && method === "GET") {
+      // Travelling-clinic visits. No patient appears on a visit — it is a
+      // block of capacity, not a disclosure — but it is on the clinical
+      // surface so the audit-coverage guarantee holds for it like everything
+      // else here.
+      return phiFor(
+        undefined,
+        "Schedule",
+        () => tenant.clinics.visits({ service: url.searchParams.get("service") ?? undefined }),
+        (rows) => rows.length
+      );
+    }
+    if (path === "/api/clinical/visit-plan" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        resourceId?: string;
+        service?: string;
+        community?: string;
+        days?: Array<{ date: string; from: string; to: string }>;
+        slotMinutes?: number;
+        capacity?: number;
+      };
+      if (!body.resourceId || !body.service || !body.community || !body.days || !body.slotMinutes) {
+        return send(res, 400, { error: "resourceId, service, community, days and slotMinutes required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(
+        undefined,
+        "Schedule",
+        () =>
+          tenant.clinics.planVisit({
+            resourceId: body.resourceId!,
+            service: body.service!,
+            community: body.community!,
+            days: body.days!,
+            slotMinutes: body.slotMinutes!,
+            ...(body.capacity ? { capacity: body.capacity } : {}),
+            by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+          }),
+        (v) => v.slots.length
+      );
+    }
+    if (path === "/api/clinical/visit-repeat" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { visit?: string; firstDay?: string };
+      if (!body.visit || !body.firstDay) return send(res, 400, { error: "visit and firstDay required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(
+        undefined,
+        "Schedule",
+        () =>
+          tenant.clinics.repeatVisit(body.visit!, {
+            firstDay: body.firstDay!,
+            by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+          }),
+        (v) => v.slots.length
+      );
+    }
+    if (path === "/api/clinical/visit-cancel" && method === "POST") {
+      // The weather case. The response is the phone list — who lost a seat
+      // and where they now stand — so it is patient data and is filtered by
+      // directive like any other list of patients.
+      const body = JSON.parse(await readBody(req)) as { visit?: string; reason?: string };
+      if (!body.visit || !body.reason) return send(res, 400, { error: "visit and reason required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(
+        undefined,
+        "Appointment",
+        () => {
+          const r = tenant.clinics.cancelVisit(body.visit!, {
+            actorId: who,
+            actorKind: auth.ok ? auth.principal.kind : "unknown",
+            reason: body.reason!,
+          });
+          const filtered = filterByDirective(
+            ["Appointment"],
+            r.bumped.map((x) => ({ patient_id: x.booking.patient_id, ...x }))
+          );
+          return { visit: r.visit, bumped: filtered.rows, withheldCount: filtered.withheldCount };
+        },
+        (v) => v.bumped.length
+      );
+    }
+    if (path === "/api/clinical/visit-reschedule" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { visit?: string; toFirstDay?: string; reason?: string };
+      if (!body.visit || !body.toFirstDay || !body.reason) {
+        return send(res, 400, { error: "visit, toFirstDay and reason required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(
+        undefined,
+        "Appointment",
+        () => {
+          const r = tenant.clinics.rescheduleVisit(body.visit!, {
+            toFirstDay: body.toFirstDay!,
+            reason: body.reason!,
+            by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+          });
+          const filtered = filterByDirective(["Appointment"], r.toTell);
+          return { visit: r.visit, toTell: filtered.rows, withheldCount: filtered.withheldCount };
+        },
+        (v) => v.toTell.length
+      );
+    }
+    if (path === "/api/clinical/waitlist" && method === "GET") {
+      const service = url.searchParams.get("service");
+      if (!service) return send(res, 400, { error: "service required" });
+      return phi(
+        "Appointment",
+        () => filterByDirective(["Appointment"], tenant.clinics.waitlist(service)),
+        (r) => r.rows.length
+      );
+    }
+    if (path === "/api/clinical/waitlist-add" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        service?: string;
+        patient?: string;
+        reason?: string;
+        priority?: "routine" | "urgent" | "stat";
+        community?: string;
+        referral?: string;
+      };
+      if (!body.service || !body.patient || !body.reason) {
+        return send(res, 400, { error: "service, patient and reason required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(body.patient, "Appointment", () =>
+        tenant.clinics.addToWaitlist({
+          service: body.service!,
+          patientId: body.patient!,
+          reason: body.reason!,
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+          ...(body.priority ? { priority: body.priority } : {}),
+          ...(body.community ? { community: body.community } : {}),
+          ...(body.referral ? { referralId: body.referral } : {}),
+        })
+      );
+    }
+    if (path === "/api/clinical/waitlist-remove" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { entry?: string; reason?: string };
+      if (!body.entry || !body.reason) return send(res, 400, { error: "entry and reason required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      // The route learns whose record it is touching from the entry, the way
+      // the encounter routes do.
+      const entry = tenant.clinics.entry(body.entry);
+      return phiFor(entry?.patient_id, "Appointment", () =>
+        tenant.clinics.removeFromWaitlist(body.entry!, {
+          actorId: who,
+          actorKind: auth.ok ? auth.principal.kind : "unknown",
+          reason: body.reason!,
+        })
+      );
+    }
+    if (path === "/api/clinical/offer" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { entry?: string; slot?: string };
+      if (!body.entry || !body.slot) return send(res, 400, { error: "entry and slot required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      const entry = tenant.clinics.entry(body.entry);
+      return phiFor(entry?.patient_id, "Appointment", () =>
+        tenant.clinics.offerSeat({
+          waitlistId: body.entry!,
+          slotId: body.slot!,
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+        })
+      );
+    }
+    if (path === "/api/clinical/offer-resolve" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        offer?: string;
+        outcome?: "accepted" | "declined" | "unreachable";
+        note?: string;
+      };
+      if (!body.offer || !body.outcome) return send(res, 400, { error: "offer and outcome required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      const existing = tenant.clinics.offer(body.offer);
+      const entry = existing ? tenant.clinics.entry(existing.waitlist_id) : undefined;
+      return phiFor(entry?.patient_id, "Appointment", () =>
+        tenant.clinics.resolveOffer(body.offer!, {
+          outcome: body.outcome!,
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+          ...(body.note ? { note: body.note } : {}),
+        })
+      );
+    }
     if (path === "/api/clinical/encounter-open" && method === "POST") {
       // Opening a visit is a write about a patient, so it goes through the
       // same directive check as a read of one. A caller who may not see this

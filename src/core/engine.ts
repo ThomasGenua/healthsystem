@@ -39,6 +39,7 @@ import { Directory } from "../directory/store.ts";
 import { ingestFhir } from "../directory/fhir.ts";
 import { ChannelNoticeDispatcher } from "../patient/notice.ts";
 import { AccessReview } from "../audit/review.ts";
+import { Clinics } from "../schedule/clinics.ts";
 import { Schedule } from "../schedule/store.ts";
 import { Registry } from "../population/registry.ts";
 import { Migration } from "../migrate/run.ts";
@@ -118,6 +119,8 @@ export interface TenantView {
   directory: Directory;
   /** Reads the trail the way a privacy officer asks about it. */
   review: AccessReview;
+  /** Travelling-clinic visits and the waitlist. */
+  clinics: Clinics;
   /** The assembled visit, the encounter-scoped counterpart to `workspace`. */
   visits: VisitView;
 }
@@ -369,6 +372,7 @@ export class Engine {
       encounters,
       directory,
       review: new AccessReview(db),
+      clinics: new Clinics(db),
       visits: new VisitView({ encounters, record: clinical, meds, orders }),
     };
     this.views.set(tenantId, view);

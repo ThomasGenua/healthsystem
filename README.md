@@ -1610,7 +1610,8 @@ a scope-narrowed directive withholds its section rather than the chart around it
 **Built for where it actually runs.**
 
 - [#38 A readable chart when the link is down](https://github.com/ThomasGenua/healthsystem/issues/38) — the outage demo covers the write path. During a 40-hour outage a nurse can queue what they write and see nothing of what is already known. A cache is a second copy of PHI that can be wrong, so it needs a design rather than a bolt-on.
-- [#39 Scheduling for travelling clinics, and a waitlist for when weather cancels one](https://github.com/ThomasGenua/healthsystem/issues/39) — a specialist flying in for two days a month is twenty hand-created slots, and when the plane does not fly there is no waitlist.
+[#39](https://github.com/ThomasGenua/healthsystem/issues/39) is done: a visit is planned, repeated, moved and cancelled as one thing, its slots stay ordinary rows under the same unique index, and cancelling it puts every booked patient on a waitlist whose ordering is stated policy — priority, then waited-longest from first asking, then most-bumped — with offers that resolve as accepted, declined or unreachable, because a community with one phone line is not a community that keeps saying no.
+
 
 **Operate it.**
 
