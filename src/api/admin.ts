@@ -628,6 +628,11 @@ async function route(
     if (path === "/patient/summary" && method === "GET") {
       const patientId = url.searchParams.get("patient");
       if (!patientId) return send(res, 400, { error: "patient required" });
+      // Deliberately blind to chart links. A patient's or proxy's authority is
+      // granted per chart, and a link is a clinician's assertion about
+      // identity — letting it widen a proxy's grant would hand a delegate
+      // records nobody delegated. The clinician chart assembles across links;
+      // this surface serves exactly the chart the grant names.
       return patientPhi(patientId, "summary", "Composition", "view-summary", () => ({
         patient: tenant.clinical.patientIndex.get(patientId) ?? null,
         allergies: {
@@ -1373,13 +1378,134 @@ async function route(
       // panel — and the panel says a directive is why, because a summary is
       // read as complete and a silently short one is the failure this whole
       // module exists to refuse.
-      return phi(
-        "Composition",
-        (withheldTypes) =>
-          tenant.workspace.chart(patient, { limit: num(url.searchParams.get("limit")), withheldTypes }),
-        undefined,
-        CHART_TYPES
-      );
+      const members = tenant.links.membersOf(patient);
+      if (members.length === 1) {
+        return phi(
+          "Composition",
+          (withheldTypes) =>
+            tenant.workspace.chart(patient, { limit: num(url.searchParams.get("limit")), withheldTypes }),
+          undefined,
+          CHART_TYPES
+        );
+      }
+      // A linked chart serves several patients' rows in one response, so the
+      // directive check and the audit trail both have to speak about every
+      // member, not the id in the query string. Fail closed member by member:
+      // one member's whole-record directive withholds the assembled view —
+      // there is no honest chart for "this person" that omits a chart the
+      // person locked — and a break-glass override lifts only the member it
+      // was declared for. The withheld entry types are the union, so a
+      // section locked on any member is locked on the assembled chart.
+      const withheldTypes = new Set<string>();
+      for (const member of members) {
+        const r = restrictions(member);
+        if (r.underBreakGlass) continue;
+        if (r.blocking) {
+          audit({
+            action: "R",
+            outcome: 4,
+            resourceType: "Composition",
+            patient: member,
+            detail: `linked chart withheld by patient directive ${r.blocking.id}`,
+          });
+          return send(res, 403, {
+            error: "a linked chart is withheld by a patient directive",
+            breakGlass: "POST /api/clinical/break-glass",
+          });
+        }
+        for (const t of r.withheldTypes.keys()) if (CHART_TYPES.includes(t)) withheldTypes.add(t);
+      }
+      let assembled: ReturnType<typeof tenant.workspace.chart>;
+      try {
+        assembled = tenant.workspace.chart(patient, {
+          limit: num(url.searchParams.get("limit")),
+          withheldTypes,
+          linkedMembers: members.filter((m) => m !== patient),
+        });
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        audit({ action: "R", outcome: mapped.outcome, resourceType: "Composition", patient, detail: mapped.detail });
+        return send(res, mapped.status, { error: mapped.error });
+      }
+      // One row per member, because each member's record was disclosed and
+      // each member's access review must see this read. A single row naming
+      // only the queried id would hide the linked members' disclosure from
+      // exactly the report built to find it.
+      for (const member of members) {
+        audit({
+          action: "R",
+          outcome: 0,
+          resourceType: "Composition",
+          patient: member,
+          detail:
+            member === patient
+              ? `chart assembled across ${members.length} linked charts`
+              : `served as a linked member of ${patient}'s chart`,
+        });
+      }
+      return send(res, 200, assembled);
+    }
+    if (path === "/api/clinical/links" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      // A link is a statement about the patient's identity, so reading it is
+      // reading something about them: through the directive check and onto
+      // the trail like any other read.
+      return phi("Patient", () => ({
+        members: tenant.links.membersOf(patient),
+        links: tenant.links.linksFor(patient),
+        history: tenant.links.historyFor(patient),
+      }));
+    }
+    if (path === "/api/clinical/link" && method === "POST") {
+      // Asserting that two charts are one person is a clinical decision about
+      // both of them. Both directive checks run — a caller withheld from
+      // either chart may not join it to another — and both patients get the
+      // event on their trail.
+      const body = JSON.parse(await readBody(req)) as { a?: string; b?: string; evidence?: string };
+      if (!body.a || !body.b || !body.evidence) return send(res, 400, { error: "a, b and evidence required" });
+      for (const id of [body.a, body.b]) {
+        const block = withheld(id, ["Patient"]);
+        if (block) {
+          audit({ action: "C", outcome: 4, resourceType: "Patient", patient: id, detail: `link refused: withheld by patient directive ${block.id}` });
+          return send(res, 403, { error: "this record is withheld by a patient directive", breakGlass: "POST /api/clinical/break-glass" });
+        }
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      try {
+        const link = tenant.links.link(body.a, body.b, {
+          actorId: who,
+          actorKind: auth.ok ? auth.principal.kind : "unknown",
+          evidence: body.evidence,
+        });
+        for (const id of [body.a, body.b]) {
+          audit({ action: "C", outcome: 0, resourceType: "Patient", patient: id, detail: `linked to ${id === body.a ? body.b : body.a}: ${body.evidence}` });
+        }
+        return send(res, 201, link);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        audit({ action: "C", outcome: mapped.outcome, resourceType: "Patient", patient: body.a, detail: mapped.detail });
+        return send(res, mapped.status, { error: mapped.error });
+      }
+    }
+    if (path === "/api/clinical/unlink" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { link?: string; reason?: string };
+      if (!body.link || !body.reason) return send(res, 400, { error: "link and reason required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      try {
+        const event = tenant.links.unlink(body.link, {
+          actorId: who,
+          actorKind: auth.ok ? auth.principal.kind : "unknown",
+          reason: body.reason,
+        });
+        for (const id of [event.patient_a, event.patient_b]) {
+          audit({ action: "U", outcome: 0, resourceType: "Patient", patient: id, detail: `unlinked from ${id === event.patient_a ? event.patient_b : event.patient_a}: ${body.reason}` });
+        }
+        return send(res, 200, event);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        audit({ action: "U", outcome: mapped.outcome, resourceType: "Patient", detail: mapped.detail });
+        return send(res, mapped.status, { error: mapped.error });
+      }
     }
     if (path === "/api/clinical/encounters" && method === "GET") {
       if (!patient) return send(res, 400, { error: "patient required" });

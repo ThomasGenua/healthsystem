@@ -252,6 +252,8 @@ window.loadChart=async()=>{
       <div class="card"><div class="n">${statusTag}</div><div class="l">allergy status</div></div>
       <div class="card"><div class="n">${c.immunizationStatus==="never-asked"?tag("never asked","bad"):tag(esc(String(c.immunizationStatus||"")),"ok")}</div><div class="l">immunization history</div></div>
       <div class="card"><div class="n">${c.vitalStatus==="never-measured"?tag("never measured","bad"):tag(esc(String(c.vitalStatus||"")),"ok")}</div><div class="l">vital signs</div></div></div>
+    ${c.linked?`<div class="banner"><b>Assembled across linked charts: ${c.linked.members.map(m=>esc(m)).join(", ")}.</b>
+      <p>${esc(c.linked.note)}</p></div>`:""}
     ${c.complete?"":`<div class="banner"><b>This is not the whole chart.</b>
       <p>Do not read a panel below as "none" without checking why it is short.</p>
       <ul>${(c.omissions||[]).map(o=>`<li>${esc(o)}</li>`).join("")}</ul></div>`}

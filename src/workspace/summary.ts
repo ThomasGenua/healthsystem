@@ -98,6 +98,14 @@ export interface ChartSummary {
   openThreads: Section<ThreadRow>;
 
   /**
+   * Present when this chart is linked to others and the sections above were
+   * assembled across all of them. Every row remains attributed to the chart
+   * it was written on; the link is reversible; and this block is the
+   * disclosure that makes the combination honest rather than silent.
+   */
+  linked?: { members: string[]; note: string };
+
+  /**
    * Whether every section is complete.
    *
    * The single flag a renderer has to honour. False means the chart in front
@@ -122,6 +130,16 @@ export interface SummaryOptions {
    * is the ordinary case.
    */
   withheldTypes?: ReadonlySet<string>;
+  /**
+   * Other charts asserted to be the same person, when a link is in force.
+   *
+   * Passed in like the withheld set, and for the same reason: this module
+   * assembles and owns no opinion about identity. When present, every section
+   * loads across all members and the summary says on its face that it did —
+   * a silently combined chart would be the exact hazard linking is built
+   * against, with the direction reversed.
+   */
+  linkedMembers?: readonly string[];
 }
 
 /** The stores a summary is assembled from. Any may be absent. */
@@ -269,31 +287,38 @@ export class Workspace {
     const sect = <T,>(key: keyof typeof SECTION_TYPES, load: (() => T[]) | undefined, cap: number): Section<T> =>
       hidden.has(SECTION_TYPES[key]) ? withhold<T>(WITHHELD_DETAIL) : section(load, cap);
 
-    const allergies = sect("allergies", meds ? () => meds.allergies(patientId).filter((a) => a.kind !== "no-known-allergies") : undefined, limit);
-    const medications = sect("medications", meds ? () => meds.current(patientId, { asPrescribed: true }) : undefined, limit);
+    // The charts this summary draws from: the one asked for, plus any linked
+    // members. Every loader runs per member and the results concatenate —
+    // rows keep their own patient_id, so nothing here moves a fact between
+    // charts; it only reads more of them.
+    const ids = [patientId, ...(opts.linkedMembers ?? [])];
+    const across = <T,>(f: (id: string) => T[]): (() => T[]) => () => ids.flatMap(f);
+
+    const allergies = sect("allergies", meds ? across((id) => meds.allergies(id).filter((a) => a.kind !== "no-known-allergies")) : undefined, limit);
+    const medications = sect("medications", meds ? across((id) => meds.current(id, { asPrescribed: true })) : undefined, limit);
     const unacknowledgedResults = sect(
       "unacknowledgedResults",
-      orders ? () => orders.unacknowledged().filter((r) => r.patient_id === patientId) : undefined,
+      orders ? () => orders.unacknowledged().filter((r) => ids.includes(r.patient_id)) : undefined,
       limit
     );
     const openOrders = sect(
       "openOrders",
-      orders ? () => orders.forPatient(patientId).filter((o) => o.status === "placed" || o.status === "in-progress") : undefined,
+      orders ? across((id) => orders.forPatient(id).filter((o) => o.status === "placed" || o.status === "in-progress")) : undefined,
       limit
     );
     const openReferrals = sect(
       "openReferrals",
-      referrals ? () => referrals.open().filter((r) => r.patient_id === patientId) : undefined,
+      referrals ? () => referrals.open().filter((r) => ids.includes(r.patient_id)) : undefined,
       limit
     );
-    const openTasks = sect("openTasks", tasks ? () => tasks.forPatient(patientId) : undefined, limit);
-    const recentNotes = sect("recentNotes", notes ? () => notes.forPatient(patientId) : undefined, noteLimit);
-    const problems = sect("problems", record ? () => record.chart(patientId, { entryType: "Condition" }) : undefined, limit);
-    const immunizationSection = sect("immunizations", immunizations ? () => immunizations.forPatient(patientId) : undefined, limit);
-    const vitalSection = sect("vitals", vitals ? () => vitals.forPatient(patientId) : undefined, limit);
-    const careTeamSection = sect("careTeam", careTeam ? () => careTeam.forPatient(patientId, { includeRetired: true }) : undefined, limit);
-    const coverageSection = sect("coverage", coverage ? () => coverage.history(patientId) : undefined, limit);
-    const openThreads = sect("openThreads", messaging ? () => messaging.forPatient(patientId) : undefined, limit);
+    const openTasks = sect("openTasks", tasks ? across((id) => tasks.forPatient(id)) : undefined, limit);
+    const recentNotes = sect("recentNotes", notes ? across((id) => notes.forPatient(id)) : undefined, noteLimit);
+    const problems = sect("problems", record ? across((id) => record.chart(id, { entryType: "Condition" })) : undefined, limit);
+    const immunizationSection = sect("immunizations", immunizations ? across((id) => immunizations.forPatient(id)) : undefined, limit);
+    const vitalSection = sect("vitals", vitals ? across((id) => vitals.forPatient(id)) : undefined, limit);
+    const careTeamSection = sect("careTeam", careTeam ? across((id) => careTeam.forPatient(id, { includeRetired: true })) : undefined, limit);
+    const coverageSection = sect("coverage", coverage ? across((id) => coverage.history(id)) : undefined, limit);
+    const openThreads = sect("openThreads", messaging ? across((id) => messaging.forPatient(id)) : undefined, limit);
 
     // Allergy status is read from the store rather than inferred from the
     // section: an empty list and a never-asked patient are the distinction
@@ -304,31 +329,50 @@ export class Workspace {
     // allergy history, so surfacing it beside a panel the patient has locked
     // would leak the shape of what was locked — the one thing this is supposed
     // to prevent.
+    // A status across linked members combines by the worst answer, because
+    // the claim it makes is about the whole person. Two charts where one was
+    // never asked about allergies is a person who was never fully asked:
+    // reporting the documented half as the status would be the merged-chart
+    // hazard arriving through the summary line instead of the panel.
+    const worstOf = <T extends string>(rank: readonly T[], onError: T, per: (id: string) => T): T => {
+      let worst = rank[rank.length - 1];
+      for (const id of ids) {
+        let v: T;
+        try {
+          v = per(id);
+        } catch {
+          v = onError;
+        }
+        if (rank.indexOf(v) < rank.indexOf(worst)) worst = v;
+      }
+      return worst;
+    };
+
     let allergyStatus: AllergyStatus | "unavailable" = "unavailable";
     if (meds && !hidden.has(SECTION_TYPES.allergies)) {
-      try {
-        allergyStatus = meds.allergyStatus(patientId);
-      } catch {
-        allergyStatus = "unavailable";
-      }
+      allergyStatus = worstOf<AllergyStatus | "unavailable">(
+        ["never-asked", "unavailable", "documented", "none-documented"],
+        "unavailable",
+        (id) => meds.allergyStatus(id)
+      );
     }
 
     let immunizationStatus: ImmunizationHistory | "unavailable" = "unavailable";
     if (immunizations && !hidden.has(SECTION_TYPES.immunizations)) {
-      try {
-        immunizationStatus = immunizations.historyStatus(patientId);
-      } catch {
-        immunizationStatus = "unavailable";
-      }
+      immunizationStatus = worstOf<ImmunizationHistory | "unavailable">(
+        ["never-asked", "unavailable", "documented"],
+        "unavailable",
+        (id) => immunizations.historyStatus(id)
+      );
     }
 
     let vitalStatus: VitalHistory | "unavailable" = "unavailable";
     if (vitals && !hidden.has(SECTION_TYPES.vitals)) {
-      try {
-        vitalStatus = vitals.historyStatus(patientId);
-      } catch {
-        vitalStatus = "unavailable";
-      }
+      vitalStatus = worstOf<VitalHistory | "unavailable">(
+        ["never-measured", "unavailable", "documented"],
+        "unavailable",
+        (id) => vitals.historyStatus(id)
+      );
     }
 
     let patient: PatientSummary | undefined;
@@ -376,7 +420,7 @@ export class Workspace {
       const currentPrimary = careTeamSection.items.find((r) => r.role === "primary" && !r.active_to);
       if (!currentPrimary) omissions.push("Care team: no current primary provider is assigned");
     }
-    if (coverage && coverageSection.complete && !hidden.has(SECTION_TYPES.coverage) && !coverage.current(patientId)) {
+    if (coverage && coverageSection.complete && !hidden.has(SECTION_TYPES.coverage) && !ids.some((id) => coverage.current(id))) {
       omissions.push("Coverage: no provincial coverage or eligibility has been recorded");
     }
 
@@ -384,6 +428,16 @@ export class Workspace {
       patientId,
       patient,
       generatedAt: new Date().toISOString(),
+      ...(ids.length > 1
+        ? {
+            linked: {
+              members: [...ids].sort(),
+              note:
+                `assembled across ${ids.length} linked charts; every row remains attributed to ` +
+                "the chart it was written on, and the link is reversible",
+            },
+          }
+        : {}),
       allergyStatus,
       immunizationStatus,
       vitalStatus,

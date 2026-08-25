@@ -11,6 +11,19 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Reversible chart linking** (#34). `duplicates()` finds two charts that may
+  be one person and declines to merge them, because merging is how a chart
+  acquires someone else's allergies and there is no honest way to unmerge. A
+  link is the assertion that objection leaves open: made by a person, on
+  evidence that is kept, withdrawn with a reason that is kept, never inferred.
+  The chart assembles across the members of a link with every row still
+  attributed to the chart it was written on — which is what makes an unlink
+  restore the prior view exactly. The assembled chart says on its face that
+  it is assembled; every summary status is the worst member's answer; a
+  directive on any member withholds or locks the assembly, break-glass lifts
+  only the member it was broken for, and the read lands on every member's
+  audit trail. The patient portal stays deliberately blind to links: a grant
+  names one chart and serves one chart.
 - **Channel configuration as a ledger** (#36). Everything else here is
   provenance-carrying — messages chain, the record is append-only, audit rows
   chain — and the configuration that decides how all of it is produced was
