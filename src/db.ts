@@ -79,6 +79,9 @@ export const TENANT_SCOPED_TABLES = [
   "patient_thread_events",
   "lab_identity_holds",
   "access_review_dismissals",
+  "schedule_visits",
+  "schedule_waitlist",
+  "schedule_offers",
   "prescriptions",
   "prescription_events",
   "migration_runs",
@@ -999,6 +1002,10 @@ CREATE TABLE IF NOT EXISTS schedule_slots (
   -- that does not exist.
   status TEXT NOT NULL DEFAULT 'open',
   block_reason TEXT,
+  -- The travelling-clinic visit this slot belongs to, when it was planned as
+  -- part of one. Null for a slot opened on its own, which stays the ordinary
+  -- case; nothing downstream needs to know visits exist.
+  visit_id TEXT,
   created_at TEXT NOT NULL,
   PRIMARY KEY (tenant_id, id)
 );
@@ -1042,6 +1049,91 @@ CREATE TABLE IF NOT EXISTS schedule_events (
   actor_id TEXT NOT NULL,
   actor_kind TEXT NOT NULL,
   detail TEXT
+);
+
+-- A travelling clinic's visit: a block of slots planned, moved and cancelled
+-- as one thing. A specialist flying into a community for two days a month is
+-- the northern scheduling primitive, and without this it is twenty
+-- hand-created slots that can only be cancelled one at a time — leaving
+-- twenty orphaned cancellations with no record that the plane was the cause.
+CREATE TABLE IF NOT EXISTS schedule_visits (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  resource_id TEXT NOT NULL,
+  resource_kind TEXT NOT NULL,
+  service TEXT NOT NULL,
+  -- Where the visit happens, in words a patient recognises. What makes
+  -- "next available" honest: an offer that crosses communities has to be able
+  -- to say so, and it cannot if nothing records where the seats are.
+  community TEXT NOT NULL,
+  starts_on TEXT NOT NULL,
+  ends_on TEXT NOT NULL,
+  -- planned | cancelled. A cancelled visit keeps its rows: the fact that a
+  -- clinic was supposed to run is what a capacity report is made of.
+  status TEXT NOT NULL DEFAULT 'planned',
+  cancelled_at TEXT,
+  cancelled_by TEXT,
+  cancel_reason TEXT,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Who is waiting for a service, in an order that is policy rather than
+-- accident. The row keeps when they first asked and how many times a
+-- cancelled visit has bumped them, because both are inputs to who gets the
+-- next seat and neither survives being kept in somebody's head.
+CREATE TABLE IF NOT EXISTS schedule_waitlist (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  service TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  priority TEXT NOT NULL DEFAULT 'routine',
+  reason TEXT NOT NULL,
+  -- The community the patient is in, when known, so an offer that would send
+  -- them 900 km can be seen to before the phone call rather than during it.
+  community TEXT,
+  referral_id TEXT,
+  -- waiting | offered | booked | removed
+  status TEXT NOT NULL DEFAULT 'waiting',
+  -- How many cancelled visits have taken a booked seat back off this person.
+  -- Never reset: a patient bumped three times is a fact about the service,
+  -- not a counter to tidy.
+  bump_count INTEGER NOT NULL DEFAULT 0,
+  added_by TEXT NOT NULL,
+  added_at TEXT NOT NULL,
+  removed_at TEXT,
+  removed_by TEXT,
+  removed_reason TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- One offer of one seat to one waiting patient, and what came of it.
+-- "Unreachable" is a real outcome in a community with one phone line and is
+-- not the same fact as "declined"; a schedule that collapses them punishes
+-- people for where they live.
+CREATE TABLE IF NOT EXISTS schedule_offers (
+  -- The ledger order. Two offers made in the same millisecond are still two
+  -- offers made in an order, and a history sorted by a timestamp presents
+  -- them in whichever order the sort happened to leave them — an accident of
+  -- insertion order in the one module written against those.
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  waitlist_id TEXT NOT NULL,
+  slot_id TEXT NOT NULL,
+  -- Where the offered seat is, in words, recorded at offer time so the
+  -- conversation with the patient starts from the truth.
+  place TEXT NOT NULL,
+  made_by TEXT NOT NULL,
+  made_at TEXT NOT NULL,
+  -- accepted | declined | unreachable, null while the offer is out.
+  outcome TEXT,
+  outcome_at TEXT,
+  outcome_by TEXT,
+  note TEXT,
+  UNIQUE (tenant_id, id)
 );
 
 -- A visit: the thing clinical work actually happens inside.
@@ -1706,6 +1798,9 @@ const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
   // correctly: those credentials named nobody, and an access review says so
   // rather than guessing at who was behind them.
   { table: "api_keys", column: "practitioner_id", type: "TEXT" },
+  // Travelling clinics. Existing slots were not planned as part of a visit,
+  // and NULL says exactly that.
+  { table: "schedule_slots", column: "visit_id", type: "TEXT" },
   { table: "audit_events", column: "practitioner_id", type: "TEXT" },
   { table: "break_glass", column: "notice_dispatched_at", type: "TEXT" },
   { table: "break_glass", column: "notice_message_id", type: "TEXT" },

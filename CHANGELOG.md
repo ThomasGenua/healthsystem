@@ -11,6 +11,29 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Travelling clinics** (#39). A visit — the block of slots a specialist's
+  two days in a community actually are — is planned, repeated ("the same as
+  last time" is one call), moved and cancelled as one thing. Its slots stay
+  ordinary rows guarded by the same partial unique index, so nothing downstream
+  knows visits exist. Cancelling a visit puts the common cause on every booking
+  and every booked patient on the waitlist, bump counted, wait dated from when
+  they first booked: the weather does not send anybody to the back of the line.
+- **A waitlist whose ordering is stated policy** rather than an accident of
+  insertion order: clinical priority, then waited-longest from first asking,
+  then most-bumped as the tiebreak, computed in one place on purpose. A seat is
+  offered to a specific patient and the offer resolves as accepted, declined or
+  unreachable — recorded as the different facts they are, because collapsing
+  "unreachable" into "declined" punishes people for where they live. A seat
+  taken while an offer was out lapses the offer rather than wedging the queue
+  or blaming the patient — and a seat withdrawn by the visit's own cancellation
+  lapses the same way. One cancelled visit is one bump, however many seats the
+  patient held on it; a seat for another service is refused rather than
+  clearing the wrong queue; removing somebody closes their open offer, so
+  resolving it later cannot write them back in; and an offer history presents
+  in the order offers were made, by ledger rather than by clock. Offers say
+  where the seat is, and say both places when the patient's community and the
+  seat's differ.
+
 - **An access review a privacy officer can run** (#35). `GET
   /api/audit/review?patient=` answers what the trail held every ingredient for
   and could not be asked: who looked, under what declared purpose, whether

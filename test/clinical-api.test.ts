@@ -458,6 +458,48 @@ test("every clinical route leaves an audit row, including ones added later", asy
       by: { actorId: "ops" },
     });
 
+    // Travelling-clinic fixtures, one per route so no route depends on what
+    // another did to it first. Distinct services keep the waitlist's
+    // one-live-entry-per-patient rule out of the way.
+    const clinics = s.engine.forTenant("default").clinics;
+    const clinicBy = { actorId: "clerk", actorKind: "staff" as const };
+    const DAY = { from: "16:00", to: "18:00" };
+    const tcRepeat = clinics.planVisit({
+      resourceId: "dr-tetso", service: "TC repeat", community: "Fort Smith",
+      days: [{ date: "2027-03-02", ...DAY }], slotMinutes: 30, by: clinicBy,
+    });
+    const tcCancel = clinics.planVisit({
+      resourceId: "dr-tetso", service: "TC cancel", community: "Fort Smith",
+      days: [{ date: "2027-03-09", ...DAY }], slotMinutes: 30, by: clinicBy,
+    });
+    const tcMove = clinics.planVisit({
+      resourceId: "dr-tetso", service: "TC move", community: "Fort Smith",
+      days: [{ date: "2027-03-16", ...DAY }], slotMinutes: 30, by: clinicBy,
+    });
+    const wlOffer = clinics.addToWaitlist({
+      service: "TC offer", patientId: P, reason: "Knee review", by: clinicBy,
+    });
+    const tcOffer = clinics.planVisit({
+      resourceId: "dr-tetso", service: "TC offer", community: "Fort Smith",
+      days: [{ date: "2027-03-31", ...DAY }], slotMinutes: 30, by: clinicBy,
+    });
+    const wlRemove = clinics.addToWaitlist({
+      service: "TC remove", patientId: P, reason: "Knee review", by: clinicBy,
+    });
+    const wlResolve = clinics.addToWaitlist({
+      service: "TC resolve", patientId: P, reason: "Knee review", by: clinicBy,
+    });
+    // Its own visit, because a seat must be for the service the patient is
+    // waiting for — the cross-service shortcut this fixture used to take is
+    // now refused on purpose.
+    const tcResolve = clinics.planVisit({
+      resourceId: "dr-tetso", service: "TC resolve", community: "Fort Smith",
+      days: [{ date: "2027-03-30", ...DAY }], slotMinutes: 30, by: clinicBy,
+    });
+    const offerOut = clinics.offerSeat({
+      waitlistId: wlResolve.id, slotId: tcResolve.slots[0].id, by: clinicBy,
+    });
+
     const standing = s.engine.forTenant("default").consent.breakGlass({
       patientId: P,
       by: { actorId: "dr-hale", actorKind: "practitioner" },
@@ -489,6 +531,16 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/break-glass-dispatch": "POST",
       "/api/clinical/gaps": "POST",
       "/api/clinical/measure": "POST",
+      "/api/clinical/visits": "?service=TC%20repeat",
+      "/api/clinical/visit-plan": "POST",
+      "/api/clinical/visit-repeat": "POST",
+      "/api/clinical/visit-cancel": "POST",
+      "/api/clinical/visit-reschedule": "POST",
+      "/api/clinical/waitlist": "?service=TC%20offer",
+      "/api/clinical/waitlist-add": "POST",
+      "/api/clinical/waitlist-remove": "POST",
+      "/api/clinical/offer": "POST",
+      "/api/clinical/offer-resolve": "POST",
       "/api/clinical/encounters": `?patient=${P}`,
       "/api/clinical/encounter": `?id=${visit.id}`,
       "/api/clinical/encounters-open": "",
@@ -568,6 +620,20 @@ test("every clinical route leaves an audit row, including ones added later", asy
         cohort: { id: "dm", name: "Diabetes", conditionCodes: ["diabetes"] },
         measure: { id: "hba1c-8", name: "HbA1c under 8", withinDays: 365, target: { code: "4548-4", below: 8 } },
       },
+      "/api/clinical/visit-plan": {
+        resourceId: "dr-tetso",
+        service: "TC plan",
+        community: "Fort Smith",
+        days: [{ date: "2027-04-06", from: "16:00", to: "17:00" }],
+        slotMinutes: 30,
+      },
+      "/api/clinical/visit-repeat": { visit: tcRepeat.visit.id, firstDay: "2027-04-13" },
+      "/api/clinical/visit-cancel": { visit: tcCancel.visit.id, reason: "runway closed" },
+      "/api/clinical/visit-reschedule": { visit: tcMove.visit.id, toFirstDay: "2027-03-23", reason: "plane delayed a week" },
+      "/api/clinical/waitlist-add": { service: "TC add", patient: P, reason: "Knee review" },
+      "/api/clinical/waitlist-remove": { entry: wlRemove.id, reason: "seen elsewhere" },
+      "/api/clinical/offer": { entry: wlOffer.id, slot: tcOffer.slots[0].id },
+      "/api/clinical/offer-resolve": { offer: offerOut.id, outcome: "declined" },
       "/api/clinical/encounter-open": { patient: P, class: "in-person", reason: "Sore throat" },
       // One row each, so no route depends on what another did to it first.
       "/api/clinical/encounter-arrive": { id: planned.id },

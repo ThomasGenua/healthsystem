@@ -57,6 +57,8 @@ export interface SlotRow {
   capacity: number;
   status: SlotStatus;
   block_reason: string | null;
+  /** The travelling-clinic visit that planned this slot, when one did. */
+  visit_id: string | null;
   created_at: string;
 }
 
@@ -96,7 +98,7 @@ export class SlotFull extends Refusal {
   }
 }
 
-const PRIORITY_RANK: Record<Priority, number> = { stat: 0, urgent: 1, routine: 2 };
+export const PRIORITY_RANK: Record<Priority, number> = { stat: 0, urgent: 1, routine: 2 };
 
 export class Schedule {
   private db: Db;
@@ -465,7 +467,7 @@ export class Schedule {
            s.tenant_id AS s_tenant_id, s.id AS s_id, s.resource_id AS s_resource_id,
            s.resource_kind AS s_resource_kind, s.service AS s_service, s.starts_at AS s_starts_at,
            s.ends_at AS s_ends_at, s.capacity AS s_capacity, s.status AS s_status,
-           s.block_reason AS s_block_reason, s.created_at AS s_created_at
+           s.block_reason AS s_block_reason, s.visit_id AS s_visit_id, s.created_at AS s_created_at
          FROM schedule_bookings b
          JOIN schedule_slots s ON s.tenant_id = b.tenant_id AND s.id = b.slot_id
         WHERE b.tenant_id = ? AND b.patient_id = ?
@@ -505,6 +507,7 @@ export class Schedule {
         capacity: Number(r.s_capacity),
         status: r.s_status as SlotStatus,
         block_reason: (r.s_block_reason as string | null) ?? null,
+        visit_id: (r.s_visit_id as string | null) ?? null,
         created_at: String(r.s_created_at),
       },
     }));
