@@ -24,6 +24,8 @@
  * POST /api/retention/run                apply the policy now
  * GET  /api/audit?patient=&principal=&failures=  access trail (admin only)
  * GET  /api/audit/verify                 verify the audit hash chain
+ * GET  /api/audit/review?patient=         access review with flags (admin only)
+ * POST /api/audit/review/dismiss          close a flag, with a reason
  * GET  /fhir/AuditEvent                  the same trail as R4 AuditEvent (admin only)
  * GET  /api/keys                         list API keys (never the keys themselves)
  * POST /api/keys                         issue a key; the response is the only time it is shown
@@ -177,6 +179,10 @@ async function route(
       // "did anyone at that clinic look at this record", and until this was
       // recorded the trail could not answer it.
       ...(auth.ok && auth.principal.organizationId ? { organizationId: auth.principal.organizationId } : {}),
+      // And which person. "Did anybody with no reason to look at this chart
+      // look at it" is the question an access review turns on, and it needs a
+      // name rather than a credential id to be answerable at all.
+      ...(auth.ok && auth.principal.practitionerId ? { practitionerId: auth.principal.practitionerId } : {}),
       ...entry,
     });
   };
@@ -970,6 +976,69 @@ async function route(
   }
   if (path === "/api/audit/verify" && method === "GET") {
     return send(res, 200, tenant.audit.verifyChain());
+  }
+  if (path === "/api/audit/review" && method === "GET") {
+    // The questions a privacy office actually asks. `/api/audit` answers "what
+    // rows are there"; this answers "who looked at this patient, did they have
+    // any reason to, and what should I look at first".
+    //
+    // Reading it is itself an access to something about a patient, so it is
+    // audited like any other — a review surface that read charts' access logs
+    // without leaving a trace would be the one privileged back door in a
+    // system whose whole argument is that there are none.
+    const patient = url.searchParams.get("patient");
+    if (!patient) return send(res, 400, { error: "patient required" });
+    const report = tenant.review.forPatient(patient, {
+      relationshipWindowDays: num(url.searchParams.get("window_days")),
+      limit: num(url.searchParams.get("limit")),
+    });
+    tenant.audit.record({
+      action: "R",
+      outcome: 0,
+      resourceType: "AuditEvent",
+      patient,
+      count: report.accesses.length,
+      principalId: auth.ok ? auth.principal.id : "unauthenticated",
+      principalKind: auth.ok ? auth.principal.kind : "unknown",
+      method,
+      path,
+      detail: "access review",
+      ...(auth.ok && auth.principal.organizationId ? { organizationId: auth.principal.organizationId } : {}),
+      ...(auth.ok && auth.principal.practitionerId ? { practitionerId: auth.principal.practitionerId } : {}),
+    });
+    return send(res, 200, report);
+  }
+  if (path === "/api/audit/review/dismiss" && method === "POST") {
+    // Closing a flag, with a reason that is itself kept. A review whose
+    // judgements vanish re-raises the same flag next month with nothing to say
+    // it was already answered, and the answer is usually the only place the
+    // context lives.
+    const body = JSON.parse(await readBody(req)) as { auditId?: string; flag?: string; reason?: string };
+    if (!body.auditId || !body.flag || !body.reason) {
+      return send(res, 400, { error: "auditId, flag and reason required" });
+    }
+    try {
+      tenant.review.dismiss({
+        auditId: body.auditId,
+        flag: body.flag as Parameters<typeof tenant.review.dismiss>[0]["flag"],
+        reason: body.reason,
+        by: auth.ok ? auth.principal.id : "unauthenticated",
+      });
+      tenant.audit.record({
+        action: "U",
+        outcome: 0,
+        resourceType: "AuditEvent",
+        resourceId: body.auditId,
+        principalId: auth.ok ? auth.principal.id : "unauthenticated",
+        principalKind: auth.ok ? auth.principal.kind : "unknown",
+        method,
+        path,
+        detail: `dismissed ${body.flag}: ${body.reason}`,
+      });
+      return send(res, 200, { ok: true });
+    } catch (err) {
+      return send(res, 400, { error: err instanceof Error ? err.message : "cannot dismiss" });
+    }
   }
   if (path === "/fhir/AuditEvent" && method === "GET") {
     const rows = tenant.audit.list({
@@ -2266,6 +2335,7 @@ async function route(
       scopes?: string[];
       expiresAt?: string;
       organizationId?: string;
+      practitionerId?: string;
     };
     if (!body.name) return send(res, 400, { error: "name required" });
     try {
@@ -2275,6 +2345,9 @@ async function route(
         // Checked against the directory inside `issue()`, so a credential
         // either names an organization that exists or names none at all.
         ...(body.organizationId ? { organizationId: body.organizationId } : {}),
+        // Likewise checked: a credential acting as a practitioner nobody has
+        // registered would stamp an unresolvable name on every row it produces.
+        ...(body.practitionerId ? { practitionerId: body.practitionerId } : {}),
       });
       audit({
         action: "C",
@@ -2282,7 +2355,8 @@ async function route(
         resourceId: issued.id,
         detail:
           `scopes: ${issued.scopes.join(" ")}` +
-          (issued.organizationId ? `; organization: ${issued.organizationId}` : "; no organization"),
+          (issued.organizationId ? `; organization: ${issued.organizationId}` : "; no organization") +
+          (issued.practitionerId ? `; practitioner: ${issued.practitionerId}` : ""),
       });
       return send(res, 201, issued);
     } catch (err) {

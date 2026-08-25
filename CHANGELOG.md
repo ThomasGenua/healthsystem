@@ -11,6 +11,25 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **An access review a privacy officer can run** (#35). `GET
+  /api/audit/review?patient=` answers what the trail held every ingredient for
+  and could not be asked: who looked, under what declared purpose, whether
+  anything clinical linked them to that patient, and what deserves attention
+  first. Each flag — self-lookup, shared surname, no treatment relationship,
+  break-glass, out-of-hours, unusual volume against that person's own median —
+  says why it fired, and is a rule somebody can read and argue with rather than
+  a model, which is the right standard for something that can end in an HR
+  process. A flag is closed with a reason that is kept, because a review whose
+  judgements vanish re-raises the same question next month with nothing to say
+  it was answered. The chain's verification travels on the report: an extract
+  attached to an investigation is worth what its source is worth.
+- **Credentials carry a practitioner**, which is what made the above possible.
+  The clinical stores have always recorded an actor and the audit trail a
+  credential, with nothing joining them — so "did whoever read this chart have
+  any reason to" was unanswerable from inside the database. A credential naming
+  nobody is reported as `unattributable` rather than passed over: an access
+  nothing could check must not look like one that was checked and passed.
+
 - **Migration that cannot report success over a gap** (#20). What makes
   migration dangerous is that you cannot tell whether it worked by
   whether it errored: a run loading 96% of the allergies produces no

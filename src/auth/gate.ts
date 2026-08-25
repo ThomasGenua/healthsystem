@@ -52,6 +52,20 @@ export interface Principal {
    * than permissive, which is the correct direction to be wrong in.
    */
   organizationId?: string;
+  /**
+   * Which practitioner the caller acts as, as a directory practitioner id.
+   *
+   * This is what lets an access review ask whether the person who read a chart
+   * had any reason to. The clinical stores have always recorded an actor and
+   * the audit trail has always recorded a credential; with no join between
+   * them, "did anybody with no relationship to this patient read their record"
+   * was a question the trail held all the data for and could not answer.
+   *
+   * Absent for an integration credential, which acts as nobody. That is a real
+   * answer rather than a missing one, and a review reports it as such instead
+   * of inventing a person to attribute the access to.
+   */
+  practitionerId?: string;
 }
 
 export type AuthOutcome =
@@ -165,6 +179,7 @@ export class AuthGate {
             // organization the caller could assert is an organization they
             // could assert their way out of a directive with.
             ...(hit.row.organization_id ? { organizationId: hit.row.organization_id } : {}),
+            ...(hit.row.practitioner_id ? { practitionerId: hit.row.practitioner_id } : {}),
           }
         : null;
     }
@@ -176,6 +191,7 @@ export class AuthGate {
         scopes: v.scopes,
         tenantId: v.tenantId ?? DEFAULT_TENANT,
         ...(v.organizationId ? { organizationId: v.organizationId } : {}),
+        ...(v.practitionerId ? { practitionerId: v.practitionerId } : {}),
       };
     }
     return null;

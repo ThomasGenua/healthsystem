@@ -441,6 +441,15 @@ export interface ApiKeyRow {
    * withheld-one rather than as somebody else.
    */
   organization_id: string | null;
+  /**
+   * The practitioner this credential acts as, as a directory practitioner id.
+   *
+   * The join the audit trail was missing. Clinical stores record an actor and
+   * the trail records a credential; without this there is no way to ask whether
+   * whoever read a chart had any clinical relationship to that patient. Null
+   * for a system integration, which acts as nobody and should say so.
+   */
+  practitioner_id: string | null;
 }
 
 /** Declarative conformance pack: profile rules per resource type. */
