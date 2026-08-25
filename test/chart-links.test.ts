@@ -556,6 +556,38 @@ test("a partly withheld assembled chart says so on every member's audit row", as
   }
 });
 
+test("a caller a directive excludes cannot sever the link either", async () => {
+  // Making the link refuses a caller either patient withheld; severing must
+  // refuse the same caller, or the identity graph is writable from outside
+  // the lockbox in one direction — a blocked caller could quietly drop B
+  // out of every assembled chart and safety-check union B's allergies
+  // would have reached, without ever reading B's record.
+  const s = await boot();
+  try {
+    const link = s.t.links.link(A, B, { ...REGISTRAR, evidence: EVIDENCE });
+    s.t.consent.record({
+      patientId: B,
+      kind: "withhold-all",
+      by: { actorId: "privacy-office", actorKind: "practitioner" },
+    });
+    const res = await s.post("/api/clinical/unlink", { link: link.linkId, reason: "tidying the graph" });
+    assert.equal(res.status, 403);
+    assert.deepEqual(s.t.links.membersOf(A), [A, B].sort(), "the assertion stands");
+
+    // Break-glass is the recorded, reviewed way through — same as reading.
+    s.t.consent.breakGlass({
+      patientId: B,
+      by: { actorId: s.admin.id, actorKind: "apikey" },
+      reason: "correcting a wrong link before the assembled chart misleads anyone",
+    });
+    const after = await s.post("/api/clinical/unlink", { link: link.linkId, reason: "linked in error; father and son" });
+    assert.equal(after.status, 200);
+    assert.deepEqual(s.t.links.membersOf(A), [A]);
+  } finally {
+    await s.close();
+  }
+});
+
 test("the console's chart loader can see a directive 403", () => {
   // The console helper throws on every 403 so its tabs render scope errors —
   // and when that arrived (merged from the privacy office branch), it

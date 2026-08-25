@@ -1584,6 +1584,20 @@ async function route(
     if (path === "/api/clinical/unlink" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as { link?: string; reason?: string };
       if (!body.link || !body.reason) return send(res, 400, { error: "link and reason required" });
+      // Withdrawing the assertion is a clinical decision about both charts,
+      // exactly as making it was. The link route refuses a caller either
+      // patient's directive excludes; severing has to refuse the same
+      // caller, or the identity graph is writable from outside the lockbox
+      // in one direction — a caller blocked from B could quietly drop B out
+      // of every assembled chart and every safety-check union that B's
+      // allergies would have reached.
+      for (const id of tenant.links.patientsOf(body.link)) {
+        const block = withheld(id, ["Patient"]);
+        if (block) {
+          audit({ action: "U", outcome: 4, resourceType: "Patient", patient: id, detail: `unlink refused: withheld by patient directive ${block.id}` });
+          return send(res, 403, { error: "this record is withheld by a patient directive", breakGlass: "POST /api/clinical/break-glass" });
+        }
+      }
       const who = auth.ok ? auth.principal.id : "unauthenticated";
       try {
         const event = tenant.links.unlink(body.link, {
