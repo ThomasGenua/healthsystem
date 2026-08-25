@@ -48,6 +48,7 @@ import { Migration } from "../migrate/run.ts";
 import { ConsentDirectives } from "../patient/consent.ts";
 import { PatientMessaging } from "../patient/messaging.ts";
 import { PatientAccess } from "../patient/access.ts";
+import { PrivacyOffice } from "../privacy/office.ts";
 import { RetentionRunner, type RetentionPolicy } from "./retention.ts";
 import { buildAck, getHl7, parseHl7, serializeHl7 } from "../hl7/parser.ts";
 import { startMllpServer, type MllpServerHandle } from "../hl7/mllp.ts";
@@ -113,6 +114,8 @@ export interface TenantView {
   /** Bulk loads from an incumbent system, and whether they were complete. */
   migration: Migration;
   consent: ConsentDirectives;
+  /** Queues, clocks, holds, incidents and the assurance catalogue. */
+  privacy: PrivacyOffice;
   /** The assembled chart, over exactly the stores above. */
   workspace: Workspace;
   /** Visits, and what belongs to each one. */
@@ -335,13 +338,22 @@ export class Engine {
       subs.notify(result, resource);
       ingestFhir(directory, resource);
     });
+    // One AuditStore per view so the in-memory chain tip is shared. Consent,
+    // tasks, patient access and the care team are the same instances the
+    // privacy office reads — two copies would diverge the queues it is
+    // charged with emptying.
+    const audit = new AuditStore(db);
+    const consent = new ConsentDirectives(db, {
+      ...(this.noticeChannel ? { dispatcher: new ChannelNoticeDispatcher(db, this.noticeChannel) } : {}),
+    });
+    const privacy = new PrivacyOffice({ db, consent, patientAccess, careTeam, tasks });
     const view: TenantView = {
       tenantId,
       db,
       fhir,
       subs,
       keys: new ApiKeyStore(db, directory),
-      audit: new AuditStore(db),
+      audit,
       clinical,
       notes,
       immunizations,
@@ -359,9 +371,8 @@ export class Engine {
       patientAccess,
       registry: new Registry(db),
       migration: new Migration(db, { clinical, meds }),
-      consent: new ConsentDirectives(db, {
-        ...(this.noticeChannel ? { dispatcher: new ChannelNoticeDispatcher(db, this.noticeChannel) } : {}),
-      }),
+      consent,
+      privacy,
       workspace: new Workspace({
         record: clinical,
         notes,

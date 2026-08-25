@@ -10,6 +10,8 @@ import { requiredScope, scopesFromSmart } from "../src/auth/scopes.ts";
 
 test("route scope map: public routes, admin surface, and read/write split", () => {
   assert.equal(requiredScope("GET", "/"), null);
+  assert.equal(requiredScope("GET", "/ui"), null);
+  assert.equal(requiredScope("GET", "/me"), null);
   assert.equal(requiredScope("GET", "/api/health"), null);
   assert.equal(requiredScope("GET", "/fhir/metadata"), null);
 

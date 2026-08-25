@@ -93,12 +93,14 @@ export function scopesFromSmart(raw: Iterable<string>): Set<Scope> {
 /**
  * The scope a request needs, or null when the route is public.
  *
- * Public by design: the admin UI shell, liveness, and the CapabilityStatement.
- * A CapabilityStatement is a discovery document — a client has to be able to
- * read it to learn how to authenticate against everything else.
+ * Public by design: the admin UI shell, the patient HTML shell at `/me`
+ * (static chrome, no PHI — chart access is `/patient/*` plus OAuth),
+ * liveness, and the CapabilityStatement. A CapabilityStatement is a
+ * discovery document — a client has to be able to read it to learn how to
+ * authenticate against everything else.
  */
 export function requiredScope(method: string, path: string): Scope | null {
-  if (method === "GET" && (path === "/" || path === "/ui")) return null;
+  if (method === "GET" && (path === "/" || path === "/ui" || path === "/me")) return null;
   if (method === "GET" && path === "/api/health") return null;
   // Metrics carry counters, ages and channel ids — no patient data — and a
   // scrape happens before any credential is configured, so it is open like

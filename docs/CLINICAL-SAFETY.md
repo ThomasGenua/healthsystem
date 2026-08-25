@@ -24,9 +24,11 @@ the post-0.5.0 line: v0.5.0 plus off-machine backup, organization identity
 on credentials, break-glass notice dispatch, encounters, the provider
 directory, FHIR projection of that directory, the refusal/fault split
 in `phi()`, the longitudinal-chart increment, durable patient messaging,
-the OAuth patient/proxy boundary, the laboratory result bridge, and
-pharmacy transmission, and the migration loader).
-**Last reviewed:** 2026-08-24.
+the OAuth patient/proxy boundary, the laboratory result bridge,
+pharmacy transmission, the migration loader, the privacy office, the
+patient HTML shell at `/me`, the access-review join on the trail,
+travelling clinics and the waitlist, and channel configuration as a ledger).
+**Last reviewed:** 2026-08-25.
 **Reviewer of this draft:** the author of the controls, not an independent
 clinical safety officer. That gap is residual risk R-01.
 
@@ -58,6 +60,9 @@ In scope, as stores and an authenticated HTTP API:
 - referrals and a unified work inbox
 - a schedule that cannot double-book a seat
 - consent directives, break-glass, and an OAuth/grant-bound patient API
+- a privacy office: reviews, legal holds, incidents, access clocks, disclosures, an assurance catalogue
+- an access review of the trail (`GET /api/audit/review`), complementary to those queues
+- travelling-clinic visits and a waitlist whose order is stated policy
 - a FHIR R4 facade, including the local provider directory as resources
 - hash-chained message lineage and a hash-chained access audit
 - verified backup, including an off-machine replica when configured
@@ -69,13 +74,13 @@ These are not gaps discovered later. They are scope:
 | Out of scope | Why that is a clinical statement |
 |---|---|
 | A clinician user interface | The chart is an API. "A clinician can use this today" is not claimed. A consumer that ignores `complete === false` reintroduces H-06. |
-| A patient application | The OAuth/grant JSON boundary exists; identity-proofing enrolment, usable EN/FR UX, notifications and accessibility validation do not. |
+| A patient application | `GET /me` is chrome (EN/FR, landmarks, an honest banner). Identity-proofing enrolment, notifications and accessibility validation are not. Do not call it a portal. |
 | Clinical decision-support *content* | The check is here; the interaction table is not. An 80% complete table is one prescribers learn to trust. |
 | Machine learning | Nothing in this repository infers, predicts or scores. No output should be read as though it did. |
 | A certified PSI / Projectathon result | Conformance packs encode published profiles and pass shipped fixtures. |
 | Authoritative provincial directories | The local registry is maintained here. Syncing from a provincial source is a later question. |
 | Horizontal multi-writer scale | One writer per database. A territorial hub is #25, last on purpose. |
-| Bulk migration from an incumbent | How a real deployment starts, and absent (#20). |
+| Extraction from an incumbent | The declare-and-check loader exists (#20). Getting data out of the incumbent is that vendor's export. |
 
 ---
 
@@ -168,9 +173,9 @@ makes the control a fact rather than a comment.
 | H-03 | Signed note revised after attestation | Edit in place after signature | The attested text is not what the chart now shows | Major | Low | `revise` refuses a signed note; only a separately signed addendum follows | `test/clinical-notes.test.ts` — "a signed note cannot be revised" |
 | H-04 | Wrong patient selected at lookup | Shared name/DOB or a shared identifier | Care, orders and meds applied to the wrong person | Catastrophic | Medium | Derived index; duplicates surfaced, never merged | `test/patient-index.test.ts` — "one identifier naming two charts is surfaced, not merged" |
 | H-05 | Automatic merge of two charts | An algorithm decides they are the same person | One chart acquires the other's allergies; unmerge is not honest | Catastrophic | Low | `duplicates()` reports; nothing merges | `test/patient-index.test.ts` — "one identifier naming two charts is surfaced, not merged" |
-| H-70 | A link made in error puts one person's record on another's chart | A clinician links two charts that are two people — twins, a father and son, a shared name and birth date | Another patient's allergies and medications are read as context for this patient's care | Catastrophic | Low | A link is a person's assertion on evidence worth weighing, never inferred; the assembled chart says on its face it is assembled and every row stays attributed to its own chart; an unlink restores the prior view exactly | `test/chart-links.test.ts` — "the assembled chart carries the linked member's allergy, and says on its face that it is assembled"; `test/chart-links.test.ts` — "unlinking restores the prior view exactly, with nothing lost on either side" |
-| H-71 | Assembly across a link hides one member's failure | One member's section fails or is thinner while another's loads | The assembled chart reads complete while half the person is missing | Catastrophic | Low | Incompleteness surfaces per section; summary statuses are the worst member's answer, never the best | `test/chart-links.test.ts` — "a member whose section fails makes the assembled chart incomplete, not shorter"; `test/chart-links.test.ts` — "the assembled allergy status is the worst member's answer" |
-| H-75 | Safety check consults one chart of a linked person — or reads past a directive | The check reads the named chart while the summary assembles across members; or unions a chart the caller's directive check refuses | The assembled chart shows a penicillin allergy the safety check calls clear; or the check becomes an ingredient-by-ingredient oracle over a withheld allergy list | Catastrophic | Low | Consent composes into the check as into the chart, member by member and section by section, the named patient included: a whole-record directive refuses with the break-glass path, a locked section stays out, and every gap is a blocking finding, never silence | `test/chart-links.test.ts` — "the safety check answers for the person the link asserts"; `test/chart-links.test.ts` — "a withheld member is not consulted by the safety check — and the check says so"; `test/chart-links.test.ts` — "the safety check is inside the lockbox, with the same emergency path"; `test/chart-links.test.ts` — "a scoped lock on a member locks that section of the check" |
+| H-77 | A link made in error puts one person's record on another's chart | A clinician links two charts that are two people — twins, a father and son, a shared name and birth date | Another patient's allergies and medications are read as context for this patient's care | Catastrophic | Low | A link is a person's assertion on evidence worth weighing, never inferred; the assembled chart says on its face it is assembled and every row stays attributed to its own chart; an unlink restores the prior view exactly | `test/chart-links.test.ts` — "the assembled chart carries the linked member's allergy, and says on its face that it is assembled"; `test/chart-links.test.ts` — "unlinking restores the prior view exactly, with nothing lost on either side" |
+| H-78 | Assembly across a link hides one member's failure | One member's section fails or is thinner while another's loads | The assembled chart reads complete while half the person is missing | Catastrophic | Low | Incompleteness surfaces per section; summary statuses are the worst member's answer, never the best | `test/chart-links.test.ts` — "a member whose section fails makes the assembled chart incomplete, not shorter"; `test/chart-links.test.ts` — "the assembled allergy status is the worst member's answer" |
+| H-82 | Safety check consults one chart of a linked person — or reads past a directive | The check reads the named chart while the summary assembles across members; or unions a chart the caller's directive check refuses | The assembled chart shows a penicillin allergy the safety check calls clear; or the check becomes an ingredient-by-ingredient oracle over a withheld allergy list | Catastrophic | Low | Consent composes into the check as into the chart, member by member and section by section, the named patient included: a whole-record directive refuses with the break-glass path, a locked section stays out, and every gap is a blocking finding, never silence | `test/chart-links.test.ts` — "the safety check answers for the person the link asserts"; `test/chart-links.test.ts` — "a withheld member is not consulted by the safety check — and the check says so"; `test/chart-links.test.ts` — "the safety check is inside the lockbox, with the same emergency path"; `test/chart-links.test.ts` — "a scoped lock on a member locks that section of the check" |
 | H-06 | Empty chart panel read as "none" | A store threw, a list was cut, a section was withheld — and the renderer shows a blank | Prescribe against an allergy list that failed to load | Catastrophic | Medium | Every section carries `complete` / incompleteness (`unavailable`, `truncated`, `withheld`) | `test/workspace.test.ts` — "a section that fails is empty and says why, rather than reading as none" |
 | H-07 | Empty visit read as "nothing happened" | Failed section or missing encounter rendered blank | Handover misses the orders and results of the visit | Major | Medium | Visit assembly is honest; membership is by encounter, not a time window | `test/encounters.test.ts` — "the assembled visit says a section failed, rather than rendering as nothing happened" |
 | H-45 | Empty immunization panel read as "none" | Never asked and documented-empty render the same | A child is assumed vaccinated when nobody asked | Major | Medium | `never-asked` is a status; a refusal needs a reason | `test/immunizations.test.ts` — "nobody asked and a documented history are different answers" |
@@ -245,9 +250,21 @@ makes the control a fact rather than a comment.
 | H-32 | Cross-custodian read on a shared node | A query that omits `tenant_id` | Another organization's chart | Catastrophic | Low | Tenant in every statement; source-reading test | `test/tenant-scoping.test.ts` — "no statement reads or writes tenant-scoped data without naming a tenant" |
 | H-33 | Feed credential subscribes its way to the record | `write` on `/fhir/` included Subscription | A lab key becomes a standing read | Catastrophic | Low | Subscription is admin-scoped | `test/subscription-scope.test.ts` — "a feed credential cannot subscribe its way to the clinical record" |
 | H-34 | Admin path reached without admin scope | Gate and router disagree on spelling | Unauthorized PHI or operator action | Catastrophic | Low | One gate; adversarial path spellings | `test/auth-bypass.test.ts` — "no spelling of an admin path reaches admin data without the admin scope" |
-| H-72 | A link overrides a member's directive | Assembly reads every member; one of them said no | A chart the patient withheld is disclosed because a chart linked to it was opened | Catastrophic | Low | Fail-closed union: any member's directive withholds or locks the assembly; break-glass lifts only the member it was broken for | `test/chart-links.test.ts` — "a directive on either member withholds across the assembled view"; `test/chart-links.test.ts` — "a scoped directive on one member locks that section of the assembled chart" |
-| H-73 | A patient-portal grant follows the link | The portal assembles the way the clinician chart does | A proxy authorized for one chart reads the linked person's record | Catastrophic | Low | The portal is deliberately blind to links; a grant names one chart and serves one chart | `test/chart-links.test.ts` — "the patient portal never assembles across a link" |
-| H-74 | A linked read invisible to a member's access review | One audit row, written against the requested chart only | The linked member's "who looked at my record" answer omits a disclosure that included them | Major | Low | One audit row per disclosed member; the read lands on every member's trail | `test/chart-links.test.ts` — "reading a linked chart lands on every member's trail" |
+| H-79 | A link overrides a member's directive | Assembly reads every member; one of them said no | A chart the patient withheld is disclosed because a chart linked to it was opened | Catastrophic | Low | Fail-closed union: any member's directive withholds or locks the assembly; break-glass lifts only the member it was broken for | `test/chart-links.test.ts` — "a directive on either member withholds across the assembled view"; `test/chart-links.test.ts` — "a scoped directive on one member locks that section of the assembled chart" |
+| H-80 | A patient-portal grant follows the link | The portal assembles the way the clinician chart does | A proxy authorized for one chart reads the linked person's record | Catastrophic | Low | The portal is deliberately blind to links; a grant names one chart and serves one chart | `test/chart-links.test.ts` — "the patient portal never assembles across a link" |
+| H-81 | A linked read invisible to a member's access review | One audit row, written against the requested chart only | The linked member's "who looked at my record" answer omits a disclosure that included them | Major | Low | One audit row per disclosed member; the read lands on every member's trail | `test/chart-links.test.ts` — "reading a linked chart lands on every member's trail" |
+
+### Privacy office and assurance
+
+| ID | Hazard | Cause | Effect on a patient | Sev. | Like. | Control | Evidence |
+|---|---|---|---|---|---|---|---|
+| H-70 | Review closed with unaddressed flags | Close clicked to empty a queue | An unreviewed break-glass teaches the ward that breaking glass costs nothing | Major | Medium | Close refused while flags are open; addressing needs a written reason | `test/privacy-office.test.ts` — "closing a review with unaddressed flags is refused" |
+| H-71 | Retention sweep runs through a legal hold | Sweep does not consult holds | The message log is destroyed while a matter is live | Catastrophic | Low | Any active hold on the tenant skips the whole sweep; messages are not patient-keyed | `test/privacy-office.test.ts` — "an active legal hold skips the retention sweep" |
+| H-72 | Access request completed with no disclosure record | `completeRequest` remains possible without one | A privacy office cannot say what left the building | Major | Medium | `fulfillAccess` records a disclosure; completing without one is flagged, not blocked | `test/privacy-office.test.ts` — "fulfilling an access request records a disclosure" |
+| H-73 | Incident closed without saying whether patients were told | Close to empty the queue | A notification duty is silently unmet | Major | Medium | Close refused without told/not-told; not-told needs a written why | `test/privacy-office.test.ts` — "closing an incident without saying whether patients were told is refused" |
+| H-74 | Active subprocessor with no hosting region | Register a vendor without saying where the disks are | PHI leaves the country unnoticed | Major | Low | Active status refused without a region; a candidate may have none | `test/privacy-office.test.ts` — "an active subprocessor without a hosting region is refused" |
+| H-75 | Finding closed by forgetting it | Status flipped with no remediation | The catalogue says a control is in-place when it is not | Major | Medium | Close needs remediation or an accepted residual risk; BACKUP-02 stays partial | `test/privacy-office.test.ts` — "closing a finding without remediation or residual risk is refused" |
+| H-76 | After-hours decided from the wall clock | Review uses local time at the moment of the review | A 03:00 UTC read is missed because the officer opened the review at noon | Moderate | Medium | UTC timestamp of the access, not `Date.now()` | `test/privacy-office.test.ts` — "after-hours is decided from a UTC timestamp, not the wall clock" |
 
 ### Interface, backup, measurement
 
@@ -282,7 +299,7 @@ twice.
 |---|---|---|---|
 | R-01 | This case has not been signed by an independent CSO | The repository can write the log; it cannot appoint the clinician | Name a CSO before go-live; treat this file as the manufacturer's draft |
 | R-02 | No clinician UI | Backend first. A renderer that ignores `complete === false` reintroduces H-06 | Do not put an untested consumer in front of a prescriber |
-| R-03 | No patient application or enrolment flow | The OAuth/grant JSON boundary is mounted; identity proofing, usable EN/FR UX, notifications and accessibility validation are not | Do not call the API a portal or enrol a real patient without an approved proofing process |
+| R-03 | No certified patient portal or enrolment flow | `GET /me` is static chrome; the OAuth/grant JSON boundary is mounted; identity proofing, notifications and accessibility validation are not | Do not call `/me` a portal or enrol a real patient without an approved proofing process |
 | R-04 | Decision-support mechanism without content (H-20) | A partial table is more dangerous than a small one | Licence an interaction source, or accept that interactions are unchecked |
 | R-05 | No machine learning | Section 7 asked; nothing here does it | Do not read any output as a prediction |
 | R-06 | MLLP is unauthenticated (H-43) | The protocol has nothing to hook | VPN, private APN, or transport mTLS — not Portage |
@@ -298,6 +315,7 @@ twice.
 | R-15 | Linking two charts is a person's decision; `duplicates()` stays advisory (#34) | An algorithm that links on a shared name and birth date is H-05 with a reversibility feature — twins, and a father and son with one name between them, are exactly who it would join | Review the duplicates worklist; link on evidence somebody can weigh afterwards; unlink with a reason when it was wrong |
 | R-16 | Remote backup unconfigured is a posture, not degraded | A missing replica is a choice | Configure `PORTAGE_BACKUP_REMOTE` or accept that RPO is the local disk |
 | R-17 | Worklists only work if someone opens them (H-11, H-13, H-23, H-24) | The product can put a row on a list; it cannot make a person look | Staff the chase lists; do not treat an empty personal inbox as "nothing owed" |
+| R-19 | After-hours uses UTC, not clinic-local time (H-76) | A single-zone engine; tests pin UTC timestamps | Do not staff the after-hours queue as if it were local clinic hours |
 
 ---
 
