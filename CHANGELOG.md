@@ -11,6 +11,24 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Channel configuration as a ledger** (#36). Everything else here is
+  provenance-carrying — messages chain, the record is append-only, audit rows
+  chain — and the configuration that decides how all of it is produced was
+  overwritten in place. Every change is now a version with who, when, why and
+  how it came to be; the first versioned change on a pre-existing channel
+  captures the state it found, so upgrading cannot destroy the last
+  unversioned config. Versions diff at the field. A rollback restores old
+  content as a new version — never by mutation — and brings a deleted channel
+  back, because deletion is a marker in the history rather than the end of
+  one. `GET /api/channels/export` and `POST /api/channels/import` move the
+  whole configuration as the document source control holds: the import is a
+  plan before it is an action, a dry run writes nothing, and what the
+  document does not mention is reported, never deleted.
+- **Every message records which configuration processed it.** The lineage
+  claim the rest of the system makes, extended to the config boundary: a
+  message that went wrong is traceable to the exact rules that were live when
+  it did, instead of to whatever the config says now.
+
 - **Travelling clinics** (#39). A visit — the block of slots a specialist's
   two days in a community actually are — is planned, repeated ("the same as
   last time" is one call), moved and cancelled as one thing. Its slots stay

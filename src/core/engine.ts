@@ -40,6 +40,7 @@ import { ingestFhir } from "../directory/fhir.ts";
 import { ChannelNoticeDispatcher } from "../patient/notice.ts";
 import { AccessReview } from "../audit/review.ts";
 import { Clinics } from "../schedule/clinics.ts";
+import { ChannelVersions } from "./channel-versions.ts";
 import { Schedule } from "../schedule/store.ts";
 import { Registry } from "../population/registry.ts";
 import { Migration } from "../migrate/run.ts";
@@ -193,6 +194,8 @@ export class Engine {
   readonly keys: ApiKeyStore;
   readonly audit: AuditStore;
   readonly retention: RetentionRunner;
+  /** The ledger of every shape each channel's configuration has had. */
+  readonly channelVersions: ChannelVersions;
   readonly mappings = new Map<string, MappingDoc>();
   /**
    * Laboratory dialects, by id. Configuration rather than code: every lab
@@ -243,6 +246,7 @@ export class Engine {
     this.subs = new SubscriptionManager(this.db, this.worker);
     this.keys = new ApiKeyStore(this.db, directory);
     this.audit = new AuditStore(this.db);
+    this.channelVersions = new ChannelVersions(this.db);
     this.retention = new RetentionRunner(this.db, opts.retention ?? {}, this.audit);
     this.connectors = {
       sql: opts.connectors?.sql ?? connectSql,
@@ -467,17 +471,52 @@ export class Engine {
     this.db.close();
   }
 
-  /** Persist and activate a channel. Replaces a running channel of the same id. */
-  async addChannel(config: ChannelConfig): Promise<void> {
+  /**
+   * Persist and activate a channel. Replaces a running channel of the same id.
+   *
+   * Every change lands as a version first — who, when, why, and what it said
+   * before — because the configuration that decides how messages are produced
+   * was the last thing here still overwritten in place. Callers that do not
+   * say who they are are recorded as the system acting on its own, which is
+   * itself information: a config change nobody claims is worth noticing.
+   */
+  async addChannel(config: ChannelConfig, opts: { by?: string; note?: string } = {}): Promise<void> {
     validateChannel(config);
-    this.db.upsertChannel(config.id, config.name, config.enabled !== false, JSON.stringify(config));
+    this.channelVersions.commit({
+      channelId: config.id,
+      name: config.name,
+      enabled: config.enabled !== false,
+      config: JSON.stringify(config),
+      by: opts.by ?? "system",
+      note: opts.note ?? "(no note given)",
+      origin: "edit",
+    });
     if (this.channels.has(config.id)) await this.deactivate(config.id);
     if (config.enabled !== false) await this.activate(config);
   }
 
-  async removeChannel(id: string): Promise<void> {
+  async removeChannel(id: string, opts: { by?: string; note?: string } = {}): Promise<void> {
     await this.deactivate(id);
+    // The deletion marker goes into the history before the row goes, so "who
+    // turned the ADT feed off on Tuesday" survives the feed being turned off.
+    this.channelVersions.markDeleted(id, { actorId: opts.by ?? "system", note: opts.note ?? "(no note given)" });
     this.db.deleteChannel(id);
+  }
+
+  /**
+   * Restores an old configuration as a new version and puts it live —
+   * including recreating a channel that was deleted, which is what makes the
+   * deletion marker an entry in a history rather than the end of one.
+   */
+  async rollbackChannel(id: string, toVersion: number, opts: { by?: string; note?: string } = {}): Promise<ChannelConfig> {
+    const restored = this.channelVersions.rollback(id, toVersion, {
+      actorId: opts.by ?? "system",
+      note: opts.note ?? `rollback to version ${toVersion}`,
+    });
+    const config = JSON.parse(restored.config) as ChannelConfig;
+    if (this.channels.has(id)) await this.deactivate(id);
+    if (restored.enabled === 1) await this.activate(config);
+    return config;
   }
 
   listChannels(): Array<{ id: string; name: string; enabled: boolean; running: boolean; source: string; mllpPort?: number }> {
