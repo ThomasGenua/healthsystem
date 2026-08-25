@@ -67,6 +67,16 @@ export interface AuditEntry {
    * credential could not say, which is recorded as such rather than guessed.
    */
   organizationId?: string;
+  /**
+   * Which practitioner the caller acted as, when the credential says one.
+   *
+   * The join that makes an access review possible: the clinical stores record
+   * an actor and this trail records a credential, and without this there was no
+   * way to ask whether whoever read a chart had any relationship to the
+   * patient. Absent means the credential acts as nobody — an integration —
+   * which is an answer rather than a gap.
+   */
+  practitionerId?: string;
 }
 
 export interface AuditRow {
@@ -87,6 +97,7 @@ export interface AuditRow {
   detail: string | null;
   purpose_of_use: string | null;
   organization_id: string | null;
+  practitioner_id: string | null;
   hash: string;
   prev_hash: string | null;
 }
@@ -95,6 +106,8 @@ export interface AuditFilter {
   principal?: string;
   /** Every access by callers acting for one organization. */
   organization?: string;
+  /** Every access by one person, across whatever credentials they used. */
+  practitioner?: string;
   patient?: string;
   resourceType?: string;
   /** ISO timestamp; rows at or after it. */
@@ -144,6 +157,11 @@ function digest(prev: string | null, e: AuditEntry, id: string, recordedAt: stri
     // `purposeOfUse` is validated against a fixed list of codes and cannot
     // contain the separator.
     .update(e.organizationId ? `|${e.organizationId}` : "")
+    // Same conditional append, same reason: a row without a practitioner
+    // hashes to exactly what it hashed to before this field existed, so an
+    // upgraded database's trail keeps verifying instead of reporting itself as
+    // forged the first time somebody checks it.
+    .update(e.practitionerId ? `|${e.practitionerId}` : "")
     .digest("hex");
 }
 
@@ -177,8 +195,8 @@ export class AuditStore {
         `INSERT INTO audit_events
            (tenant_id, id, recorded_at, action, outcome, principal_id, principal_kind, method, path,
             resource_type, resource_id, patient, count, source_ip, detail, purpose_of_use,
-            organization_id, hash, prev_hash)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            organization_id, practitioner_id, hash, prev_hash)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         this.db.tenantId,
@@ -198,6 +216,7 @@ export class AuditStore {
         entry.detail ?? null,
         entry.purposeOfUse ?? null,
         entry.organizationId ?? null,
+        entry.practitionerId ?? null,
         hash,
         prev
       );
@@ -225,6 +244,10 @@ export class AuditStore {
     if (filter.organization) {
       where.push("organization_id = ?");
       args.push(filter.organization);
+    }
+    if (filter.practitioner) {
+      where.push("practitioner_id = ?");
+      args.push(filter.practitioner);
     }
     if (filter.patient) {
       where.push("patient = ?");
@@ -303,6 +326,7 @@ export class AuditStore {
           count: r.count ?? undefined,
           purposeOfUse: r.purpose_of_use ?? undefined,
           organizationId: r.organization_id ?? undefined,
+          practitionerId: r.practitioner_id ?? undefined,
         },
         r.id,
         r.recorded_at

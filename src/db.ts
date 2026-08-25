@@ -78,6 +78,7 @@ export const TENANT_SCOPED_TABLES = [
   "patient_messages",
   "patient_thread_events",
   "lab_identity_holds",
+  "access_review_dismissals",
   "prescriptions",
   "prescription_events",
   "migration_runs",
@@ -290,7 +291,15 @@ CREATE TABLE IF NOT EXISTS api_keys (
   -- when the key is issued. Null means the credential cannot say, which a
   -- withhold-from-organization directive treats as "possibly the withheld
   -- one" — over-restrictive on purpose rather than permissive by default.
-  organization_id TEXT
+  organization_id TEXT,
+  -- The practitioner this credential acts as, resolved against the directory.
+  --
+  -- Separate from the organization, and the join the audit trail was missing:
+  -- clinical stores record an actor ("dr-tetso") and the trail records a
+  -- credential, so before this there was no way to ask whether the person who
+  -- read a chart had any clinical relationship to that patient. Null for a
+  -- system integration, which genuinely acts as no one.
+  practitioner_id TEXT
 );
 
 -- Access audit trail, hash-chained like message lineage so a row cannot be
@@ -320,6 +329,9 @@ CREATE TABLE IF NOT EXISTS audit_events (
   -- organization looked" are different questions and a privacy review asks
   -- both; before this column the trail could only answer the first.
   organization_id TEXT,
+  -- Which person, where the credential acts as one. This is what makes
+  -- "did anybody with no reason to look at this chart look at it" answerable.
+  practitioner_id TEXT,
   hash TEXT NOT NULL,
   prev_hash TEXT
 );
@@ -1491,6 +1503,27 @@ CREATE TABLE IF NOT EXISTS clinical_counters (
 -- so a trail that has lost rows disagrees with it — the truncation check that
 -- SQLite's own AUTOINCREMENT mark used to serve before the trail became
 -- per-tenant and that mark started counting everybody.
+-- A privacy officer's judgement on a flagged access, so a review has a memory.
+--
+-- A flag that can only be looked at is a report; a flag somebody can close,
+-- with a reason, on a specific access, is a process. Dismissals are kept
+-- rather than deleting the flag because the flag is derived from the trail on
+-- every read — there is nothing to delete — and because "we looked at this and
+-- decided it was fine" is itself a fact a later review needs.
+CREATE TABLE IF NOT EXISTS access_review_dismissals (
+  tenant_id TEXT NOT NULL,
+  -- The audit row the flag was raised against, and which flag. One access can
+  -- raise several and they are dismissed one at a time: "yes, she is his
+  -- daughter" answers the surname match and says nothing about the fact that
+  -- there was no encounter.
+  audit_id TEXT NOT NULL,
+  flag TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  dismissed_by TEXT NOT NULL,
+  dismissed_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, audit_id, flag)
+);
+
 CREATE TABLE IF NOT EXISTS audit_counters (
   tenant_id TEXT PRIMARY KEY,
   issued INTEGER NOT NULL DEFAULT 0
@@ -1669,6 +1702,11 @@ const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
   // Dispatch, recorded separately from acknowledgement. An upgraded database's
   // existing overrides have all three NULL, which reads correctly: nothing was
   // sent, because before this there was nothing that could send.
+  // The credential-to-person join. Null on every existing row, which reads
+  // correctly: those credentials named nobody, and an access review says so
+  // rather than guessing at who was behind them.
+  { table: "api_keys", column: "practitioner_id", type: "TEXT" },
+  { table: "audit_events", column: "practitioner_id", type: "TEXT" },
   { table: "break_glass", column: "notice_dispatched_at", type: "TEXT" },
   { table: "break_glass", column: "notice_message_id", type: "TEXT" },
   { table: "break_glass", column: "notice_error", type: "TEXT" },
@@ -2939,14 +2977,24 @@ export class Db {
     hash: string,
     scopes: string[],
     expiresAt?: string,
-    organizationId?: string
+    organizationId?: string,
+    practitionerId?: string
   ): void {
     this.sql
       .prepare(
-        `INSERT INTO api_keys (tenant_id, id, name, hash, scopes, expires_at, organization_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO api_keys (tenant_id, id, name, hash, scopes, expires_at, organization_id, practitioner_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(this.tenantId, id, name, hash, scopes.join(" "), expiresAt ?? null, organizationId ?? null);
+      .run(
+        this.tenantId,
+        id,
+        name,
+        hash,
+        scopes.join(" "),
+        expiresAt ?? null,
+        organizationId ?? null,
+        practitionerId ?? null
+      );
   }
 
   /**

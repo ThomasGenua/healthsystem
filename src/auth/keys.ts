@@ -58,6 +58,8 @@ export interface IssuedKey {
   previousRetiresAt?: string;
   /** The organization this credential acts for. Null when it does not say. */
   organizationId: string | null;
+  /** The practitioner it acts as. Null for an integration, which acts as nobody. */
+  practitionerId: string | null;
 }
 
 export class ApiKeyStore {
@@ -79,7 +81,7 @@ export class ApiKeyStore {
   issue(
     name: string,
     scopes: string[] = ALL_SCOPES,
-    opts: { expiresAt?: string; organizationId?: string } = {}
+    opts: { expiresAt?: string; organizationId?: string; practitionerId?: string } = {}
   ): IssuedKey {
     // `patient` is deliberately OAuth-only. An API key identifies a service
     // or operator, not a natural person whose subject can be checked against a
@@ -102,9 +104,26 @@ export class ApiKeyStore {
       if (!seen.known) throw new Error(`no organization '${opts.organizationId}' in the directory`);
       if (!seen.active) throw new Error(`organization '${opts.organizationId}' is retired`);
     }
+    // Same discipline for the person. A credential that claims to act as a
+    // practitioner nobody has registered would put an unresolvable name on
+    // every audit row it produces, which is worse than putting none there:
+    // an access review would report a relationship it cannot check as absent.
+    if (opts.practitionerId !== undefined && this.directory) {
+      const seen = this.directory.resolve("practitioner", opts.practitionerId);
+      if (!seen.known) throw new Error(`no practitioner '${opts.practitionerId}' in the directory`);
+      if (!seen.active) throw new Error(`practitioner '${opts.practitionerId}' is retired`);
+    }
     const id = randomUUID();
     const key = KEY_PREFIX + randomBytes(32).toString("base64url");
-    this.db.insertApiKey(id, name, hashKey(key), requested, opts.expiresAt, opts.organizationId);
+    this.db.insertApiKey(
+      id,
+      name,
+      hashKey(key),
+      requested,
+      opts.expiresAt,
+      opts.organizationId,
+      opts.practitionerId
+    );
     return {
       id,
       name,
@@ -112,6 +131,7 @@ export class ApiKeyStore {
       key,
       expiresAt: opts.expiresAt ?? null,
       organizationId: opts.organizationId ?? null,
+      practitionerId: opts.practitionerId ?? null,
     };
   }
 
@@ -144,6 +164,7 @@ export class ApiKeyStore {
       const replacement = this.issue(current.name, current.scopes.split(/\s+/).filter(Boolean), {
         ...(opts.expiresAt ? { expiresAt: opts.expiresAt } : {}),
         ...(current.organization_id ? { organizationId: current.organization_id } : {}),
+        ...(current.practitioner_id ? { practitionerId: current.practitioner_id } : {}),
       });
       this.db.markApiKeyRotated(id, replacement.id, retireAt);
       return { ...replacement, replaces: id, previousRetiresAt: retireAt };
