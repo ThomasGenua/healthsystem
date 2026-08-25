@@ -11,6 +11,37 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **A privacy office a privacy officer can actually run** (#35). The
+  audit trail records and proves, and answers none of the questions a
+  privacy office asks. A chain nobody reads proves only that nobody
+  tampered with a log nobody reads.
+
+  Reviews cannot close with unaddressed flags; addressing a flag needs a
+  written reason. A legal hold skips the whole message-log retention
+  sweep, because messages are not patient-keyed. An incident cannot close
+  without a written account and whether patients were told. Access clocks
+  are a queue, not a hard stop; fulfilling an access request records a
+  disclosure (section names and counts, not a second chart); completing
+  without one is flagged, not blocked. The assurance catalogue cannot
+  close a finding by forgetting remediation or residual risk.
+  `BACKUP-02` stays partial. An active subprocessor needs a hosting
+  region. After-hours is decided from a UTC timestamp.
+
+  Privacy-office HTTP does not apply a patient lockbox: a directive that
+  hid the office from the record it is charged with reviewing would be a
+  lock with no key. Still tenant-scoped; the trail says the directive was
+  not applied.
+
+  **`GET /me`** is a static English/French shell with landmarks and an
+  honest banner. Not a certified portal: no identity-proofing,
+  notifications, or WCAG claim. Chart access remains `/patient/*` plus
+  OAuth. Unauthenticated GETs are not audited as a reach for a patient.
+
+  The clinician console gains a Privacy tab. Hazards H-70–H-76.
+
+  596 → 611 tests for the office itself; 654 after merging the trail
+  join, travelling clinics, and the config ledger.
+
 - **Channel configuration as a ledger** (#36). Everything else here is
   provenance-carrying — messages chain, the record is append-only, audit rows
   chain — and the configuration that decides how all of it is produced was
@@ -52,8 +83,10 @@ always forward-compatible and run automatically on open — see
   where the seat is, and say both places when the patient's community and the
   seat's differ.
 
-- **An access review a privacy officer can run** (#35). `GET
-  /api/audit/review?patient=` answers what the trail held every ingredient for
+- **An access review of the trail a privacy officer can run** (#35, trail
+  half). Complementary to the operational office above, not a substitute
+  for it. `GET /api/audit/review?patient=` answers what the trail held every
+  ingredient for
   and could not be asked: who looked, under what declared purpose, whether
   anything clinical linked them to that patient, and what deserves attention
   first. Each flag — self-lookup, shared surname, no treatment relationship,

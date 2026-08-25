@@ -10,7 +10,7 @@ The design targets the interoperability posture Canadian jurisdictions are conve
 
 **The clinical platform** — [The clinical record](#the-clinical-record) · [The inbox](#the-inbox) · [Closing referral loops](#closing-referral-loops) · [Orders and results](#orders-and-results) · [Medications](#medications) · [The clinician workspace](#the-clinician-workspace) · [Scheduling](#scheduling) · [Registries and care gaps](#registries-and-care-gaps)
 
-**Privacy and access** — [Security](#security) · [Encryption at rest](#encryption-at-rest) · [Key lifecycle](#key-lifecycle) · [Audit trail](#audit-trail) · [Patient access](#patient-access) · [Consent directives and breaking glass](#consent-directives-and-breaking-glass) · [The clinical API, and audit by construction](#the-clinical-api-and-audit-by-construction) · [Retention](#retention) · [What the chains prove](#what-the-chains-prove) · [Tenancy](#tenancy)
+**Privacy and access** — [Security](#security) · [Encryption at rest](#encryption-at-rest) · [Key lifecycle](#key-lifecycle) · [Audit trail](#audit-trail) · [Patient access](#patient-access) · [Consent directives and breaking glass](#consent-directives-and-breaking-glass) · [The clinical API, and audit by construction](#the-clinical-api-and-audit-by-construction) · [The privacy office](#the-privacy-office) · [Retention](#retention) · [What the chains prove](#what-the-chains-prove) · [Tenancy](#tenancy)
 
 **Running it** — [Runbook](docs/RUNBOOK.md) · [Clinical safety](docs/CLINICAL-SAFETY.md) · [Provincial gap map](docs/PROVINCIAL.md) · [Upgrading](#upgrading) · [Backup](#backup) · [Monitoring](#monitoring) · [Throughput](#throughput) · [Durability under failure](#durability-under-failure) · [Crash recovery](#crash-recovery)
 
@@ -63,8 +63,13 @@ v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **An OAuth-only patient/proxy API.** A patient-context SMART token cannot read the general FHIR facade; every chart is authorized again through an active grant with explicit scope, purpose and expiry. Held results, appointments, messages, access history, delegates and requests are patient-safe views, not the clinician Workspace.
 - **Migration that cannot report success over a gap.** Completeness is declared and checked, not inferred from the absence of errors; rejects keep their payloads; a trial rolls back by retraction and a cutover with clinical activity refuses to.
 - **A laboratory result bridge that closes the order loop**, not just a mapping onto the facade: a resend writes nothing, a correction supersedes and arrives unacknowledged, a stale preliminary is ignored, and a result whose patient cannot be identified is held for a person rather than filed against a guess. No vendor interface is claimed — see [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
+- **A privacy office a privacy officer can actually run.** Reviews cannot close with unaddressed flags. A legal hold skips the message-log retention sweep. An incident cannot close without saying whether patients were told. Access clocks queue; they do not hard-stop. Completing an access request without a disclosure is flagged, not blocked. The assurance catalogue cannot close a finding by forgetting the residual risk. `BACKUP-02` stays partial.
+- **A patient HTML shell at `GET /me`.** Language, landmarks, an honest banner. Not a certified portal: no identity-proofing, no notification that a result reached the patient, no WCAG claim. Chart access is `/patient/*` plus OAuth.
+- **An access review of the trail.** `GET /api/audit/review?patient=` joins who looked to whether anything clinical linked them, with flags a person can dismiss with a reason. Complementary to the operational office: this one reads the trail; that one runs the queues.
+- **Travelling clinics and a waitlist whose ordering is stated policy.** A visit is planned, repeated, moved and cancelled as one thing. Cancelling it puts every booked patient on a waitlist: priority, then waited-longest, then most-bumped. An offer resolves as accepted, declined or unreachable.
+- **Channel configuration as a ledger.** Every change is a version with who, when and why. Export and import go through the same store; a dry run writes nothing; every message records which configuration processed it.
 
-596 tests. Backend first, then the interface that makes the backend's honesty visible.
+654 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -76,7 +81,7 @@ Honest limits, so nobody discovers them in production:
 - **The database file is not encrypted.** `node:sqlite` cannot encrypt, so the control that fits a single-file store is an encrypted volume underneath it. Portage does not assume one is there: it checks at boot and on `/api/health`, and says so loudly when it cannot find one. See [Encryption at rest](#encryption-at-rest).
 - **The conformance packs are not certified.** They encode the published profiles as data and pass the shipped fixtures, but no projectathon has scored them.
 - **The clinical platform has no user interface.** Every module described below — the chart, medications, orders, referrals, scheduling, registries — is a store and an HTTP API with tests. The admin UI covers interface operations only. This is deliberate ordering, not an oversight, but "a clinician can use this today" is not a claim being made.
-- **No patient portal UI.** The JSON patient/proxy boundary is mounted at `/patient/*`; it is OAuth-only and checks a live, explicitly scoped authority grant on every chart. There is no patient application, identity-proofing enrolment flow, Canadian-French interface, notification delivery, or accessibility claim. The API being safe to call is not the same thing as a portal people can use.
+- **No certified patient portal.** `GET /me` is chrome: English/French copy, a skip link, landmarks, and a banner that says what this page is not. The JSON patient/proxy boundary is mounted at `/patient/*`; it is OAuth-only and checks a live, explicitly scoped authority grant on every chart. There is no identity-proofing enrolment flow, notification delivery, or accessibility claim. A shell people can open is not a portal people can use.
 - **No clinical decision support content.** The medication safety mechanism is here — the check, the severities, the override with its record — and ships a deliberately small cross-reactivity set covering the classes with the clearest consensus. Drug interactions come from a licensed database through the `InteractionSource` seam. An interaction table that is 80% complete is one prescribers learn to trust, and the missing 20% is then invisible.
 - **Nothing here uses machine learning.** Section 7 of the requirements asks for it; nothing in this repository does anything of the sort, and no output should be read as though it did.
 
@@ -120,7 +125,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 596 tests
+npm test          # 654 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -149,7 +154,7 @@ A SMART `patient/*.read` token maps only to `patient`. It does **not** map to `r
 
 Two things under `/fhir/` are not clinical traffic and sit with the operator rather than the consumer. `AuditEvent` records who looked at whom, so read access to the facade must not also disclose the access history of everyone in it. `Subscription` is a standing instruction to send patient records to an address — a routing decision of the same kind `POST /api/channels` makes. Left under the general `/fhir/` rule it needed only `write`, which is exactly what a feed is given, so the credential a lab uses to file results could have registered a rest-hook of its own and turned push-only access into a continuous read of the record. See [Subscriptions](#subscriptions).
 
-Open without credentials, by design: the admin UI shell, `GET /api/health`, and `GET /fhir/metadata` — a CapabilityStatement is a discovery document, and a client has to read it to learn how to authenticate against everything else. Any unrecognised path defaults to requiring `admin`, so a route added later fails closed.
+Open without credentials, by design: the admin UI shell, the patient HTML shell at `GET /me` (static chrome, no PHI), `GET /api/health`, and `GET /fhir/metadata` — a CapabilityStatement is a discovery document, and a client has to read it to learn how to authenticate against everything else. Any unrecognised path defaults to requiring `admin`, so a route added later fails closed.
 
 ### API keys
 
@@ -301,10 +306,13 @@ Canadian health privacy law — PHIPA in Ontario, HIA in Alberta, the Health Inf
 curl "localhost:8686/api/audit?patient=NT123456" -H "Authorization: Bearer $KEY"   # who read this record
 curl "localhost:8686/api/audit?failures=true"    -H "Authorization: Bearer $KEY"   # who was turned away
 curl "localhost:8686/api/audit/verify"           -H "Authorization: Bearer $KEY"   # has the trail been altered
+curl "localhost:8686/api/audit/review?patient=NT123456" -H "Authorization: Bearer $KEY"  # who looked, and whether they had a reason to
 curl "localhost:8686/fhir/AuditEvent"            -H "Authorization: Bearer $KEY"   # the same, as R4 AuditEvent
 ```
 
 **What is recorded.** Disclosure is the event that matters, so every read of patient data is: a facade read or search, and any look at a raw message, since an ER7 message identifies a patient as surely as anything in the facade. A search records how many records it returned — one that discloses nine hundred is not a read. Refused attempts are recorded too, because a trail that shows only successes cannot show someone trying doors. Key issue and revocation are recorded because they change who can open them.
+
+**What a privacy officer actually asks.** `/api/audit` answers "what rows are there". `GET /api/audit/review?patient=` answers who looked, whether anything clinical linked them to that patient, and what to look at first — self-lookup, surname match, no treatment relationship, break-glass, out-of-hours, unusual volume, or a credential that names nobody. Each flag says why it fired and can be dismissed with a reason that is kept. The chain's verification travels on the report. This is the trail half of the privacy office; the queues, holds and incidents live under `/api/clinical/privacy-*`. Credentials carry a practitioner so the join is possible.
 
 **What is not.** Internal writes are not duplicated here. Every message already carries hash-chained lineage with its pipeline steps and deliveries, which is a stronger record than an audit line, and repeating it would bury the disclosures in routine traffic.
 
@@ -350,6 +358,8 @@ All five are covered, in every settled delivery state including **dead** — a d
 Neither control reaches the FHIR facade, and neither reaches the clinical stores — the chart, medications, allergies, orders, results, referrals or tasks. Those hold **the record**, not a log of traffic, and how long a territorial EHR keeps a patient's chart is a clinical governance question, not something an interface engine should answer on a timer.
 
 Worth stating outright, because the alternative reading is available and would be a catastrophe: *"retention is configured"* must not be heard as *"patient data ages out everywhere"*. It ages out of the message log. A patient's allergy to penicillin recorded four years ago is not stale data, and a sweep that deleted it because a number in a config file said `1095` would be destroying the record while reporting success — and it would report success, because deleting rows is exactly what it was asked to do.
+
+An active **legal hold** on the tenant skips the sweep entirely. Messages are not patient-keyed, so there is no honest way to redact "just that patient". `test/privacy-office.test.ts` pins it.
 
 `test/retention-boundary.test.ts` pins the line from both sides: it runs the most aggressive policy anyone would write over a fully populated chart and requires every record table to come out unchanged, and it reads the purge path's source and fails if a clinical table is ever named in a `DELETE`. Moving the boundary is then a deliberate act with a failing test attached, in either direction.
 
@@ -737,7 +747,7 @@ A route serving **exactly** the locked type still refuses, having nothing left t
 
 Everything above is a store with an API in front of it, and until something renders it the honesty is theoretical. `complete` and `omissions` have been on every chart section since the chart was written; nothing displayed them.
 
-Three tabs in the admin UI, driven entirely through the clinical API — no privileged path, so every read leaves an audit row and passes the directive check like any other caller:
+Four tabs in the admin UI, driven entirely through the clinical API — no privileged path, so every read leaves an audit row and passes the directive check like any other caller:
 
 **Chart.** The patient, the allergy status at the top where it cannot be missed, and eight panels. The only thing this screen really has to do is make a panel that is *not* complete impossible to mistake for one that is, so incompleteness is on the left border and in a line of prose inside the panel — never a tint somebody reads past at 03:00. The three reasons are visually distinct because they call for different actions:
 
@@ -751,7 +761,9 @@ A chart that is short says so at the top, above the panels: *"This is not the wh
 
 **Break-glass.** The two queues, and the controls that discharge them. A lockbox nobody can find out was opened is a lockbox with no lock.
 
-Hostile content in this console runs in the browser session of the person holding an admin key, so `test/ui-xss.test.ts` drives all three tabs in a real Chromium against genuinely hostile input — a patient's name from an ADT feed, and the free text a clerk types into a referral, a task or a break-glass reason — and asserts both that nothing executed and that the payloads actually reached the DOM.
+**Privacy.** The queues a privacy officer actually runs: unreviewed break-glass, overdue access requests, open reviews, active holds, incidents and assurance findings. Opening a review of the last 24 hours is a button; closing one with flags still open is not. After-hours uses UTC clinic hours, not local time.
+
+Hostile content in this console runs in the browser session of the person holding an admin key, so `test/ui-xss.test.ts` drives the operational tabs in a real Chromium against genuinely hostile input — a patient's name from an ADT feed, and the free text a clerk types into a referral, a task or a break-glass reason — and asserts both that nothing executed and that the payloads actually reached the DOM. The Privacy tab is driven too; its honesty check is the inbox tests, because an empty queue would pass an XSS check having rendered nothing.
 
 ### What is deliberately not on the clinical API
 
@@ -761,9 +773,58 @@ token, then binds that token's subject to a live `patient_authority` grant on
 every request. A patient scope cannot read `/fhir/*`; an admin scope does not
 imply patient; an API key cannot be issued patient scope.
 
-The surface is JSON only. There is still no patient application, enrolment or
-identity-proofing workflow, French UI, notification delivery, or accessibility
-claim.
+`GET /me` is a static English/French shell with landmarks and an honest banner.
+It loads no chart. There is still no identity-proofing enrolment, notification
+delivery, or accessibility claim.
+
+## The privacy office
+
+The audit trail records and proves. It answers none of the questions a privacy
+officer asks — who broke glass and has not been reviewed, which access request
+is past thirty days, whether a hold is standing in the way of a sweep, whether
+an incident closed with patients told. A chain nobody reads proves only that
+nobody tampered with a log nobody reads.
+
+`tenant.privacy` is that office, and `/api/clinical/privacy-*` is how it is
+reached. Reads and writes still audit, and every query is still tenant-scoped.
+They do **not** apply a patient lockbox. A directive that hid the office from
+the record it is charged with reviewing would be a lock with no key. The trail
+says the directive was not applied.
+
+`GET /api/audit/review?patient=` is the complementary surface: it reads the
+trail the queues above are not. One is who looked and whether they had a
+reason to; the other is the work of emptying reviews, holds, incidents and
+clocks. Neither substitutes for the other.
+
+What it refuses, because a queue that empties on a click teaches a ward that
+the queue was the work:
+
+- **A review cannot close with unaddressed flags.** Addressing a flag needs a
+  written reason; closing needs a written conclusion.
+- **An incident cannot close** without a written account, named patients or
+  `noneAffected`, and whether they were told. `not-told` needs a written why.
+- **An active subprocessor needs a hosting region.** A candidate may have none;
+  an active one may not.
+- **A finding cannot close** without remediation or an accepted residual risk.
+  `BACKUP-02` stays `partial` in the catalogue: the replica is still an
+  operator copying a file, and a SQL seed that marked it in-place would be
+  the finding closed by forgetting it.
+
+What it queues rather than hard-stops:
+
+- **Overdue access requests.** Thirty days from `submitted_at`, or an extended
+  deadline. Completing without a recorded disclosure stays possible on
+  `PatientAccess`; the inbox flags it. `fulfillAccess` records the disclosure
+  (section names and counts, not a second copy of the chart) and then completes
+  the request.
+- **After-hours reads.** Decided from the UTC timestamp of the access, default
+  clinic hours 07:00–19:00 UTC. Residual: not clinic-local.
+
+A legal hold with a null patient is tenant-wide. Messages are not
+patient-keyed, so any active hold on this tenant **skips the entire retention
+sweep** rather than trying to redact "just that patient". Fail closed.
+
+Hazards H-70–H-76.
 
 ## Patient access
 
@@ -810,6 +871,14 @@ accepting a patient id is not accepting its authority.
 The patient-facing access row and the tamper-evident audit row commit in the
 same database transaction as a patient write. A message reply cannot persist
 without both trails.
+
+### The patient HTML shell
+
+`GET /me` is public on purpose, the way `GET /` is: it is chrome, not a record.
+An unauthenticated GET is not audited as a reach for a patient. The page says,
+in English and in French, that it is not a certified portal — no
+identity-proofing, no notification that a result or message reached the
+patient, no WCAG or AODA claim. Chart access is `/patient/*` with a live grant.
 
 ### Release timing
 
@@ -918,6 +987,21 @@ So `didNotAttend()` returns **what is owed**, not just a status:
 ```
 
 `unresolvedNonAttendance()` holds them until somebody says what they did about it — worst first, because a missed urgent appointment gets less recoverable with every week. Clearing one requires an action in words, for the same reason completing a task requires evidence.
+
+### A travelling clinic is one visit, not a pile of slots
+
+A specialist's two days in a community is one thing that happens to contain
+slots. `tenant.clinics` plans, repeats, moves and cancels that visit as one
+row; the slots stay ordinary rows under the same unique index, so nothing
+downstream has to know visits exist. Cancelling the visit puts every booked
+patient on a waitlist — bump counted, wait dated from when they first booked,
+so weather does not send anybody to the back of the line.
+
+The waitlist's order is stated policy rather than insertion order: clinical
+priority, then waited-longest from first asking, then most-bumped. A seat is
+offered to a named patient and resolves as accepted, declined or unreachable,
+because collapsing "unreachable" into "declined" punishes people for where
+they live.
 
 ## Consent directives and breaking glass
 
@@ -1274,20 +1358,25 @@ src/
   work/tasks.ts            the unified inbox
   work/referrals.ts        closed-loop referrals and the stalled query
   schedule/store.ts        slots and bookings, double-booking refused by an index
+  schedule/clinics.ts      travelling-clinic visits and the waitlist
   population/registry.ts   cohorts, care gaps, quality measures with honest denominators
   patient/access.ts        patient and proxy authority, result release timing
   patient/consent.ts       consent directives and break-glass
+  privacy/office.ts        reviews, holds, incidents, clocks, assurance catalogue
   workspace/summary.ts     the assembled chart, declaring what it left out
 
   api/admin.ts        admin, ingest, clinical, terminology, conformance and FHIR API
   api/tls.ts          TLS and mutual TLS for the listener
   api/ratelimit.ts    per-principal and per-source token buckets
   api/ui.html         single-file admin UI served at GET /
+  api/patient.html    patient HTML shell served at GET /me (not a certified portal)
   auth/scopes.ts      the scope model and the route-to-scope map
   auth/keys.ts        API key issue, verify, revoke
   auth/jwt.ts         OAuth 2.0 / SMART bearer validation against a JWKS
   auth/gate.ts        the one check every request passes
   audit/store.ts      hash-chained access trail
+  audit/review.ts     who looked, and whether anything clinical linked them
+  core/channel-versions.ts  channel configuration as a ledger, not an overwrite
   core/text.ts        small helpers for messages people read
   core/atrest.ts      whether the data directory is on an encrypted volume
   core/retention.ts   payload redaction and purge under a retention policy
@@ -1399,6 +1488,10 @@ POST   /api/backup                          verified online snapshot; off-machin
 GET    /metrics                             Prometheus exposition (public, no patient data)
 GET    /api/audit?patient=&principal=&failures=  who accessed patient data
 GET    /api/audit/verify                    walk and verify the audit hash chain
+GET    /api/audit/review?patient=           who looked, flags, dismissible with a reason
+POST   /api/audit/review/dismiss            close a flag, with a reason that is kept
+GET    /api/channels/export                 the configuration as a versioned document
+POST   /api/channels/import                 a plan, then an action; a dry run writes nothing
 GET    /api/retention                       policy, and what a sweep would touch
 POST   /api/retention/run                   apply the retention policy now
 GET    /fhir/AuditEvent?patient=&_count=    the same trail as R4 AuditEvent (admin only)
@@ -1428,6 +1521,7 @@ POST   /fhir/Subscription                   create a rest-hook subscription (201
 GET    /fhir/Subscription/:id               read one
 DELETE /fhir/Subscription/:id               remove one
 GET    /                                    admin UI (single file, no build step)
+GET    /me                                  patient HTML shell (EN/FR chrome; not a certified portal)
 ```
 
 ## FHIR facade
@@ -1517,7 +1611,9 @@ All of these are engine sources, so everything downstream — pipeline, lineage,
 
 ## Admin UI
 
-`GET /` serves a single-file, no-build UI over the public API: a dashboard with live counts, history charts, an access audit view, channels with hash-chain verification, a channel designer, a mapping editor with live fixtures, a message browser with per-step lineage, the delivery queue with dead-letter replay and discard, a FHIR facade browser, subscription management, terminology lookups and a conformance validator. It is deliberately thin; anything it does, curl does.
+`GET /` serves a single-file, no-build UI over the public API: a dashboard with live counts, history charts, an access audit view, channels with hash-chain verification, a channel designer, a mapping editor with live fixtures, a message browser with per-step lineage, the delivery queue with dead-letter replay and discard, a FHIR facade browser, subscription management, terminology lookups, a conformance validator, and a **Privacy** tab over the office queues. It is deliberately thin; anything it does, curl does.
+
+`GET /me` is a separate file: English/French chrome, a skip link, landmarks, and a banner that says this is not a certified portal. It does not load a chart.
 
 Paste an API key into the box in the header and it is attached to every request; it is held in browser local storage and sent nowhere else.
 
@@ -1601,10 +1697,10 @@ a scope-narrowed directive withholds its section rather than the chart around it
 
 **Put it in front of a person.**
 
-[#35](https://github.com/ThomasGenua/healthsystem/issues/35) is done: `GET /api/audit/review?patient=` answers who looked, whether anything clinical linked them to the patient, and what to look at first — with each flag saying why it fired, dismissible with a reason that is kept, and the chain's verification attached to the report. Credentials carry a practitioner to make it possible; the clinical stores recorded an actor and the trail recorded a credential, and nothing joined them.
+[#35](https://github.com/ThomasGenua/healthsystem/issues/35) is done in two complementary pieces. A privacy officer can open a review of the last 24 hours, address flags with a written reason, place a legal hold that skips the retention sweep, record a disclosure when fulfilling an access request, and close an incident only after saying whether patients were told. The assurance catalogue cannot close a finding by forgetting it. Separately, `GET /api/audit/review?patient=` answers who looked, whether anything clinical linked them to the patient, and what to look at first — with each flag saying why it fired, dismissible with a reason that is kept, and the chain's verification attached to the report. Credentials carry a practitioner to make that join possible. It is not a SIEM, not a PIA product, and after-hours is UTC.
 
 - [#23 Validate the conformance packs against the published Projectathon scripts](https://github.com/ThomasGenua/healthsystem/issues/23) — the packs validate against this project's reading of the specifications, which is not the same as conforming to them.
-- [#24 The patient-facing surface, and its separate identity boundary](https://github.com/ThomasGenua/healthsystem/issues/24) — the backend boundary is done: OAuth-only patient scope, live subject-to-chart grants, explicit proxy scope/purpose/expiry, patient-safe summaries, held results, appointments, messages, delegates, access logs and requests. What remains is the patient application, enrolment/identity proofing, French parity, notification delivery and accessibility validation.
+- [#24 The patient-facing surface, and its separate identity boundary](https://github.com/ThomasGenua/healthsystem/issues/24) — the backend boundary is done, and `GET /me` is chrome with English/French copy and landmarks. What remains is identity-proofing enrolment, notification delivery and accessibility validation. Do not call `/me` a portal.
 [#40](https://github.com/ThomasGenua/healthsystem/issues/40) is done: a prescription has a transmission lifecycle, a second transmission is refused because a pharmacy may dispense twice, and each way one is lost — never sent, sent and unacknowledged, failed, cancelled without telling the pharmacy — is a chase list. No pharmacy network has received a message.
 
 **Built for where it actually runs.**
@@ -1623,7 +1719,7 @@ a scope-narrowed directive withholds its section rather than the chart around it
 
 **Smaller, from review.** [#26](https://github.com/ThomasGenua/healthsystem/issues/26) and [#27](https://github.com/ThomasGenua/healthsystem/issues/27) are done: a store refusal is not a 400-and-outcome-8, and the `migrate()` rebuild turns foreign keys off around the copy.
 
-**Where the production build has reached.** Priorities 1–9 and 13 of the immediate list are done or substantially done: the chart, documentation, inbox, scheduling, patient messaging, the FHIR service, an inbound laboratory bridge, medications with pharmacy transmission, the patient access boundary, and a migration loader. The distance to the provincial specification is [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
+**Where the production build has reached.** Priorities 1–9, 11 and 13 of the immediate list are done or substantially done: the chart, documentation, inbox, scheduling (including travelling clinics and the waitlist), patient messaging, the FHIR service, an inbound laboratory bridge, medications with pharmacy transmission, the patient access boundary, a privacy office a privacy officer can run (queues *and* the trail join), a channel-configuration ledger, and a migration loader. The distance to the provincial specification is [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
 
 What is left is mostly not code. Vendor and provincial interfaces (Dynacare, LifeLabs, OLIS, DHDR, HRM, eConsult, ONE ID) each need a conformance guide, a sandbox, credentials and a signed test result — none of which can be written from inside this repository. Accessibility and Canadian-French parity need a person with a screen reader and a translator. A penetration test needs somebody who does not share the author's model of an attack. A clinical pilot needs a named safety officer.
 

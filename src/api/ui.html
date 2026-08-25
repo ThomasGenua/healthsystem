@@ -117,7 +117,7 @@ const j=async(url,opts={})=>{
 };
 const tag=(t,cls)=>`<span class="tag ${cls}">${esc(t)}</span>`;
 const stTag=s=>tag(s,{processed:"ok",delivered:"ok",filtered:"dim",queued:"warn",retrying:"warn",inflight:"warn",error:"bad",dead:"bad",discarded:"dim",active:"ok"}[s]||"dim");
-const TABS=["Dashboard","Chart","Worklist","Break-glass","History","Audit","Channels","Designer","Mappings","Messages","Deliveries","FHIR","Subscriptions","Terminology","Conformance"];
+const TABS=["Dashboard","Chart","Worklist","Break-glass","Privacy","History","Audit","Channels","Designer","Mappings","Messages","Deliveries","FHIR","Subscriptions","Terminology","Conformance"];
 let tab="Dashboard",timer=null;
 
 function nav(){$("#nav").innerHTML=TABS.map(t=>`<button class="${t===tab?"on":""}" onclick="go('${t}')">${t}</button>`).join("")}
@@ -130,6 +130,7 @@ async function render(){
     else if(tab==="Chart")await chartTab(m);
     else if(tab==="Worklist")await worklistTab(m);
     else if(tab==="Break-glass")await glassTab(m);
+    else if(tab==="Privacy")await privacyTab(m);
     else if(tab==="History")await history(m);
     else if(tab==="Audit")await auditTab(m);
     else if(tab==="Designer")await designer(m);
@@ -398,6 +399,50 @@ window.reviewed=async(id)=>{
     if(status!==200)throw new Error(data.error||"refused");
     render();
   }catch(e){$("#main").innerHTML=`<p class="err">${esc(e.message||e)}</p>`}
+};
+
+async function privacyTab(m){
+  m.innerHTML=`<p class="none">loading…</p>`;
+  try{
+    const {data}=await j("/api/clinical/privacy-inbox");
+    const list=(rows,empty,render)=>rows&&rows.length?`<ul>${rows.map(render).join("")}</ul>`:`<p class="none">${esc(empty)}</p>`;
+    const glass=data.unreviewedBreakGlass||[];
+    const access=data.pendingAccess||[];
+    const reviews=data.openReviews||[];
+    const holds=data.activeHolds||[];
+    const incidents=data.openIncidents||[];
+    const findings=data.openFindings||[];
+    m.innerHTML=`
+      <div class="banner"><b>Privacy office.</b>
+        <p>Queues, clocks and holds. A chain nobody reads proves only that nobody tampered with a log nobody reads. After-hours uses UTC clinic hours, not local time.</p></div>
+      <div class="panel ${glass.length?"warn":""}"><h3>Unreviewed break-glass ${tag(String(glass.length),glass.length?"warn":"ok")}</h3>
+        ${list(glass,"nothing waiting for review",o=>`<li><a href="#" onclick="openChart('${esc(o.patient_id)}');go('Chart');return false">${esc(o.patient_id)}</a>
+          ${esc(o.subject_id)} — ${esc(o.reason)}</li>`)}</div>
+      <div class="panel ${access.length?"warn":""}"><h3>Access and correction requests ${tag(String(access.length),access.length?"warn":"ok")}</h3>
+        ${list(access,"no pending requests",r=>`<li>${esc(r.kind)} for ${esc(r.patientId)} due ${esc(r.dueAt)}
+          ${r.overdue?tag("overdue","bad"):""}${r.completedWithoutDisclosure?tag("completed without disclosure","warn"):""}</li>`)}</div>
+      <div class="panel ${reviews.length?"warn":""}"><h3>Open reviews ${tag(String(reviews.length),reviews.length?"warn":"ok")}</h3>
+        ${list(reviews,"no open reviews",r=>`<li>${esc(r.id)} — ${(r.flags||[]).length} flag(s) ${stTag(r.status)}</li>`)}</div>
+      <div class="panel ${holds.length?"warn":""}"><h3>Active legal holds ${tag(String(holds.length),holds.length?"warn":"ok")}</h3>
+        <p class="why">An active hold on this tenant skips the whole message-log retention sweep. Messages are not patient-keyed.</p>
+        ${list(holds,"no active holds",h=>`<li>${esc(h.id)} ${esc(h.patientId||"tenant-wide")} — ${esc(h.reason)}</li>`)}</div>
+      <div class="panel ${incidents.length?"warn":""}"><h3>Open incidents ${tag(String(incidents.length),incidents.length?"warn":"ok")}</h3>
+        ${list(incidents,"no open incidents",i=>`<li>${esc(i.id)} ${esc(i.whatHappened)}</li>`)}</div>
+      <div class="panel ${findings.length?"warn":""}"><h3>Open assurance findings ${tag(String(findings.length),findings.length?"warn":"ok")}</h3>
+        ${list(findings,"no open findings",f=>`<li>${esc(f.controlId)} — ${esc(f.title)}: ${esc(f.detail)}</li>`)}</div>
+      <div class="bar"><button class="act" onclick="openPrivacyReview()">open a review of the last 24 hours</button></div>
+      <div id="prv-out"></div>`;
+  }catch(e){m.innerHTML=`<p class="err">${esc(e.message||e)}</p>`}
+}
+
+window.openPrivacyReview=async()=>{
+  const out=$("#prv-out");
+  try{
+    const {status,data}=await j("/api/clinical/privacy-review-open",{method:"POST",headers:{"content-type":"application/json"},body:"{}"});
+    if(status!==200){out.innerHTML=`<p class="err">${esc(data.error||"refused")}</p>`;return}
+    out.innerHTML=`<p class="none">opened ${esc(data.id)} with ${(data.flags||[]).length} flag(s)</p>`;
+    render();
+  }catch(e){out.innerHTML=`<p class="err">${esc(e.message||e)}</p>`}
 };
 
 async function dash(m){

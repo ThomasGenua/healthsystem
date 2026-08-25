@@ -88,6 +88,17 @@ export const TENANT_SCOPED_TABLES = [
   "migration_runs",
   "migration_records",
   "migration_declarations",
+  "privacy_reviews",
+  "privacy_review_events",
+  "privacy_flags",
+  "legal_holds",
+  "privacy_incidents",
+  "privacy_incident_events",
+  "privacy_disclosures",
+  "privacy_deadlines",
+  "assurance_findings",
+  "assurance_exercises",
+  "subprocessors",
 ] as const;
 
 /**
@@ -1581,6 +1592,187 @@ CREATE TABLE IF NOT EXISTS migration_declarations (
   PRIMARY KEY (tenant_id, run_id, record_type)
 );
 
+-- Privacy office: reviews, holds, incidents, disclosures, assurance.
+--
+-- The audit trail records and proves. These tables are what a privacy office
+-- actually runs — queues, clocks, holds that stop a sweep, and an assurance
+-- catalogue that cannot close a finding by forgetting it. A chain nobody
+-- reads proves only that nobody tampered with a log nobody reads.
+
+CREATE TABLE IF NOT EXISTS privacy_reviews (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  -- open | closed. Never deleted.
+  status TEXT NOT NULL DEFAULT 'open',
+  patient_id TEXT,
+  principal_id TEXT,
+  since TEXT NOT NULL,
+  conclusion TEXT,
+  opened_by TEXT NOT NULL,
+  opened_at TEXT NOT NULL,
+  closed_by TEXT,
+  closed_at TEXT,
+  task_id TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS privacy_review_events (
+  tenant_id TEXT NOT NULL,
+  review_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  at TEXT NOT NULL,
+  event TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_kind TEXT NOT NULL,
+  detail TEXT,
+  PRIMARY KEY (tenant_id, review_id, seq)
+);
+
+CREATE TABLE IF NOT EXISTS privacy_flags (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  review_id TEXT NOT NULL,
+  -- after-hours | high-volume | high-volume-repeat | not-on-care-team |
+  -- break-glass-unreviewed | sar-overdue | access-without-disclosure
+  kind TEXT NOT NULL,
+  patient_id TEXT,
+  principal_id TEXT,
+  principal_kind TEXT,
+  detail TEXT NOT NULL,
+  -- open | accepted | escalated
+  status TEXT NOT NULL DEFAULT 'open',
+  addressed_at TEXT,
+  addressed_by TEXT,
+  address_reason TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- A hold with a null patient_id is tenant-wide. Messages are not patient-keyed,
+-- so any active hold on the tenant blocks the whole retention sweep.
+CREATE TABLE IF NOT EXISTS legal_holds (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT,
+  reason TEXT NOT NULL,
+  placed_by TEXT NOT NULL,
+  placed_at TEXT NOT NULL,
+  released_at TEXT,
+  released_by TEXT,
+  release_reason TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS privacy_incidents (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  -- open | closed
+  status TEXT NOT NULL DEFAULT 'open',
+  what_happened TEXT NOT NULL,
+  -- JSON array of patient ids. Empty only when none_affected is 1.
+  affected_patients TEXT NOT NULL DEFAULT '[]',
+  none_affected INTEGER NOT NULL DEFAULT 0,
+  -- told | not-told. Null while open.
+  notification TEXT,
+  notification_reason TEXT,
+  opened_by TEXT NOT NULL,
+  opened_at TEXT NOT NULL,
+  closed_by TEXT,
+  closed_at TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS privacy_incident_events (
+  tenant_id TEXT NOT NULL,
+  incident_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  at TEXT NOT NULL,
+  event TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_kind TEXT NOT NULL,
+  detail TEXT,
+  PRIMARY KEY (tenant_id, incident_id, seq)
+);
+
+-- Section names and counts, never a second copy of the chart.
+CREATE TABLE IF NOT EXISTS privacy_disclosures (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  request_id TEXT,
+  purpose TEXT NOT NULL,
+  -- JSON array of { name, count }.
+  sections TEXT NOT NULL,
+  recorded_by TEXT NOT NULL,
+  recorded_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Optional override of the PHIPA 30-day clock. Absent means submitted_at + 30 days.
+CREATE TABLE IF NOT EXISTS privacy_deadlines (
+  tenant_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  until_at TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  set_by TEXT NOT NULL,
+  set_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, request_id)
+);
+
+CREATE TABLE IF NOT EXISTS assurance_findings (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  control_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  detail TEXT NOT NULL,
+  -- open | closed
+  status TEXT NOT NULL DEFAULT 'open',
+  remediation TEXT,
+  residual_risk TEXT,
+  opened_by TEXT NOT NULL,
+  opened_at TEXT NOT NULL,
+  closed_by TEXT,
+  closed_at TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS assurance_exercises (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  rto_seconds INTEGER,
+  -- passed | failed. Null while open.
+  outcome TEXT,
+  notes TEXT,
+  recorded_by TEXT NOT NULL,
+  -- open | closed
+  status TEXT NOT NULL DEFAULT 'open',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS subprocessors (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  region TEXT,
+  -- candidate | active | inactive
+  status TEXT NOT NULL,
+  recorded_by TEXT NOT NULL,
+  recorded_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
 -- Lookup index over the charts.
 --
 -- Derived, not authoritative. Every column here is recoverable from the
@@ -1720,6 +1912,14 @@ CREATE INDEX IF NOT EXISTS idx_migration_source
   ON migration_records(tenant_id, source_system, record_type, source_id);
 CREATE INDEX IF NOT EXISTS idx_migration_run ON migration_records(tenant_id, run_id, record_type, outcome);
 CREATE INDEX IF NOT EXISTS idx_migration_patient ON migration_records(tenant_id, patient_id, loaded_at);
+CREATE INDEX IF NOT EXISTS idx_privacy_reviews_status ON privacy_reviews(tenant_id, status, opened_at);
+CREATE INDEX IF NOT EXISTS idx_privacy_flags_review ON privacy_flags(tenant_id, review_id, status);
+CREATE INDEX IF NOT EXISTS idx_legal_holds_active ON legal_holds(tenant_id, released_at, placed_at);
+CREATE INDEX IF NOT EXISTS idx_privacy_incidents_status ON privacy_incidents(tenant_id, status, opened_at);
+CREATE INDEX IF NOT EXISTS idx_privacy_disclosures_patient ON privacy_disclosures(tenant_id, patient_id, recorded_at);
+CREATE INDEX IF NOT EXISTS idx_privacy_disclosures_request ON privacy_disclosures(tenant_id, request_id);
+CREATE INDEX IF NOT EXISTS idx_assurance_findings_status ON assurance_findings(tenant_id, status, opened_at);
+CREATE INDEX IF NOT EXISTS idx_subprocessors_status ON subprocessors(tenant_id, status, name);
 CREATE INDEX IF NOT EXISTS idx_patient_request_events ON patient_request_events(tenant_id, request_id, seq);
 -- The double-booking constraint. Partial, so a cancelled booking releases its
 -- seat while remaining on the record — a slot freed by deleting its booking

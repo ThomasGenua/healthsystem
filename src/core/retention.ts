@@ -58,6 +58,12 @@ export interface RetentionResult {
   purgedChannels: string[];
   redactCutoff?: string;
   purgeCutoff?: string;
+  /**
+   * Set when the sweep did not run. Messages are not patient-keyed, so any
+   * active legal hold on this database handle blocks the entire sweep rather
+   * than trying to redact "just that patient". Fail closed.
+   */
+  skippedBecause?: string;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -104,6 +110,18 @@ export class RetentionRunner {
       purgedMessages: 0,
       purgedChannels: [],
     };
+
+    // Queried here rather than via PrivacyOffice: core must not import the
+    // privacy module (that module already imports refusal from core).
+    const hold = this.db.sql
+      .prepare(
+        `SELECT 1 AS ok FROM legal_holds WHERE tenant_id = ? AND released_at IS NULL LIMIT 1`
+      )
+      .get(this.db.tenantId) as { ok: number } | undefined;
+    if (hold) {
+      result.skippedBecause = "active legal hold";
+      return result;
+    }
 
     if (this.policy.purgeAfterDays !== undefined) {
       const c = cutoff(this.policy.purgeAfterDays);
