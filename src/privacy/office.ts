@@ -392,27 +392,30 @@ export class PrivacyOffice {
       }
     }
 
+    // HTTP audits record the credential on principal_id (kind apikey/oauth)
+    // and the person on practitioner_id. Care-team membership is a person
+    // join — the same one AccessReview uses. A credential with no
+    // practitioner cannot be on a team, so it is not this flag.
     const staff = this.db.sql
       .prepare(
-        `SELECT DISTINCT principal_id, principal_kind, patient FROM audit_events
-         WHERE tenant_id = ? AND outcome = 0 AND patient IS NOT NULL AND recorded_at >= ?`
+        `SELECT DISTINCT practitioner_id, patient FROM audit_events
+         WHERE tenant_id = ? AND outcome = 0 AND patient IS NOT NULL AND recorded_at >= ?
+           AND practitioner_id IS NOT NULL`
       )
       .all(this.db.tenantId, since) as {
-      principal_id: string;
-      principal_kind: string;
+      practitioner_id: string;
       patient: string;
     }[];
     for (const r of staff) {
-      if (r.principal_kind !== "practitioner") continue;
       const team = this.careTeam.forPatient(r.patient);
       if (team.length === 0) continue;
-      if (team.some((m) => m.practitioner_id === r.principal_id)) continue;
+      if (team.some((m) => m.practitioner_id === r.practitioner_id)) continue;
       drafts.push({
         kind: "not-on-care-team",
         patientId: r.patient,
-        principalId: r.principal_id,
-        principalKind: r.principal_kind,
-        detail: `${r.principal_id} read ${r.patient} and is not on the current care team`,
+        principalId: r.practitioner_id,
+        principalKind: "practitioner",
+        detail: `${r.practitioner_id} read ${r.patient} and is not on the current care team`,
       });
     }
 
@@ -878,15 +881,17 @@ export class PrivacyOffice {
     if (!row) refuse(`no patient request ${requestId}`, 404);
     if (row.status !== "submitted") refuse(`request ${requestId} is ${row.status}, not submitted`, 409);
     if (row.kind !== "access") refuse("fulfillAccess is for access requests. corrections use completeRequest");
-    const disclosure = this.recordDisclosure(
-      { patientId: row.patient_id, requestId, purpose: input.purpose, sections: input.sections },
-      by
-    );
-    this.patientAccess.completeRequest(requestId, {
-      ...by,
-      outcome: `Disclosed ${input.sections.length} section(s); record ${disclosure.id}`,
+    return this.db.transaction(() => {
+      const disclosure = this.recordDisclosure(
+        { patientId: row.patient_id, requestId, purpose: input.purpose, sections: input.sections },
+        by
+      );
+      this.patientAccess.completeRequest(requestId, {
+        ...by,
+        outcome: `Disclosed ${input.sections.length} section(s); record ${disclosure.id}`,
+      });
+      return { disclosure, requestId };
     });
-    return { disclosure, requestId };
   }
 
   extendDeadline(requestId: string, input: { until: string; reason: string }, by: Actor): void {

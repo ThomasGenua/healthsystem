@@ -211,6 +211,27 @@ test("fulfilling an access request records a disclosure", async () => {
   }
 });
 
+test("a failed fulfill does not leave a disclosure on a still-submitted request", async () => {
+  const { t, close } = await boot();
+  try {
+    const req = t.patientAccess.submitRequest({
+      patientId: P,
+      kind: "access",
+      detail: "Please provide a copy of my chart.",
+      by: { subjectId: P, relationship: "self" },
+    });
+    const row = t.patientAccess.request(req.id)!;
+    t.tasks.complete(row.task_id, { ...OFFICER, evidence: "closed before the disclosure was recorded" });
+    assert.throws(() =>
+      t.privacy.fulfillAccess(req.id, { sections: [{ name: "allergies", count: 1 }] }, OFFICER)
+    );
+    assert.equal(t.patientAccess.request(req.id)?.status, "submitted");
+    assert.equal(t.privacy.listDisclosures().length, 0, "the disclosure must not outlive a failed completion");
+  } finally {
+    await close();
+  }
+});
+
 test("completing access without a disclosure is flagged, not blocked", async () => {
   const { t, close } = await boot();
   try {
@@ -325,10 +346,14 @@ test("staff not on the care team are flagged, and an empty team is not", async (
   const { t, close } = await boot();
   try {
     t.careTeam.assign({ patientId: P, practitionerId: "dr-tetso", role: "primary", by: { actorId: "ops" } });
+    // Production HTTP audits put the credential on principal_id and the
+    // clinician on practitioner_id. Matching principal_id to the care team
+    // would miss every real access.
     t.audit.record({
       action: "R",
-      principalId: "dr-locum",
-      principalKind: "practitioner",
+      principalId: "key-locum",
+      principalKind: "apikey",
+      practitionerId: "dr-locum",
       method: "GET",
       path: "/api/clinical/chart",
       patient: P,
@@ -337,11 +362,33 @@ test("staff not on the care team are flagged, and an empty team is not", async (
     });
     t.audit.record({
       action: "R",
-      principalId: "dr-alone",
-      principalKind: "practitioner",
+      principalId: "key-tetso",
+      principalKind: "apikey",
+      practitionerId: "dr-tetso",
+      method: "GET",
+      path: "/api/clinical/chart",
+      patient: P,
+      resourceType: "Composition",
+      outcome: 0,
+    });
+    t.audit.record({
+      action: "R",
+      principalId: "key-alone",
+      principalKind: "apikey",
+      practitionerId: "dr-alone",
       method: "GET",
       path: "/api/clinical/chart",
       patient: "NT-none",
+      resourceType: "Composition",
+      outcome: 0,
+    });
+    t.audit.record({
+      action: "R",
+      principalId: "key-feed",
+      principalKind: "apikey",
+      method: "GET",
+      path: "/api/clinical/chart",
+      patient: P,
       resourceType: "Composition",
       outcome: 0,
     });
@@ -350,9 +397,19 @@ test("staff not on the care team are flagged, and an empty team is not", async (
       review.flags.some((f) => f.kind === "not-on-care-team" && f.principalId === "dr-locum" && f.patientId === P)
     );
     assert.equal(
+      review.flags.some((f) => f.kind === "not-on-care-team" && f.principalId === "dr-tetso"),
+      false,
+      "a team member acting through an API key is still on the team"
+    );
+    assert.equal(
       review.flags.some((f) => f.kind === "not-on-care-team" && f.patientId === "NT-none"),
       false,
       "an empty care team is not a team somebody is missing from"
+    );
+    assert.equal(
+      review.flags.some((f) => f.kind === "not-on-care-team" && f.principalId === "key-feed"),
+      false,
+      "a credential naming no practitioner cannot be missing from a team"
     );
   } finally {
     await close();
