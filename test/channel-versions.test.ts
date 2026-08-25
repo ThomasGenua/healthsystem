@@ -463,6 +463,16 @@ test("an invalid document is refused whole, before anything is planned or writte
     // not a plan.
     const dry = await s.post("/api/channels/import", { channels: [bad] });
     assert.equal(dry.status, 400);
+
+    // And a document whose id disagrees with its blob's id is refused before
+    // anything happens: the row would be stored under one identity and the
+    // runtime registered under the other, splitting the channel in two.
+    const split = DOC();
+    (split.config as { id?: string }).id = "oru";
+    const refused = await s.post("/api/channels/import", { channels: [split], apply: true });
+    assert.equal(refused.status, 400);
+    assert.match(((await refused.json()) as { error: string }).error, /document id and config\.id disagree \(adt vs oru\)/);
+    assert.equal(s.engine.channelVersions.history("adt").length, 1, "still nothing written");
   } finally {
     await s.close();
   }

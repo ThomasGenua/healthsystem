@@ -844,6 +844,17 @@ async function route(
     // already updated, which is the worst possible moment to learn a document
     // is malformed: the database applied, the runtime half restarted.
     for (const doc of body.channels) {
+      // The document id and the blob's id must agree: the row is stored under
+      // the document's, the runtime registers under the blob's, and letting
+      // them differ splits one channel into two half-identities — an orphaned
+      // runtime, a wrong running flag, and messages stamped against a row
+      // that does not exist.
+      const blobId = (doc?.config as { id?: unknown } | undefined)?.id;
+      if (blobId !== doc?.id) {
+        return send(res, 400, {
+          error: `channel ${doc?.id ?? "(no id)"}: document id and config.id disagree (${String(doc?.id)} vs ${String(blobId)})`,
+        });
+      }
       try {
         validateChannel(doc.config as unknown as ChannelConfig);
       } catch (err) {
