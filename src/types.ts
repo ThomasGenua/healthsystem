@@ -379,6 +379,12 @@ export interface MessageRow {
   status: MessageStatus;
   error: string | null;
   meta: string | null;
+  /**
+   * The channel configuration version that processed this message, or null
+   * when the channel predated versioning. What makes "which rules were live
+   * when this went wrong" a lookup instead of an archaeology project.
+   */
+  config_version: number | null;
   hash: string;
   prev_hash: string | null;
 }

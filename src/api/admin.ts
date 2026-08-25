@@ -69,6 +69,9 @@ import { VERSION } from "../version.ts";
 import type { AuditAction, AuditEntry } from "../audit/store.ts";
 import type { TlsConfig } from "./tls.ts";
 import type { ChannelConfig, MappingDoc, MessageRow } from "../types.ts";
+import type { ChannelDocument } from "../core/channel-versions.ts";
+import { validateChannel } from "../core/engine.ts";
+import { Refusal } from "../core/refusal.ts";
 
 let UI_HTML: string | null = null;
 function uiHtml(): string {
@@ -802,18 +805,154 @@ async function route(
   if (path === "/api/channels" && method === "POST") {
     const body = await readBody(req);
     const config = JSON.parse(body) as ChannelConfig;
-    await engine.addChannel(config);
-    return send(res, 201, { ok: true, id: config.id });
+    // Who made the change comes from the credential; why comes from the
+    // x-change-note header, so the body stays exactly the channel document
+    // that source control holds. A change with no note is recorded as such
+    // rather than refused — but the version always says who and when.
+    const note = typeof req.headers["x-change-note"] === "string" ? req.headers["x-change-note"] : undefined;
+    await engine.addChannel(config, {
+      by: auth.ok ? auth.principal.id : "unauthenticated",
+      ...(note ? { note } : {}),
+    });
+    const v = engine.channelVersions.history(config.id)[0];
+    audit({
+      action: "U",
+      resourceType: "Channel",
+      resourceId: config.id,
+      detail: `configured as version ${v?.version ?? "?"}${note ? `: ${note}` : ""}`,
+    });
+    return send(res, 201, { ok: true, id: config.id, version: v?.version });
   }
 
-  let m = /^\/api\/channels\/([a-z0-9-]+)$/.exec(path);
+  // Exact paths first: "export" and "import" would otherwise match the
+  // one-segment channel-id pattern below and read as channels named that.
+  if (path === "/api/channels/export" && method === "GET") {
+    // The whole configuration in the form source control holds and an
+    // operator edits — which makes a config change reviewable as a pull
+    // request instead of as JSON edited in a database.
+    return send(res, 200, { channels: engine.channelVersions.exportAll() });
+  }
+  if (path === "/api/channels/import" && method === "POST") {
+    const body = JSON.parse(await readBody(req)) as {
+      channels?: ChannelDocument[];
+      apply?: boolean;
+      note?: string;
+    };
+    if (!Array.isArray(body.channels)) return send(res, 400, { error: "channels required" });
+    // Validated before anything is planned, let alone written. Validation
+    // inside the restart used to run after the ledger and live rows were
+    // already updated, which is the worst possible moment to learn a document
+    // is malformed: the database applied, the runtime half restarted.
+    for (const doc of body.channels) {
+      // The document id and the blob's id must agree: the row is stored under
+      // the document's, the runtime registers under the blob's, and letting
+      // them differ splits one channel into two half-identities — an orphaned
+      // runtime, a wrong running flag, and messages stamped against a row
+      // that does not exist.
+      const blobId = (doc?.config as { id?: unknown } | undefined)?.id;
+      if (blobId !== doc?.id) {
+        return send(res, 400, {
+          error: `channel ${doc?.id ?? "(no id)"}: document id and config.id disagree (${String(doc?.id)} vs ${String(blobId)})`,
+        });
+      }
+      try {
+        validateChannel(doc.config as unknown as ChannelConfig);
+      } catch (err) {
+        return send(res, 400, {
+          error: `channel ${doc?.id ?? "(no id)"}: ${err instanceof Error ? err.message : "invalid config"}`,
+        });
+      }
+    }
+    // A plan unless apply is said outright. The plan is the review: what
+    // would be created, what would change and exactly how, what the document
+    // does not mention — and a dry run writes nothing at all.
+    if (!body.apply) {
+      return send(res, 200, { applied: false, ...engine.channelVersions.plan(body.channels) });
+    }
+    const plan = engine.channelVersions.apply(body.channels, {
+      actorId: auth.ok ? auth.principal.id : "unauthenticated",
+      note: body.note ?? "(no note given)",
+    });
+    // The live engine follows the ledger: anything the import changed is
+    // restarted to match the stored row. Not through addChannel — that
+    // re-derives enabled and name from the config blob and records a second
+    // version doing it, so an import that disabled a channel would have been
+    // switched back on by its own restart.
+    for (const entry of plan.entries) {
+      if (entry.action === "unchanged") continue;
+      await engine.refreshChannel(entry.channelId);
+    }
+    audit({
+      action: "U",
+      resourceType: "Channel",
+      count: plan.entries.filter((e) => e.action !== "unchanged").length,
+      detail: `import applied${body.note ? `: ${body.note}` : ""}`,
+    });
+    return send(res, 200, { applied: true, ...plan });
+  }
+
+  let m = /^\/api\/channels\/([a-z0-9-]+)\/versions$/.exec(path);
+  if (m && method === "GET") {
+    return send(res, 200, engine.channelVersions.history(m[1]));
+  }
+  m = /^\/api\/channels\/([a-z0-9-]+)\/versions\/(\d+)$/.exec(path);
+  if (m && method === "GET") {
+    const v = engine.channelVersions.get(m[1], Number(m[2]));
+    return v ? send(res, 200, v) : send(res, 404, { error: "not found" });
+  }
+  m = /^\/api\/channels\/([a-z0-9-]+)\/diff$/.exec(path);
+  if (m && method === "GET") {
+    const from = Number(url.searchParams.get("from"));
+    const to = Number(url.searchParams.get("to"));
+    if (!Number.isInteger(from) || !Number.isInteger(to)) {
+      return send(res, 400, { error: "from and to versions required" });
+    }
+    try {
+      return send(res, 200, { channelId: m[1], from, to, diff: engine.channelVersions.diff(m[1], from, to) });
+    } catch (err) {
+      // A missing version is the operator's 404, not a server fault.
+      if (err instanceof Refusal) return send(res, err.status, { error: err.message });
+      throw err;
+    }
+  }
+  m = /^\/api\/channels\/([a-z0-9-]+)\/rollback$/.exec(path);
+  if (m && method === "POST") {
+    const body = JSON.parse(await readBody(req)) as { to?: number; note?: string };
+    if (!Number.isInteger(body.to)) return send(res, 400, { error: "to version required" });
+    let config: ChannelConfig;
+    try {
+      config = await engine.rollbackChannel(m[1], body.to!, {
+        by: auth.ok ? auth.principal.id : "unauthenticated",
+        ...(body.note ? { note: body.note } : {}),
+      });
+    } catch (err) {
+      // "No such version", "that is the deletion marker", "already at that
+      // shape" — refusals with the status they chose, not 500s wearing them.
+      if (err instanceof Refusal) return send(res, err.status, { error: err.message });
+      throw err;
+    }
+    audit({
+      action: "U",
+      resourceType: "Channel",
+      resourceId: m[1],
+      detail: `rolled back to version ${body.to}${body.note ? `: ${body.note}` : ""}`,
+    });
+    return send(res, 200, { ok: true, id: m[1], config });
+  }
+
+  m = /^\/api\/channels\/([a-z0-9-]+)$/.exec(path);
   if (m) {
     if (method === "GET") {
       const cfg = engine.getChannelConfig(m[1]);
       return cfg ? send(res, 200, cfg) : send(res, 404, { error: "not found" });
     }
     if (method === "DELETE") {
-      await engine.removeChannel(m[1]);
+      const note = typeof req.headers["x-change-note"] === "string" ? req.headers["x-change-note"] : undefined;
+      await engine.removeChannel(m[1], {
+        by: auth.ok ? auth.principal.id : "unauthenticated",
+        ...(note ? { note } : {}),
+      });
+      audit({ action: "D", resourceType: "Channel", resourceId: m[1], detail: note ?? "(no note given)" });
       return send(res, 200, { ok: true });
     }
   }

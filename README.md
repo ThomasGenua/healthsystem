@@ -1613,9 +1613,7 @@ a scope-narrowed directive withholds its section rather than the chart around it
 [#39](https://github.com/ThomasGenua/healthsystem/issues/39) is done: a visit is planned, repeated, moved and cancelled as one thing, its slots stay ordinary rows under the same unique index, and cancelling it puts every booked patient on a waitlist whose ordering is stated policy — priority, then waited-longest from first asking, then most-bumped — with offers that resolve as accepted, declined or unreachable, because a community with one phone line is not a community that keeps saying no.
 
 
-**Operate it.**
-
-- [#36 Channel configuration as versioned, reviewable artifacts](https://github.com/ThomasGenua/healthsystem/issues/36) — messages chain, the record is append-only, audit rows chain, and the configuration that determines all of it is overwritten in place with no history, no diff and no way back.
+**Operate it.** [#36](https://github.com/ThomasGenua/healthsystem/issues/36) is done: every channel change is a version carrying who, when and why; two versions diff at the field; a rollback restores old content as a new version and can resurrect a deleted channel; an import is a plan before it is an action and a dry run writes nothing; and every message records which configuration processed it, so "which rules were live when this went wrong" is a lookup rather than an archaeology project.
 
 **Then scale.**
 

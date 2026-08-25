@@ -82,6 +82,7 @@ export const TENANT_SCOPED_TABLES = [
   "schedule_visits",
   "schedule_waitlist",
   "schedule_offers",
+  "channel_versions",
   "prescriptions",
   "prescription_events",
   "migration_runs",
@@ -127,6 +128,37 @@ CREATE TABLE IF NOT EXISTS tenants (
   status TEXT NOT NULL DEFAULT 'active',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   suspended_at TEXT
+);
+
+-- Every shape a channel's configuration has ever had.
+--
+-- The channels row is the running state; this is its history. Messages chain,
+-- the clinical record is append-only, audit rows chain — and until this table
+-- the configuration that determines how all of those are produced was
+-- overwritten in place, with no record it ever said anything else. A mapping
+-- change that starts dropping a segment at 14:00 left an operator an
+-- updated_at, the current config, and their memory.
+CREATE TABLE IF NOT EXISTS channel_versions (
+  -- Ledger order across all channels, same reasoning as schedule_offers: two
+  -- versions in one millisecond are still two versions in an order.
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  -- Per-channel, counting from 1. What an operator says out loud: "roll adt
+  -- back to version 3".
+  version INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  enabled INTEGER NOT NULL,
+  config TEXT NOT NULL,
+  -- How this version came to be: baseline (the state found when versioning
+  -- first touched an existing channel), edit, import, rollback, or delete.
+  origin TEXT NOT NULL,
+  -- Set on a rollback: the version whose content was restored.
+  rollback_of INTEGER,
+  note TEXT NOT NULL,
+  changed_by TEXT NOT NULL,
+  changed_at TEXT NOT NULL,
+  UNIQUE (tenant_id, channel_id, version)
 );
 
 CREATE TABLE IF NOT EXISTS channels (
@@ -1801,6 +1833,10 @@ const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
   // Travelling clinics. Existing slots were not planned as part of a visit,
   // and NULL says exactly that.
   { table: "schedule_slots", column: "visit_id", type: "TEXT" },
+  // Config versioning. Null on existing rows reads correctly: written before
+  // any version existed.
+  { table: "channels", column: "config_version", type: "INTEGER" },
+  { table: "messages", column: "config_version", type: "INTEGER" },
   { table: "audit_events", column: "practitioner_id", type: "TEXT" },
   { table: "break_glass", column: "notice_dispatched_at", type: "TEXT" },
   { table: "break_glass", column: "notice_message_id", type: "TEXT" },
@@ -1884,7 +1920,11 @@ const REBUILT_TABLES: Array<{ table: string; columns: string[]; ddl: string }> =
   },
   {
     table: "channels",
-    columns: ["tenant_id", "id", "name", "enabled", "config", "last_hash", "created_at", "updated_at"],
+    // config_version is here as well as in ADDED_COLUMNS, because the rebuild
+    // runs after the ALTERs and recreates the table from this DDL: a column
+    // listed only there would be added and then dropped by the copy, on
+    // exactly the upgraded databases it exists for.
+    columns: ["tenant_id", "id", "name", "enabled", "config", "last_hash", "created_at", "updated_at", "config_version"],
     ddl: `CREATE TABLE channels__new (
       tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
       id TEXT NOT NULL,
@@ -1894,6 +1934,7 @@ const REBUILT_TABLES: Array<{ table: string; columns: string[]; ddl: string }> =
       last_hash TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      config_version INTEGER,
       PRIMARY KEY (tenant_id, id)
     )`,
   },
@@ -2189,11 +2230,17 @@ export class Db {
       .run(this.tenantId, id, name, enabled ? 1 : 0, config);
   }
 
-  getChannel(id: string): { id: string; name: string; enabled: number; config: string; last_hash: string | null } | undefined {
+  getChannel(
+    id: string
+  ):
+    | { id: string; name: string; enabled: number; config: string; last_hash: string | null; config_version: number | null }
+    | undefined {
     return this.sql
-      .prepare("SELECT id, name, enabled, config, last_hash FROM channels WHERE tenant_id = ? AND id = ?")
+      .prepare(
+        "SELECT id, name, enabled, config, last_hash, config_version FROM channels WHERE tenant_id = ? AND id = ?"
+      )
       .get(this.tenantId, id) as
-      | { id: string; name: string; enabled: number; config: string; last_hash: string | null }
+      | { id: string; name: string; enabled: number; config: string; last_hash: string | null; config_version: number | null }
       | undefined;
   }
 
@@ -2232,8 +2279,9 @@ export class Db {
     const id = randomUUID();
     this.sql
       .prepare(
-        `INSERT INTO messages (tenant_id, id, channel_id, source_type, content_type, raw, meta, hash, prev_hash, raw_digest)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO messages (tenant_id, id, channel_id, source_type, content_type, raw, meta, hash, prev_hash,
+           raw_digest, config_version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         this.tenantId,
@@ -2245,7 +2293,12 @@ export class Db {
         meta ? JSON.stringify(meta) : null,
         hash,
         prev,
-        rawDigest
+        rawDigest,
+        // Which configuration processed this message. The lineage claim the
+        // rest of the system already makes, extended to the config boundary:
+        // a message that went wrong is traceable to the exact rules that were
+        // live when it did. Null means the channel predates versioning.
+        ch?.config_version ?? null
       );
     this.sql
       .prepare("UPDATE channels SET last_hash = ? WHERE tenant_id = ? AND id = ?")
