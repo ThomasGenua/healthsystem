@@ -463,6 +463,40 @@ test("a scoped lock on a member locks that section of the check", async () => {
   }
 });
 
+test("a safety check that could consult nothing still lands on the patient's trail", async () => {
+  // Scoped locks on both sections empty the check — and the emptied answer
+  // is still a clinical answer about this patient. A 200 with no audit row
+  // would be the silent read the coverage guard exists to refuse, arriving
+  // through the one route whose fixtures carry no directives.
+  const s = await boot();
+  try {
+    const C = "NT500010";
+    s.t.consent.record({
+      patientId: C,
+      kind: "withhold-all",
+      scope: ["AllergyIntolerance", "MedicationStatement"],
+      by: { actorId: "privacy-office", actorKind: "practitioner" },
+    });
+    const res = await s.post("/api/clinical/safety-check", { patient: C, ingredient: "penicillin" });
+    assert.equal(res.status, 200);
+    const check = (await res.json()) as { clear: boolean; allergyStatus: string };
+    assert.equal(check.clear, false);
+    assert.equal(check.allergyStatus, "withheld");
+
+    const rows = s.t.audit.list({ patient: C, limit: 10 });
+    assert.ok(
+      rows.some(
+        (r) =>
+          /safety check/.test(r.detail ?? "") &&
+          /withheld by patient directive: AllergyIntolerance, MedicationStatement/.test(r.detail ?? "")
+      ),
+      "the emptied check is on the trail, with the locked sections named types-only"
+    );
+  } finally {
+    await s.close();
+  }
+});
+
 test("a refused unlink lands on both members' trails", async () => {
   // The withdrawal audits both charts; an attempt that was refused is part
   // of the same story, and an access review that shows one without the other

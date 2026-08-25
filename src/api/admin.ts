@@ -2588,17 +2588,35 @@ async function route(
         if (r.withheldTypes.has("MedicationStatement")) medicationsLocked += 1;
         else medicationCharts.push(member);
       }
-      // Audited as a read of each chart it consulted, because that is what
-      // it is: it reads their allergies and their medication list. A chart a
-      // directive kept out was not read, and stays off the trail.
+      // The named patient is audited on every answer — even one the
+      // directives emptied. The route still answered a clinical question
+      // about them, and a 200 with no row is exactly the silent read H-29
+      // exists to refuse. Sections a directive kept out are recorded the way
+      // phi() records them: types only, never content. Linked members are
+      // audited only when a section of theirs was actually read — a chart a
+      // directive kept out entirely was not read, and stays off the trail.
       const consulted = [...new Set([...allergyCharts, ...medicationCharts])].sort();
+      const ownLocked = [
+        ...(allergyCharts.includes(p) ? [] : ["AllergyIntolerance"]),
+        ...(medicationCharts.includes(p) ? [] : ["MedicationStatement"]),
+      ];
+      audit({
+        action: "R",
+        outcome: 0,
+        resourceType: "AllergyIntolerance",
+        patient: p,
+        detail:
+          `safety check: ${ingredient}` +
+          (ownLocked.length ? `; withheld by patient directive: ${ownLocked.join(", ")}` : ""),
+      });
       for (const member of consulted) {
+        if (member === p) continue;
         audit({
           action: "R",
           outcome: 0,
           resourceType: "AllergyIntolerance",
           patient: member,
-          detail: member === p ? `safety check: ${ingredient}` : `safety check for linked chart ${p}: ${ingredient}`,
+          detail: `safety check for linked chart ${p}: ${ingredient}`,
         });
       }
       const result = tenant.meds.check(p, { ingredient, display }, { allergyCharts, medicationCharts });
