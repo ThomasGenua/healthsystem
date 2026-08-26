@@ -11,6 +11,27 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **A migration you can rehearse** (#20). A migration is the riskiest day in
+  a deployment's life, and the way to survive it is to have already done it.
+  `dryRun()` runs the whole load — the real records, through the ordinary
+  stores — inside a transaction that is always rolled back, and returns the
+  same reconciliation report a real run would.
+
+  It is deliberately not a separate validator. A checker written alongside the
+  loader is a second opinion that drifts from the first, approving records the
+  real load would refuse; this one *is* the loader, so it cannot disagree with
+  itself. Nothing survives it either — not the run, not the record
+  bookkeeping, not the chart writes — because a rehearsal whose bookkeeping
+  persisted would make every record come back `unchanged` on the real load and
+  migrate nothing, silently.
+
+  The report says what a rehearsal cannot prove: that it describes this
+  database today, that a record loading cleanly now can be refused at cutover
+  if something takes its key first, and that a batch was validated in the
+  order it was given. A dry run with nothing declared still reconciles
+  perfectly and still means nothing — the same trap as the real run, reported
+  the same way. Hazard H-96.
+
 - **What the pharmacy did with the prescription** (#40). "Prescribed" and
   "dispensed" are different facts, and a chart that cannot tell them apart is
   misleading in the direction that causes harm: a medication the patient never

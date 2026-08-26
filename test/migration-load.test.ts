@@ -527,3 +527,123 @@ test("migrations are confined to their tenant", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- rehearsing it ------------------------------------------------------
+
+test("a dry run reports what would happen and writes absolutely nothing", () => {
+  // The point of rehearsing a migration is finding the mapping errors before
+  // they are in a chart. A rehearsal that left rows behind would be a
+  // migration with extra steps.
+  const w = site();
+  try {
+    const report = w.mig.dryRun({
+      sourceSystem: "legacy-emr",
+      by: OPS,
+      declared: [
+        { recordType: "patient", sourceCount: 1 },
+        { recordType: "allergy", sourceCount: 2 },
+      ],
+      records: [patientRecord(), allergyRecord("AL-1"), allergyRecord("AL-2", "Sulfa")],
+    });
+
+    assert.equal(report.dryRun, true);
+    assert.equal(report.totals.loaded, 3, "it says what would have landed");
+    assert.equal(report.totals.rejected, 0);
+    assert.equal(report.complete, true, "declared and accounted for");
+
+    // Nothing survives: not the run, not the records, not the chart writes.
+    assert.equal(w.mig.runs().length, 0, "the run itself is gone");
+    assert.equal(w.mig.provenanceFor(P).length, 0, "no migration record survives");
+    assert.equal(w.meds.allergies(P).length, 0, "and nothing reached the chart");
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("a dry run finds the rejections a real run would, because it uses the real stores", () => {
+  // A validator written alongside the loader is a second opinion that drifts
+  // from the first. This one is the loader.
+  const w = site();
+  try {
+    const broken: SourceRecord = {
+      sourceId: "AL-BAD",
+      recordType: "allergy",
+      sourcePatientId: "OLD-NOBODY",
+      content: { display: "Penicillin" },
+    };
+    const report = w.mig.dryRun({
+      sourceSystem: "legacy-emr",
+      by: OPS,
+      declared: [{ recordType: "allergy", sourceCount: 1 }],
+      records: [broken],
+    });
+    assert.equal(report.totals.rejected, 1, "an allergy for a patient nobody migrated cannot load");
+    assert.equal(report.totals.loaded, 0);
+    // Every declared record is accounted for — and a run holding a rejection
+    // is still not complete, which is the stricter and correct answer.
+    assert.equal(report.perType[0].unaccounted, 0, "nothing vanished");
+    assert.equal(report.complete, false, "a rejection is not a clean bill of health");
+    assert.ok(report.caveats.some((c) => /rejected/.test(c)), "and the report says so in words");
+    assert.equal(w.mig.runs().length, 0);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("a dry run says what a rehearsal cannot prove", () => {
+  // Honest about its own limits, in the report rather than in a comment
+  // somebody reads afterwards.
+  const w = site();
+  try {
+    const report = w.mig.dryRun({
+      sourceSystem: "legacy-emr",
+      by: OPS,
+      declared: [{ recordType: "patient", sourceCount: 1 }],
+      records: [patientRecord()],
+    });
+    assert.ok(
+      report.caveats.some((c) => /can be refused at cutover/.test(c)),
+      "a clean rehearsal today is not a promise about cutover"
+    );
+    assert.ok(
+      report.caveats.some((c) => /in the order given/.test(c)),
+      "and the order the batch was validated in is part of the result"
+    );
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("a dry run with nothing declared reconciles perfectly and says it means nothing", () => {
+  // The same trap as the real run: counts that agree with themselves.
+  const w = site();
+  try {
+    const report = w.mig.dryRun({ sourceSystem: "legacy-emr", by: OPS, records: [patientRecord()] });
+    assert.equal(report.complete, false, "nothing declared is not a clean bill of health");
+    assert.ok(report.caveats.some((c) => /declare/i.test(c)));
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("a rehearsal leaves the real run free to use the same source ids", () => {
+  // If the dry run's bookkeeping survived, every record would come back
+  // "unchanged" on the real load and nothing would actually migrate — the
+  // worst possible outcome, and a silent one.
+  const w = site();
+  try {
+    const records = [patientRecord(), allergyRecord("AL-1")];
+    w.mig.dryRun({ sourceSystem: "legacy-emr", by: OPS, records });
+
+    const run = w.mig.begin({ sourceSystem: "legacy-emr", mode: "cutover", by: OPS });
+    const outcomes = w.mig.loadAll(run.id, records, OPS);
+    assert.deepEqual(
+      outcomes.map((o) => o.outcome),
+      ["loaded", "loaded"],
+      "the real load actually loads"
+    );
+    assert.equal(w.meds.allergies(P).length, 1);
+  } finally {
+    w.cleanup();
+  }
+});
