@@ -39,8 +39,9 @@ rhetorical.
    middle, but not one removed from the end, because nothing survives that
    pointed at the missing rows. So each chain carries an issued count beside
    it — `audit_counters` per tenant, `clinical_counters` per tenant and
-   patient — incremented on every append, and `verifyChain()` compares rows
-   present against rows issued. That is what makes truncation, deleting the
+   patient — incremented on every append, and the verify walks
+   (`verifyChain()`, `verifyChart()`) compare rows present against rows
+   issued. That is what makes truncation, deleting the
    embarrassing tail, detectable (`test/chain-truncation.test.ts` — "an audit
    trail with its tail removed does not verify"). Each counter is one number
    because there is one place that increments it.
