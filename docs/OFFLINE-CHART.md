@@ -15,16 +15,35 @@ Hazards **H-84** through **H-88** carry its controls, and the residual that
 survives the build — a directive issued mid-outage reaching the station only at
 the next fill — is **R-20**.
 
-Two details the build settled that this design left open. The station keeps
+Details the build settled that this design left open. The station keeps
 **two databases**: the cached snapshot, destroyed at expiry, and the station's
-own, holding the manifest and the offline trail, which outlives it — because
-the record that somebody read a chart during the outage still has to reach the
-primary afterwards, and destroying it with the cache would make an offline read
-invisible to the access review built to find exactly that. And the cache is
-dated from the **snapshot's own stamp** rather than from when the copy landed:
-a snapshot taken at 02:00 and filled at 06:00 is four hours old on arrival, and
-a chart dated from the copy would understate its age — the one direction
-staleness must never err in.
+own, holding the manifest, the offline trail, and any offline break-glass
+declarations, all of which outlive it — because the record that somebody read
+a chart during the outage still has to reach the primary afterwards, and
+destroying it with the cache would make an offline read invisible to the
+access review built to find exactly that. The cache is dated from the
+**snapshot's own stamp** rather than from when the copy landed: a snapshot
+taken at 02:00 and filled at 06:00 is four hours old on arrival, and a chart
+dated from the copy would understate its age — the one direction staleness
+must never err in.
+
+The review hardened five more seams. **Read-only means no writes, not no
+POSTs**: break-glass is accepted (declared against the cache, honoured for
+the rest of the outage, copied into the surviving database, and replayed onto
+the primary at reconciliation so the patient's notice rides the real dispatch
+machinery), and the read-shaped checks — the safety check and the registry
+queries — still answer, because taking the allergy check away for the outage
+would be its own hazard. **Expiry is genuinely autonomous**: the first
+request to arrive past the budget purges the cache, and an hourly sweep
+purges the station nobody asks. **Every station response carries
+`x-portage-station-as-of` and `x-portage-station-age-hours`**, so a consumer
+that never opens the assembled chart still cannot mistake outage data for
+current data without ignoring the response saying so. **A refill to a new
+path destroys the previous cache** rather than orphaning a copy of the record
+outside the manifest's tracking. And **the cache runs nobody's channels**:
+the snapshot carries the primary's integration config, and every channel is
+disabled at fill, because a station that ran them would be a second engine
+sending the primary's feeds when the link returns.
 
 ---
 

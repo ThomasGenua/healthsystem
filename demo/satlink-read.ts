@@ -32,6 +32,7 @@ import { Workspace } from "../src/workspace/summary.ts";
 import { AuditStore } from "../src/audit/store.ts";
 import { takeBackup } from "../src/core/backup.ts";
 import { ReadingStation, fillStation, reconcile } from "../src/core/station.ts";
+import { ConsentDirectives } from "../src/patient/consent.ts";
 
 const P = "NT-DEMO-0001";
 const NURSE = { actorId: "nurse-tetso", actorKind: "staff" };
@@ -129,11 +130,22 @@ async function main(): Promise<void> {
     console.log(`   recorded on the station's own chain (${station.pending().length} row pending reconciliation)`);
 
     step(6, "A clinical write is refused, with somewhere else to go");
-    console.log("   POST /api/clinical/break-glass  ->  405");
+    console.log("   POST /api/clinical/immunization-record  ->  405");
     console.log("   \"this is a reading station serving a cached chart; it does not accept");
     console.log("    clinical writes, because a second writable copy of the record is a");
     console.log("    conflict nobody can resolve safely afterwards\"");
     console.log("   remedy: the feed queue and paper — the write path already degrades well.");
+    console.log("");
+    console.log("   The exception is the emergency: POST /api/clinical/break-glass -> 201.");
+    console.log("   The override is honoured from the cache for the rest of the outage,");
+    console.log("   a copy survives in the station's own database, and the primary learns");
+    console.log("   of it — and queues the patient's notice — at reconciliation.");
+    station.recordBreakGlass({
+      patient: P,
+      reason: "unresponsive on arrival, need the allergy list before giving anything",
+      actorId: "nurse-tetso",
+      actorKind: "apikey",
+    });
 
     step(7, `The outage outlasts the ${BUDGET_HOURS}-hour budget`);
     const wellPast = new Date(Date.parse(st.asOf) + (BUDGET_HOURS + 16) * 36e5);
@@ -152,10 +164,13 @@ async function main(): Promise<void> {
     console.log(`   primary chain before: ok=${before.ok} over ${before.checked} rows`);
 
     step(9, "The offline reads reconcile — by appending, never by rewriting");
-    const result = reconcile(station, primaryAudit, { principalId: "ops", principalKind: "apikey" });
+    const result = reconcile(station, primaryAudit, { principalId: "ops", principalKind: "apikey" }, {
+      consent: new ConsentDirectives(primary),
+    });
     const after = primaryAudit.verifyChain();
     console.log(`   appended:     ${result.appended} row(s) + 1 reconciliation row`);
     console.log(`   station chain: ok=${result.stationChain.ok} over ${result.stationChain.checked} rows`);
+    console.log(`   break-glass replayed: ${result.breakGlassReplayed} — the notice now rides the primary dispatch`);
     console.log(`   primary chain after: ok=${after.ok} over ${after.checked} rows`);
 
     const onTrail = primaryAudit.list({ patient: P, limit: 5 }).find((r) => /reconciled from station/.test(r.detail ?? ""));

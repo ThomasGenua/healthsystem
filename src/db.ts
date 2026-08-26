@@ -85,6 +85,7 @@ export const TENANT_SCOPED_TABLES = [
   "channel_versions",
   "patient_link_events",
   "station_manifest",
+  "station_breakglass",
   "prescriptions",
   "prescription_events",
   "migration_runs",
@@ -1844,6 +1845,26 @@ CREATE TABLE IF NOT EXISTS station_manifest (
   -- The station chain seq already appended to the primary. Reconciliation is
   -- append-only and resumable; this is where it resumes from.
   reconciled_through INTEGER NOT NULL DEFAULT 0
+);
+
+-- Break-glass declared while the link was down, kept until the primary knows.
+--
+-- The declaration itself lands in the cached database, where the same consent
+-- code the primary runs honours it for the rest of the outage. But the cache
+-- is destroyed at budget expiry, and the notice a patient is owed rides the
+-- primary's dispatch machinery — so the fact of the declaration is copied
+-- here, in the database that survives, and replayed onto the primary at
+-- reconciliation. An emergency override the primary never learns about is a
+-- patient never told their record was opened.
+CREATE TABLE IF NOT EXISTS station_breakglass (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  patient TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_kind TEXT NOT NULL,
+  declared_at TEXT NOT NULL,
+  replayed_at TEXT
 );
 
 -- Every identifier a chart is known by. A patient reaches a clinic with a

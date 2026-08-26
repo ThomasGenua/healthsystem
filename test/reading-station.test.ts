@@ -161,7 +161,12 @@ test("a station refuses clinical writes, and says where to write instead", async
   try {
     const s = await serveCache(rig.cachePath, rig.station);
     try {
-      const res = await s.post("/api/clinical/break-glass", { patient: P, reason: "unresponsive on arrival" });
+      const res = await s.post("/api/clinical/immunization-record", {
+        patient: P,
+        vaccine: "Influenza",
+        occurrenceAt: new Date().toISOString(),
+        status: "given",
+      });
       assert.equal(res.status, 405);
       const body = (await res.json()) as { error: string; remedy: string };
       assert.match(body.error, /does not accept clinical writes/);
@@ -175,6 +180,192 @@ test("a station refuses clinical writes, and says where to write instead", async
       );
     } finally {
       await s.close();
+    }
+  } finally {
+    rig.close();
+  }
+});
+
+test("break-glass works offline, and the primary learns of it at reconciliation", async () => {
+  // §6 of the design: a withheld chart mid-emergency with no way through is
+  // exactly the failure break-glass exists to refuse, and the link being
+  // down does not change that. The declaration lands in the cache, where
+  // the same consent code honours it; the copy in the station's own
+  // database is what survives the purge and reaches the primary — because
+  // an override the primary never learns about is a patient never told
+  // their record was opened.
+  const rig = await outageRig();
+  try {
+    const { ConsentDirectives } = await import("../src/patient/consent.ts");
+    new ConsentDirectives(rig.primary).record({
+      patientId: P,
+      kind: "withhold-all",
+      by: { actorId: "privacy-office", actorKind: "practitioner" },
+    });
+    const withDirective = await takeBackup(rig.primary, { dir: join(rig.dir, "snapshots-bg") });
+    fillStation(rig.stationDb, {
+      snapshot: withDirective.path,
+      cachePath: rig.cachePath,
+      stationId: "nursing-station-01",
+      allowUnencrypted: true,
+    });
+
+    const s = await serveCache(rig.cachePath, rig.station);
+    try {
+      const refused = await s.get(`/api/clinical/chart?patient=${P}`);
+      assert.equal(refused.status, 403, "the lockbox holds at the station");
+
+      const declared = await s.post("/api/clinical/break-glass", {
+        patient: P,
+        reason: "unresponsive on arrival, need the allergy list before giving anything",
+      });
+      assert.equal(declared.status, 201);
+      const body = (await declared.json()) as { station: string; note: string };
+      assert.equal(body.station, "nursing-station-01");
+      assert.match(body.note, /at reconciliation/);
+
+      const after = await s.get(`/api/clinical/chart?patient=${P}`);
+      assert.equal(after.status, 200, "the override lifts at the station for the rest of the outage");
+      const chart = (await after.json()) as { stale?: unknown };
+      assert.ok(chart.stale, "and the chart it opens is still honest about being a cache");
+    } finally {
+      await s.close();
+    }
+
+    assert.equal(rig.station.pendingBreakGlass().length, 1, "the declaration survives outside the cache");
+
+    const primaryAudit = new AuditStore(rig.primary);
+    const primaryConsent = new ConsentDirectives(rig.primary);
+    const result = reconcile(rig.station, primaryAudit, { principalId: "ops", principalKind: "apikey" }, { consent: primaryConsent });
+    assert.equal(result.breakGlassReplayed, 1);
+    assert.equal(rig.station.pendingBreakGlass().length, 0, "replayed once, never twice");
+
+    const replayed = rig.primary.sql
+      .prepare("SELECT reason FROM break_glass WHERE tenant_id = ? AND patient_id = ? ORDER BY rowid DESC LIMIT 1")
+      .get("default", P) as { reason: string } | undefined;
+    assert.ok(replayed, "the primary's consent store now holds the declaration");
+    assert.match(replayed?.reason ?? "", /declared offline at station nursing-station-01/);
+  } finally {
+    rig.close();
+  }
+});
+
+test("the safety check still answers during an outage", async () => {
+  // A read that arrives as POST is not a write, and refusing it would take
+  // the allergy check away for exactly the outage it matters most in.
+  const rig = await outageRig();
+  try {
+    const s = await serveCache(rig.cachePath, rig.station);
+    try {
+      const res = await s.post("/api/clinical/safety-check", { patient: P, ingredient: "penicillin" });
+      assert.equal(res.status, 200);
+      const check = (await res.json()) as { blocking: Array<{ kind: string }>; clear: boolean };
+      assert.equal(check.clear, false);
+      assert.ok(
+        check.blocking.some((f) => f.kind === "allergy"),
+        "the cached penicillin allergy still blocks a penicillin prescription"
+      );
+      assert.equal(res.headers.get("x-portage-station-as-of"), rig.fill.manifest.takenAt);
+    } finally {
+      await s.close();
+    }
+  } finally {
+    rig.close();
+  }
+});
+
+test("every station response says what it serves from", async () => {
+  // The assembled chart wears its age in the body; a consumer that only ever
+  // asks for the allergy list gets the same fact in the response itself.
+  const rig = await outageRig();
+  try {
+    const s = await serveCache(rig.cachePath, rig.station);
+    try {
+      const res = await s.get(`/api/clinical/allergies?patient=${P}`);
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get("x-portage-station-as-of"), rig.fill.manifest.takenAt);
+      assert.ok(Number(res.headers.get("x-portage-station-age-hours")) >= 0);
+    } finally {
+      await s.close();
+    }
+  } finally {
+    rig.close();
+  }
+});
+
+test("the serving budget can come from the environment, and a bad value refuses", async () => {
+  const rig = await outageRig();
+  try {
+    const fromEnv = fillStation(rig.stationDb, {
+      snapshot: rig.snapshot,
+      cachePath: rig.cachePath,
+      stationId: "nursing-station-01",
+      allowUnencrypted: true,
+      env: { PORTAGE_STATION_BUDGET_HOURS: "24" },
+    });
+    assert.equal(fromEnv.manifest.budgetHours, 24, "the documented variable is actually read");
+
+    // A misspelled budget must refuse, not quietly become 72: for a
+    // directive-freshness clock the silent default is the failure mode.
+    assert.throws(
+      () =>
+        fillStation(rig.stationDb, {
+          snapshot: rig.snapshot,
+          cachePath: rig.cachePath,
+          stationId: "nursing-station-01",
+          allowUnencrypted: true,
+          env: { PORTAGE_STATION_BUDGET_HOURS: "three days" },
+        }),
+      /not a positive number of hours/
+    );
+  } finally {
+    rig.close();
+  }
+});
+
+test("a refill does not orphan the previous cache", async () => {
+  // An untracked copy of the record on disk is exactly what the purge
+  // machinery exists to prevent, and a refill to a new path must not create
+  // one by accident.
+  const rig = await outageRig();
+  try {
+    const newPath = join(rig.dir, "cache-moved.db");
+    fillStation(rig.stationDb, {
+      snapshot: rig.snapshot,
+      cachePath: newPath,
+      stationId: "nursing-station-01",
+      allowUnencrypted: true,
+    });
+    assert.equal(existsSync(rig.cachePath), false, "the old cache is destroyed when the path moves");
+    assert.equal(existsSync(newPath), true);
+  } finally {
+    rig.close();
+  }
+});
+
+test("a filled cache runs nobody's channels", async () => {
+  // The snapshot carries the primary's integration config, and a station
+  // that ran it would be a second engine sending the primary's feeds when
+  // the link returns — H-39 with two databases instead of one.
+  const rig = await outageRig();
+  try {
+    rig.primary.sql
+      .prepare("INSERT INTO channels (tenant_id, id, name, enabled, config) VALUES (?, ?, ?, 1, ?)")
+      .run("default", "adt", "admissions", JSON.stringify({ id: "adt", name: "admissions", source: { kind: "http" }, destinations: [] }));
+    const snap = await takeBackup(rig.primary, { dir: join(rig.dir, "snapshots-ch") });
+    fillStation(rig.stationDb, {
+      snapshot: snap.path,
+      cachePath: rig.cachePath,
+      stationId: "nursing-station-01",
+      allowUnencrypted: true,
+    });
+
+    const cache = new Db(rig.cachePath);
+    try {
+      const enabled = cache.sql.prepare("SELECT COUNT(*) AS n FROM channels WHERE enabled = 1").get() as { n: number };
+      assert.equal(enabled.n, 0, "every channel in the cache is disabled at fill");
+    } finally {
+      cache.close();
     }
   } finally {
     rig.close();
@@ -231,7 +422,11 @@ test("past its budget the station serves nothing, and purges rather than waiting
       assert.match(st.detail, /directive issued since the fill cannot be known here/);
     }
 
-    // Serving is refused at the route with the reason and a way forward.
+    // Serving is refused at the route with the reason and a way forward —
+    // and the same request destroys the cache, because expiry is autonomous:
+    // the first arrival past the budget purges rather than leaving a copy of
+    // the record on disk for an operator to remember.
+    assert.ok(existsSync(rig.cachePath), "the cache exists before the request");
     const s = await serveCache(rig.cachePath, rig.station);
     try {
       // The route asks the real clock, which is well past this fixed stamp.
@@ -243,14 +438,12 @@ test("past its budget the station serves nothing, and purges rather than waiting
     } finally {
       await s.close();
     }
+    assert.equal(existsSync(rig.cachePath), false, "the refused request itself destroyed the clinical cache");
+    assert.ok(rig.station.manifest()?.purgedAt, "the manifest survives, so the station can still say why");
 
-    // Expiry destroys the clinical copy and keeps the record that reads
-    // happened — those still have to reach the primary.
-    assert.ok(existsSync(rig.cachePath), "the cache exists before expiry");
-    const purge = rig.station.expire(wellPast);
-    assert.equal(purge.purged, true);
-    assert.equal(existsSync(rig.cachePath), false, "the clinical cache is destroyed");
-    assert.ok(rig.station.manifest(), "the manifest survives, so the station can still say why");
+    const again = rig.station.expire(wellPast);
+    assert.equal(again.purged, false, "a purge is not repeated");
+    assert.match(again.detail, /already purged/);
     const afterPurge = rig.station.state(wellPast);
     assert.equal(afterPurge.serving, false);
     if (!afterPurge.serving) {

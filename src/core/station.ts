@@ -104,10 +104,13 @@ export interface FillOptions {
   cachePath: string;
   /** Identifies this station on every audit row it writes. */
   stationId: string;
+  /** Overrides PORTAGE_STATION_BUDGET_HOURS and the 72-hour default. */
   budgetHours?: number;
   /** Skip the at-rest check. For tests and for an operator who has asserted it. */
   allowUnencrypted?: boolean;
   now?: string;
+  /** Injectable so the env-var path is testable without mutating process.env. */
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface FillResult {
@@ -118,14 +121,43 @@ export interface FillResult {
 }
 
 /**
+ * The serving budget, from the explicit option, the environment, or the
+ * default — in that order.
+ *
+ * A value that does not parse throws rather than quietly becoming 72: a
+ * custodian who set a tighter budget and misspelled it would otherwise get
+ * the loose one with no sign anything was wrong, which for a
+ * directive-freshness clock is the failure mode, not a fallback.
+ */
+export function resolveBudgetHours(explicit: number | undefined, env: NodeJS.ProcessEnv): number {
+  if (explicit !== undefined) return explicit;
+  const raw = env.PORTAGE_STATION_BUDGET_HOURS;
+  if (raw === undefined || raw === "") return DEFAULT_BUDGET_HOURS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Refusal(
+      `PORTAGE_STATION_BUDGET_HOURS is set to "${raw}", which is not a positive number of hours; ` +
+        "refusing to fill rather than quietly serving under the default budget",
+      400
+    );
+  }
+  return parsed;
+}
+
+/**
  * Fills a station from a verified snapshot.
  *
- * The snapshot is verified, restored and dated before the manifest is written,
- * so a station that fails to fill has no manifest and therefore serves
- * nothing — rather than half a cache it would describe as whole.
+ * The snapshot is restored and dated before the manifest is written, so a
+ * station that fails to fill has no manifest and therefore serves nothing —
+ * rather than half a cache it would describe as whole. Verification is the
+ * restore's own: its preflight migrates a scratch copy and walks it, which is
+ * the check that works across a version boundary. Verifying the snapshot file
+ * directly would open it read-only with no migration, and an older but
+ * perfectly good snapshot would false-fail on tables it predates.
  */
 export function fillStation(station: Db, opts: FillOptions): FillResult {
   if (!existsSync(opts.snapshot)) throw new Refusal(`no snapshot at ${opts.snapshot}`, 404);
+  const budgetHours = resolveBudgetHours(opts.budgetHours, opts.env ?? process.env);
 
   // The at-rest posture is the primary's, verbatim (H-44). A station is a
   // machine in a nursing station rather than a locked server room, so a
@@ -143,12 +175,33 @@ export function fillStation(station: Db, opts: FillOptions): FillResult {
     }
   }
 
-  const verified = verifyBackup(opts.snapshot);
+  // A refill to a new path must not leave the previous cache on disk outside
+  // the manifest's tracking — an untracked copy of the record is exactly what
+  // the purge machinery exists to prevent.
+  const prior = readManifest(station);
+  if (prior && prior.cachePath !== opts.cachePath) {
+    for (const suffix of ["", "-wal", "-shm"]) rmSync(prior.cachePath + suffix, { force: true });
+  }
+
   const { takenAt, fromName } = snapshotTakenAt(opts.snapshot);
-  restore({ snapshot: opts.snapshot, target: opts.cachePath });
+  const restored = restore({ snapshot: opts.snapshot, target: opts.cachePath });
+  const verified = restored.verified;
+
+  // The snapshot carries the primary's integration config, and a station that
+  // ran it would be a second engine sending the primary's feeds when the link
+  // returns — H-39 with two databases instead of one. The rows are flipped in
+  // the cache only; the config ledger is untouched, because this is runtime
+  // posture on a copy, not authorship of anyone's configuration.
+  const cache = new Db(opts.cachePath);
+  try {
+    // crosses-tenants: deliberately the whole file. The cache node must not
+    // run any custodian's channels, so the flip covers every tenant's rows.
+    cache.sql.prepare("UPDATE channels SET enabled = 0").run();
+  } finally {
+    cache.close();
+  }
 
   const filledAt = opts.now ?? new Date().toISOString();
-  const budgetHours = opts.budgetHours ?? DEFAULT_BUDGET_HOURS;
   station.sql
     .prepare(
       `INSERT INTO station_manifest
@@ -334,6 +387,56 @@ export class ReadingStation {
       .prepare("UPDATE station_manifest SET reconciled_through = ? WHERE tenant_id = ?")
       .run(throughSeq, this.db.tenantId);
   }
+
+  /**
+   * Copies a break-glass declaration into the database that survives the purge.
+   *
+   * The declaration itself lives in the cache, where the same consent code the
+   * primary runs honours it for the rest of the outage. This copy exists
+   * because the cache is destroyed at expiry and the patient's notice rides
+   * the primary's dispatch machinery — an override the primary never learns
+   * about is a patient never told their record was opened.
+   */
+  recordBreakGlass(input: { patient: string; reason: string; actorId: string; actorKind: string; at?: string }): void {
+    this.db.sql
+      .prepare(
+        `INSERT INTO station_breakglass (tenant_id, patient, reason, actor_id, actor_kind, declared_at, replayed_at)
+         VALUES (?, ?, ?, ?, ?, ?, NULL)`
+      )
+      .run(
+        this.db.tenantId,
+        input.patient,
+        input.reason,
+        input.actorId,
+        input.actorKind,
+        input.at ?? new Date().toISOString()
+      );
+  }
+
+  /** Declarations the primary has not yet been told about, oldest first. */
+  pendingBreakGlass(): Array<{
+    seq: number;
+    patient: string;
+    reason: string;
+    actor_id: string;
+    actor_kind: string;
+    declared_at: string;
+  }> {
+    return this.db.sql
+      .prepare(
+        `SELECT seq, patient, reason, actor_id, actor_kind, declared_at
+           FROM station_breakglass WHERE tenant_id = ? AND replayed_at IS NULL ORDER BY seq`
+      )
+      .all(this.db.tenantId) as never;
+  }
+
+  markBreakGlassReplayed(throughSeq: number, at = new Date().toISOString()): void {
+    this.db.sql
+      .prepare(
+        "UPDATE station_breakglass SET replayed_at = ? WHERE tenant_id = ? AND seq <= ? AND replayed_at IS NULL"
+      )
+      .run(at, this.db.tenantId, throughSeq);
+  }
 }
 
 export interface ReconcileResult {
@@ -343,6 +446,10 @@ export interface ReconcileResult {
   /** Present when the station's chain did not verify — an incident, not a drop. */
   incident?: string;
   span?: { from: string; to: string };
+  /** Offline break-glass declarations replayed onto the primary's consent store. */
+  breakGlassReplayed: number;
+  /** Declarations still pending because no consent store was offered to replay into. */
+  breakGlassPending: number;
 }
 
 /**
@@ -363,11 +470,44 @@ export interface ReconcileResult {
 export function reconcile(
   station: ReadingStation,
   primary: AuditStore,
-  by: { principalId: string; principalKind: string }
+  by: { principalId: string; principalKind: string },
+  opts: {
+    /**
+     * The primary's consent store, for replaying break-glass declared offline.
+     *
+     * The replay re-declares at the primary with the original actor and a
+     * reason carrying the station and the original time — which queues the
+     * patient's notice through the real dispatch machinery and puts the
+     * override in front of the same review every break-glass faces. Omitted,
+     * the declarations stay pending and the result says how many, because
+     * losing them quietly is the failure this table exists to prevent.
+     */
+    consent?: {
+      breakGlass(input: {
+        patientId: string;
+        by: { actorId: string; actorKind: string };
+        reason: string;
+      }): unknown;
+    };
+  } = {}
 ): ReconcileResult {
   const pending = station.pending();
   const chain = station.audit.verifyChain();
   const stationId = station.manifest()?.stationId ?? "unknown-station";
+
+  const declarations = station.pendingBreakGlass();
+  let breakGlassReplayed = 0;
+  if (opts.consent && declarations.length > 0) {
+    for (const d of declarations) {
+      opts.consent.breakGlass({
+        patientId: d.patient,
+        by: { actorId: d.actor_id, actorKind: d.actor_kind },
+        reason: `${d.reason} (declared offline at station ${stationId} at ${d.declared_at}; replayed at reconciliation)`,
+      });
+    }
+    station.markBreakGlassReplayed(declarations[declarations.length - 1].seq);
+    breakGlassReplayed = declarations.length;
+  }
 
   for (const row of pending) {
     primary.record({
@@ -407,6 +547,9 @@ export function reconcile(
     detail:
       `station ${stationId} reconciled: ${pending.length} row${pending.length === 1 ? "" : "s"}` +
       (span ? ` spanning ${span.from} to ${span.to}` : " (none pending)") +
+      (breakGlassReplayed > 0
+        ? `; ${breakGlassReplayed} offline break-glass declaration${breakGlassReplayed === 1 ? "" : "s"} replayed`
+        : "") +
       `; station chain ${chain.ok ? `verified over ${chain.checked} rows` : "DID NOT VERIFY"}`,
   });
 
@@ -416,6 +559,8 @@ export function reconcile(
     appended: pending.length,
     stationChain: { ok: chain.ok, checked: chain.checked },
     ...(span ? { span } : {}),
+    breakGlassReplayed,
+    breakGlassPending: declarations.length - breakGlassReplayed,
     ...(chain.ok
       ? {}
       : {

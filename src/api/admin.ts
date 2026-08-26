@@ -152,6 +152,24 @@ export function startApi(engine: Engine, port: number, host = "0.0.0.0", options
     });
   };
   const server = options.tls ? createSecureServer(options.tls.serverOptions, handler) : createServer(handler);
+
+  // The other half of autonomous expiry: the gate purges on the first request
+  // past the budget, and this sweep purges the station nobody asks — a copy
+  // of the record must not sit in a building nobody is watching just because
+  // nobody opened a chart. expire() checks the budget itself, so calling it
+  // early is a no-op rather than a hazard.
+  const stationSweep = options.station
+    ? setInterval(() => {
+        try {
+          options.station?.expire();
+        } catch {
+          // A sweep that throws must not take the server down; the gate's
+          // per-request purge is still in place, and the next sweep retries.
+        }
+      }, 3_600_000)
+    : undefined;
+  stationSweep?.unref();
+
   return new Promise((resolve, reject) => {
     server.on("error", reject);
     server.listen(port, host, () => {
@@ -162,7 +180,10 @@ export function startApi(engine: Engine, port: number, host = "0.0.0.0", options
         port: actual,
         tls: Boolean(options.tls),
         limiter,
-        close: () => new Promise<void>((r) => server.close(() => r())),
+        close: () => {
+          if (stationSweep) clearInterval(stationSweep);
+          return new Promise<void>((r) => server.close(() => r()));
+        },
       });
     });
   });
@@ -1258,11 +1279,17 @@ async function route(
   if (path.startsWith("/api/clinical/")) {
     const patient = url.searchParams.get("patient") ?? undefined;
 
-    // A station answers for a cache, and two rules come before any route on
-    // it. Both fail closed, and both say what to do instead of a chart.
+    // A station answers for a cache, and the rules come before any route on
+    // it. Everything here fails closed, and every refusal says what to do
+    // instead of a chart.
     const stationState = station?.state();
     if (stationState) {
       if (!stationState.serving) {
+        // Expiry is autonomous, and this is half of how: the first request
+        // to arrive past the budget destroys the cache rather than leaving a
+        // copy of the record on disk for an operator to remember. (The other
+        // half is the hourly sweep in startApi, for the station nobody asks.)
+        if (stationState.reason === "expired") station?.expire();
         // Past the budget the directives in the cache are too old to be
         // trusted about who may see what, so the honest answer is nothing —
         // never a chart with an unknown lockbox over it.
@@ -1279,11 +1306,64 @@ async function route(
           remedy: "reach the primary over the link, or fill this station from a fresh snapshot",
         });
       }
-      // Read-only, and it says so. The write path already degrades acceptably
-      // — that is what the outage demo proves — so the station's refusal
-      // points at the queue and the paper form rather than inventing a
-      // conflict-resolution problem nobody has designed yet.
-      if (method !== "GET") {
+      // Every station response says what it is serving from, so a consumer
+      // that never opens the assembled chart still cannot mistake outage
+      // data for current data without ignoring the response saying so.
+      res.setHeader("x-portage-station-as-of", stationState.asOf);
+      res.setHeader("x-portage-station-age-hours", String(stationState.ageHours));
+
+      // Break-glass works offline — §6 of the design, and the reason a
+      // blanket write refusal would be wrong: a withheld chart mid-emergency
+      // with no way through is exactly the failure H-25 exists to refuse.
+      // The declaration lands in the cache, where the same consent code the
+      // primary runs honours it for the rest of the outage; a copy lands in
+      // the station's own database, which survives the purge, so the primary
+      // learns of it — and the patient's notice is queued — at
+      // reconciliation.
+      if (method === "POST" && path === "/api/clinical/break-glass") {
+        const body = JSON.parse(await readBody(req)) as { patient?: string; reason?: string };
+        if (!body.patient || !body.reason) return send(res, 400, { error: "patient and reason required" });
+        const who = auth.ok ? auth.principal.id : "unauthenticated";
+        const kind = auth.ok ? auth.principal.kind : "unknown";
+        try {
+          const declared = tenant.consent.breakGlass({
+            patientId: body.patient,
+            by: { actorId: who, actorKind: kind },
+            reason: body.reason,
+            ...(auth.ok && auth.principal.purposeOfUse ? { purposeOfUse: auth.principal.purposeOfUse } : {}),
+          });
+          station?.recordBreakGlass({ patient: body.patient, reason: body.reason, actorId: who, actorKind: kind });
+          audit({
+            action: "E",
+            outcome: 0,
+            resourceType: "Consent",
+            patient: body.patient,
+            detail: `break-glass declared during outage: ${body.reason}`,
+          });
+          return send(res, 201, {
+            ...declared,
+            station: stationState.stationId,
+            note: "declared against the cache; the primary learns of it, and the patient's notice is queued, at reconciliation",
+          });
+        } catch (err) {
+          const mapped = mapStoreError(err);
+          audit({
+            action: "E",
+            outcome: mapped.outcome,
+            resourceType: "Consent",
+            patient: body.patient,
+            detail: mapped.detail,
+          });
+          return send(res, mapped.status, { error: mapped.error });
+        }
+      }
+
+      // Read-only means no clinical *writes* — not no POSTs. The safety
+      // check and the registry queries are reads that arrive as POST because
+      // their input is structured, and refusing them would take the allergy
+      // check away for exactly the outage it matters most in.
+      const READS_AS_POST = ["/api/clinical/safety-check", "/api/clinical/gaps", "/api/clinical/measure"];
+      if (method !== "GET" && !READS_AS_POST.includes(path)) {
         audit({
           action: verbToAction(method),
           outcome: 4,
