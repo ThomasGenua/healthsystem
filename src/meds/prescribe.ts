@@ -38,6 +38,28 @@
  * prescription is *outstanding*, and `awaitingAcknowledgement()` is the list
  * that stops "we sent it" from being the end of the story.
  *
+ * ## Dispensed is not prescribed, and unknown is not "no"
+ *
+ * A prescription that reached a pharmacy is not a medication in a patient. It
+ * becomes one when somebody collects it, and the gap between those two facts
+ * is where a chart starts lying: every screen shows the drug, nothing shows
+ * that it is still on a shelf. So a dispense is recorded as its own event.
+ *
+ * What makes that honest rather than decorative is the third state. A
+ * prescription with no dispense against it means the patient did not collect
+ * it **only where the pharmacy is declared to report dispenses**. Everywhere
+ * else the absence means nothing at all, and saying "never collected" would
+ * flag every prescription sent to a pharmacy that simply does not send
+ * notifications. Silence is `unknown`, and it says so.
+ *
+ * ## A renewal request is work, not a message
+ *
+ * A pharmacy asking for a repeat is a decision a prescriber has to make, and
+ * a decision that arrives as a fax, an email or a note in a queue nobody owns
+ * is a decision that gets made late or not at all. It arrives here as an item
+ * in the unified worklist, which cannot be closed without saying what was
+ * done.
+ *
  * ## A controlled substance is not an ordinary prescription
  *
  * Electronic prescribing of narcotics and controlled drugs is separately
@@ -51,7 +73,9 @@ import type { Db } from "../db.ts";
 import { refuse } from "../core/refusal.ts";
 import { an } from "../core/text.ts";
 import { Directory } from "../directory/store.ts";
+import type { TaskRow, TaskStore } from "../work/tasks.ts";
 import type { MedicationStore, MedRow } from "./store.ts";
+import type { Finding, SafetyCheck } from "./safety.ts";
 
 export const PRESCRIPTION_STATUSES = [
   /** Written, not yet gone anywhere. Nobody is waiting. */
@@ -71,6 +95,69 @@ export type PrescriptionStatus = (typeof PRESCRIPTION_STATUSES)[number];
 
 /** How long a transmitted prescription may go unacknowledged before it is chased. */
 const ACK_WINDOW_HOURS = 4;
+
+/** How far ahead of us a pharmacy's clock may be before a dispense is refused. */
+const CLOCK_SKEW_HOURS = 24;
+
+/**
+ * What the pharmacy did with it.
+ *
+ * `not-collected` is the one worth having: a pharmacy that returns a
+ * prescription to stock is reporting a fact, and a reported fact is
+ * actionable in a way an absence never is.
+ */
+export const DISPENSE_OUTCOMES = ["dispensed", "partially-dispensed", "not-collected"] as const;
+export type DispenseOutcome = (typeof DISPENSE_OUTCOMES)[number];
+
+export interface DispenseRow {
+  tenant_id: string;
+  id: string;
+  prescription_id: string;
+  patient_id: string;
+  outcome: DispenseOutcome;
+  /** When the pharmacy says it happened, which is not when we heard. */
+  dispensed_at: string;
+  quantity: string | null;
+  days_supply: number | null;
+  reported_at: string;
+  reported_by: string;
+  source_message_id: string | null;
+  detail: string | null;
+}
+
+/**
+ * Whether this prescription reached the patient, as far as anyone can tell.
+ *
+ * `unknown` is not a failure to compute. It is the answer for a prescription
+ * sent to a pharmacy that does not report dispenses, and it is the only
+ * honest one: nothing about that silence distinguishes a patient who
+ * collected their medication from one who never went.
+ */
+export type DispenseState =
+  | { state: "not-applicable"; detail: string }
+  | { state: "unknown"; detail: string }
+  | { state: "awaiting"; detail: string }
+  | { state: "dispensed"; at: string; detail: string }
+  | { state: "partially-dispensed"; at: string; detail: string }
+  | { state: "not-collected"; at: string; detail: string };
+
+/**
+ * The safety check as the prescriber saw it, travelling with the script.
+ *
+ * A pharmacist runs their own check; that is the point of two professionals.
+ * What they cannot reconstruct is what *this* check saw and what the
+ * prescriber decided to sign past, and a pharmacist who does not know an
+ * interaction was already considered either calls to ask or assumes it was
+ * missed. Both are worse than being told.
+ */
+export interface TransmittedSafetyCheck {
+  allergyStatus: string;
+  clear: boolean;
+  findings: Array<{ kind: string; severity: string; message: string }>;
+  /** Findings the prescriber signed past, and why. */
+  overridden: Array<{ kind: string; severity: string; message: string }>;
+  overrideReason: string | null;
+}
 
 export interface PrescriptionRow {
   tenant_id: string;
@@ -99,6 +186,14 @@ export interface PrescriptionRow {
   cancel_reason: string | null;
   /** The prescription this one replaces after a failure. */
   replaces: string | null;
+  /**
+   * Whether the pharmacy reported dispenses when this was sent. Null on a
+   * prescription that never went to one. Snapshotted deliberately: a
+   * declaration made later says nothing about what this silence meant.
+   */
+  dispense_reporting: number | null;
+  /** The safety check as it was shown to the prescriber, as JSON. */
+  safety_summary: string | null;
   created_at: string;
 }
 
@@ -149,10 +244,43 @@ export interface PrescriptionPayload {
   writtenAt: string;
   /** Set when this replaces a failed transmission, so a pharmacy can tell. */
   replaces: string | null;
+  /**
+   * What the prescriber's own check saw. Null means no check was recorded
+   * with this prescription — which a pharmacy must read as *not checked
+   * here*, never as checked and clear.
+   */
+  safetyCheck: TransmittedSafetyCheck | null;
+}
+
+/**
+ * Folds a safety check into what a pharmacy is told.
+ *
+ * Every finding travels, not only the blocking ones: a moderate interaction a
+ * prescriber reasonably proceeded through is exactly the thing a pharmacist
+ * catches with the piece of history the prescriber did not have. What is left
+ * behind is the patient-level detail behind each finding — the pharmacy is
+ * being told what was considered, not handed the chart it was considered
+ * against.
+ */
+function summarise(check: SafetyCheck, overrideReason: string | null): TransmittedSafetyCheck {
+  const flat = (f: Finding) => ({ kind: f.kind, severity: f.severity, message: f.message });
+  return {
+    allergyStatus: check.allergyStatus,
+    clear: check.clear,
+    findings: check.findings.map(flat),
+    overridden: check.blocking.map(flat),
+    overrideReason,
+  };
 }
 
 export interface PrescribeOptions {
   dispatcher?: PharmacyDispatcher;
+  /**
+   * The unified worklist a renewal request becomes an item in. Without one,
+   * `requestRenewal()` refuses rather than recording a request into a place
+   * nobody looks — which is the fax tray this is meant to replace.
+   */
+  tasks?: TaskStore;
   /**
    * What authorises this deployment to transmit controlled substances
    * electronically. Unset means it may not, and the refusal says so.
@@ -169,6 +297,7 @@ export class Prescribing {
   private meds: MedicationStore;
   private directory: Directory;
   private dispatcher: PharmacyDispatcher | null;
+  private tasks: TaskStore | null;
   private controlledAuthority: string | null;
 
   constructor(db: Db, meds: MedicationStore, opts: PrescribeOptions = {}) {
@@ -176,6 +305,7 @@ export class Prescribing {
     this.meds = meds;
     this.directory = new Directory(db);
     this.dispatcher = opts.dispatcher ?? null;
+    this.tasks = opts.tasks ?? null;
     this.controlledAuthority = opts.controlledSubstanceAuthority ?? null;
   }
 
@@ -191,6 +321,14 @@ export class Prescribing {
     instructions: string;
     by: Actor;
     controlled?: boolean;
+    /**
+     * The check `MedicationStore.prescribe()` returned, so it can travel with
+     * the script. Omitted means the payload says *no check recorded*, which
+     * is not the same as clear and must never be read as it.
+     */
+    safetyCheck?: SafetyCheck;
+    /** Why the prescriber signed past a blocking finding, when they did. */
+    overrideReason?: string;
   }): PrescriptionRow {
     if (!input.instructions.trim()) {
       refuse("a prescription needs instructions the patient can follow");
@@ -208,6 +346,22 @@ export class Prescribing {
       );
     }
 
+    // Run the check here when the caller did not bring one. Without this the
+    // ordinary path — a route that writes a prescription against an existing
+    // statement — would transmit "no check recorded" for every script, which
+    // is honest and useless: the pharmacist would learn that the field is
+    // always empty and stop reading it.
+    //
+    // `record()` derives an ingredient from the display when none is given, so
+    // this is normally always available. The null branch is for a row that
+    // arrived without one — a migration, or a database written before the
+    // column — and it stays null rather than becoming a clear check.
+    const check =
+      input.safetyCheck ??
+      (statement.ingredient
+        ? this.meds.check(statement.patient_id, { ingredient: statement.ingredient, display: statement.display })
+        : null);
+
     const id = randomUUID();
     const now = new Date().toISOString();
     return this.db.transaction(() => {
@@ -215,8 +369,8 @@ export class Prescribing {
         .prepare(
           `INSERT INTO prescriptions
              (tenant_id, id, statement_id, patient_id, pharmacy_id, status, instructions,
-              controlled, controlled_authority, prescriber_id, written_at, created_at)
-           VALUES (?, ?, ?, ?, NULL, 'draft', ?, ?, NULL, ?, ?, ?)`
+              controlled, controlled_authority, prescriber_id, written_at, safety_summary, created_at)
+           VALUES (?, ?, ?, ?, NULL, 'draft', ?, ?, NULL, ?, ?, ?, ?)`
         )
         .run(
           this.db.tenantId,
@@ -227,6 +381,7 @@ export class Prescribing {
           input.controlled ? 1 : 0,
           statement.prescriber_id ?? input.by.actorId,
           now,
+          check ? JSON.stringify(summarise(check, input.overrideReason ?? null)) : null,
           now
         );
       this.event(id, "written", input.by, `${statement.display}: ${input.instructions.trim()}`);
@@ -296,7 +451,8 @@ export class Prescribing {
       this.db.sql
         .prepare(
           `UPDATE prescriptions
-              SET status = 'transmitted', pharmacy_id = ?, transmitted_at = ?, message_id = ?, ack_due_by = ?
+              SET status = 'transmitted', pharmacy_id = ?, transmitted_at = ?, message_id = ?, ack_due_by = ?,
+                  dispense_reporting = ?
             WHERE tenant_id = ? AND id = ?`
         )
         .run(
@@ -304,6 +460,9 @@ export class Prescribing {
           now,
           messageId,
           new Date(new Date(now).getTime() + ACK_WINDOW_HOURS * 3_600_000).toISOString(),
+          // Taken now, not read later: whether this prescription's silence
+          // will mean anything depends on what was true when it was sent.
+          this.reportsDispenses(pharmacyId) ? 1 : 0,
           this.db.tenantId,
           prescriptionId
         );
@@ -533,6 +692,277 @@ export class Prescribing {
       .all(this.db.tenantId) as unknown as PrescriptionRow[];
   }
 
+  // ---- what the pharmacy did with it ------------------------------------
+
+  /**
+   * Declares whether a pharmacy tells us what it dispensed.
+   *
+   * This is what makes an absent dispense mean anything. Without it, a
+   * prescription with no dispense against it is `unknown`, and it stays
+   * unknown however long it sits there.
+   */
+  declareDispenseReporting(pharmacyId: string, reports: boolean, by: Actor): void {
+    this.directory.require("organization", pharmacyId);
+    this.db.sql
+      .prepare(
+        `INSERT INTO pharmacy_dispense_reporting (tenant_id, pharmacy_id, reports, declared_at, declared_by)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(tenant_id, pharmacy_id) DO UPDATE SET
+           reports = excluded.reports, declared_at = excluded.declared_at, declared_by = excluded.declared_by`
+      )
+      .run(this.db.tenantId, pharmacyId, reports ? 1 : 0, new Date().toISOString(), by.actorId);
+  }
+
+  /** Whether this pharmacy is declared to report dispenses. */
+  reportsDispenses(pharmacyId: string): boolean {
+    const row = this.db.sql
+      .prepare("SELECT reports FROM pharmacy_dispense_reporting WHERE tenant_id = ? AND pharmacy_id = ?")
+      .get(this.db.tenantId, pharmacyId) as { reports: number } | undefined;
+    return row?.reports === 1;
+  }
+
+  /**
+   * Records what the pharmacy did with a prescription.
+   *
+   * Deliberately permitted against a **cancelled** prescription, and loud
+   * when it happens. A cancellation that never reached the pharmacy, or
+   * reached it too late, ends exactly here — with a drug dispensed that
+   * somebody decided to stop. Refusing to record it would delete the only
+   * evidence of the hazard this system tracks cancellations for; the
+   * dispense is kept, and the prescription is left owing a phone call.
+   */
+  recordDispense(
+    prescriptionId: string,
+    input: {
+      outcome: DispenseOutcome;
+      dispensedAt: string;
+      by: Actor;
+      quantity?: string;
+      daysSupply?: number;
+      sourceMessageId?: string;
+      detail?: string;
+    }
+  ): { dispense: DispenseRow; afterCancellation: boolean } {
+    const row = this.require(prescriptionId);
+    if (row.status === "draft") {
+      // Nothing left the building, so nothing can have been dispensed. This
+      // is a mis-keyed prescription id, and guessing which one was meant is
+      // how a dispense lands on the wrong patient.
+      refuse("a draft prescription has not gone anywhere, so it cannot have been dispensed");
+    }
+    const at = new Date(input.dispensedAt).getTime();
+    if (!Number.isFinite(at)) {
+      refuse(`${input.dispensedAt} is not a time this dispense could have happened at`);
+    }
+    // A pharmacy's clock can be a little ahead of ours; a year cannot. A
+    // mistyped year would sort last and make an uncollected prescription read
+    // as dispensed, which is the exact misreading this whole module exists to
+    // stop — so the tolerance is a day and everything past it is refused.
+    if (at > Date.now() + CLOCK_SKEW_HOURS * 3_600_000) {
+      refuse(`${input.dispensedAt} is in the future; a dispense cannot have happened yet`);
+    }
+    if (input.daysSupply !== undefined && (!Number.isInteger(input.daysSupply) || input.daysSupply < 0)) {
+      refuse("a days supply is a whole number of days, or absent");
+    }
+
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    const afterCancellation = row.status === "cancelled";
+    const dispense = this.db.transaction(() => {
+      this.db.sql
+        .prepare(
+          `INSERT INTO prescription_dispenses
+             (tenant_id, id, prescription_id, patient_id, outcome, dispensed_at, quantity, days_supply,
+              reported_at, reported_by, source_message_id, detail)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          this.db.tenantId,
+          id,
+          prescriptionId,
+          row.patient_id,
+          input.outcome,
+          input.dispensedAt,
+          input.quantity ?? null,
+          input.daysSupply ?? null,
+          now,
+          input.by.actorId,
+          input.sourceMessageId ?? null,
+          input.detail ?? null
+        );
+      this.event(
+        prescriptionId,
+        afterCancellation ? "dispensed-after-cancellation" : `dispense-${input.outcome}`,
+        input.by,
+        afterCancellation
+          ? `${input.outcome} at ${input.dispensedAt} despite cancellation — the pharmacy acted on a stopped prescription`
+          : `${input.outcome} at ${input.dispensedAt}${input.quantity ? `, ${input.quantity}` : ""}`
+      );
+      return this.dispense(id)!;
+    });
+    return { dispense, afterCancellation };
+  }
+
+  /** One dispense record. */
+  dispense(id: string): DispenseRow | undefined {
+    return this.db.sql
+      .prepare("SELECT * FROM prescription_dispenses WHERE tenant_id = ? AND id = ?")
+      .get(this.db.tenantId, id) as unknown as DispenseRow | undefined;
+  }
+
+  /** Every dispense against a prescription, oldest first. */
+  dispenses(prescriptionId: string): DispenseRow[] {
+    return this.db.sql
+      .prepare(
+        `SELECT * FROM prescription_dispenses
+          WHERE tenant_id = ? AND prescription_id = ? ORDER BY dispensed_at, reported_at`
+      )
+      .all(this.db.tenantId, prescriptionId) as unknown as DispenseRow[];
+  }
+
+  /**
+   * Whether this prescription reached the patient, as far as anyone can tell.
+   *
+   * The whole point of this method is the `unknown` branch. A chart that
+   * renders "not collected" for a pharmacy that never reports anything is
+   * making an accusation out of a silence, and a clinician who learns to
+   * ignore it has lost the signal for the pharmacies that do report.
+   */
+  dispenseState(prescriptionId: string): DispenseState {
+    const row = this.require(prescriptionId);
+    const records = this.dispenses(prescriptionId);
+    const last = records[records.length - 1];
+    if (last) {
+      const detail =
+        row.status === "cancelled"
+          ? `${last.outcome} at ${last.dispensed_at}, after this prescription was cancelled`
+          : `${last.outcome} at ${last.dispensed_at}`;
+      if (last.outcome === "dispensed") return { state: "dispensed", at: last.dispensed_at, detail };
+      if (last.outcome === "partially-dispensed") {
+        return { state: "partially-dispensed", at: last.dispensed_at, detail };
+      }
+      return { state: "not-collected", at: last.dispensed_at, detail };
+    }
+    if (row.status === "draft") {
+      return { state: "not-applicable", detail: "not sent anywhere yet" };
+    }
+    if (row.status === "handed-out") {
+      // Paper. The pharmacy that fills it is whichever one the patient walks
+      // into, and it has no way to tell us and nothing to tell us about.
+      return { state: "not-applicable", detail: "given to the patient on paper; no pharmacy is reporting on it" };
+    }
+    if (row.status === "failed") {
+      return { state: "not-applicable", detail: "the transmission failed; nothing reached a pharmacy" };
+    }
+    if (row.dispense_reporting === 1) {
+      return {
+        state: "awaiting",
+        detail: "sent to a pharmacy that reports dispenses, and none has been reported yet",
+      };
+    }
+    return {
+      state: "unknown",
+      detail:
+        "this pharmacy does not report dispenses, so whether the patient collected it is not something this system knows",
+    };
+  }
+
+  /**
+   * Prescriptions a patient looks likely not to have collected.
+   *
+   * Confined to pharmacies that report dispenses, because everywhere else the
+   * absence of a record is not evidence. That confinement is the reason this
+   * list is worth reading: everything on it is a real silence from somewhere
+   * that would have spoken.
+   */
+  neverCollected(withinDays = 14, asOf = new Date().toISOString()): PrescriptionRow[] {
+    const cutoff = new Date(new Date(asOf).getTime() - withinDays * 86_400_000).toISOString();
+    return this.db.sql
+      .prepare(
+        `SELECT p.* FROM prescriptions p
+          WHERE p.tenant_id = ?
+            AND p.status IN ('transmitted', 'acknowledged')
+            AND p.dispense_reporting = 1
+            AND p.transmitted_at IS NOT NULL
+            AND p.transmitted_at <= ?
+            AND NOT EXISTS (
+              SELECT 1 FROM prescription_dispenses d
+               WHERE d.tenant_id = p.tenant_id AND d.prescription_id = p.id
+            )
+          ORDER BY p.transmitted_at`
+      )
+      .all(this.db.tenantId, cutoff) as unknown as PrescriptionRow[];
+  }
+
+  /** Dispenses recorded against a prescription that had been cancelled. */
+  dispensedAfterCancellation(): Array<{ prescription: PrescriptionRow; dispense: DispenseRow }> {
+    const rows = this.db.sql
+      .prepare(
+        `SELECT d.* FROM prescription_dispenses d
+           JOIN prescriptions p ON p.tenant_id = d.tenant_id AND p.id = d.prescription_id
+          WHERE d.tenant_id = ? AND p.status = 'cancelled' AND d.outcome != 'not-collected'
+          ORDER BY d.dispensed_at`
+      )
+      .all(this.db.tenantId) as unknown as DispenseRow[];
+    return rows.map((d) => ({ prescription: this.require(d.prescription_id), dispense: d }));
+  }
+
+  // ---- renewal ----------------------------------------------------------
+
+  /**
+   * A pharmacy asks for a repeat, and it becomes work somebody owns.
+   *
+   * Not a status on the prescription, because a renewal is a new prescribing
+   * decision and the old prescription is not what is waiting — a person is.
+   * The task cannot be completed without evidence of what was decided, which
+   * is what stops "renewed" from meaning "the request stopped being visible".
+   */
+  requestRenewal(input: {
+    prescriptionId: string;
+    by: Actor;
+    requestedBy?: string;
+    note?: string;
+    priority?: "routine" | "urgent" | "stat";
+    sourceMessageId?: string;
+  }): TaskRow {
+    if (!this.tasks) {
+      refuse("no worklist is wired in, so a renewal request has nowhere to go that anybody would see");
+    }
+    const row = this.require(input.prescriptionId);
+    const statement = this.meds.statement(row.statement_id);
+    const drug = statement?.display ?? "a medication";
+    if (row.status === "draft") {
+      refuse("that prescription has not gone to a pharmacy, so no pharmacy can be asking to renew it");
+    }
+
+    const task = this.tasks.create({
+      kind: "prescription-renewal",
+      title: `Renewal requested: ${drug}`,
+      by: input.by,
+      patientId: row.patient_id,
+      priority: input.priority ?? "routine",
+      source: input.requestedBy ? `pharmacy ${input.requestedBy}` : "pharmacy",
+      sourceMessageId: input.sourceMessageId,
+      // The prescription id ties every renewal of one script together, so the
+      // third request in six weeks is visible as a pattern rather than as
+      // three unrelated items.
+      correlationId: input.prescriptionId,
+    });
+    this.event(
+      input.prescriptionId,
+      "renewal-requested",
+      input.by,
+      `${input.requestedBy ? `${input.requestedBy} ` : ""}asked for a repeat${input.note ? `: ${input.note}` : ""}`
+    );
+    return task;
+  }
+
+  /** Open renewal requests raised against one prescription. */
+  renewalsFor(prescriptionId: string): TaskRow[] {
+    if (!this.tasks) return [];
+    return this.tasks.correlated(prescriptionId).filter((t) => t.kind === "prescription-renewal");
+  }
+
   private payload(row: PrescriptionRow, statement: MedRow, pharmacyId: string): PrescriptionPayload {
     return {
       type: "prescription",
@@ -552,6 +982,10 @@ export class Prescribing {
       controlled: row.controlled === 1,
       writtenAt: row.written_at,
       replaces: row.replaces,
+      // Null rather than a manufactured all-clear. A pharmacy reading this
+      // has to be able to tell "checked, and here is what it found" from
+      // "no check came with this", and only one of those is safe to assume.
+      safetyCheck: row.safety_summary ? (JSON.parse(row.safety_summary) as TransmittedSafetyCheck) : null,
     };
   }
 

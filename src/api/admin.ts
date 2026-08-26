@@ -66,6 +66,7 @@ import { DIRECTORY_KINDS, type PartyKind } from "../directory/store.ts";
 import { mapStoreError, refuse } from "../core/refusal.ts";
 import type { MigrationRecordType, SourceRecord } from "../migrate/run.ts";
 import type { AuthorityRow, PatientPermission } from "../patient/access.ts";
+import { DISPENSE_OUTCOMES, type DispenseOutcome } from "../meds/prescribe.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
 import { VERSION } from "../version.ts";
@@ -2594,13 +2595,97 @@ async function route(
         ),
         failed: filterByDirective(["MedicationRequest"], tenant.prescribing.failed()),
         cancellationsOwed: filterByDirective(["MedicationRequest"], tenant.prescribing.cancellationsOwed()),
+        // Confined to pharmacies declared to report dispenses. Everywhere
+        // else an absent dispense is not evidence of anything, and listing it
+        // would teach a clinician to ignore the list.
+        neverCollected: filterByDirective(["MedicationRequest"], tenant.prescribing.neverCollected()),
+        // A stopped drug that was handed over anyway. The worst one here.
+        dispensedAfterCancellation: filterByDirective(
+          ["MedicationRequest"],
+          tenant.prescribing.dispensedAfterCancellation().map((i) => i.prescription)
+        ),
       }));
+    }
+    if (path === "/api/clinical/prescription-dispenses" && method === "GET") {
+      const id = url.searchParams.get("prescription");
+      if (!id) return send(res, 400, { error: "prescription required" });
+      const row = tenant.prescribing.get(id);
+      if (!row) return send(res, 404, { error: `no prescription ${id}` });
+      return phiFor(row.patient_id, "MedicationDispense", () => ({
+        state: tenant.prescribing.dispenseState(id),
+        dispenses: tenant.prescribing.dispenses(id),
+      }));
+    }
+    if (path === "/api/clinical/prescription-dispense" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        prescription?: string;
+        outcome?: DispenseOutcome;
+        dispensedAt?: string;
+        quantity?: string;
+        daysSupply?: number;
+        detail?: string;
+      };
+      if (!body.prescription) return send(res, 400, { error: "prescription required" });
+      if (!body.outcome || !DISPENSE_OUTCOMES.includes(body.outcome)) {
+        return send(res, 400, { error: `outcome must be one of ${DISPENSE_OUTCOMES.join(", ")}` });
+      }
+      if (!body.dispensedAt) return send(res, 400, { error: "dispensedAt required" });
+      const row = tenant.prescribing.get(body.prescription);
+      if (!row) return send(res, 404, { error: `no prescription ${body.prescription}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      const by = { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phiFor(row.patient_id, "MedicationDispense", () =>
+        tenant.prescribing.recordDispense(body.prescription!, {
+          outcome: body.outcome!,
+          dispensedAt: body.dispensedAt!,
+          by,
+          ...(body.quantity ? { quantity: body.quantity } : {}),
+          ...(body.daysSupply !== undefined ? { daysSupply: body.daysSupply } : {}),
+          ...(body.detail ? { detail: body.detail } : {}),
+        })
+      );
+    }
+    if (path === "/api/clinical/prescription-renewal" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        prescription?: string;
+        requestedBy?: string;
+        note?: string;
+        priority?: "routine" | "urgent" | "stat";
+      };
+      if (!body.prescription) return send(res, 400, { error: "prescription required" });
+      const row = tenant.prescribing.get(body.prescription);
+      if (!row) return send(res, 404, { error: `no prescription ${body.prescription}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      const by = { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phiFor(row.patient_id, "MedicationRequest", () =>
+        tenant.prescribing.requestRenewal({
+          prescriptionId: body.prescription!,
+          by,
+          ...(body.requestedBy ? { requestedBy: body.requestedBy } : {}),
+          ...(body.note ? { note: body.note } : {}),
+          ...(body.priority ? { priority: body.priority } : {}),
+        })
+      );
+    }
+    if (path === "/api/clinical/pharmacy-dispense-reporting" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { pharmacy?: string; reports?: boolean };
+      if (!body.pharmacy) return send(res, 400, { error: "pharmacy required" });
+      if (typeof body.reports !== "boolean") return send(res, 400, { error: "reports must be true or false" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      const by = { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      // Not patient data: it is a fact about a pharmacy's interface. It still
+      // audits, because it changes how every silence from that pharmacy reads.
+      return phi("Organization", () => {
+        tenant.prescribing.declareDispenseReporting(body.pharmacy!, body.reports!, by);
+        return { pharmacy: body.pharmacy, reports: body.reports };
+      });
     }
     if (path === "/api/clinical/prescribe" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as {
         statement?: string;
         instructions?: string;
         controlled?: boolean;
+        overrideReason?: string;
       };
       if (!body.statement || !body.instructions) {
         return send(res, 400, { error: "statement and instructions required" });
@@ -2614,6 +2699,9 @@ async function route(
           instructions: body.instructions!,
           by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
           ...(body.controlled ? { controlled: true } : {}),
+          // The check itself is run by write(); this is only why the
+          // prescriber signed past it, which nothing else can recover.
+          ...(body.overrideReason ? { overrideReason: body.overrideReason } : {}),
         })
       );
     }

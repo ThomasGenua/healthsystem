@@ -316,7 +316,11 @@ export class Engine {
     // check reports interactions as unchecked rather than clear, which is the
     // honest answer and the one src/meds/safety.ts is built to give.
     const meds = new MedicationStore(db, this.interactions);
+    // Before prescribing, because a renewal request from a pharmacy is an
+    // item in this worklist rather than a status on the prescription.
+    const tasks = new TaskStore(db);
     const prescribing = new Prescribing(db, meds, {
+      tasks,
       // Absent unless a deployment configures a channel, and absence is a
       // refusal at transmit time rather than a prescription that looks sent.
       ...(this.pharmacyChannel ? { dispatcher: new ChannelPharmacyDispatcher(db, this.pharmacyChannel) } : {}),
@@ -325,7 +329,6 @@ export class Engine {
     const orders = new OrderStore(db);
     const labIntake = new LabIntake(db, orders, clinical.patientIndex);
     const referrals = new ReferralStore(db);
-    const tasks = new TaskStore(db);
     const patientAccess = new PatientAccess(db, orders, tasks);
     const encounters = new Encounters(db);
     // Built here rather than inline in the view because the key store needs it

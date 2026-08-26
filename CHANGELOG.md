@@ -7,6 +7,45 @@ Portage is pre-1.0: minor versions may change interfaces. Database upgrades are
 always forward-compatible and run automatically on open — see
 [Upgrading](docs/RUNBOOK.md#upgrading).
 
+## Unreleased
+
+**Added**
+
+- **What the pharmacy did with the prescription** (#40). "Prescribed" and
+  "dispensed" are different facts, and a chart that cannot tell them apart is
+  misleading in the direction that causes harm: a medication the patient never
+  collected is not a medication they are taking, and it reads as one on every
+  screen that shows the prescription alone. A dispense is now its own recorded
+  event — full, partial, or a pharmacy reporting that it was never picked up —
+  and `dispenseState()` answers with `dispensed`, `partially-dispensed`,
+  `not-collected`, `awaiting` or `unknown`.
+
+  The load-bearing part is `unknown`. Most pharmacies send no dispense
+  notification, so an absent record usually means nothing at all, and calling
+  that "never collected" would flag every prescription sent to a quiet pharmacy
+  until a clinician learned to ignore the list. Dispense reporting is declared
+  per pharmacy and **snapshotted onto the prescription at transmission**, so a
+  declaration made later never rewrites what an older silence meant, and
+  `neverCollected()` is confined to the pharmacies that would have spoken.
+
+  A dispense against a **cancelled** prescription is deliberately recorded
+  rather than refused, and surfaced: refusing it would delete the only evidence
+  that a stopped drug was handed over. Hazards H-91 through H-93.
+
+- **The prescriber's safety check travels with the script** (#40). A pharmacist
+  runs their own check — that is the point of two professionals — but cannot
+  reconstruct what the prescriber's check saw or what they signed past. Every
+  finding now travels, not only the blocking ones, with the override reason;
+  and a prescription written without a recorded check transmits `null` rather
+  than anything a pharmacy could read as checked-and-clear. Hazard H-94.
+
+- **A renewal request is work, not a message** (#40). A pharmacy asking for a
+  repeat arrives as an item in the unified worklist, correlated to the
+  prescription so three requests in six weeks read as a pattern rather than as
+  three unrelated items, and closable only with evidence of what was decided.
+  With no worklist wired in it is refused rather than recorded somewhere nobody
+  looks. Hazard H-95.
+
 ## 0.6.0 — 2026-08-26
 
 Running it in the north: a chart that stays readable when the link is down, a

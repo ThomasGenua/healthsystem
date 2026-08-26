@@ -19,6 +19,7 @@ import { Db } from "../src/db.ts";
 import { MedicationStore } from "../src/meds/store.ts";
 import { Directory } from "../src/directory/store.ts";
 import { Prescribing, type PharmacyDispatcher, type PrescriptionPayload } from "../src/meds/prescribe.ts";
+import { TaskStore } from "../src/work/tasks.ts";
 import { Refusal } from "../src/core/refusal.ts";
 
 const P = "NT123456";
@@ -43,7 +44,7 @@ const brokenPharmacy: PharmacyDispatcher = {
   },
 };
 
-function clinic(opts: { dispatcher?: PharmacyDispatcher; controlledAuthority?: string } = {}) {
+function clinic(opts: { dispatcher?: PharmacyDispatcher; controlledAuthority?: string; noTasks?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "portage-rx-"));
   const db = new Db(join(dir, "portage.db"));
   const meds = new MedicationStore(db, { check: () => [] });
@@ -60,13 +61,16 @@ function clinic(opts: { dispatcher?: PharmacyDispatcher; controlledAuthority?: s
     adherence: "taking",
     by: GP,
   });
+  const tasks = new TaskStore(db);
   return {
     db,
     meds,
     statement,
+    tasks,
     rx: new Prescribing(db, meds, {
       ...(opts.dispatcher ? { dispatcher: opts.dispatcher } : {}),
       ...(opts.controlledAuthority ? { controlledSubstanceAuthority: opts.controlledAuthority } : {}),
+      ...(opts.noTasks ? {} : { tasks }),
     }),
     cleanup: () => {
       db.close();
@@ -369,5 +373,358 @@ test("prescriptions are confined to their tenant", () => {
   } finally {
     root.close();
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- what the pharmacy did with it ---------------------------------------
+
+/** Transmits one prescription to a pharmacy and returns the workspace. */
+function transmitted(opts: { reports?: boolean } = {}) {
+  const pharmacy = goodPharmacy();
+  const w = clinic({ dispatcher: pharmacy });
+  if (opts.reports !== undefined) w.rx.declareDispenseReporting("yk-pharmacy", opts.reports, GP);
+  const script = w.rx.write({ statementId: w.statement.id, instructions: "one twice daily with food", by: GP });
+  w.rx.transmit(script.id, "yk-pharmacy", GP);
+  return { ...w, pharmacy, script };
+}
+
+test("a prescription nobody has collected is not a prescription the patient is taking", () => {
+  const w = transmitted({ reports: true });
+  try {
+    const before = w.rx.dispenseState(w.script.id);
+    assert.equal(before.state, "awaiting", "sent to a reporting pharmacy and not yet filled");
+
+    w.rx.recordDispense(w.script.id, { outcome: "dispensed", dispensedAt: "2026-08-20T15:00:00.000Z", by: GP, quantity: "60 tablets" });
+    const after = w.rx.dispenseState(w.script.id);
+    assert.equal(after.state, "dispensed");
+    assert.match(after.detail, /2026-08-20/);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("silence from a pharmacy that does not report is unknown, never 'not collected'", () => {
+  // The property the whole feature rests on. A chart that renders "never
+  // collected" for every prescription sent somewhere that does not send
+  // notifications is making an accusation out of an absence, and a clinician
+  // who learns to ignore it has lost the signal for the pharmacies that do.
+  const quiet = transmitted({ reports: false });
+  try {
+    const state = quiet.rx.dispenseState(quiet.script.id);
+    assert.equal(state.state, "unknown");
+    assert.match(state.detail, /does not report dispenses/);
+    assert.equal(quiet.rx.neverCollected(0).length, 0, "a silence that means nothing is not a worklist item");
+  } finally {
+    quiet.cleanup();
+  }
+
+  const loud = transmitted({ reports: true });
+  try {
+    assert.equal(loud.rx.neverCollected(0).length, 1, "a silence from somewhere that would have spoken is worth chasing");
+  } finally {
+    loud.cleanup();
+  }
+});
+
+test("a pharmacy that reports and then does is off the list", () => {
+  const w = transmitted({ reports: true });
+  try {
+    w.rx.recordDispense(w.script.id, { outcome: "dispensed", dispensedAt: "2026-08-20T15:00:00.000Z", by: GP });
+    assert.equal(w.rx.neverCollected(0).length, 0);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("the reporting declaration is snapshotted at transmission, not read later", () => {
+  // A declaration made next year says nothing about what this prescription's
+  // silence meant last week. Reading it live would rewrite history each time
+  // a pharmacy's interface was switched on.
+  const w = transmitted({ reports: false });
+  try {
+    w.rx.declareDispenseReporting("yk-pharmacy", true, GP);
+    assert.equal(w.rx.dispenseState(w.script.id).state, "unknown", "this one was sent before they reported anything");
+    assert.equal(w.rx.neverCollected(0).length, 0);
+
+    const later = w.rx.write({ statementId: w.statement.id, instructions: "one twice daily", by: GP });
+    w.rx.transmit(later.id, "yk-pharmacy", GP);
+    assert.equal(w.rx.dispenseState(later.id).state, "awaiting", "this one was sent after");
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("a partial fill is not a full one, and the last word wins", () => {
+  const w = transmitted({ reports: true });
+  try {
+    w.rx.recordDispense(w.script.id, { outcome: "partially-dispensed", dispensedAt: "2026-07-20T15:00:00.000Z", by: GP, quantity: "30 of 90" });
+    assert.equal(w.rx.dispenseState(w.script.id).state, "partially-dispensed");
+    w.rx.recordDispense(w.script.id, { outcome: "dispensed", dispensedAt: "2026-08-20T15:00:00.000Z", by: GP, quantity: "60 of 90" });
+    assert.equal(w.rx.dispenseState(w.script.id).state, "dispensed", "a 90-day script filled in parts is one decision, not three");
+    assert.equal(w.rx.dispenses(w.script.id).length, 2, "and every fill is kept");
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("a pharmacy reporting that it was never picked up is a fact, not a silence", () => {
+  const w = transmitted({ reports: true });
+  try {
+    w.rx.recordDispense(w.script.id, { outcome: "not-collected", dispensedAt: "2026-08-25T15:00:00.000Z", by: GP, detail: "returned to stock" });
+    const state = w.rx.dispenseState(w.script.id);
+    assert.equal(state.state, "not-collected");
+    assert.equal(w.rx.neverCollected(0).length, 0, "it is answered, not outstanding");
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("a dispense against a cancelled prescription is recorded and surfaced, never refused", () => {
+  // The hazard cancellations are tracked for, arriving. Refusing to record it
+  // would delete the only evidence that a stopped drug was handed over.
+  const w = transmitted({ reports: true });
+  try {
+    w.rx.cancel(w.script.id, { ...GP, reason: "rash" });
+    const { afterCancellation } = w.rx.recordDispense(w.script.id, {
+      outcome: "dispensed",
+      dispensedAt: "2026-08-21T15:00:00.000Z",
+      by: GP,
+    });
+    assert.equal(afterCancellation, true);
+
+    const incidents = w.rx.dispensedAfterCancellation();
+    assert.equal(incidents.length, 1, "somebody has to know a stopped drug was dispensed");
+    assert.equal(incidents[0].prescription.id, w.script.id);
+    assert.match(w.rx.dispenseState(w.script.id).detail, /after this prescription was cancelled/);
+    assert.ok(
+      w.rx.history(w.script.id).some((e) => e.event === "dispensed-after-cancellation"),
+      "and it is on the prescription's own history"
+    );
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("a prescription that never left cannot have been dispensed", () => {
+  const w = clinic({ dispatcher: goodPharmacy() });
+  try {
+    const rx = w.rx.write({ statementId: w.statement.id, instructions: "one twice daily", by: GP });
+    assert.equal(w.rx.dispenseState(rx.id).state, "not-applicable");
+    assert.throws(
+      () => w.rx.recordDispense(rx.id, { outcome: "dispensed", dispensedAt: "2026-08-20T15:00:00.000Z", by: GP }),
+      /has not gone anywhere/
+    );
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("a prescription on paper is nobody's to report on", () => {
+  const w = clinic({ dispatcher: goodPharmacy() });
+  try {
+    const rx = w.rx.write({ statementId: w.statement.id, instructions: "one twice daily", by: GP });
+    w.rx.handOut(rx.id, { ...GP, reason: "patient going to the pharmacy themselves" });
+    const state = w.rx.dispenseState(rx.id);
+    assert.equal(state.state, "not-applicable");
+    assert.match(state.detail, /on paper/);
+  } finally {
+    w.cleanup();
+  }
+});
+
+// ---- renewal, and the check that travels --------------------------------
+
+test("a pharmacy asking for a repeat becomes work somebody owns", () => {
+  const w = transmitted({ reports: true });
+  try {
+    const task = w.rx.requestRenewal({
+      prescriptionId: w.script.id,
+      by: { actorId: "pharmacy-intake", actorKind: "system" },
+      requestedBy: "Yellowknife Pharmacy",
+      note: "patient has 3 days left",
+    });
+    assert.equal(task.kind, "prescription-renewal");
+    assert.equal(task.patient_id, P);
+    assert.match(task.title, /Metformin/);
+    assert.equal(task.status, "open");
+    assert.ok(w.tasks.unassigned({ kind: "prescription-renewal" }).length === 1, "it is visible from the moment it arrives");
+
+    // The point of it being a task: it cannot be closed by being ignored.
+    assert.throws(() => w.tasks.complete(task.id, { ...GP, evidence: "" }), /evidence/i);
+    const done = w.tasks.complete(task.id, { ...GP, evidence: "renewed for 90 days, new script sent" });
+    assert.equal(done.status, "completed");
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("repeat requests for one script are one thread, so a pattern is visible", () => {
+  const w = transmitted({ reports: true });
+  try {
+    const by = { actorId: "pharmacy-intake", actorKind: "system" };
+    w.rx.requestRenewal({ prescriptionId: w.script.id, by });
+    w.rx.requestRenewal({ prescriptionId: w.script.id, by });
+    w.rx.requestRenewal({ prescriptionId: w.script.id, by, priority: "urgent" });
+    const thread = w.rx.renewalsFor(w.script.id);
+    assert.equal(thread.length, 3, "three requests in a row is a fact about the patient, not three unrelated items");
+    assert.ok(thread.some((t) => t.priority === "urgent"));
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("a renewal with no worklist to land in is refused, not dropped", () => {
+  // Recording it anyway would put the request in a place nobody looks, which
+  // is the fax tray this replaces.
+  const pharmacy = goodPharmacy();
+  const w = clinic({ dispatcher: pharmacy, noTasks: true });
+  try {
+    const script = w.rx.write({ statementId: w.statement.id, instructions: "one twice daily", by: GP });
+    w.rx.transmit(script.id, "yk-pharmacy", GP);
+    assert.throws(
+      () => w.rx.requestRenewal({ prescriptionId: script.id, by: GP }),
+      /nowhere to go that anybody would see/
+    );
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("nobody can be asking to renew a prescription that never went out", () => {
+  const w = clinic({ dispatcher: goodPharmacy() });
+  try {
+    const script = w.rx.write({ statementId: w.statement.id, instructions: "one twice daily", by: GP });
+    assert.throws(() => w.rx.requestRenewal({ prescriptionId: script.id, by: GP }), /has not gone to a pharmacy/);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("the safety check the prescriber saw travels with the script", () => {
+  const pharmacy = goodPharmacy();
+  const w = clinic({ dispatcher: pharmacy });
+  try {
+    const script = w.rx.write({
+      statementId: w.statement.id,
+      instructions: "one twice daily",
+      by: GP,
+      safetyCheck: {
+        findings: [
+          { kind: "interaction", severity: "moderate", message: "metformin with contrast media" },
+          { kind: "allergy", severity: "severe", message: "documented sulfonamide allergy" },
+        ],
+        allergyStatus: "documented",
+        clear: false,
+        blocking: [{ kind: "allergy", severity: "severe", message: "documented sulfonamide allergy" }],
+      },
+      overrideReason: "discussed with patient; benefit outweighs, monitoring arranged",
+    });
+    w.rx.transmit(script.id, "yk-pharmacy", GP);
+
+    const sent = pharmacy.sent[0].safetyCheck;
+    assert.ok(sent, "a pharmacist cannot reconstruct what this check saw");
+    assert.equal(sent?.clear, false);
+    assert.equal(sent?.allergyStatus, "documented");
+    assert.equal(sent?.findings.length, 2, "every finding travels, not only the blocking ones");
+    assert.equal(sent?.overridden.length, 1);
+    assert.match(sent?.overrideReason ?? "", /benefit outweighs/);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("a prescription written before this existed transmits null, not a fabricated all-clear", () => {
+  // The reachable null case: an upgraded database. Every prescription written
+  // before the check travelled has no summary, and the difference between
+  // "checked, nothing found" and "no check came with this" is the whole of
+  // it — a pharmacist who reads the second as the first stops looking.
+  const pharmacy = goodPharmacy();
+  const w = clinic({ dispatcher: pharmacy });
+  try {
+    const script = w.rx.write({ statementId: w.statement.id, instructions: "one twice daily", by: GP });
+    // Exactly what `migrate()` leaves on a row that predates the column.
+    w.db.sql.prepare("UPDATE prescriptions SET safety_summary = NULL WHERE id = ?").run(script.id);
+    w.rx.transmit(script.id, "yk-pharmacy", GP);
+    assert.equal(pharmacy.sent[0].safetyCheck, null, "null is not a clear check");
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("a prescription written without a check being handed in still carries one", () => {
+  // The ordinary path: a route writes a prescription against an existing
+  // statement and has no SafetyCheck object to pass. If that transmitted "no
+  // check recorded" every time, the field would always be empty and a
+  // pharmacist would stop reading it — honest, and useless.
+  const pharmacy = goodPharmacy();
+  const w = clinic({ dispatcher: pharmacy });
+  try {
+    const script = w.rx.write({ statementId: w.statement.id, instructions: "one twice daily", by: GP });
+    w.rx.transmit(script.id, "yk-pharmacy", GP);
+    const sent = pharmacy.sent[0].safetyCheck;
+    assert.ok(sent, "the check is run when the caller does not bring one");
+    assert.equal(sent?.allergyStatus, "never-asked", "and it reports what it actually found");
+    assert.equal(sent?.clear, false, "nobody asked about allergies, so this is not a clear check");
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("dispenses and renewals are confined to their custodian", () => {
+  const dir = mkdtempSync(join(tmpdir(), "portage-rx-tenant-"));
+  const db = new Db(join(dir, "portage.db"));
+  try {
+    db.createTenant("north", "Northern Health", "Northern Regional Custodian");
+    const northDb = db.forTenant("north");
+    const meds = new MedicationStore(db, { check: () => [] });
+    new Directory(db).addOrganization({ id: "yk-pharmacy", name: "Yellowknife Pharmacy" });
+    const pharmacy = goodPharmacy();
+    const rx = new Prescribing(db, meds, { dispatcher: pharmacy, tasks: new TaskStore(db) });
+    const statement = meds.record({
+      patientId: P,
+      code: "860975",
+      display: "Metformin 500mg tablet",
+      ingredient: "metformin",
+      source: "prescribed",
+      adherence: "taking",
+      by: GP,
+    });
+    const script = rx.write({ statementId: statement.id, instructions: "one twice daily", by: GP });
+    rx.declareDispenseReporting("yk-pharmacy", true, GP);
+    rx.transmit(script.id, "yk-pharmacy", GP);
+    rx.recordDispense(script.id, { outcome: "dispensed", dispensedAt: "2026-08-20T15:00:00.000Z", by: GP });
+
+    const northRx = new Prescribing(northDb, new MedicationStore(northDb, { check: () => [] }), {
+      dispatcher: pharmacy,
+      tasks: new TaskStore(northDb),
+    });
+    assert.equal(northRx.dispenses(script.id).length, 0, "another custodian's dispense is not visible");
+    assert.equal(northRx.neverCollected(0).length, 0);
+    assert.equal(northRx.dispensedAfterCancellation().length, 0);
+    assert.equal(northRx.reportsDispenses("yk-pharmacy"), false, "a declaration is the custodian's own");
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a dispense cannot have happened in the future", () => {
+  // A mistyped year sorts last and turns an uncollected prescription into a
+  // dispensed one, which is the exact misreading this module exists to stop.
+  const w = transmitted({ reports: true });
+  try {
+    const nextYear = new Date(Date.now() + 365 * 86_400_000).toISOString();
+    assert.throws(
+      () => w.rx.recordDispense(w.script.id, { outcome: "dispensed", dispensedAt: nextYear, by: GP }),
+      /in the future/
+    );
+    assert.equal(w.rx.dispenseState(w.script.id).state, "awaiting", "and nothing was recorded");
+
+    // A pharmacy's clock running a few minutes ahead is not a typo.
+    const slightlyAhead = new Date(Date.now() + 5 * 60_000).toISOString();
+    w.rx.recordDispense(w.script.id, { outcome: "dispensed", dispensedAt: slightlyAhead, by: GP });
+    assert.equal(w.rx.dispenseState(w.script.id).state, "dispensed");
+  } finally {
+    w.cleanup();
   }
 });
