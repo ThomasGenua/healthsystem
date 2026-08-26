@@ -11,6 +11,22 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **A design for more than one writer, before any code** (#25).
+  [`docs/MULTI-WRITER.md`](docs/MULTI-WRITER.md) names the six claims a
+  multi-writer design must not weaken — ordered delivery per ordering key,
+  three verifying hash chains, the per-tenant audit counter that makes
+  truncation detectable, the scheduling unique index, tenant isolation, and
+  an acknowledgement meaning durably queued — then takes the candidates
+  against all six. Two engines on one file and multi-master for one tenant
+  are ruled out (the latter breaks five of the six, and splicing forked
+  chains is byte-for-byte what tampering looks like). Read scaling is ruled
+  **in**, by generalizing the reading station already built for #38.
+  Store-and-forward ingest edges are the one honest second writer, at the
+  cost of restating what an acknowledgement means where an edge issues one;
+  tenant partitioning is the capacity path if capacity ever becomes the
+  demand. No code, and #25 stays open: the proposal is its first checkbox,
+  not its last.
+
 - **De-identified release with small-cell suppression** (#54). The registry
   answers honestly inside the walls; nothing patient-shaped may leave them,
   because in the communities this system is built for a small count is a

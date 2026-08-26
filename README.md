@@ -1713,7 +1713,7 @@ a scope-narrowed directive withholds its section rather than the chart around it
 
 [#20](https://github.com/ThomasGenua/healthsystem/issues/20) is done for the half that carries the clinical risk: a loader whose completeness is declared and then checked, so a run cannot report success having dropped 4% of the allergies. It is not an extractor, and inventory, cutover scheduling and stabilisation are a plan a person writes.
 
-- [#25 Horizontal operation](https://github.com/ThomasGenua/healthsystem/issues/25) — a single writer suits a community site and not a territorial hub. Last, because scaling a system whose recovery has never been rehearsed is optimising the wrong axis.
+- [#25 Horizontal operation](https://github.com/ThomasGenua/healthsystem/issues/25) — a single writer suits a community site and not a territorial hub. Last, because scaling a system whose recovery has never been rehearsed is optimising the wrong axis. The design is written and the code is not: [docs/MULTI-WRITER.md](docs/MULTI-WRITER.md) evaluates the candidates against the six claims a second writer would have to keep, rules read scaling in by generalizing the reading station, rules multi-master out, and recommends doing nothing until availability or locality — not capacity — is the demand.
 
 **Smaller, from review.** [#26](https://github.com/ThomasGenua/healthsystem/issues/26) and [#27](https://github.com/ThomasGenua/healthsystem/issues/27) are done: a store refusal is not a 400-and-outcome-8, and the `migrate()` rebuild turns foreign keys off around the copy.
 
