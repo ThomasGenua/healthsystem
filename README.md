@@ -20,7 +20,7 @@ The design targets the interoperability posture Canadian jurisdictions are conve
 
 ## Status
 
-v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources; filter, split, mapping and validation pipeline; retrying ordered destinations with DLQ and replay; hash-chained lineage; FHIR R4 facade; terminology service; PS-CA / CA:FeX / CA:eReC conformance packs; rest-hook Subscriptions; satellite outage demo; admin UI) plus:
+v0.6.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources; filter, split, mapping and validation pipeline; retrying ordered destinations with DLQ and replay; hash-chained lineage; FHIR R4 facade; terminology service; PS-CA / CA:FeX / CA:eReC conformance packs; rest-hook Subscriptions; satellite outage demo; admin UI) plus:
 
 - **Authentication and authorisation.** API keys and OAuth 2.0 / SMART on FHIR bearer tokens, three system scopes plus a separate OAuth-only patient scope, one gate ahead of every route. On by default.
 - **Mutual TLS**, for node-to-node links, inbound and outbound.
@@ -68,8 +68,11 @@ v0.5.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **An access review of the trail.** `GET /api/audit/review?patient=` joins who looked to whether anything clinical linked them, with flags a person can dismiss with a reason. Complementary to the operational office: this one reads the trail; that one runs the queues.
 - **Travelling clinics and a waitlist whose ordering is stated policy.** A visit is planned, repeated, moved and cancelled as one thing. Cancelling it puts every booked patient on a waitlist: priority, then waited-longest, then most-bumped. An offer resolves as accepted, declined or unreachable.
 - **Channel configuration as a ledger.** Every change is a version with who, when and why. Export and import go through the same store; a dry run writes nothing; every message records which configuration processed it.
+- **Chart linking that can be undone.** Two charts that may be one person are surfaced, not merged: linking is a reversible statement with an author and a reason, both charts keep their own history, and unlinking restores exactly what was there. A merge that cannot be undone is a merge that must never be wrong, and nobody can promise that.
+- **A chart that stays readable when the link is down.** A reading station serves a restored, verified snapshot from the same binary, with staleness a first-class incompleteness — stamped on every panel, every response header and the console banner — a serving budget that expires and purges the cache, channels disabled so it cannot become a second engine, and offline break-glass declarations that survive the purge and are replayed onto the primary's consent and trail at reconcile. A cached chart's danger is being wrong while looking right, so it is dated from the snapshot's own stamp, never from when the copy landed.
+- **Numbers that can leave the building.** `POST /api/clinical/release` turns a measure or care-gap summary into aggregate counts with small cells suppressed, complements suppressed with them, a rate withheld when it would divide the secret back out, and the method on the face of the document — because in a community of 300, "3 of 41" is a name and so is "38 of 41". No release without a recipient and a purpose, both on the chained trail.
 
-654 tests. Backend first, then the interface that makes the backend's honesty visible.
+707 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 

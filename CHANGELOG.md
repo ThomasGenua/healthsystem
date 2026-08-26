@@ -7,7 +7,11 @@ Portage is pre-1.0: minor versions may change interfaces. Database upgrades are
 always forward-compatible and run automatically on open — see
 [Upgrading](docs/RUNBOOK.md#upgrading).
 
-## Unreleased
+## 0.6.0 — 2026-08-26
+
+Running it in the north: a chart that stays readable when the link is down, a
+privacy office somebody can actually run, and numbers that can leave the
+building without taking a name with them.
 
 **Added**
 
