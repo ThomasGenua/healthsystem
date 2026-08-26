@@ -67,6 +67,7 @@ import { mapStoreError, refuse } from "../core/refusal.ts";
 import type { MigrationRecordType, SourceRecord } from "../migrate/run.ts";
 import type { AuthorityRow, PatientPermission } from "../patient/access.ts";
 import { DISPENSE_OUTCOMES, type DispenseOutcome } from "../meds/prescribe.ts";
+import { readFhirBundle, readFhirNdjson } from "../migrate/read-fhir.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
 import { VERSION } from "../version.ts";
@@ -2760,6 +2761,18 @@ async function route(
     // phi() and inside the source-reading test that drives every clinical
     // route and fails the build if one serves patient data without an audit
     // row — which is a stronger guarantee than a tidier URL.
+    if (path === "/api/clinical/migration-read" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { bundle?: unknown; ndjson?: string };
+      if (body.bundle === undefined && body.ndjson === undefined) {
+        return send(res, 400, { error: "bundle or ndjson required" });
+      }
+      // Reads nothing from the database, but the export is patient data and
+      // an operator looking at what an extract contains is a look somebody
+      // may need to account for later.
+      return phi("Bundle", () =>
+        typeof body.ndjson === "string" ? readFhirNdjson(body.ndjson) : readFhirBundle(body.bundle)
+      );
+    }
     if (path === "/api/clinical/migration-dry-run" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as {
         source?: string;

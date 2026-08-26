@@ -11,6 +11,32 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **A reader for a real export format** (#20). The loader took normalised
+  records and something had to produce them. `src/migrate/read-fhir.ts` reads
+  a FHIR Bundle or a bulk NDJSON export into `SourceRecord`s.
+
+  The rule is the migration module's one rule, one layer earlier: **nothing is
+  skipped.** A resource the reader cannot map comes back in `unreadable` with
+  its reason and the resource itself; a resource it can map but the stores
+  will refuse — an allergy with no substance, a record whose chart never
+  arrived — becomes a record anyway and lands in the reject queue with its
+  payload. A reader that quietly skipped what it did not understand would
+  produce a clean run of everything it happened to recognise, reconciling
+  against a number nobody chose.
+
+  The declaration comes from the bundle's own `total`, never inferred from the
+  entries: a count derived from what arrived cannot disagree with what
+  arrived. NDJSON carries no total, and that is reported as a gap rather than
+  filled in from the line count. Patients are ordered first regardless of
+  export order, so an export listing an allergy before its patient does not
+  reconcile as a pile of rejections that are really one ordering problem.
+
+  FHIR because it is published and this repository can check its reading of it
+  against the conformance packs it already carries. It is not a claim that
+  every incumbent exports FHIR — most export a database dump or a delimited
+  file, and that needs a per-deployment adapter, for which `SourceRecord` is
+  the seam. Hazard H-97.
+
 - **A migration you can rehearse** (#20). A migration is the riskiest day in
   a deployment's life, and the way to survive it is to have already done it.
   `dryRun()` runs the whole load — the real records, through the ordinary

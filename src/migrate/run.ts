@@ -47,6 +47,12 @@
  * repository can pretend to do. This takes normalised records and is honest
  * about what arrived. Source-system inventory, cutover scheduling and
  * post-launch stabilisation are a plan a person writes, not code.
+ *
+ * What it does have is a reader for one published format —
+ * `read-fhir.ts`, for a FHIR Bundle or a bulk NDJSON export — because that
+ * is a format this repository can check its reading of, against the
+ * conformance packs it already carries. Anything else needs a
+ * per-deployment adapter, and `SourceRecord` is the seam for one.
  */
 import { randomUUID } from "node:crypto";
 import type { Db } from "../db.ts";
