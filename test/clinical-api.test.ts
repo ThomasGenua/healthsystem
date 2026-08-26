@@ -447,6 +447,11 @@ test("every clinical route leaves an audit row, including ones added later", asy
     const rxToConfirm = writeRx();
     rx.transmit(rxToConfirm, "yk-pharmacy", GP);
     rx.cancel(rxToConfirm, { ...GP, reason: "started on insulin instead" });
+    const rxToDispense = writeRx();
+    rx.transmit(rxToDispense, "yk-pharmacy", GP);
+    const rxToRenew = writeRx();
+    rx.transmit(rxToRenew, "yk-pharmacy", GP);
+    rx.recordDispense(rxToRenew, { outcome: "dispensed", dispensedAt: "2026-08-20T15:00:00.000Z", by: GP });
 
     // Migration runs, one per route that changes a run's state.
     const migration = s.engine.forTenant("default").migration;
@@ -650,6 +655,10 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/prescription-replace": "POST",
       "/api/clinical/prescription-cancel": "POST",
       "/api/clinical/prescription-cancel-confirm": "POST",
+      "/api/clinical/prescription-dispenses": `?prescription=${rxToRenew}`,
+      "/api/clinical/prescription-dispense": "POST",
+      "/api/clinical/prescription-renewal": "POST",
+      "/api/clinical/pharmacy-dispense-reporting": "POST",
       "/api/clinical/migrations": "",
       "/api/clinical/migration-report": `?run=${migrationRun.id}`,
       "/api/clinical/migration-rejects": `?run=${migrationRun.id}`,
@@ -804,6 +813,18 @@ test("every clinical route leaves an audit row, including ones added later", asy
         prescription: rxToConfirm,
         detail: "telephoned the pharmacist, who withdrew it",
       },
+      "/api/clinical/prescription-dispense": {
+        prescription: rxToDispense,
+        outcome: "dispensed",
+        dispensedAt: "2026-08-21T16:30:00.000Z",
+        quantity: "60 tablets",
+      },
+      "/api/clinical/prescription-renewal": {
+        prescription: rxToRenew,
+        requestedBy: "Yellowknife Pharmacy",
+        note: "patient has three days left",
+      },
+      "/api/clinical/pharmacy-dispense-reporting": { pharmacy: "yk-pharmacy", reports: true },
       "/api/clinical/migration-begin": { source: "legacy-emr", mode: "trial" },
       "/api/clinical/migration-declare": { run: migrationRun.id, recordType: "condition", sourceCount: 1 },
       "/api/clinical/migration-load": {

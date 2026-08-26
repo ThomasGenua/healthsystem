@@ -88,6 +88,8 @@ export const TENANT_SCOPED_TABLES = [
   "station_breakglass",
   "prescriptions",
   "prescription_events",
+  "prescription_dispenses",
+  "pharmacy_dispense_reporting",
   "migration_runs",
   "migration_records",
   "migration_declarations",
@@ -780,6 +782,14 @@ CREATE TABLE IF NOT EXISTS prescriptions (
   -- The failed prescription this one replaces. The only safe retry: a
   -- pharmacy receiving the same prescription twice may dispense it twice.
   replaces TEXT,
+  -- Whether the pharmacy reported dispenses *at the moment this was sent*.
+  -- Snapshotted rather than read live, because a declaration made next year
+  -- says nothing about what this prescription's silence meant last week.
+  dispense_reporting INTEGER,
+  -- The safety check that ran when this was written, as it was shown to the
+  -- prescriber: allergy status, findings, and anything signed past. A
+  -- pharmacist doing their own check needs to know what this one saw.
+  safety_summary TEXT,
   created_at TEXT NOT NULL,
   PRIMARY KEY (tenant_id, id)
 );
@@ -793,6 +803,55 @@ CREATE TABLE IF NOT EXISTS prescription_events (
   actor_id TEXT NOT NULL,
   actor_kind TEXT NOT NULL,
   detail TEXT
+);
+
+-- What the pharmacy did with it.
+--
+-- "Prescribed" and "dispensed" are different facts, and a chart that cannot
+-- tell them apart is misleading in the direction that causes harm: a
+-- medication the patient never collected is not a medication they are taking,
+-- and it reads as one on every screen that shows the prescription alone.
+--
+-- A log rather than a status, because a 90-day prescription filled 30 days at
+-- a time is three dispenses of one decision, and the last one is what says
+-- whether the patient still has any.
+CREATE TABLE IF NOT EXISTS prescription_dispenses (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  prescription_id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  -- dispensed | partially-dispensed | not-collected
+  --
+  -- not-collected is a fact a pharmacy reports when it returns a prescription
+  -- to stock, and it is the one worth having: it turns an absence into a
+  -- statement somebody can act on.
+  outcome TEXT NOT NULL,
+  -- When the pharmacy says it happened, which is not when we heard.
+  dispensed_at TEXT NOT NULL,
+  quantity TEXT,
+  days_supply INTEGER,
+  reported_at TEXT NOT NULL,
+  reported_by TEXT NOT NULL,
+  source_message_id TEXT,
+  detail TEXT,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Whether a pharmacy tells us what it dispensed.
+--
+-- The load-bearing table for the honesty of everything above. Without a
+-- declaration, no dispense record means *we do not know* whether the patient
+-- collected it — not that they did not. Treating silence as non-collection
+-- would put "never collected" against every prescription sent to a pharmacy
+-- that simply does not send notifications, and a list that is wrong that
+-- often is a list nobody reads.
+CREATE TABLE IF NOT EXISTS pharmacy_dispense_reporting (
+  tenant_id TEXT NOT NULL,
+  pharmacy_id TEXT NOT NULL,
+  reports INTEGER NOT NULL,
+  declared_at TEXT NOT NULL,
+  declared_by TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, pharmacy_id)
 );
 
 -- Allergies and intolerances, including the assertion that there are none.
@@ -2080,6 +2139,8 @@ export interface DbOptions {
  * this column existed".
  */
 const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
+  { table: "prescriptions", column: "dispense_reporting", type: "INTEGER" },
+  { table: "prescriptions", column: "safety_summary", type: "TEXT" },
   { table: "referrals", column: "to_service_id", type: "TEXT" },
   { table: "referrals", column: "to_external", type: "INTEGER" },
   { table: "messages", column: "raw_digest", type: "TEXT" },
