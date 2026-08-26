@@ -72,6 +72,7 @@ import { VERSION } from "../version.ts";
 import type { AuditAction, AuditEntry } from "../audit/store.ts";
 import type { Finding } from "../meds/safety.ts";
 import type { ReadingStation } from "../core/station.ts";
+import { releaseGaps, releaseMeasure, type GapsRelease, type MeasureRelease } from "../population/release.ts";
 import type { TlsConfig } from "./tls.ts";
 import type { ChannelConfig, MappingDoc, MessageRow } from "../types.ts";
 import type { ChannelDocument } from "../core/channel-versions.ts";
@@ -2791,6 +2792,69 @@ async function route(
       if (!body.cohort || !body.measure) return send(res, 400, { error: "cohort and measure required" });
       audit({ action: "R", outcome: 0, resourceType: "MeasureReport", detail: "quality measure" });
       return send(res, 200, tenant.registry.measure(body.cohort as never, body.measure as never, body.asOf));
+    }
+    if (path === "/api/clinical/release" && method === "POST") {
+      // The registry's numbers, made fit to leave the building: aggregate
+      // counts only, small cells suppressed, complements suppressed where a
+      // published total would hand a suppressed count back by subtraction.
+      // A release needs a recipient and a purpose — an extract with nobody
+      // it goes to is a leak with paperwork pending — and both go on the
+      // chained trail. The privacy office's disclosure ledger is deliberately
+      // not used: it is chart-scoped by construction, and an aggregate
+      // release names no chart.
+      const body = JSON.parse(await readBody(req)) as {
+        kind?: "measure" | "gaps";
+        cohort?: unknown;
+        measure?: unknown;
+        gap?: unknown;
+        recipient?: string;
+        purpose?: string;
+        threshold?: number;
+        asOf?: string;
+      };
+      if (!body.kind || !body.cohort) return send(res, 400, { error: "kind and cohort required" });
+      if (!body.recipient || !body.purpose) {
+        return send(res, 400, {
+          error: "a release needs a recipient and a purpose somebody can weigh afterwards",
+        });
+      }
+      const asOf = body.asOf ?? new Date().toISOString();
+      const opts = {
+        recipient: body.recipient,
+        purpose: body.purpose,
+        ...(body.threshold !== undefined ? { threshold: body.threshold } : {}),
+      };
+      try {
+        let released: MeasureRelease | GapsRelease;
+        if (body.kind === "measure") {
+          if (!body.measure) return send(res, 400, { error: "measure required for kind=measure" });
+          released = releaseMeasure(tenant.registry.measure(body.cohort as never, body.measure as never, asOf), asOf, opts);
+        } else {
+          if (!body.gap) return send(res, 400, { error: "gap required for kind=gaps" });
+          const g = body.gap as { id: string; name: string };
+          const cohortSize = tenant.registry.cohort(body.cohort as never, asOf).members.length;
+          released = releaseGaps(
+            { ...tenant.registry.gaps(body.cohort as never, body.gap as never, asOf), cohortSize },
+            g.id,
+            g.name,
+            asOf,
+            opts
+          );
+        }
+        audit({
+          action: "R",
+          outcome: 0,
+          resourceType: "MeasureReport",
+          detail:
+            `de-identified release to ${body.recipient} for ${body.purpose}: ` +
+            `threshold ${released.method.threshold}, ${released.method.suppressedCells} cell(s) suppressed`,
+        });
+        return send(res, 200, released);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        audit({ action: "R", outcome: mapped.outcome, resourceType: "MeasureReport", detail: mapped.detail });
+        return send(res, mapped.status, { error: mapped.error });
+      }
     }
     if (path === "/api/clinical/safety-check" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as { patient?: string; ingredient?: string; display?: string };
