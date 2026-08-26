@@ -200,7 +200,7 @@ A satellite site runs an ingest edge. It accepts a sender's message, commits
 it to its **own** durable queue in its own transaction, and acks. From there
 it forwards to the tenant's home node in order, with retries, over whatever
 the link allows; the home node ingests normally — mints `seq`, appends the
-chains, increments the counter, enqueues deliveries — as the single writer
+chains, increments the counters, enqueues deliveries — as the single writer
 it never stopped being.
 
 This is not a new machine. It is the **outbound delivery queue pointed
@@ -212,8 +212,8 @@ peer append. Both precedents are built and tested.
 Against the list: ordering holds per key, because the edge forwards FIFO per
 key and the home node serializes — what the system promises is per-key
 order, not cross-site wall-clock order, and that is worth saying plainly.
-Chains, counter, scheduling index: untouched, one appender and one
-incrementer and one index, all at home. Isolation: unchanged.
+Chains, counters, scheduling index: untouched — one appender, one
+incrementer, one index, all at home. Isolation: unchanged.
 
 The acknowledgement is the one claim that **changes meaning**. An AA from an
 edge means *durably queued on the path*, not yet on the home node's disk.
