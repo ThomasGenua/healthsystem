@@ -11,6 +11,21 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **The offline chart, designed before it is built** (#38, part one).
+  [docs/OFFLINE-CHART.md](docs/OFFLINE-CHART.md) is the written design the
+  issue asks for first: a reading station — the same binary against the same
+  schema, fed by the verified snapshot machinery that already exists, never a
+  browser cache — serving read-only during an outage under one serving budget
+  that bounds directive freshness and key revocation alike, auditing locally
+  on its own chain and reconciling by append when the link returns, expiring
+  and purging on its own if it never does. The piece everything else rests on
+  ships now: `stale` joins `unavailable`, `truncated` and `withheld` as a
+  first-class incompleteness. A chart assembled with an `asOf` is never
+  complete — every panel says "as of N hours ago", the summary carries a
+  stale block, the console banners it before anything else, and an age that
+  cannot be established refuses to serve rather than serving as fresh.
+  Hazard H-83; residual R-19 says nothing serves a cached chart until the
+  station is built to the design.
 - **Reversible chart linking** (#34). `duplicates()` finds two charts that may
   be one person and declines to merge them, because merging is how a chart
   acquires someone else's allergies and there is no honest way to unmerge. A
