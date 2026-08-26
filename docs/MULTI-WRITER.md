@@ -30,17 +30,20 @@ rhetorical.
 
 2. **Hash-chained lineage that verifies.** Three chains: the message log per
    tenant and channel (`src/db.ts`), the audit trail per tenant
-   (`src/audit/store.ts`), the clinical record per record key
+   (`src/audit/store.ts`), and the chart per patient
    (`src/clinical/record.ts`). Every append is *read the tip, hash over it,
    insert* — correct because one writer serializes appends. A chain has one
    tip by construction.
 
-3. **The audit counter.** `audit_counters` holds a per-tenant issued count,
-   incremented on every append; `verifyChain()` compares rows present against
-   rows issued, which is what makes truncation — deleting the embarrassing
-   tail — detectable (`test/chain-truncation.test.ts` — "an audit trail with
-   its tail removed does not verify"). The counter is one number because
-   there is one place that increments it.
+3. **The counters.** Linkage catches an edited entry and one removed from the
+   middle, but not one removed from the end, because nothing survives that
+   pointed at the missing rows. So each chain carries an issued count beside
+   it — `audit_counters` per tenant, `clinical_counters` per tenant and
+   patient — incremented on every append, and `verifyChain()` compares rows
+   present against rows issued. That is what makes truncation, deleting the
+   embarrassing tail, detectable (`test/chain-truncation.test.ts` — "an audit
+   trail with its tail removed does not verify"). Each counter is one number
+   because there is one place that increments it.
 
 4. **The scheduling uniqueness guarantee.** One active booking per seat is a
    partial unique index (`idx_booking_seat`, `src/db.ts`), enforced by the
@@ -169,8 +172,9 @@ Taken against the list:
    is byte-for-byte what tampering looks like — the chain exists precisely
    to make that detectable, so a design requiring it is the attack the
    design is meant to catch. **Broken.**
-3. *Counter*: `issued` becomes a distributed sum, and truncation detection
-   degrades to per-replica bookkeeping that a lost replica quietly resets.
+3. *Counters*: `issued` becomes a distributed sum, and truncation detection
+   degrades to per-replica bookkeeping that a lost replica quietly resets —
+   for the chart as well as the trail, since both are counted the same way.
    **Weakened past usefulness.**
 4. *Scheduling*: a partial unique index on each copy and on no whole. Both
    nodes book the last seat on the plane, and the conflict surfaces at sync
