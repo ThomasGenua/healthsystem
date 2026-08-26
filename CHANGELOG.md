@@ -11,6 +11,40 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Value sets and concept maps from real releases** (#23, in part). Concepts
+  already loaded from a licensed distribution; memberships and mappings were
+  hand-written pack JSON, which is fine for a fixture and does not survive a
+  real terminology release where one value set is thousands of codes revised
+  quarterly. `src/terminology/loaders/valuesets.ts` reads FHIR ValueSet and
+  ConceptMap resources, plus SNOMED RF2 simple refsets and extended cross-maps,
+  and `scripts/import-terminology.ts` gained `--format valueset|conceptmap|refset|map`.
+
+  The rule it is built around is a refusal: **a value set that cannot be fully
+  resolved does not import at all.** FHIR allows an intensional definition —
+  "every descendant of 73211009" — and expanding that needs a terminology
+  server that knows the hierarchy, which this store deliberately is not.
+  Importing the enumerated part and ignoring the filter would produce a value
+  set with the publisher's name and a smaller membership, no error anywhere,
+  and every membership check against it silently wrong. A filter, a grouped
+  expansion, a reference to another value set, a whole-code-system include or
+  any exclusion refuses the whole import and names the supported path: obtain
+  the expansion from a terminology server. A server-produced expansion is
+  preferred over the definition when the resource carries one.
+
+  Mappings keep their `equivalence` (R4) or `relationship` (R5), because
+  "wider" is a different clinical claim from "equivalent" and flattening them
+  would assert a precision the publisher declined to. A code the publisher
+  states is `unmatched` is reported as answered rather than imported as a
+  mapping to nothing. Hazards H-98 and H-99.
+
+- **An honest conformance status table** (#23, in part). The README now says
+  per pack what is enforced, how many rules, and — the column that matters —
+  that **none has been scored against Infoway's Projectathon scripts**. Every
+  rule encodes this project's reading of a specification, and a pack that
+  passes its own rules and fails a Projectathon script is a plausible guess
+  with a test suite. The table is checked against the packs by
+  `test/conformance.test.ts`, so a claim cannot drift past what the packs do.
+
 - **A reader for a real export format** (#20). The loader took normalised
   records and something had to produce them. `src/migrate/read-fhir.ts` reads
   a FHIR Bundle or a bulk NDJSON export into `SourceRecord`s.

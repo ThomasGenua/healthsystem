@@ -1585,6 +1585,20 @@ A rejected write fails the delivery, which retries and then dead-letters with th
 
 The two checks are not deduplicated, on purpose. A pipeline `validate.profile` runs at ingest; the write happens later off the queue — 250ms normally, but hours later after retries or a replay, by which point a pack may have been tightened. The write-time check is the one that reflects the rules in force when the data actually lands.
 
+### What each pack actually covers
+
+Stated per pack rather than as "the packs exist", because a pack claiming conformance it does not have is the same failure mode as a chart section rendering "none" when it failed to load.
+
+| Pack | Profiles enforced | Rules | Capability self-check | Scored against Projectathon scripts |
+| --- | --- | --- | --- | --- |
+| `ps-ca` | Patient, Observation, Condition, MedicationRequest | 17 | resource types + interactions | **No** |
+| `ca-fex` | Bundle | 3 | resource types + interactions | **No** |
+| `ca-erec` | ServiceRequest, Patient | 8 | resource types + interactions | **No** |
+
+The last column is the one that matters. Every rule in these packs encodes *this project's reading* of a published specification, and passes the fixtures shipped beside it. None has been run against Infoway's published Projectathon test scripts, which are the only thing that settles whether the reading is right — a pack that passes its own rules and fails a Projectathon script is not a conformance pack, it is a plausible guess with a test suite. Each pack's `name` says "working profile pack" for that reason.
+
+Obtaining and running those scripts is [#23](https://github.com/ThomasGenua/healthsystem/issues/23), and it is gated on a relationship with Infoway rather than on code.
+
 ## Subscriptions
 
 `POST /fhir/Subscription` with a rest-hook channel registers a consumer. **This needs `admin`**, not `write` — see [Security](#security) for why. A change in the facade store (created or updated; an unchanged upsert never notifies, because versioning is content-addressed) enqueues one delivery per matching active subscription on the same durable queue as everything else, so notifications get retry with backoff, dead-lettering, replay and strict per-subscription ordering, and they survive a restart. Criteria is a resource type with an optional identifier token: `Observation`, `Patient?identifier=NT123456`, or `Patient?identifier=system|value`.
