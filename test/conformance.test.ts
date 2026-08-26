@@ -108,3 +108,39 @@ test("validate.profile gates the pipeline: reject AEs, annotate passes with a no
 
   await engine.stop();
 });
+
+test("the README's conformance table says what the packs actually enforce", () => {
+  // A table of hand-counted numbers drifts the first time somebody adds a
+  // rule, and a pack claiming conformance it does not have is the same
+  // failure mode as a chart section rendering "none" when it failed to load.
+  // So the claim is checked against the packs rather than maintained by hand.
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  const packs = ["ps-ca", "ca-fex", "ca-erec"] as const;
+
+  for (const id of packs) {
+    const pack = load(`../conformance/${id}.json`) as ConformancePack;
+    const profiles = pack.profiles ?? [];
+    const rules = profiles.reduce((n, p) => n + (p.rules?.length ?? 0), 0);
+    const row = readme.split("\n").find((l) => l.startsWith(`| \`${id}\``));
+    assert.ok(row, `README has no conformance-table row for ${id}`);
+
+    const cells = row!.split("|").map((c) => c.trim());
+    const claimedRules = Number(cells[3]);
+    assert.equal(
+      claimedRules,
+      rules,
+      `README claims ${id} enforces ${claimedRules} rules; the pack has ${rules}`
+    );
+
+    for (const profile of profiles) {
+      assert.ok(
+        cells[2].includes(profile.resourceType),
+        `README does not list ${profile.resourceType} among ${id}'s enforced profiles`
+      );
+    }
+
+    // The honest column. Nothing here has been scored against Infoway's
+    // scripts, and the day one is, this test is what makes somebody say so.
+    assert.equal(cells[5], "**No**", `${id} claims a Projectathon result it does not have`);
+  }
+});
