@@ -591,6 +591,7 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/break-glass-dispatch": "POST",
       "/api/clinical/gaps": "POST",
       "/api/clinical/measure": "POST",
+      "/api/clinical/release": "POST",
       "/api/clinical/links": `?patient=${P}`,
       "/api/clinical/link": "POST",
       "/api/clinical/unlink": "POST",
@@ -707,6 +708,13 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/measure": {
         cohort: { id: "dm", name: "Diabetes", conditionCodes: ["diabetes"] },
         measure: { id: "hba1c-8", name: "HbA1c under 8", withinDays: 365, target: { code: "4548-4", below: 8 } },
+      },
+      "/api/clinical/release": {
+        kind: "measure",
+        cohort: { id: "dm", name: "Diabetes", conditionCodes: ["diabetes"] },
+        measure: { id: "hba1c-8", name: "HbA1c under 8", withinDays: 365, target: { code: "4548-4", below: 8 } },
+        recipient: "NWT quality improvement committee",
+        purpose: "quarterly diabetes measure review",
       },
       "/api/clinical/link": {
         a: P,

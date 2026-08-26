@@ -11,6 +11,23 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **De-identified release with small-cell suppression** (#54). The registry
+  answers honestly inside the walls; nothing patient-shaped may leave them,
+  because in the communities this system is built for a small count is a
+  name — "3 of 41 diabetics uncontrolled" identifies people to anyone who
+  knows a community of 300, and so does "38 of 41 controlled", because
+  subtraction works. `POST /api/clinical/release` turns a measure or a
+  care-gap summary into aggregate counts with no identifiers anywhere in the
+  document: counts from 1 to threshold−1 suppressed (default 5, floor 2,
+  refused below as suppression in name only), zeroes published, complements
+  suppressed where a published total would hand a suppressed count back, and
+  a rate withheld when it would divide the secret back out. The method is on
+  the face of the document, unclassified patients stay counted, and a
+  release does not exist without a recipient and a purpose — both of which
+  land on the chained trail, because an extract with nobody it goes to is a
+  leak with paperwork pending. Consent for secondary use is named as a
+  governance decision the release does not decide. Hazards H-89 and H-90.
+
 - **A readable chart when the link is down** (#38, complete). The outage demo
   covered the write path: the queue holds, order survives, everything drains on
   reconnection. The read path had no equivalent, and a nurse in a community
