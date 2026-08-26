@@ -6,14 +6,25 @@ on a machine in a different building, and it acquires the one failure mode
 the primary cannot have — being wrong while looking right. That is not a
 feature to bolt on; it is a set of obligations to accept in writing first.
 
-**Status.** This design is the reviewable artifact. Of it, the piece
-everything else depends on is already built and tested: staleness is a
-first-class incompleteness (`stale`, beside `unavailable`, `truncated` and
-`withheld`), stamped on every panel of a chart assembled with an `asOf`,
-carried at the top of the summary, and rendered as a warning banner in the
-console (`test/offline-chart.test.ts`). The reading station itself is not
-built. Until it is, nothing in a deployment may serve a cached chart, and
-residual risk R-19 says exactly that.
+**Status: built.** Staleness is a first-class incompleteness (`stale`, beside
+`unavailable`, `truncated` and `withheld`), stamped on every panel of a chart
+assembled with an `asOf` and bannered in the console
+(`test/offline-chart.test.ts`). The station is `src/core/station.ts`, tested in
+`test/reading-station.test.ts` and walked end to end by `demo/satlink-read.ts`.
+Hazards **H-84** through **H-88** carry its controls, and the residual that
+survives the build — a directive issued mid-outage reaching the station only at
+the next fill — is **R-20**.
+
+Two details the build settled that this design left open. The station keeps
+**two databases**: the cached snapshot, destroyed at expiry, and the station's
+own, holding the manifest and the offline trail, which outlives it — because
+the record that somebody read a chart during the outage still has to reach the
+primary afterwards, and destroying it with the cache would make an offline read
+invisible to the access review built to find exactly that. And the cache is
+dated from the **snapshot's own stamp** rather than from when the copy landed:
+a snapshot taken at 02:00 and filled at 06:00 is four hours old on arrival, and
+a chart dated from the copy would understate its age — the one direction
+staleness must never err in.
 
 ---
 

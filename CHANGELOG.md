@@ -11,6 +11,25 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **A readable chart when the link is down** (#38, complete). The outage demo
+  covered the write path: the queue holds, order survives, everything drains on
+  reconnection. The read path had no equivalent, and a nurse in a community
+  during a forty-hour outage could queue what they wrote and see nothing of
+  what was already known. A **reading station** closes it — the same binary
+  over a restored, verified snapshot, so the cache inherits a rehearsed
+  procedure instead of a sync protocol nobody has tested. It dates itself from
+  the snapshot's own stamp rather than from when the copy landed, so a chart
+  never understates its age. Consent decides exactly as at the primary, from
+  the directives the snapshot carried. The station is read-only and its
+  refusal names the queue and the paper form. Past its serving budget it
+  refuses every clinical route and destroys the clinical cache on its own,
+  keeping the trail it still owes the primary — because reads that happened
+  offline still have to reach an access review. Those reconcile by appending
+  to the primary's chain, never rewriting it, each row carrying the station,
+  the time of the read and the station's own seq; a station chain that does
+  not verify is reported as an incident rather than dropped. Hazards H-84
+  through H-88; R-20 records what remains. `demo/satlink-read.ts` walks the
+  whole outage.
 - **The offline chart, designed before it is built** (#38, part one).
   [docs/OFFLINE-CHART.md](docs/OFFLINE-CHART.md) is the written design the
   issue asks for first: a reading station — the same binary against the same

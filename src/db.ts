@@ -84,6 +84,7 @@ export const TENANT_SCOPED_TABLES = [
   "schedule_offers",
   "channel_versions",
   "patient_link_events",
+  "station_manifest",
   "prescriptions",
   "prescription_events",
   "migration_runs",
@@ -1815,6 +1816,34 @@ CREATE TABLE IF NOT EXISTS patient_link_events (
   actor_id TEXT NOT NULL,
   actor_kind TEXT NOT NULL,
   at TEXT NOT NULL
+);
+
+-- What a reading station knows about its own cache: which snapshot it holds,
+-- when that snapshot's data was true, and how long it may serve from it.
+--
+-- Lives in the station's *own* database rather than in the cached snapshot,
+-- and that separation is the whole point. The cache is purged when the budget
+-- expires; the record that reads happened is not PHI-optional and outlives it,
+-- because those reads still have to reconcile onto the primary's trail. One
+-- row per tenant: a station serves exactly one custodian, so a shared regional
+-- station cannot put one custodian's outage on another's floor.
+CREATE TABLE IF NOT EXISTS station_manifest (
+  tenant_id TEXT PRIMARY KEY,
+  station_id TEXT NOT NULL,
+  snapshot TEXT NOT NULL,
+  -- When the data was true, not when the copy landed. A snapshot taken at
+  -- 02:00 and filled at 06:00 is four hours old the moment it arrives, and a
+  -- chart that dates itself from the copy would understate its own age.
+  taken_at TEXT NOT NULL,
+  filled_at TEXT NOT NULL,
+  budget_hours REAL NOT NULL,
+  cache_path TEXT NOT NULL,
+  -- Set when the budget ran out and the clinical cache was destroyed. A purged
+  -- station keeps its manifest so it can still say why it is not serving.
+  purged_at TEXT,
+  -- The station chain seq already appended to the primary. Reconciliation is
+  -- append-only and resumable; this is where it resumes from.
+  reconciled_through INTEGER NOT NULL DEFAULT 0
 );
 
 -- Every identifier a chart is known by. A patient reaches a clinic with a

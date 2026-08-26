@@ -71,6 +71,7 @@ import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
 import { VERSION } from "../version.ts";
 import type { AuditAction, AuditEntry } from "../audit/store.ts";
 import type { Finding } from "../meds/safety.ts";
+import type { ReadingStation } from "../core/station.ts";
 import type { TlsConfig } from "./tls.ts";
 import type { ChannelConfig, MappingDoc, MessageRow } from "../types.ts";
 import type { ChannelDocument } from "../core/channel-versions.ts";
@@ -126,6 +127,16 @@ export interface ApiOptions {
    * health reports as a posture rather than an incident.
    */
   remote?: RemoteBackup;
+  /**
+   * Run this node as a reading station over a cached snapshot.
+   *
+   * Present means the engine underneath is a restore rather than the live
+   * record, and three things change: every chart is assembled `asOf` the fill
+   * and wears its age, every clinical write is refused with words saying what
+   * to do instead, and reads land on the station's own chain rather than on a
+   * copy of the primary's. Absent is the ordinary case — the primary.
+   */
+  station?: ReadingStation;
 }
 
 export function startApi(engine: Engine, port: number, host = "0.0.0.0", options: ApiOptions = {}): Promise<ApiHandle> {
@@ -136,7 +147,7 @@ export function startApi(engine: Engine, port: number, host = "0.0.0.0", options
   const limiter = new RateLimiter(options.rateLimit);
   const remote = options.remote;
   const handler = (req: IncomingMessage, res: ServerResponse): void => {
-    void route(engine, req, res, gate, limiter, remote).catch((err) => {
+    void route(engine, req, res, gate, limiter, remote, options.station).catch((err) => {
       send(res, 500, { error: err instanceof Error ? err.message : "internal error" });
     });
   };
@@ -163,7 +174,8 @@ async function route(
   res: ServerResponse,
   gate: AuthGate,
   limiter: RateLimiter,
-  remote?: RemoteBackup
+  remote?: RemoteBackup,
+  station?: ReadingStation
 ): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname.replace(/\/+$/, "") || "/";
@@ -185,7 +197,12 @@ async function route(
 
   /** Records an access against the audit trail. */
   const audit = (entry: Omit<AuditEntry, "principalId" | "principalKind" | "method" | "path">): void => {
-    tenant.audit.record({
+    // On a station the trail is the station's own, from its own genesis. The
+    // primary's chain sits inside the cache as a copy, and appending to that
+    // copy would leave two divergent trails claiming the same history —
+    // strictly worse than having no offline trail, because both would verify.
+    const sink = station ?? tenant.audit;
+    sink.record({
       principalId: auth.ok ? auth.principal.id : (auth.principal?.id ?? "unauthenticated"),
       principalKind: auth.ok ? auth.principal.kind : (auth.principal?.kind ?? "unknown"),
       method,
@@ -1241,6 +1258,50 @@ async function route(
   if (path.startsWith("/api/clinical/")) {
     const patient = url.searchParams.get("patient") ?? undefined;
 
+    // A station answers for a cache, and two rules come before any route on
+    // it. Both fail closed, and both say what to do instead of a chart.
+    const stationState = station?.state();
+    if (stationState) {
+      if (!stationState.serving) {
+        // Past the budget the directives in the cache are too old to be
+        // trusted about who may see what, so the honest answer is nothing —
+        // never a chart with an unknown lockbox over it.
+        audit({
+          action: verbToAction(method),
+          outcome: 4,
+          resourceType: "Composition",
+          ...(patient ? { patient } : {}),
+          detail: `station not serving (${stationState.reason})`,
+        });
+        return send(res, 503, {
+          error: stationState.detail,
+          station: stationState.reason,
+          remedy: "reach the primary over the link, or fill this station from a fresh snapshot",
+        });
+      }
+      // Read-only, and it says so. The write path already degrades acceptably
+      // — that is what the outage demo proves — so the station's refusal
+      // points at the queue and the paper form rather than inventing a
+      // conflict-resolution problem nobody has designed yet.
+      if (method !== "GET") {
+        audit({
+          action: verbToAction(method),
+          outcome: 4,
+          resourceType: "Composition",
+          ...(patient ? { patient } : {}),
+          detail: "refused: a reading station does not accept clinical writes",
+        });
+        return send(res, 405, {
+          error:
+            "this is a reading station serving a cached chart; it does not accept clinical writes, " +
+            "because a second writable copy of the record is a conflict nobody can resolve safely afterwards",
+          remedy:
+            "write on paper or into the feed queue as during any outage — the queue holds and drains when the link returns",
+          servingAsOf: stationState.asOf,
+        });
+      }
+    }
+
     /**
      * Whether a patient directive stands between this caller and this record.
      *
@@ -1451,7 +1512,14 @@ async function route(
         return phi(
           "Composition",
           (withheldTypes) =>
-            tenant.workspace.chart(patient, { limit: num(url.searchParams.get("limit")), withheldTypes }),
+            tenant.workspace.chart(patient, {
+              limit: num(url.searchParams.get("limit")),
+              withheldTypes,
+              // On a station this is what puts the age on every panel. It is
+              // the snapshot's own stamp, so the chart dates itself from when
+              // the data was true rather than from when the copy landed.
+              ...(stationState?.serving ? { asOf: stationState.asOf } : {}),
+            }),
           undefined,
           CHART_TYPES
         );
@@ -1507,6 +1575,7 @@ async function route(
           limit: num(url.searchParams.get("limit")),
           withheldTypes,
           linkedMembers: members.filter((m) => m !== patient),
+          ...(stationState?.serving ? { asOf: stationState.asOf } : {}),
         });
       } catch (err) {
         const mapped = mapStoreError(err);
