@@ -7,7 +7,13 @@ Portage is pre-1.0: minor versions may change interfaces. Database upgrades are
 always forward-compatible and run automatically on open — see
 [Upgrading](docs/RUNBOOK.md#upgrading).
 
-## Unreleased
+## 0.7.0 — 2026-08-26
+
+What a prescription does after it leaves, and what an extract does before it
+arrives. 0.6.0 made the system operable in the north; this closes the two
+places where it was still trusting a silence — a pharmacy that never said
+whether the patient collected the drug, and a migration that could report
+success for records it never read.
 
 **Added**
 
