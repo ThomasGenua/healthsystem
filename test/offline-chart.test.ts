@@ -112,4 +112,12 @@ test("the console renders the cache banner from the chart's stale block", () => 
   assert.match(ui, /c\.stale\?`<div class="banner bad">/, "a cached chart banners as a warning, before anything else");
   assert.match(ui, /esc\(String\(c\.stale\.ageHours\)\)/, "the age is shown, escaped");
   assert.match(ui, /esc\(c\.stale\.note\)/, "and so is the note");
+  // The banner is not enough: H-83 promises the age on every cached panel,
+  // and an empty stale panel must never read as a current "none".
+  assert.match(
+    ui,
+    /inc\.reason==="stale"\)why=`as of \$\{esc\(String\(inc\.ageHours\)\)\} hours ago/,
+    "each stale panel carries its own age"
+  );
+  assert.match(ui, /none recorded as of the cache/, "an empty stale panel does not read as a current none");
 });

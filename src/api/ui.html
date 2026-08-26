@@ -170,7 +170,11 @@ async function render(){
    panel must not be read as "none". `withheld` is the patient's instruction,
    which is not a fault at all and must not be rendered as one — a clinician
    who reads a lockbox as an outage goes looking for a bug instead of having a
-   conversation. `truncated` just means there is more. */
+   conversation. `truncated` just means there is more. `stale` means true as
+   of the cache's fill time — so the age goes on the panel itself, not only
+   the banner above it, and an empty stale panel must never read as a current
+   "none": a cached "no known drug allergies" from before this morning's
+   reaction read as current is the exact failure the reason exists to refuse. */
 function panel(title,sec,render,extra){
   const inc=sec&&sec.incomplete;
   const cls=!inc?"":inc.reason==="unavailable"?"bad":inc.reason==="withheld"?"held":"warn";
@@ -179,9 +183,10 @@ function panel(title,sec,render,extra){
   if(inc&&inc.reason==="unavailable")why=`this panel is empty because it failed to load, not because there is nothing — ${esc(inc.detail)}`;
   else if(inc&&inc.reason==="withheld")why=esc(inc.detail);
   else if(inc&&inc.reason==="truncated")why=`showing ${inc.shown} of ${inc.total}`;
+  else if(inc&&inc.reason==="stale")why=`as of ${esc(String(inc.ageHours))} hours ago — anything recorded since the cache was filled is not here`;
   const body=inc&&inc.reason==="withheld"?""
     :items.length?`<ul>${items.map(render).join("")}</ul>`
-    :`<p class="none">none recorded</p>`;
+    :`<p class="none">${inc&&inc.reason==="stale"?"none recorded as of the cache — ask; something may have happened since":"none recorded"}</p>`;
   return `<div class="panel ${cls}"><h3>${esc(title)}${extra?" "+extra:""}${inc?tag(inc.reason,cls):""}</h3>
     ${why?`<p class="why">${why}</p>`:""}${body}</div>`;
 }
