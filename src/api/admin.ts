@@ -2760,6 +2760,27 @@ async function route(
     // phi() and inside the source-reading test that drives every clinical
     // route and fails the build if one serves patient data without an audit
     // row — which is a stronger guarantee than a tidier URL.
+    if (path === "/api/clinical/migration-dry-run" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        source?: string;
+        records?: Parameters<typeof tenant.migration.dryRun>[0]["records"];
+        declared?: Parameters<typeof tenant.migration.dryRun>[0]["declared"];
+      };
+      if (!body.source) return send(res, 400, { error: "source required" });
+      if (!Array.isArray(body.records)) return send(res, 400, { error: "records required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      // Behind phi() like every other clinical route: a dry run reads and
+      // writes patient data in bulk, and the fact that it takes it all back
+      // does not make the reading invisible.
+      return phi("Bundle", () =>
+        tenant.migration.dryRun({
+          sourceSystem: body.source!,
+          records: body.records!,
+          by: { actorId: who },
+          ...(body.declared ? { declared: body.declared } : {}),
+        })
+      );
+    }
     if (path === "/api/clinical/migrations" && method === "GET") {
       return phi("Bundle", () => tenant.migration.runs(), (rows) => rows.length);
     }

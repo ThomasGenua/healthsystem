@@ -158,6 +158,11 @@ export interface TypeReconciliation {
 
 export interface MigrationReport {
   runId: string;
+  /**
+   * True when this report describes a rehearsal that wrote nothing. The run
+   * it names no longer exists, deliberately.
+   */
+  dryRun?: boolean;
   sourceSystem: string;
   mode: MigrationMode;
   status: MigrationStatus;
@@ -176,6 +181,12 @@ export interface MigrationSources {
   clinical: ClinicalRecord;
   meds: MedicationStore;
 }
+
+/**
+ * Thrown to end a dry run by rolling its transaction back. Never escapes
+ * `dryRun()`, and is not a Refusal because nothing was refused.
+ */
+class DryRunComplete extends Error {}
 
 export class Migration {
   private db: Db;
@@ -337,6 +348,72 @@ export class Migration {
    * charts have been written to since is refused: rolling it back would
    * delete the records a clinician's note refers to.
    */
+  /**
+   * Runs the whole load and keeps none of it.
+   *
+   * Not a shape check. The records go through the ordinary stores exactly as
+   * a real load would, inside a transaction that is always rolled back, so
+   * what comes back is what those stores actually did — including the
+   * refusals a validator written separately would have to guess at, and
+   * would eventually guess differently from.
+   *
+   * ## What it proves, and what it does not
+   *
+   * It proves what these records do against **this database, today**. It does
+   * not promise the cutover will match: a record that loads cleanly now can
+   * be refused later because something else took the same key in between, and
+   * a batch whose later records depend on earlier ones is only valid in the
+   * order it was given. Those limits are stated in the report rather than
+   * left for somebody to discover at 3am.
+   *
+   * What it cannot see at all is what the extract never contained. That is
+   * what the declared counts are for, and a dry run with nothing declared
+   * reconciles perfectly and means nothing — the same trap as the real run,
+   * and reported the same way.
+   */
+  dryRun(input: {
+    sourceSystem: string;
+    records: SourceRecord[];
+    by: { actorId: string };
+    declared?: Array<{ recordType: MigrationRecordType; sourceCount: number }>;
+    mode?: MigrationMode;
+  }): MigrationReport {
+    let captured: MigrationReport | undefined;
+    try {
+      this.db.transaction(() => {
+        // A trial run, because that is what this is — the difference is only
+        // that nothing survives to be rolled back later by a person.
+        const run = this.begin({
+          sourceSystem: input.sourceSystem,
+          mode: input.mode ?? "trial",
+          by: input.by,
+          notes: "dry run: rehearsed and discarded",
+        });
+        for (const d of input.declared ?? []) this.declare(run.id, d.recordType, d.sourceCount, input.by);
+        this.loadAll(run.id, input.records, input.by);
+        const report = this.report(run.id);
+        captured = {
+          ...report,
+          dryRun: true,
+          caveats: [
+            ...report.caveats,
+            "this was a rehearsal against the database as it stands today; a record that loads now can be refused at cutover if something else takes its key first",
+            "records were validated in the order given, so a batch whose later records depend on earlier ones proves nothing about a different order",
+          ],
+        };
+        // The only way out that leaves nothing behind. Everything above —
+        // the run row, the record rows, the clinical writes — goes with it.
+        throw new DryRunComplete();
+      });
+    } catch (err) {
+      if (!(err instanceof DryRunComplete)) throw err;
+    }
+    // Unreachable unless the transaction helper stops rolling back on a
+    // throw, which would mean a dry run had just written to the database.
+    if (!captured) refuse("the dry run did not complete; nothing was written");
+    return captured;
+  }
+
   rollback(runId: string, by: { actorId: string; reason: string }): { retracted: number; run: MigrationRun } {
     if (!by.reason.trim()) refuse("rolling back a migration needs a reason");
     const run = this.run(runId);

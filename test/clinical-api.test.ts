@@ -663,6 +663,7 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/migration-report": `?run=${migrationRun.id}`,
       "/api/clinical/migration-rejects": `?run=${migrationRun.id}`,
       "/api/clinical/migration-sample": `?run=${migrationRun.id}`,
+      "/api/clinical/migration-dry-run": "POST",
       "/api/clinical/migration-begin": "POST",
       "/api/clinical/migration-declare": "POST",
       "/api/clinical/migration-load": "POST",
@@ -825,6 +826,18 @@ test("every clinical route leaves an audit row, including ones added later", asy
         note: "patient has three days left",
       },
       "/api/clinical/pharmacy-dispense-reporting": { pharmacy: "yk-pharmacy", reports: true },
+      "/api/clinical/migration-dry-run": {
+        source: "legacy-emr",
+        declared: [{ recordType: "condition", sourceCount: 1 }],
+        records: [
+          {
+            sourceId: "CO-DRY-1",
+            recordType: "condition",
+            sourcePatientId: P,
+            content: { code: "44054006", display: "Type 2 diabetes mellitus" },
+          },
+        ],
+      },
       "/api/clinical/migration-begin": { source: "legacy-emr", mode: "trial" },
       "/api/clinical/migration-declare": { run: migrationRun.id, recordType: "condition", sourceCount: 1 },
       "/api/clinical/migration-load": {
