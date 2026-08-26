@@ -19,16 +19,8 @@ still points at a deleted test is a silent failure of this document;
 test is gone.
 
 **Product:** Portage (this repository).
-**Version this case describes:** the `main` it is committed on (currently
-the post-0.5.0 line: v0.5.0 plus off-machine backup, organization identity
-on credentials, break-glass notice dispatch, encounters, the provider
-directory, FHIR projection of that directory, the refusal/fault split
-in `phi()`, the longitudinal-chart increment, durable patient messaging,
-the OAuth patient/proxy boundary, the laboratory result bridge,
-pharmacy transmission, the migration loader, the privacy office, the
-patient HTML shell at `/me`, the access-review join on the trail,
-travelling clinics and the waitlist, and channel configuration as a ledger).
-**Last reviewed:** 2026-08-25.
+**Version this case describes:** v0.6.0.
+**Last reviewed:** 2026-08-26.
 **Reviewer of this draft:** the author of the controls, not an independent
 clinical safety officer. That gap is residual risk R-01.
 

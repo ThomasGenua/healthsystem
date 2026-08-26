@@ -118,7 +118,7 @@ curl -sS -X POST -H "authorization: Bearer $ADMIN_KEY" http://localhost:8686/api
 systemctl stop portage
 
 # 3. Update, and re-run the suite against the new code on this machine.
-git fetch --tags && git checkout v0.5.0
+git fetch --tags && git checkout v0.6.0
 npm ci && npm run typecheck && npm test
 
 # 4. Start. Watch the log: the migration announces each table it rebuilds.
