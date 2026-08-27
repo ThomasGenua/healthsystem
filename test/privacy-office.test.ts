@@ -211,6 +211,33 @@ test("fulfilling an access request records a disclosure", async () => {
   }
 });
 
+test("a failed fulfill leaves neither a disclosure nor a half-closed request", async () => {
+  // The two writes are one act. Recorded separately, a failure between them
+  // left the ledger saying the chart went out while the queue said nobody had
+  // answered — and a retry inserted a second disclosure for one release.
+  const { t, close } = await boot();
+  try {
+    const req = t.patientAccess.submitRequest({
+      patientId: P,
+      kind: "access",
+      detail: "Please provide a copy of my chart.",
+      by: { subjectId: P, relationship: "self" },
+    });
+    const row = t.patientAccess.request(req.id)!;
+    // Close the underlying work item first, so completing the request fails
+    // after the disclosure has already been written.
+    t.tasks.complete(row.task_id, { ...OFFICER, evidence: "closed before the disclosure was recorded" });
+
+    assert.throws(() =>
+      t.privacy.fulfillAccess(req.id, { purpose: "patient access request", sections: [{ name: "allergies", count: 1 }] }, OFFICER)
+    );
+    assert.equal(t.patientAccess.request(req.id)?.status, "submitted", "the request is untouched");
+    assert.equal(t.privacy.listDisclosures().length, 0, "and the disclosure did not outlive the failed completion");
+  } finally {
+    await close();
+  }
+});
+
 test("completing access without a disclosure is flagged, not blocked", async () => {
   const { t, close } = await boot();
   try {
@@ -325,10 +352,15 @@ test("staff not on the care team are flagged, and an empty team is not", async (
   const { t, close } = await boot();
   try {
     t.careTeam.assign({ patientId: P, practitionerId: "dr-tetso", role: "primary", by: { actorId: "ops" } });
+    // Shaped the way production actually writes: the credential on
+    // principal_id, the clinician on practitioner_id. Matching principal_id
+    // to the care team missed every real access, so the flag never fired
+    // where it mattered.
     t.audit.record({
       action: "R",
-      principalId: "dr-locum",
-      principalKind: "practitioner",
+      principalId: "key-locum",
+      principalKind: "apikey",
+      practitionerId: "dr-locum",
       method: "GET",
       path: "/api/clinical/chart",
       patient: P,
@@ -337,22 +369,57 @@ test("staff not on the care team are flagged, and an empty team is not", async (
     });
     t.audit.record({
       action: "R",
-      principalId: "dr-alone",
-      principalKind: "practitioner",
+      principalId: "key-tetso",
+      principalKind: "apikey",
+      practitionerId: "dr-tetso",
+      method: "GET",
+      path: "/api/clinical/chart",
+      patient: P,
+      resourceType: "Composition",
+      outcome: 0,
+    });
+    t.audit.record({
+      action: "R",
+      principalId: "key-alone",
+      principalKind: "apikey",
+      practitionerId: "dr-alone",
       method: "GET",
       path: "/api/clinical/chart",
       patient: "NT-none",
       resourceType: "Composition",
       outcome: 0,
     });
+    // A feed credential with no practitioner behind it. It cannot be on a
+    // care team, so it is not this flag's business.
+    t.audit.record({
+      action: "R",
+      principalId: "key-feed",
+      principalKind: "apikey",
+      method: "GET",
+      path: "/api/clinical/chart",
+      patient: P,
+      resourceType: "Composition",
+      outcome: 0,
+    });
     const review = t.privacy.openReview(OFFICER, { hours: { startHour: 0, endHour: 24 } });
     assert.ok(
-      review.flags.some((f) => f.kind === "not-on-care-team" && f.principalId === "dr-locum" && f.patientId === P)
+      review.flags.some((f) => f.kind === "not-on-care-team" && f.principalId === "dr-locum" && f.patientId === P),
+      "a clinician acting through a credential is still the person who read the chart"
+    );
+    assert.equal(
+      review.flags.some((f) => f.kind === "not-on-care-team" && f.principalId === "dr-tetso"),
+      false,
+      "a team member acting through an API key is still on the team"
     );
     assert.equal(
       review.flags.some((f) => f.kind === "not-on-care-team" && f.patientId === "NT-none"),
       false,
       "an empty care team is not a team somebody is missing from"
+    );
+    assert.equal(
+      review.flags.some((f) => f.kind === "not-on-care-team" && f.principalId === "key-feed"),
+      false,
+      "a credential naming no practitioner cannot be missing from a team"
     );
   } finally {
     await close();
