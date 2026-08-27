@@ -392,27 +392,35 @@ export class PrivacyOffice {
       }
     }
 
+    // Care-team membership is a join on the *person*, and an HTTP audit row
+    // records the credential on principal_id (kind apikey or oauth) with the
+    // clinician on practitioner_id. Filtering for principal_kind
+    // "practitioner" and comparing principal_id to the team therefore matched
+    // nothing real: every access through the API was skipped, and the flag
+    // that exists to catch a clinician reading a chart they have no part in
+    // never fired in production. This joins practitioner_id, which is the
+    // identity AccessReview already uses. A credential naming no practitioner
+    // cannot be on a team, so it is not this flag's business.
     const staff = this.db.sql
       .prepare(
-        `SELECT DISTINCT principal_id, principal_kind, patient FROM audit_events
-         WHERE tenant_id = ? AND outcome = 0 AND patient IS NOT NULL AND recorded_at >= ?`
+        `SELECT DISTINCT practitioner_id, patient FROM audit_events
+         WHERE tenant_id = ? AND outcome = 0 AND patient IS NOT NULL AND recorded_at >= ?
+           AND practitioner_id IS NOT NULL`
       )
       .all(this.db.tenantId, since) as {
-      principal_id: string;
-      principal_kind: string;
+      practitioner_id: string;
       patient: string;
     }[];
     for (const r of staff) {
-      if (r.principal_kind !== "practitioner") continue;
       const team = this.careTeam.forPatient(r.patient);
       if (team.length === 0) continue;
-      if (team.some((m) => m.practitioner_id === r.principal_id)) continue;
+      if (team.some((m) => m.practitioner_id === r.practitioner_id)) continue;
       drafts.push({
         kind: "not-on-care-team",
         patientId: r.patient,
-        principalId: r.principal_id,
-        principalKind: r.principal_kind,
-        detail: `${r.principal_id} read ${r.patient} and is not on the current care team`,
+        principalId: r.practitioner_id,
+        principalKind: "practitioner",
+        detail: `${r.practitioner_id} read ${r.patient} and is not on the current care team`,
       });
     }
 
@@ -878,15 +886,22 @@ export class PrivacyOffice {
     if (!row) refuse(`no patient request ${requestId}`, 404);
     if (row.status !== "submitted") refuse(`request ${requestId} is ${row.status}, not submitted`, 409);
     if (row.kind !== "access") refuse("fulfillAccess is for access requests. corrections use completeRequest");
-    const disclosure = this.recordDisclosure(
-      { patientId: row.patient_id, requestId, purpose: input.purpose, sections: input.sections },
-      by
-    );
-    this.patientAccess.completeRequest(requestId, {
-      ...by,
-      outcome: `Disclosed ${input.sections.length} section(s); record ${disclosure.id}`,
+    // One transaction, because these two writes are one act. Recorded
+    // separately, a failure between them left a durable disclosure against a
+    // request still reading as submitted — the ledger saying the chart went
+    // out while the queue said nobody had answered — and a retry inserted a
+    // second disclosure for the same release.
+    return this.db.transaction(() => {
+      const disclosure = this.recordDisclosure(
+        { patientId: row.patient_id, requestId, purpose: input.purpose, sections: input.sections },
+        by
+      );
+      this.patientAccess.completeRequest(requestId, {
+        ...by,
+        outcome: `Disclosed ${input.sections.length} section(s); record ${disclosure.id}`,
+      });
+      return { disclosure, requestId };
     });
-    return { disclosure, requestId };
   }
 
   extendDeadline(requestId: string, input: { until: string; reason: string }, by: Actor): void {

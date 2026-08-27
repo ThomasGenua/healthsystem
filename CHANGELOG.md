@@ -9,6 +9,30 @@ always forward-compatible and run automatically on open — see
 
 ## Unreleased
 
+**Fixed**
+
+- **The not-on-care-team flag never fired on real traffic** (H-106). The
+  privacy office's review joined `principal_id` and required
+  `principal_kind = "practitioner"` — but an HTTP audit row records the
+  *credential* on `principal_id`, with kind `apikey` or `oauth`, and the
+  clinician on `practitioner_id`. So every access through the API was skipped,
+  and the flag that exists to catch a clinician reading a chart they have no
+  part in never fired where it mattered. Worse than silent: the review
+  reported a clean period because it had examined nothing. It now joins
+  `practitioner_id`, the identity `AccessReview` already uses, and a
+  credential naming no practitioner is excluded because it cannot be on a
+  team.
+
+- **A disclosure could outlive the request it answered** (H-107).
+  `fulfillAccess` recorded the disclosure and completed the request as two
+  independent writes. A failure between them left the ledger saying the chart
+  had gone out while the queue said nobody had answered, and a retry recorded
+  a second disclosure for one release. Both writes now share one transaction.
+
+  Both fixes were found by a Cursor review that never reached `main`; the
+  branch had gone too stale to merge, so they are ported here with regression
+  tests verified to fail against the unfixed source.
+
 **Added**
 
 - **Risk scores computed from the chart, with a clock on every input**
