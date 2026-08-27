@@ -2,7 +2,7 @@
  * Postgres and MySQL polling clients.
  *
  * The drivers are optional dependencies, imported only when a channel
- * actually names one. Portage's core keeps no required runtime dependency,
+ * actually names one. Northstar's core keeps no required runtime dependency,
  * and an operator who never polls Postgres never installs `pg`.
  *
  * Channel queries always use `?` for the cursor placeholder, matching the

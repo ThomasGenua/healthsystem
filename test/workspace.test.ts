@@ -42,8 +42,8 @@ const ANALYSER = "stanton-lab-analyser-3";
 const PAST = "2020-01-01T00:00:00Z";
 
 function ward() {
-  const dir = mkdtempSync(join(tmpdir(), "portage-ws-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-ws-"));
+  const db = new Db(join(dir, "northstar.db"));
   const record = new ClinicalRecord(db);
   const notes = new ClinicalNotes(record);
   const meds = new MedicationStore(db, { check: () => [] });
@@ -462,8 +462,8 @@ test("a worklist section that fails is reported, not swallowed", () => {
 });
 
 test("the summary is confined to its tenant", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-ws-iso-"));
-  const root = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-ws-iso-"));
+  const root = new Db(join(dir, "northstar.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");

@@ -39,7 +39,7 @@
  *
  * Decision support, not a decision. Every result carries the instrument's own
  * interpretation, not an instruction, and none of these scores is a substitute
- * for the clinician in front of the patient. Portage is not a certified
+ * for the clinician in front of the patient. Northstar is not a certified
  * medical device and makes no such claim; a deployment that intends to rely on
  * these clinically owns that assessment.
  */

@@ -9,7 +9,7 @@
  *
  * ## Why this publishes a message rather than sending anything
  *
- * Portage does not know how to reach a patient and should not learn. The
+ * Northstar does not know how to reach a patient and should not learn. The
  * patient index holds a name, a birth date and a set of identifiers — nothing
  * to reach anybody by — so any address this module produced would be one it had
  * invented. For a notice whose entire content is "somebody read your medical

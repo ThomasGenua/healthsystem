@@ -1,5 +1,5 @@
 /**
- * Loads a licensed terminology release into a Portage database.
+ * Loads a licensed terminology release into a Northstar database.
  *
  *   node scripts/import-terminology.ts --format <fmt> --in <file> [options]
  *
@@ -9,7 +9,7 @@
  *   --system      canonical system URI, or a shorthand:
  *                 snomed, loinc, icd10ca, pclocd, cci
  *   --pack        pack id recorded for the import (default: the format name)
- *   --db          database to load into (default: ./data/portage.db)
+ *   --db          database to load into (default: ./data/northstar.db)
  *   --out         also write the concepts as a pack JSON file
  *   --code-column / --display-column   csv and tsv only
  *   --batch       concepts per write (default 5000)
@@ -36,7 +36,7 @@
  *   node scripts/import-terminology.ts --format csv --in icd10ca.csv \
  *     --system icd10ca --code-column Code --display-column Description
  *
- * Nothing licensed ships with Portage; this is how an operator loads what
+ * Nothing licensed ships with Northstar; this is how an operator loads what
  * their own licence entitles them to.
  */
 import { readFileSync, writeFileSync } from "node:fs";
@@ -71,7 +71,7 @@ function resolveSystem(value: string | undefined): string {
  * failure back.
  */
 async function importMemberships(format: string, input: string): Promise<void> {
-  const dbPath = arg("db") ?? join(process.cwd(), "data", "portage.db");
+  const dbPath = arg("db") ?? join(process.cwd(), "data", "northstar.db");
   const db = new Db(dbPath);
   const store = new TerminologyStore(db);
   try {
@@ -165,7 +165,7 @@ async function main(): Promise<void> {
   const system = resolveSystem(arg("system"));
   const packId = arg("pack") ?? format;
   const outPath = arg("out");
-  const dbPath = arg("db") ?? join(process.cwd(), "data", "portage.db");
+  const dbPath = arg("db") ?? join(process.cwd(), "data", "northstar.db");
   const batch = Number(arg("batch") ?? 5000);
 
   const source = readerFor(

@@ -19,7 +19,7 @@
  * against.
  *
  * Skipped where no Chromium is installed, rather than quietly asserting
- * nothing. Set PORTAGE_TEST_CHROME to point at one.
+ * nothing. Set NORTHSTAR_TEST_CHROME to point at one.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -36,7 +36,7 @@ import type { MappingDoc } from "../src/types.ts";
 
 function findChrome(): string | undefined {
   const candidates = [
-    process.env.PORTAGE_TEST_CHROME,
+    process.env.NORTHSTAR_TEST_CHROME,
     "/opt/pw-browsers/chromium-1194/chrome-linux/chrome",
     "/usr/bin/chromium",
     "/usr/bin/chromium-browser",
@@ -54,7 +54,7 @@ const HOSTILE_ACTOR = { actorId: HOSTILE_CLINICIAN, actorKind: "practitioner" };
 
 test(
   "hostile message content does not execute in the admin console",
-  { skip: CHROME ? false : "no chromium found; set PORTAGE_TEST_CHROME to run this" },
+  { skip: CHROME ? false : "no chromium found; set NORTHSTAR_TEST_CHROME to run this" },
   async () => {
     // Anything that runs calls this. A hit is proof rather than an inference.
     const beacons: string[] = [];
@@ -66,9 +66,9 @@ test(
     const canaryPort = (canary.address() as { port: number }).port;
     const beacon = (tag: string) => `fetch('http://127.0.0.1:${canaryPort}/fired-${tag}')`;
 
-    const dir = mkdtempSync(join(tmpdir(), "portage-xss-"));
-    const profile = mkdtempSync(join(tmpdir(), "portage-chrome-"));
-    const engine = new Engine({ dbPath: join(dir, "portage.db"), tickMs: 25 });
+    const dir = mkdtempSync(join(tmpdir(), "northstar-xss-"));
+    const profile = mkdtempSync(join(tmpdir(), "northstar-chrome-"));
+    const engine = new Engine({ dbPath: join(dir, "northstar.db"), tickMs: 25 });
     await engine.start();
     const api = await startApi(engine, 0, "127.0.0.1");
     let chrome: ReturnType<typeof spawn> | undefined;
@@ -262,8 +262,8 @@ test(
       // this they paint an empty form and the payloads never reach the DOM —
       // which would pass, having proved nothing.
       const prep: Record<string, string> = {
-        Chart: `sessionStorage.setItem('portage.patient',${JSON.stringify(HOSTILE_PATIENT)});`,
-        Worklist: `localStorage.setItem('portage.clinician',${JSON.stringify(HOSTILE_CLINICIAN)});`,
+        Chart: `sessionStorage.setItem('northstar.patient',${JSON.stringify(HOSTILE_PATIENT)});`,
+        Worklist: `localStorage.setItem('northstar.clinician',${JSON.stringify(HOSTILE_CLINICIAN)});`,
       };
 
       for (const tab of ["Channels", "Messages", "FHIR", "Audit", "Chart", "Worklist", "Break-glass", "Privacy"]) {

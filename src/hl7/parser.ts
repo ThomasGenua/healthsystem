@@ -7,6 +7,7 @@
  * the field separator character itself and MSH-2 the encoding characters, so
  * MSH-9 addresses the message type as clinicians expect.
  */
+import { hl7ApplicationName } from "../core/naming.ts";
 
 export interface Hl7Delimiters {
   field: string;
@@ -222,7 +223,7 @@ export function buildAck(original: Hl7Message, code: "AA" | "AE" | "AR", text?: 
     now,
     "",
     trigger ? `ACK${d.component}${trigger}${d.component}ACK` : "ACK",
-    `PORTAGE${Date.now()}`,
+    `${hl7ApplicationName()}${Date.now()}`,
     getHl7(original, "MSH-11") || "P",
     getHl7(original, "MSH-12") || "2.5.1",
   ].join(d.field);

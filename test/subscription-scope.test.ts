@@ -48,8 +48,8 @@ async function collector(): Promise<{ port: number; got: string[]; close: () => 
 }
 
 async function boot() {
-  const dir = mkdtempSync(join(tmpdir(), "portage-subscope-"));
-  const engine = new Engine({ dbPath: join(dir, "portage.db"), tickMs: 25 });
+  const dir = mkdtempSync(join(tmpdir(), "northstar-subscope-"));
+  const engine = new Engine({ dbPath: join(dir, "northstar.db"), tickMs: 25 });
   await engine.start();
   const api = await startApi(engine, 0, "127.0.0.1", { auth: new AuthGate({ keys: engine.keys }) });
   return {

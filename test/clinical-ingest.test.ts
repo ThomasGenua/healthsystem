@@ -47,8 +47,8 @@ const adt = (family: string, control: string) =>
   ].join("\r") + "\r";
 
 async function boot(channel: ChannelConfig = CHANNEL) {
-  const dir = mkdtempSync(join(tmpdir(), "portage-cling-"));
-  const engine = new Engine({ dbPath: join(dir, "portage.db"), tickMs: 25 });
+  const dir = mkdtempSync(join(tmpdir(), "northstar-cling-"));
+  const engine = new Engine({ dbPath: join(dir, "northstar.db"), tickMs: 25 });
   await engine.start();
   engine.registerMapping(
     JSON.parse(readFileSync(new URL("../mappings/adt-patient.json", import.meta.url), "utf8")) as MappingDoc

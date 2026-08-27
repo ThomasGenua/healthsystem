@@ -23,7 +23,7 @@
  * budget of a credentialed feed, and a credentialed feed is accounted for
  * wherever it connects from.
  *
- * In memory, matching the engine's single-writer design. A Portage node is one
+ * In memory, matching the engine's single-writer design. A Northstar node is one
  * process; sharing this across nodes would need shared state, and the note in
  * the README says so rather than pretending otherwise.
  */

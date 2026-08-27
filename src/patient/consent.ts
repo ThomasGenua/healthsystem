@@ -89,7 +89,7 @@ export interface BreakGlassRow {
 /**
  * What a deployment is handed when an override needs telling the patient about.
  *
- * Deliberately not an address. Portage holds no contact details — `patient_index`
+ * Deliberately not an address. Northstar holds no contact details — `patient_index`
  * carries a name and a birth date and nothing to reach anybody by — so it
  * cannot resolve where this should go, and a system that invents a destination
  * for a disclosure notice sends somebody else's private business to a wrong

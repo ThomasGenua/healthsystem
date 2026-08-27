@@ -165,7 +165,7 @@ export interface EngineOptions {
    * to the deployment's destinations by the same ordered, retried, dead-lettered
    * machinery as any other clinical message.
    *
-   * Deliberately a channel id rather than an address: Portage holds nothing to
+   * Deliberately a channel id rather than an address: Northstar holds nothing to
    * reach a patient by, and inventing one for a disclosure notice would send
    * somebody's private business to a stranger.
    */
@@ -435,7 +435,7 @@ export class Engine {
     if (!lock.acquired) {
       const held = lock.heldBy!;
       throw new Error(
-        `another Portage instance owns this database (pid ${held.pid} on ${held.host}, ` +
+        `another Northstar instance owns this database (pid ${held.pid} on ${held.host}, ` +
           `last seen ${Math.round(held.ageMs / 1000)}s ago). Two engines on one database duplicate messages. ` +
           `If that process is gone, wait for its claim to expire and start again.`
       );

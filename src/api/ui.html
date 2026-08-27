@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Portage</title>
+<title>Northstar</title>
 <link rel="icon" href="data:,">
 <style>
 :root{--bg:#0e1116;--panel:#161b22;--line:#2b3240;--text:#d7dde6;--dim:#8b95a5;--acc:#4ea1ff;--ok:#3fb950;--warn:#d29922;--bad:#f85149;font-size:15px}
@@ -88,7 +88,7 @@ svg text{fill:var(--dim);font-size:10px}
 </style>
 </head>
 <body>
-<header><h1>PORTAGE</h1><span class="sub">health integration engine</span>
+<header><h1>NORTHSTAR</h1><span class="sub">health integration engine</span>
   <span class="sub" style="margin-left:auto">api key</span>
   <input id="apikey" type="password" placeholder="ptg_… (blank if auth is off)" title="Stored in this browser only and sent with every request">
 </header>
@@ -104,8 +104,19 @@ const $=(s,el=document)=>el.querySelector(s);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 // The key lives in this browser and is attached to every request. Nothing is
 // sent anywhere else, and the server never returns a stored key.
-const KEY="portage.apikey";
-const apiKey=()=>localStorage.getItem(KEY)||"";
+// Browser storage keys moved with the rename, so each read falls back to the
+// pre-rename key and writes the value forward. Renaming them outright would
+// not fail — it would silently log every clinician out, drop the stored API
+// key, and lose the chart they had open, on the first load after an upgrade.
+const store=(s,k)=>{
+  const cur=s.getItem("northstar."+k);
+  if(cur!==null)return cur;
+  const old=s.getItem("portage."+k);
+  if(old!==null){try{s.setItem("northstar."+k,old);s.removeItem("portage."+k);}catch{}}
+  return old;
+};
+const KEY="northstar.apikey";
+const apiKey=()=>store(localStorage,"apikey")||"";
 const j=async(url,opts={})=>{
   // `allow403` is for the caller that renders a 403 itself. A 403 is two
   // different sentences — "this key lacks the scope" and "a patient
@@ -203,7 +214,7 @@ const body=e=>{try{return JSON.parse(e.content)}catch{return{}}};
 const due=(label,v)=>v?`<span class="none">${esc(label)} ${when(v)}</span>`:"";
 
 async function chartTab(m){
-  const q=sessionStorage.getItem("portage.patient")||"";
+  const q=store(sessionStorage,"patient")||"";
   m.innerHTML=`<div class="bar">
     <input id="pt" placeholder="patient identifier, e.g. NT123456" style="width:260px" value="${esc(q)}">
     <button class="act" onclick="loadChart()">open chart</button>
@@ -228,13 +239,13 @@ window.findPatient=async()=>{
   }catch(e){out.innerHTML=`<p class="err">${esc(e.message||e)}</p>`}
 };
 
-window.openChart=id=>{sessionStorage.setItem("portage.patient",id);$("#pt").value=id;loadChart()};
+window.openChart=id=>{sessionStorage.setItem("northstar.patient",id);$("#pt").value=id;loadChart()};
 
 window.loadChart=async()=>{
   const id=$("#pt").value.trim();
   const out=$("#chart");
   if(!id){out.innerHTML="";return}
-  sessionStorage.setItem("portage.patient",id);
+  sessionStorage.setItem("northstar.patient",id);
   out.innerHTML=`<p class="none">loading…</p>`;
   let c;
   try{
@@ -312,7 +323,7 @@ window.declareGlass=async(patient)=>{
 };
 
 async function worklistTab(m){
-  const who=localStorage.getItem("portage.clinician")||"";
+  const who=store(localStorage,"clinician")||"";
   m.innerHTML=`<div class="bar"><input id="cl" placeholder="clinician id, e.g. dr-tetso" style="width:220px" value="${esc(who)}">
     <button class="act" onclick="loadWorklist()">open worklist</button></div><div id="wl"></div>`;
   if(who)await loadWorklist();
@@ -322,7 +333,7 @@ window.loadWorklist=async()=>{
   const who=$("#cl").value.trim();
   const out=$("#wl");
   if(!who){out.innerHTML="";return}
-  localStorage.setItem("portage.clinician",who);
+  localStorage.setItem("northstar.clinician",who);
   try{
     const {data:w}=await j("/api/clinical/worklist?clinician="+encodeURIComponent(who));
     const {data:res}=await j("/api/clinical/results");
@@ -593,10 +604,10 @@ const SOURCES={
   mllp:[["port","number","6661"],["host","text","0.0.0.0"]],
   http:[["path","text","channel id if blank"]],
   fhir:[["resourceTypes","text","Patient,Observation (blank = all)"]],
-  filedrop:[["dir","text","/var/spool/portage"],["pattern","text","\\\\.hl7$"],["archiveDir","text","optional"],["pollMs","number","2000"],["cron","text","optional, e.g. */5 * * * *"]],
+  filedrop:[["dir","text","/var/spool/northstar"],["pattern","text","\\\\.hl7$"],["archiveDir","text","optional"],["pollMs","number","2000"],["cron","text","optional, e.g. */5 * * * *"]],
   dbpoll:[["dbPath","text","/var/lib/lab/results.db"],["query","text","SELECT * FROM r WHERE id > ? ORDER BY id"],["cursorColumn","text","id"],["pollMs","number","2000"],["cron","text","optional"]],
   sqlpoll:[["driver","text","postgres | mysql"],["dsn","text","postgres://user:pw@host:5432/db"],["query","text","SELECT * FROM r WHERE id > ? ORDER BY id"],["cursorColumn","text","id"],["initialCursor","text","0"],["pollMs","number","2000"],["cron","text","optional"]],
-  sftp:[["host","text","sftp.example.org"],["port","number","22"],["username","text","portage"],["password","text",""],["privateKeyPath","text","/etc/portage/id_ed25519"],["dir","text","/outbound"],["pattern","text","\\\\.hl7$"],["archiveDir","text","optional"],["pollMs","number","5000"],["cron","text","optional"]],
+  sftp:[["host","text","sftp.example.org"],["port","number","22"],["username","text","northstar"],["password","text",""],["privateKeyPath","text","/etc/northstar/id_ed25519"],["dir","text","/outbound"],["pattern","text","\\\\.hl7$"],["archiveDir","text","optional"],["pollMs","number","5000"],["cron","text","optional"]],
 };
 const STEPS={
   "filter.hl7Type":[["allow","text","ADT^A01,ADT^A04"]],

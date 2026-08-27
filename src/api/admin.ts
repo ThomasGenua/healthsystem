@@ -82,6 +82,7 @@ import type { ChannelConfig, MappingDoc, MessageRow } from "../types.ts";
 import type { ChannelDocument } from "../core/channel-versions.ts";
 import { validateChannel } from "../core/engine.ts";
 import { Refusal } from "../core/refusal.ts";
+import { readEnv } from "../core/naming.ts";
 
 let UI_HTML: string | null = null;
 function uiHtml(): string {
@@ -89,7 +90,7 @@ function uiHtml(): string {
     try {
       UI_HTML = readFileSync(new URL("./ui.html", import.meta.url), "utf8");
     } catch {
-      UI_HTML = "<h1>Portage</h1><p>ui.html not found</p>";
+      UI_HTML = "<h1>Northstar</h1><p>ui.html not found</p>";
     }
   }
   return UI_HTML;
@@ -101,7 +102,7 @@ function patientHtml(): string {
     try {
       PATIENT_HTML = readFileSync(new URL("./patient.html", import.meta.url), "utf8");
     } catch {
-      PATIENT_HTML = "<h1>Portage</h1><p>patient.html not found</p>";
+      PATIENT_HTML = "<h1>Northstar</h1><p>patient.html not found</p>";
     }
   }
   return PATIENT_HTML;
@@ -318,7 +319,7 @@ async function route(
       configured: false,
       ok: false,
       detail:
-        "no PORTAGE_BACKUP_REMOTE; a snapshot that never leaves this machine does not survive the failures that need a restore",
+        "no NORTHSTAR_BACKUP_REMOTE; a snapshot that never leaves this machine does not survive the failures that need a restore",
     };
     return send(res, 200, {
       ok: true,
@@ -361,36 +362,44 @@ async function route(
       fhir: Record<string, number>;
     };
     const lines: string[] = [];
+    // Every series is exposed twice: once as `northstar_*` and once under the
+    // pre-rename `portage_*`.
+    //
+    // A metric name is not branding — it is the string in somebody's dashboard
+    // query and, more importantly, in their alerting rules. A renamed metric
+    // does not break an alert loudly; the series simply stops existing, the
+    // rule evaluates against no data, and the alert that was watching for a
+    // dead-letter backlog quietly never fires again. The duplicate costs a few
+    // hundred bytes per scrape and keeps every existing rule working until the
+    // dashboards have been moved by hand.
     const metric = (name: string, help: string, type: string, samples: Array<[string, number]>): void => {
-      lines.push(`# HELP ${name} ${help}`, `# TYPE ${name} ${type}`);
-      for (const [labels, value] of samples) lines.push(`${name}${labels} ${value}`);
+      for (const full of [`northstar_${name}`, `portage_${name}`]) {
+        lines.push(`# HELP ${full} ${help}`, `# TYPE ${full} ${type}`);
+        for (const [labels, value] of samples) lines.push(`${full}${labels} ${value}`);
+      }
     };
 
-    metric("portage_channels", "Configured channels.", "gauge", [["", stats.channels]]);
-    metric(
-      "portage_messages_total",
+    metric("channels", "Configured channels.", "gauge", [["", stats.channels]]);
+    metric("messages_total",
       "Messages ingested, by status.",
       "counter",
       Object.entries(stats.messages).map(([k, v]) => [`{status="${k}"}`, v] as [string, number])
     );
-    metric(
-      "portage_deliveries",
+    metric("deliveries",
       "Deliveries by state.",
       "gauge",
       Object.entries(stats.deliveries).map(([k, v]) => [`{state="${k}"}`, v] as [string, number])
     );
-    metric(
-      "portage_fhir_resources",
+    metric("fhir_resources",
       "Resources in the FHIR facade, by type.",
       "gauge",
       Object.entries(stats.fhir).map(([k, v]) => [`{resource_type="${k}"}`, v] as [string, number])
     );
-    metric("portage_dead_letters", "Deliveries in the dead-letter queue.", "gauge", [["", signals.deadLetters]]);
-    metric("portage_oldest_queued_age_seconds", "Age of the oldest undelivered message.", "gauge", [
+    metric("dead_letters", "Deliveries in the dead-letter queue.", "gauge", [["", signals.deadLetters]]);
+    metric("oldest_queued_age_seconds", "Age of the oldest undelivered message.", "gauge", [
       ["", signals.oldestQueuedAgeSec ?? 0],
     ]);
-    metric(
-      "portage_channel_oldest_queued_age_seconds",
+    metric("channel_oldest_queued_age_seconds",
       "Age of the oldest undelivered message, per channel.",
       "gauge",
       signals.stalledChannels.map(
@@ -402,8 +411,7 @@ async function route(
     // counter: the question is "how long has it been quiet", and an alert is a
     // threshold on it. Only channels that declared a cadence appear, so this
     // never invents an expectation an operator did not set.
-    metric(
-      "portage_channel_last_message_age_seconds",
+    metric("channel_last_message_age_seconds",
       "Seconds since a channel last received a message.",
       "gauge",
       engine
@@ -412,8 +420,7 @@ async function route(
         .filter((e): e is readonly [string, number] => e[1] !== null)
         .map(([id, age]) => [`{channel="${id.replace(/"/g, "")}"}`, age] as [string, number])
     );
-    metric(
-      "portage_channel_silent",
+    metric("channel_silent",
       "1 when a channel has gone longer than its declared cadence without a message.",
       "gauge",
       signals.silentChannels.map((c) => [`{channel="${c.channelId.replace(/"/g, "")}"}`, 1] as [string, number])
@@ -431,11 +438,10 @@ async function route(
     // and walking every chain each time would cost more as the log grew —
     // worst exactly where the log is largest. The length is the signal; the
     // walk belongs on /api/chain/verify, where an operator asks for it.
-    metric("portage_audit_events_total", "Entries on the access audit chain.", "counter", [
+    metric("audit_events_total", "Entries on the access audit chain.", "counter", [
       ["", tenant.audit.count()],
     ]);
-    metric(
-      "portage_chain_length",
+    metric("chain_length",
       "Messages on each channel's hash chain.",
       "counter",
       engine
@@ -446,19 +452,17 @@ async function route(
     const remoteStatus = remote?.status() ?? {
       configured: false,
       ok: false,
-      detail: "no PORTAGE_BACKUP_REMOTE",
+      detail: "no NORTHSTAR_BACKUP_REMOTE",
     };
-    metric("portage_backup_remote_configured", "1 when an off-machine backup destination is configured.", "gauge", [
+    metric("backup_remote_configured", "1 when an off-machine backup destination is configured.", "gauge", [
       ["", remoteStatus.configured ? 1 : 0],
     ]);
-    metric(
-      "portage_backup_remote_ok",
+    metric("backup_remote_ok",
       "1 when the last off-machine replica was verified. 0 if unconfigured, never attempted, or last attempt failed.",
       "gauge",
       [["", remoteStatus.ok ? 1 : 0]]
     );
-    metric(
-      "portage_backup_remote_age_seconds",
+    metric("backup_remote_age_seconds",
       "Seconds since the last verified off-machine replica. -1 if none.",
       "gauge",
       [["", remoteAgeSec(remoteStatus)]]
@@ -1118,8 +1122,8 @@ async function route(
   }
 
   if (path === "/api/backup" && method === "POST") {
-    const dir = process.env.PORTAGE_BACKUP_DIR ?? join(process.cwd(), "backups");
-    const keep = Number(process.env.PORTAGE_BACKUP_KEEP ?? "7");
+    const dir = readEnv("BACKUP_DIR") ?? join(process.cwd(), "backups");
+    const keep = Number(readEnv("BACKUP_KEEP") ?? "7");
     try {
       const result = await takeBackup(db, { dir, keep: Number.isInteger(keep) && keep > 0 ? keep : undefined });
       if (!remote?.configured) {
@@ -1314,8 +1318,8 @@ async function route(
       // Every station response says what it is serving from, so a consumer
       // that never opens the assembled chart still cannot mistake outage
       // data for current data without ignoring the response saying so.
-      res.setHeader("x-portage-station-as-of", stationState.asOf);
-      res.setHeader("x-portage-station-age-hours", String(stationState.ageHours));
+      res.setHeader("x-northstar-station-as-of", stationState.asOf);
+      res.setHeader("x-northstar-station-age-hours", String(stationState.ageHours));
 
       // Break-glass works offline — §6 of the design, and the reason a
       // blanket write refusal would be wrong: a withheld chart mid-emergency
@@ -3857,7 +3861,7 @@ async function route(
  * for a traversal to reach.
  */
 function listFixtures(): Array<{ name: string; content: string }> {
-  const dir = process.env.PORTAGE_FIXTURES ?? join(process.cwd(), "fixtures");
+  const dir = readEnv("FIXTURES") ?? join(process.cwd(), "fixtures");
   if (!existsSync(dir)) return [];
   const out: Array<{ name: string; content: string }> = [];
   for (const name of readdirSync(dir).sort()) {

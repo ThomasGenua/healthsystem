@@ -6,7 +6,7 @@ table 0085 and abnormal flags from table 0078, and a site that could redefine
 "critical" would not be configuring an interface, it would be editing a
 clinical safety control.
 
-Loaded at boot from this directory (override with `PORTAGE_LABS`) and named by
+Loaded at boot from this directory (override with `NORTHSTAR_LABS`) and named by
 a `labresults` destination:
 
 ```json

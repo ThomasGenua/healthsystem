@@ -1,10 +1,10 @@
 /**
- * Takes a verified snapshot of a Portage database, and replicates it off the
- * machine when PORTAGE_BACKUP_REMOTE is set.
+ * Takes a verified snapshot of a Northstar database, and replicates it off the
+ * machine when NORTHSTAR_BACKUP_REMOTE is set.
  *
- *   node scripts/backup.ts [--db data/portage.db] [--out backups] [--keep 7]
- *   node scripts/backup.ts --verify backups/portage-2026-08-07T14-00-00.db
- *   node scripts/backup.ts --init-key /etc/portage/backup.key
+ *   node scripts/backup.ts [--db data/northstar.db] [--out backups] [--keep 7]
+ *   node scripts/backup.ts --verify backups/northstar-2026-08-07T14-00-00.db
+ *   node scripts/backup.ts --init-key /etc/northstar/backup.key
  *
  * Safe to run against a live engine: this uses SQLite's online backup API, not
  * a file copy, which would be torn or stale under WAL. The snapshot is
@@ -23,6 +23,7 @@ import { Db } from "../src/db.ts";
 import { takeBackup, verifyBackup } from "../src/core/backup.ts";
 import { initBackupKey } from "../src/core/backup-crypto.ts";
 import { RemoteBackup } from "../src/core/remote.ts";
+import { readEnv } from "../src/core/naming.ts";
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -49,8 +50,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  const dbPath = arg("db") ?? join(process.cwd(), "data", "portage.db");
-  const dir = arg("out") ?? process.env.PORTAGE_BACKUP_DIR ?? join(process.cwd(), "backups");
+  const dbPath = arg("db") ?? join(process.cwd(), "data", "northstar.db");
+  const dir = arg("out") ?? readEnv("BACKUP_DIR") ?? join(process.cwd(), "backups");
   const keep = arg("keep") ? Number(arg("keep")) : undefined;
   if (keep !== undefined && (!Number.isInteger(keep) || keep < 1)) {
     throw new Error(`--keep must be a positive integer, got: ${arg("keep")}`);
@@ -66,10 +67,10 @@ async function main(): Promise<void> {
         `${result.verified.auditEvents} audit event(s)`
     );
 
-    const remote = RemoteBackup.fromEnv({ ...process.env, PORTAGE_BACKUP_DIR: dir });
+    const remote = RemoteBackup.fromEnv({ ...process.env, NORTHSTAR_BACKUP_DIR: dir });
     if (!remote.configured) {
       console.log(
-        "  local only: no PORTAGE_BACKUP_REMOTE. this snapshot does not survive the disk dying."
+        "  local only: no NORTHSTAR_BACKUP_REMOTE. this snapshot does not survive the disk dying."
       );
       return;
     }

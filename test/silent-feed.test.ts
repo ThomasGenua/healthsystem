@@ -35,8 +35,8 @@ const channel = (over: Partial<ChannelConfig> = {}): ChannelConfig => ({
 });
 
 async function boot() {
-  const dir = mkdtempSync(join(tmpdir(), "portage-silent-"));
-  const engine = new Engine({ dbPath: join(dir, "portage.db"), tickMs: 100_000 });
+  const dir = mkdtempSync(join(tmpdir(), "northstar-silent-"));
+  const engine = new Engine({ dbPath: join(dir, "northstar.db"), tickMs: 100_000 });
   await engine.start();
   return {
     engine,

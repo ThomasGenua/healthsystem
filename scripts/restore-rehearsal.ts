@@ -60,8 +60,8 @@ const P = "NT123456";
 const secs = (ms: number): string => `${(ms / 1000).toFixed(1)}s`;
 
 async function main(): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "portage-rehearsal-"));
-  const sourcePath = join(dir, "source", "portage.db");
+  const dir = mkdtempSync(join(tmpdir(), "northstar-rehearsal-"));
+  const sourcePath = join(dir, "source", "northstar.db");
   let failed = false;
 
   try {
@@ -121,9 +121,9 @@ async function main(): Promise<void> {
     const localDir = join(dir, "backups");
     const backup = await takeBackup(source, { dir: localDir });
     // The snapshot's size, not the live file's. Under WAL the committed data
-    // is still in portage.db-wal until a checkpoint folds it in, so `stat` on
+    // is still in northstar.db-wal until a checkpoint folds it in, so `stat` on
     // the database reports a fraction of what is actually there — which is the
-    // same reason `cp portage.db` is not a backup. The snapshot is checkpointed
+    // same reason `cp northstar.db` is not a backup. The snapshot is checkpointed
     // by construction and is the number that matters for a restore anyway.
     const dbMb = backup.bytes / 1024 / 1024;
     console.log(
@@ -139,9 +139,9 @@ async function main(): Promise<void> {
     initBackupKey(keyFile);
     const remoteDir = join(dir, "offsite");
     const remote = RemoteBackup.fromEnv({
-      PORTAGE_BACKUP_REMOTE: `fs:${remoteDir}`,
-      PORTAGE_BACKUP_KEY_FILE: keyFile,
-      PORTAGE_BACKUP_DIR: localDir,
+      NORTHSTAR_BACKUP_REMOTE: `fs:${remoteDir}`,
+      NORTHSTAR_BACKUP_KEY_FILE: keyFile,
+      NORTHSTAR_BACKUP_DIR: localDir,
     });
     const replica = await remote.replicate(backup.path);
     console.log(
@@ -158,7 +158,7 @@ async function main(): Promise<void> {
     source.close();
 
     // ---- the restore, somewhere the database has never been -------------
-    const target = join(dir, "recovered", "portage.db");
+    const target = join(dir, "recovered", "northstar.db");
     console.log(`\n  restoring to ${target} from the remote copy`);
     const restoreStarted = Date.now();
     const result = restore({ snapshot: fetched.path, target });

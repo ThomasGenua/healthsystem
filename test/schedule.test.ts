@@ -33,8 +33,8 @@ const P1 = "NT123456";
 const P2 = "NT999999";
 
 function clinic() {
-  const dir = mkdtempSync(join(tmpdir(), "portage-sched-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-sched-"));
+  const db = new Db(join(dir, "northstar.db"));
   return {
     db,
     s: new Schedule(db),
@@ -267,8 +267,8 @@ test("availability and a diary answer different questions about the same slots",
 });
 
 test("the schedule is confined to its tenant", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-sched-iso-"));
-  const root = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-sched-iso-"));
+  const root = new Db(join(dir, "northstar.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");

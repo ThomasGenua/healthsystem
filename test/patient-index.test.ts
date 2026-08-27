@@ -20,8 +20,8 @@ import { Db } from "../src/db.ts";
 import { ClinicalRecord } from "../src/clinical/record.ts";
 
 function chart(): { db: Db; rec: ClinicalRecord; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "portage-pidx-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-pidx-"));
+  const db = new Db(join(dir, "northstar.db"));
   return {
     db,
     rec: new ClinicalRecord(db),
@@ -248,8 +248,8 @@ test("a retracted patient leaves the index on rebuild", () => {
 });
 
 test("the index is confined to its tenant", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-pidx-iso-"));
-  const root = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-pidx-iso-"));
+  const root = new Db(join(dir, "northstar.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");

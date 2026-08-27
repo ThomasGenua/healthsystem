@@ -30,7 +30,7 @@
  *
  * ## Sent is not received
  *
- * Portage does not know how to talk to a pharmacy network and should not
+ * Northstar does not know how to talk to a pharmacy network and should not
  * pretend to. A transmission is published onto a channel the deployment
  * configures, and the delivery machinery carries it — ordered, retried,
  * dead-lettered — exactly like every other clinical message. What comes back
