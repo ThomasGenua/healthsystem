@@ -7,6 +7,92 @@ Portage is pre-1.0: minor versions may change interfaces. Database upgrades are
 always forward-compatible and run automatically on open — see
 [Upgrading](docs/RUNBOOK.md#upgrading).
 
+## Unreleased
+
+**Added**
+
+- **Risk scores computed from the chart, with a clock on every input**
+  (`src/clinical/score-from-chart.ts`, `POST /api/clinical/chart-score`).
+  Hand-supplied scores refuse a missing input. Feeding the same instruments
+  from the chart adds the failure the hand-supplied form cannot have: **a value
+  that is present but old.**
+
+  A NEWS2 assembled from the most recent vitals is a NEWS2 of whenever those
+  vitals were taken. If the last set was at 06:00 and it is now 20:00, the
+  number describes a patient from fourteen hours ago and puts today's date on
+  it — a complete set of real measurements, every field populated, rendering as
+  confidently as one taken five minutes ago. It is not wrong about the past; it
+  is wrong about now, which is the only tense anybody reads it in.
+
+  So every input carries a maximum age, and a value past its window is not a
+  value: it falls through to `missing` and the instrument refuses exactly as it
+  would for a measurement nobody took. The windows differ because the clinical
+  question does — NEWS2 accepts four hours, CURB-65 twelve — and every score
+  reports the age of its stalest input, because a score is only as current as
+  the oldest thing it rests on.
+
+  Nothing the chart does not hold is defaulted. NEWS2 needs to know whether the
+  patient is on supplemental oxygen and whether they are alert; neither is a
+  vital sign, and both plausible defaults understate — by two points and three
+  respectively, on the instrument that exists to escalate exactly those
+  patients. They are reported as unavailable with the size of the
+  understatement, so an interface can ask for precisely what is missing.
+
+  Comorbidity indices are deliberately not derived from diagnosis codes:
+  mapping ICD-10 onto Charlson's categories is real terminology work whose
+  failure mode is a confident lower score, and it deserves its own design
+  rather than a plausible lookup table. Hazards H-104 and H-105.
+
+- **A laboratory conformance harness** (`src/orders/conformance.ts`, `npm run
+  labcheck`). A laboratory interface is agreed on paper and discovered in
+  practice: the specification says the accession number is in ORC-3 and the
+  messages put it in OBR-3; the specification does not mention a timezone and
+  every result lands an hour out. None of it is visible until real messages
+  meet real parsing code, and by then the interface is usually live.
+
+  The harness reads a laboratory's own sample messages against a profile and
+  reports, per message and in aggregate, what parsed, what refused and why,
+  which fields were absent, and which assumptions had to be made — each with
+  the question to put to their integration analyst. A message that will not
+  parse is a finding rather than an exception, so fifty messages produce one
+  report instead of fifty round trips. Findings are marked blocking or not:
+  a missing accession number is answerable, while a patient identifier the
+  profile can never match would hold every result for identity.
+
+  What it will not do is conclude that an interface conforms. Every report
+  states that a sample set exercises only what it happens to contain, and that
+  nothing was inferred into a profile — guessing field locations from a sample
+  and calling the result a vendor interface is the failure `labs/README.md`
+  exists to refuse. Hazard H-103.
+
+- **Ten validated clinical risk scores** — CURB-65, CHA₂DS₂-VASc, HAS-BLED,
+  Wells for PE, HEART, MELD-Na, CIWA-Ar, Charlson, LACE and NEWS2, in
+  `src/clinical/scores.ts`, with `POST /api/clinical/score`.
+
+  The arithmetic is the easy half. The reason the module is shaped the way it
+  is: the obvious implementation of CURB-65 asks `urea > 7 ? 1 : 0`, and a
+  patient whose urea was never drawn then scores zero for that criterion —
+  identical to a patient whose urea came back normal. The total is lower, the
+  band is milder, and the recommendation moves toward discharge. **The patient
+  reads as safer because less is known about them.** That is the allergy list
+  that is empty because nobody asked, wearing a different name.
+
+  So a score with a missing input is not a score. It returns
+  `{ complete: false, missing: [...] }`, which has no `score` field at all —
+  there is no number to render and no way to misread one. Each criterion
+  distinguishes three states, not two: present, looked-for-and-absent, and
+  unstated; only the last refuses.
+
+  NEWS2 escalates on any single parameter scoring 3 even when the aggregate is
+  low, because a patient can be profoundly abnormal in one axis and
+  unremarkable in the rest. Every result carries the instrument's published
+  interpretation rather than an instruction, and HAS-BLED says in words that a
+  high score is a prompt to address modifiable risk, not a reason to withhold
+  anticoagulation. Hazards H-100 through H-102.
+
+  This is decision support, not a decision, and Portage is not a certified
+  medical device.
+
 ## 0.7.0 — 2026-08-26
 
 What a prescription does after it leaves, and what an extract does before it

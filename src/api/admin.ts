@@ -68,6 +68,8 @@ import type { MigrationRecordType, SourceRecord } from "../migrate/run.ts";
 import type { AuthorityRow, PatientPermission } from "../patient/access.ts";
 import { DISPENSE_OUTCOMES, type DispenseOutcome } from "../meds/prescribe.ts";
 import { readFhirBundle, readFhirNdjson } from "../migrate/read-fhir.ts";
+import { score as computeScore, SCORE_IDS } from "../clinical/scores.ts";
+import { news2FromChart, curb65FromChart } from "../clinical/score-from-chart.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
 import { VERSION } from "../version.ts";
@@ -2575,6 +2577,36 @@ async function route(
         })
       );
     }
+    if (path === "/api/clinical/score" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { score?: string; patient?: string; input?: unknown };
+      if (!body.score) return send(res, 400, { error: `score required; one of ${SCORE_IDS.join(", ")}` });
+      // Computed over values the caller supplies rather than read from a
+      // chart, so there is nothing to filter by directive here — but it is
+      // still a clinical question about a patient, and it audits like one.
+      const resource = "RiskAssessment";
+      const produce = () => computeScore(body.score!, body.input ?? {});
+      return body.patient ? phiFor(body.patient, resource, produce) : phi(resource, produce);
+    }
+    if (path === "/api/clinical/chart-score" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        score?: string;
+        patient?: string;
+        supplied?: Record<string, unknown>;
+        maxAgeHours?: number;
+      };
+      if (!body.patient) return send(res, 400, { error: "patient required" });
+      if (body.score !== "news2" && body.score !== "curb-65") {
+        return send(res, 400, { error: "score must be news2 or curb-65; the others are not chart-derivable yet" });
+      }
+      const deps = { vitals: tenant.vitals, clinical: tenant.clinical };
+      const supplied = (body.supplied ?? {}) as never;
+      const options = body.maxAgeHours === undefined ? {} : { maxAgeHours: body.maxAgeHours };
+      return phiFor(body.patient, "RiskAssessment", () =>
+        body.score === "news2"
+          ? news2FromChart(deps, body.patient!, supplied, options)
+          : curb65FromChart(deps, body.patient!, supplied, options)
+      );
+    }
     if (path === "/api/clinical/prescriptions" && method === "GET") {
       if (!patient) return send(res, 400, { error: "patient required" });
       return phi(
@@ -3609,6 +3641,13 @@ async function route(
     const issues = validateResource(pack, body.resource, engine.terminology);
     const errors = issues.filter((i) => i.severity === "error").length;
     return send(res, 200, { ok: errors === 0, errors, outcome: toOperationOutcome(issues) });
+  }
+  // The catalogue of instruments this system can compute. Deliberately not
+  // under /api/clinical/, which is the prefix whose every route must leave an
+  // audit row: this serves no patient data, and filling the trail with
+  // catalogue reads makes the access review worse at finding the real ones.
+  if (method === "GET" && path === "/api/scores") {
+    return send(res, 200, { scores: SCORE_IDS });
   }
   if (method === "GET" && path === "/api/conformance/capability") {
     const pack = engine.conformance.get(url.searchParams.get("pack") ?? "");
