@@ -75,7 +75,8 @@ v0.7.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A migration you can rehearse, and an extract reader that loses nothing.** `dryRun()` runs the whole load through the ordinary stores inside a transaction that is always rolled back — it *is* the loader, so it cannot approve what a real load would refuse, and nothing survives it. The FHIR Bundle and NDJSON reader skips nothing: a resource it cannot map comes back with its reason and the resource itself, one it can map but the stores refuse reaches the reject queue with its payload, and the declared count comes from the export's own `total` rather than from what happened to arrive.
 - **Value sets and concept maps from real releases.** FHIR ValueSet and ConceptMap resources plus SNOMED RF2 refsets and cross-maps, replacing hand-written pack JSON. A value set that cannot be fully resolved — a filter, an exclusion, a reference this store cannot follow — refuses to import at all, because one carrying the publisher's name and a smaller membership is worse than none.
 
-757 tests. Backend first, then the interface that makes the backend's honesty visible.
+The complete suite passes on both supported Node lines. Backend first, then the
+interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -86,9 +87,9 @@ Honest limits, so nobody discovers them in production:
 - **The shipped terminology pack is a labelled demo subset.** SNOMED CT CA, LOINC, pCLOCD, ICD-10-CA and CCI are licensed distributions; the loaders are here, the content is not.
 - **The database file is not encrypted.** `node:sqlite` cannot encrypt, so the control that fits a single-file store is an encrypted volume underneath it. Portage does not assume one is there: it checks at boot and on `/api/health`, and says so loudly when it cannot find one. See [Encryption at rest](#encryption-at-rest).
 - **The conformance packs are not certified.** They encode the published profiles as data and pass the shipped fixtures, but no projectathon has scored them.
-- **The clinical platform has no user interface.** Every module described below — the chart, medications, orders, referrals, scheduling, registries — is a store and an HTTP API with tests. The admin UI covers interface operations only. This is deliberate ordering, not an oversight, but "a clinician can use this today" is not a claim being made.
+- **The clinician console is not a validated clinical application.** It renders the chart, worklist, break-glass and privacy queues through the ordinary audited API, including the distinction between failed, truncated and withheld panels. It has not had independent clinical-usability, human-factors or accessibility validation, so "a clinician can safely use this in production today" is not a claim being made.
 - **No certified patient portal.** `GET /me` is chrome: English/French copy, a skip link, landmarks, and a banner that says what this page is not. The JSON patient/proxy boundary is mounted at `/patient/*`; it is OAuth-only and checks a live, explicitly scoped authority grant on every chart. There is no identity-proofing enrolment flow, notification delivery, or accessibility claim. A shell people can open is not a portal people can use.
-- **No clinical decision support content.** The medication safety mechanism is here — the check, the severities, the override with its record — and ships a deliberately small cross-reactivity set covering the classes with the clearest consensus. Drug interactions come from a licensed database through the `InteractionSource` seam. An interaction table that is 80% complete is one prescribers learn to trust, and the missing 20% is then invisible.
+- **No broad medication decision-support content.** The medication safety mechanism is here — the check, severities and recorded override — but drug interactions still require a licensed database through `InteractionSource`. Ten deterministic published risk instruments are implemented separately; each response now names its source, formula version, intended population, units and unreviewed assurance state. They are implementation-tested, not independently clinically validated.
 - **Nothing here uses machine learning.** Section 7 of the requirements asks for it; nothing in this repository does anything of the sort, and no output should be read as though it did.
 
 ## Requirements
@@ -131,7 +132,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 654 tests
+npm test          # the complete unit and integration suite
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -646,6 +647,31 @@ A failing store does not take the chart down — six panels beat an error page �
 Allergy, immunization and vital-sign status are carried to the top of the summary rather than left inside their panels, and read from the stores rather than inferred from the panel's contents. Inferring them would undo the distinction those stores exist for: a clinician scanning a chart has to see "never asked" or "never measured" without interpreting an empty box. A chart with no current primary or no coverage claim says so in `omissions` the same way.
 
 `worklist()` is the same idea across the day rather than across one patient. A clinician's work is not one queue — today's appointments, messages awaiting a reply, unowned messages, results, referrals, tasks, and each system reports its own as though it were the whole picture. The value of a single view is that nothing is owed to them somewhere they are not looking, which is only true if the view says what it could not reach. Today's list is that clinician's booked and attended appointments on the UTC day of `asOf`, not every empty slot in the diary.
+
+### Governed risk scores
+
+`POST /api/clinical/score` computes ten deterministic published instruments;
+`POST /api/clinical/chart-score` can assemble NEWS2 and CURB-65 from the chart
+while refusing stale or unavailable inputs. A number without its definition is
+not reproducible evidence, so every complete **and incomplete** result carries:
+
+- the instrument and Portage implementation versions;
+- the original publication or official steward source;
+- intended population, exclusions and required units;
+- a copy of the supplied inputs and the calculation time;
+- an assurance state that remains
+  `implementation-tested-not-independently-clinically-validated` until a named
+  clinical owner records a review.
+
+Chart-derived responses additionally carry their clinical `asOf` time, every
+source record and its age, and the oldest observation on which the score rests.
+The catalogue is `src/clinical/score-definitions.ts`; source-linked vectors in
+`fixtures/clinical-scores/golden.json` are executable transcription checks, not
+a substitute for independent validation. MELD-Na identifies itself as the 2016
+OPTN formula and explicitly says it is not current MELD 3.0; NEWS2 says that
+only Scale 1 is implemented. A mathematically complete score can still be
+clinically inapplicable, which is why population and exclusions travel with the
+number instead of living only in this README.
 
 ### Patient messaging
 

@@ -64,6 +64,8 @@ export interface UnavailableInput {
 
 export interface ChartScore {
   result: ScoreResult;
+  /** The clinical moment against which observation ages were evaluated. */
+  asOf: string;
   /** Every chart value the score used, with its age. The number's working. */
   used: ChartSource[];
   /** What the chart could not supply, and why, so a caller knows what to ask. */
@@ -142,10 +144,12 @@ function assemble(
 function finish(
   result: ScoreResult,
   used: ChartSource[],
-  unavailable: UnavailableInput[]
+  unavailable: UnavailableInput[],
+  asOf: string
 ): ChartScore {
   return {
     result,
+    asOf,
     used,
     unavailable,
     oldestAgeHours: used.length === 0 ? null : Math.max(...used.map((u) => u.ageHours)),
@@ -236,7 +240,7 @@ export function news2FromChart(
     ...(supplied.onSupplementalOxygen === undefined ? {} : { onSupplementalOxygen: supplied.onSupplementalOxygen }),
     ...(supplied.alert === undefined ? {} : { alert: supplied.alert }),
   });
-  return finish(result, used, unavailable);
+  return finish(result, used, unavailable, asOf);
 }
 
 /**
@@ -300,5 +304,5 @@ export function curb65FromChart(
     ...(supplied.confusion === undefined ? {} : { confusion: supplied.confusion }),
     ...(supplied.ureaMmolL === undefined ? {} : { ureaMmolL: supplied.ureaMmolL }),
   });
-  return finish(result, used, unavailable);
+  return finish(result, used, unavailable, asOf);
 }

@@ -1,5 +1,5 @@
 /**
- * Validated clinical risk scores, and the one rule that makes them safe.
+ * Published clinical risk scores, and the rules that keep their limits visible.
  *
  * These are published, well-established instruments: CURB-65 for pneumonia
  * disposition, CHA₂DS₂-VASc and HAS-BLED for the anticoagulation
@@ -44,24 +44,27 @@
  * these clinically owns that assessment.
  */
 import { Refusal } from "../core/refusal.ts";
+import {
+  SCORE_DEFINITIONS,
+  SCORE_IDS,
+  type ScoreDefinition,
+  type ScoreId,
+} from "./score-definitions.ts";
 
-export const SCORE_IDS = [
-  "curb-65",
-  "cha2ds2-vasc",
-  "has-bled",
-  "wells-pe",
-  "heart",
-  "meld-na",
-  "ciwa-ar",
-  "charlson",
-  "lace",
-  "news2",
-] as const;
-export type ScoreId = (typeof SCORE_IDS)[number];
+export { SCORE_DEFINITIONS, SCORE_IDS, type ScoreDefinition, type ScoreId } from "./score-definitions.ts";
+
+interface ScoreEvidence {
+  /** The exact governed definition used for this calculation. */
+  definition: ScoreDefinition;
+  /** A copy of what the caller supplied, so the arithmetic can be replayed. */
+  suppliedInputs: Readonly<Record<string, unknown>>;
+  /** When this calculation ran; chart-derived results separately state their clinical as-of time. */
+  calculatedAt: string;
+}
 
 /** A score, or the honest absence of one. */
 export type ScoreResult =
-  | {
+  | (ScoreEvidence & {
       complete: true;
       id: ScoreId;
       name: string;
@@ -72,15 +75,23 @@ export type ScoreResult =
       interpretation: string;
       /** Every criterion and the points it contributed, so the number is auditable. */
       components: Record<string, number>;
-    }
-  | {
+    })
+  | (ScoreEvidence & {
       complete: false;
       id: ScoreId;
       name: string;
       /** Inputs the instrument needs and nobody has supplied. */
       missing: string[];
       reason: string;
-    };
+    });
+
+function evidence(id: ScoreId, input: object): ScoreEvidence {
+  return {
+    definition: SCORE_DEFINITIONS[id],
+    suppliedInputs: Object.freeze(Object.fromEntries(Object.entries(input).sort(([a], [b]) => a.localeCompare(b)))),
+    calculatedAt: new Date().toISOString(),
+  };
+}
 
 /**
  * Collects the inputs an instrument needs before any arithmetic happens.
@@ -127,8 +138,9 @@ class Inputs {
   }
 
   /** The refusal, worded so a reader knows the number was withheld deliberately. */
-  refuse(id: ScoreId, name: string): ScoreResult {
+  refuse(id: ScoreId, name: string, input: object): ScoreResult {
     return {
+      ...evidence(id, input),
       complete: false,
       id,
       name,
@@ -171,7 +183,7 @@ export function curb65(input: Curb65Input): ScoreResult {
   const sbp = i.num("systolicBp", input.systolicBp);
   const dbp = i.num("diastolicBp", input.diastolicBp);
   const age = i.num("ageYears", input.ageYears);
-  if (i.incomplete) return i.refuse("curb-65", name);
+  if (i.incomplete) return i.refuse("curb-65", name, input);
 
   const components = {
     confusion: confusion ? 1 : 0,
@@ -187,7 +199,7 @@ export function curb65(input: Curb65Input): ScoreResult {
     { upTo: 2, band: "moderate", says: "30-day mortality around 9%; consider admission or supervised outpatient care." },
     { upTo: 5, band: "severe", says: "30-day mortality 15% or higher; admit, and assess for intensive care." },
   ]);
-  return { complete: true, id: "curb-65", name, score, band: b, interpretation, components };
+  return { ...evidence("curb-65", input), complete: true, id: "curb-65", name, score, band: b, interpretation, components };
 }
 
 // ── CHA₂DS₂-VASc ───────────────────────────────────────────────────────────
@@ -212,7 +224,7 @@ export function cha2ds2Vasc(input: Cha2ds2VascInput): ScoreResult {
   const stroke = i.flag("strokeTiaThromboembolism", input.strokeTiaThromboembolism);
   const vasc = i.flag("vascularDisease", input.vascularDisease);
   const female = i.flag("sexFemale", input.sexFemale);
-  if (i.incomplete) return i.refuse("cha2ds2-vasc", name);
+  if (i.incomplete) return i.refuse("cha2ds2-vasc", name, input);
 
   const components = {
     congestiveHeartFailure: chf ? 1 : 0,
@@ -230,7 +242,7 @@ export function cha2ds2Vasc(input: Cha2ds2VascInput): ScoreResult {
     { upTo: 1, band: "intermediate", says: "Annual stroke risk around 1–2%; anticoagulation may be considered." },
     { upTo: 9, band: "high", says: "Annual stroke risk 2% or higher; anticoagulation is generally recommended." },
   ]);
-  return { complete: true, id: "cha2ds2-vasc", name, score, band: b, interpretation, components };
+  return { ...evidence("cha2ds2-vasc", input), complete: true, id: "cha2ds2-vasc", name, score, band: b, interpretation, components };
 }
 
 // ── HAS-BLED ───────────────────────────────────────────────────────────────
@@ -259,7 +271,7 @@ export function hasBled(input: HasBledInput): ScoreResult {
   const age = i.num("ageYears", input.ageYears);
   const drugs = i.flag("antiplateletOrNsaid", input.antiplateletOrNsaid);
   const alcohol = i.flag("alcoholExcess", input.alcoholExcess);
-  if (i.incomplete) return i.refuse("has-bled", name);
+  if (i.incomplete) return i.refuse("has-bled", name, input);
 
   const components = {
     uncontrolledHypertension: htn ? 1 : 0,
@@ -277,7 +289,7 @@ export function hasBled(input: HasBledInput): ScoreResult {
     { upTo: 2, band: "lower", says: "Major bleeding risk is not elevated enough on its own to withhold anticoagulation." },
     { upTo: 9, band: "high", says: "Major bleeding risk is elevated. This flags modifiable factors for attention; it is not by itself a reason to withhold anticoagulation." },
   ]);
-  return { complete: true, id: "has-bled", name, score, band: b, interpretation, components };
+  return { ...evidence("has-bled", input), complete: true, id: "has-bled", name, score, band: b, interpretation, components };
 }
 
 // ── Wells (pulmonary embolism) ─────────────────────────────────────────────
@@ -302,7 +314,7 @@ export function wellsPe(input: WellsPeInput): ScoreResult {
   const previous = i.flag("previousPeOrDvt", input.previousPeOrDvt);
   const haemoptysis = i.flag("haemoptysis", input.haemoptysis);
   const malignancy = i.flag("malignancy", input.malignancy);
-  if (i.incomplete) return i.refuse("wells-pe", name);
+  if (i.incomplete) return i.refuse("wells-pe", name, input);
 
   const components = {
     clinicalSignsOfDvt: dvt ? 3 : 0,
@@ -319,7 +331,7 @@ export function wellsPe(input: WellsPeInput): ScoreResult {
     { upTo: 6, band: "moderate", says: "Intermediate probability; a D-dimer or imaging is indicated depending on the pathway in use." },
     { upTo: 12.5, band: "high", says: "PE is likely; proceed to imaging rather than relying on a D-dimer." },
   ]);
-  return { complete: true, id: "wells-pe", name, score, band: b, interpretation, components };
+  return { ...evidence("wells-pe", input), complete: true, id: "wells-pe", name, score, band: b, interpretation, components };
 }
 
 // ── HEART ──────────────────────────────────────────────────────────────────
@@ -345,7 +357,7 @@ export function heart(input: HeartInput): ScoreResult {
   const age = i.num("ageYears", input.ageYears);
   const risk = i.pick("riskFactors", input.riskFactors, HEART_RISK);
   const troponin = i.pick("troponin", input.troponin, HEART_TROPONIN);
-  if (i.incomplete) return i.refuse("heart", name);
+  if (i.incomplete) return i.refuse("heart", name, input);
 
   const components = {
     history: HEART_HISTORY.indexOf(history!),
@@ -360,7 +372,7 @@ export function heart(input: HeartInput): ScoreResult {
     { upTo: 6, band: "moderate", says: "Around 20% risk at six weeks; admission for observation is usual." },
     { upTo: 10, band: "high", says: "Around 65% or higher risk at six weeks; early invasive management is usually considered." },
   ]);
-  return { complete: true, id: "heart", name, score, band: b, interpretation, components };
+  return { ...evidence("heart", input), complete: true, id: "heart", name, score, band: b, interpretation, components };
 }
 
 // ── MELD-Na ────────────────────────────────────────────────────────────────
@@ -382,7 +394,7 @@ export function meldNa(input: MeldNaInput): ScoreResult {
   const inrRaw = i.num("inr", input.inr);
   const sodiumRaw = i.num("sodiumMeqL", input.sodiumMeqL);
   const dialysis = i.flag("dialysisTwiceInPastWeek", input.dialysisTwiceInPastWeek);
-  if (i.incomplete) return i.refuse("meld-na", name);
+  if (i.incomplete) return i.refuse("meld-na", name, input);
 
   // The published bounds. A laboratory value below 1.0 is set to 1.0 so the
   // logarithm cannot turn a normal result into a negative contribution.
@@ -411,6 +423,7 @@ export function meldNa(input: MeldNaInput): ScoreResult {
     { upTo: 40, band: "very high", says: "50% or greater three-month mortality without transplant." },
   ]);
   return {
+    ...evidence("meld-na", input),
     complete: true,
     id: "meld-na",
     name,
@@ -450,7 +463,7 @@ export function ciwaAr(input: CiwaInput): ScoreResult {
     components[item] = v;
   }
   const orientation = i.num("orientation", input.orientation);
-  if (i.incomplete) return i.refuse("ciwa-ar", name);
+  if (i.incomplete) return i.refuse("ciwa-ar", name, input);
   if (orientation < 0 || orientation > 4) throw new Refusal(`orientation is scored 0 to 4; got ${orientation}`, 400);
   components.orientation = orientation;
 
@@ -461,7 +474,7 @@ export function ciwaAr(input: CiwaInput): ScoreResult {
     { upTo: 20, band: "moderate", says: "Moderate withdrawal; medication is usually indicated." },
     { upTo: 67, band: "severe", says: "Severe withdrawal, with a risk of seizure and delirium tremens; urgent treatment is indicated." },
   ]);
-  return { complete: true, id: "ciwa-ar", name, score, band: b, interpretation, components };
+  return { ...evidence("ciwa-ar", input), complete: true, id: "ciwa-ar", name, score, band: b, interpretation, components };
 }
 
 // ── Charlson comorbidity index ─────────────────────────────────────────────
@@ -501,7 +514,7 @@ export function charlson(input: CharlsonInput): ScoreResult {
     components[condition] = present ? weight : 0;
   }
   const age = i.num("ageYears", input.ageYears);
-  if (i.incomplete) return i.refuse("charlson", name);
+  if (i.incomplete) return i.refuse("charlson", name, input);
 
   // One point per decade over 40, to a maximum of four.
   components.age = age >= 50 ? Math.min(4, Math.floor((age - 40) / 10)) : 0;
@@ -512,7 +525,7 @@ export function charlson(input: CharlsonInput): ScoreResult {
     { upTo: 4, band: "moderate", says: "Moderate comorbidity burden; around 77% estimated ten-year survival." },
     { upTo: 40, band: "high", says: "High comorbidity burden; estimated ten-year survival under 50%." },
   ]);
-  return { complete: true, id: "charlson", name, score, band: b, interpretation, components };
+  return { ...evidence("charlson", input), complete: true, id: "charlson", name, score, band: b, interpretation, components };
 }
 
 // ── LACE ───────────────────────────────────────────────────────────────────
@@ -532,7 +545,7 @@ export function lace(input: LaceInput): ScoreResult {
   const acute = i.flag("acuteEmergentAdmission", input.acuteEmergentAdmission);
   const cci = i.num("charlsonScore", input.charlsonScore);
   const ed = i.num("edVisitsPastSixMonths", input.edVisitsPastSixMonths);
-  if (i.incomplete) return i.refuse("lace", name);
+  if (i.incomplete) return i.refuse("lace", name, input);
 
   const losPoints = los < 1 ? 0 : los <= 3 ? Math.floor(los) : los <= 6 ? 4 : los <= 13 ? 5 : 7;
   const components = {
@@ -547,7 +560,7 @@ export function lace(input: LaceInput): ScoreResult {
     { upTo: 9, band: "moderate", says: "Moderate risk; discharge planning and follow-up warrant attention." },
     { upTo: 19, band: "high", says: "High risk of readmission or death within 30 days; intensive discharge planning is indicated." },
   ]);
-  return { complete: true, id: "lace", name, score, band: b, interpretation, components };
+  return { ...evidence("lace", input), complete: true, id: "lace", name, score, band: b, interpretation, components };
 }
 
 // ── NEWS2 ──────────────────────────────────────────────────────────────────
@@ -573,7 +586,7 @@ export function news2(input: News2Input): ScoreResult {
   const hr = i.num("heartRate", input.heartRate);
   const alert = i.flag("alert", input.alert);
   const temp = i.num("temperatureC", input.temperatureC);
-  if (i.incomplete) return i.refuse("news2", name);
+  if (i.incomplete) return i.refuse("news2", name, input);
 
   const components = {
     respiratoryRate: rr <= 8 ? 3 : rr <= 11 ? 1 : rr <= 20 ? 0 : rr <= 24 ? 2 : 3,
@@ -611,7 +624,7 @@ export function news2(input: News2Input): ScoreResult {
     b = "none";
     interpretation = "No physiological derangement recorded; continue routine monitoring.";
   }
-  return { complete: true, id: "news2", name, score, band: b, interpretation, components };
+  return { ...evidence("news2", input), complete: true, id: "news2", name, score, band: b, interpretation, components };
 }
 
 /** Every score, by id, for a route that dispatches on a name. */

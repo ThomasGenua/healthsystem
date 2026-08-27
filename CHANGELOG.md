@@ -35,6 +35,20 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Governed provenance for every clinical risk score.** A result now carries
+  the exact instrument and Portage implementation versions, original source,
+  intended population, exclusions, required units, calculation time and a
+  copy of the supplied inputs. The assurance state is deliberately machine
+  readable and unresolved: source-linked golden vectors exercise the
+  implementation, but no independent clinical reviewer or clinical owner has
+  signed it. Chart-derived scores also state their clinical `asOf` time.
+
+  The catalogue makes two easily hidden version choices explicit: MELD-Na is
+  the historical 2016 OPTN formula, not current MELD 3.0, and NEWS2 implements
+  Scale 1 only. `test/score-provenance.test.ts` requires one governed
+  definition and one source-linked vector per scorer and keeps those caveats
+  attached to the API result. Hazards H-108 through H-110.
+
 - **Risk scores computed from the chart, with a clock on every input**
   (`src/clinical/score-from-chart.ts`, `POST /api/clinical/chart-score`).
   Hand-supplied scores refuse a missing input. Feeding the same instruments
@@ -89,7 +103,7 @@ always forward-compatible and run automatically on open — see
   and calling the result a vendor interface is the failure `labs/README.md`
   exists to refuse. Hazard H-103.
 
-- **Ten validated clinical risk scores** — CURB-65, CHA₂DS₂-VASc, HAS-BLED,
+- **Ten implemented published clinical risk scores** — CURB-65, CHA₂DS₂-VASc, HAS-BLED,
   Wells for PE, HEART, MELD-Na, CIWA-Ar, Charlson, LACE and NEWS2, in
   `src/clinical/scores.ts`, with `POST /api/clinical/score`.
 

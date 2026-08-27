@@ -108,8 +108,8 @@ exists precisely so that upgrading is not the risky part.
 
 | Version | Supported |
 | --- | --- |
-| 0.5.x | yes |
-| < 0.5 | no |
+| 0.7.x | yes |
+| < 0.7 | no |
 
 ## Known limitations, which are not vulnerabilities
 
@@ -132,5 +132,8 @@ discussion, but they will not be treated as advisories:
   but a credential issued without an organization still cannot show it is
   outside the withheld one, and is refused. Fails closed on purpose; it is
   over-restrictive, not permissive.
-- **Decision support ships as a mechanism without content**, and nothing in
-  Portage uses machine learning. No output should be read as though it did.
+- **Medication decision support ships without a broad interaction source.**
+  Deterministic published risk instruments are a separate catalogue and carry
+  their formula version, population, exclusions, units and an explicit
+  not-independently-clinically-validated assurance state. Nothing in Portage
+  uses machine learning.
