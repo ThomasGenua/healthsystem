@@ -11,6 +11,28 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **A laboratory conformance harness** (`src/orders/conformance.ts`, `npm run
+  labcheck`). A laboratory interface is agreed on paper and discovered in
+  practice: the specification says the accession number is in ORC-3 and the
+  messages put it in OBR-3; the specification does not mention a timezone and
+  every result lands an hour out. None of it is visible until real messages
+  meet real parsing code, and by then the interface is usually live.
+
+  The harness reads a laboratory's own sample messages against a profile and
+  reports, per message and in aggregate, what parsed, what refused and why,
+  which fields were absent, and which assumptions had to be made — each with
+  the question to put to their integration analyst. A message that will not
+  parse is a finding rather than an exception, so fifty messages produce one
+  report instead of fifty round trips. Findings are marked blocking or not:
+  a missing accession number is answerable, while a patient identifier the
+  profile can never match would hold every result for identity.
+
+  What it will not do is conclude that an interface conforms. Every report
+  states that a sample set exercises only what it happens to contain, and that
+  nothing was inferred into a profile — guessing field locations from a sample
+  and calling the result a vendor interface is the failure `labs/README.md`
+  exists to refuse. Hazard H-103.
+
 - **Ten validated clinical risk scores** — CURB-65, CHA₂DS₂-VASc, HAS-BLED,
   Wells for PE, HEART, MELD-Na, CIWA-Ar, Charlson, LACE and NEWS2, in
   `src/clinical/scores.ts`, with `POST /api/clinical/score`.
