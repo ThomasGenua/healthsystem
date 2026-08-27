@@ -69,6 +69,7 @@ import type { AuthorityRow, PatientPermission } from "../patient/access.ts";
 import { DISPENSE_OUTCOMES, type DispenseOutcome } from "../meds/prescribe.ts";
 import { readFhirBundle, readFhirNdjson } from "../migrate/read-fhir.ts";
 import { score as computeScore, SCORE_IDS } from "../clinical/scores.ts";
+import { news2FromChart, curb65FromChart } from "../clinical/score-from-chart.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
 import { VERSION } from "../version.ts";
@@ -2585,6 +2586,26 @@ async function route(
       const resource = "RiskAssessment";
       const produce = () => computeScore(body.score!, body.input ?? {});
       return body.patient ? phiFor(body.patient, resource, produce) : phi(resource, produce);
+    }
+    if (path === "/api/clinical/chart-score" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        score?: string;
+        patient?: string;
+        supplied?: Record<string, unknown>;
+        maxAgeHours?: number;
+      };
+      if (!body.patient) return send(res, 400, { error: "patient required" });
+      if (body.score !== "news2" && body.score !== "curb-65") {
+        return send(res, 400, { error: "score must be news2 or curb-65; the others are not chart-derivable yet" });
+      }
+      const deps = { vitals: tenant.vitals, clinical: tenant.clinical };
+      const supplied = (body.supplied ?? {}) as never;
+      const options = body.maxAgeHours === undefined ? {} : { maxAgeHours: body.maxAgeHours };
+      return phiFor(body.patient, "RiskAssessment", () =>
+        body.score === "news2"
+          ? news2FromChart(deps, body.patient!, supplied, options)
+          : curb65FromChart(deps, body.patient!, supplied, options)
+      );
     }
     if (path === "/api/clinical/prescriptions" && method === "GET") {
       if (!patient) return send(res, 400, { error: "patient required" });

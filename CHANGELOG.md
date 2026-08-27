@@ -11,6 +11,38 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Risk scores computed from the chart, with a clock on every input**
+  (`src/clinical/score-from-chart.ts`, `POST /api/clinical/chart-score`).
+  Hand-supplied scores refuse a missing input. Feeding the same instruments
+  from the chart adds the failure the hand-supplied form cannot have: **a value
+  that is present but old.**
+
+  A NEWS2 assembled from the most recent vitals is a NEWS2 of whenever those
+  vitals were taken. If the last set was at 06:00 and it is now 20:00, the
+  number describes a patient from fourteen hours ago and puts today's date on
+  it — a complete set of real measurements, every field populated, rendering as
+  confidently as one taken five minutes ago. It is not wrong about the past; it
+  is wrong about now, which is the only tense anybody reads it in.
+
+  So every input carries a maximum age, and a value past its window is not a
+  value: it falls through to `missing` and the instrument refuses exactly as it
+  would for a measurement nobody took. The windows differ because the clinical
+  question does — NEWS2 accepts four hours, CURB-65 twelve — and every score
+  reports the age of its stalest input, because a score is only as current as
+  the oldest thing it rests on.
+
+  Nothing the chart does not hold is defaulted. NEWS2 needs to know whether the
+  patient is on supplemental oxygen and whether they are alert; neither is a
+  vital sign, and both plausible defaults understate — by two points and three
+  respectively, on the instrument that exists to escalate exactly those
+  patients. They are reported as unavailable with the size of the
+  understatement, so an interface can ask for precisely what is missing.
+
+  Comorbidity indices are deliberately not derived from diagnosis codes:
+  mapping ICD-10 onto Charlson's categories is real terminology work whose
+  failure mode is a confident lower score, and it deserves its own design
+  rather than a plausible lookup table. Hazards H-104 and H-105.
+
 - **A laboratory conformance harness** (`src/orders/conformance.ts`, `npm run
   labcheck`). A laboratory interface is agreed on paper and discovered in
   practice: the specification says the accession number is in ORC-3 and the
