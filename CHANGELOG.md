@@ -7,6 +7,38 @@ Portage is pre-1.0: minor versions may change interfaces. Database upgrades are
 always forward-compatible and run automatically on open — see
 [Upgrading](docs/RUNBOOK.md#upgrading).
 
+## Unreleased
+
+**Added**
+
+- **Ten validated clinical risk scores** — CURB-65, CHA₂DS₂-VASc, HAS-BLED,
+  Wells for PE, HEART, MELD-Na, CIWA-Ar, Charlson, LACE and NEWS2, in
+  `src/clinical/scores.ts`, with `POST /api/clinical/score`.
+
+  The arithmetic is the easy half. The reason the module is shaped the way it
+  is: the obvious implementation of CURB-65 asks `urea > 7 ? 1 : 0`, and a
+  patient whose urea was never drawn then scores zero for that criterion —
+  identical to a patient whose urea came back normal. The total is lower, the
+  band is milder, and the recommendation moves toward discharge. **The patient
+  reads as safer because less is known about them.** That is the allergy list
+  that is empty because nobody asked, wearing a different name.
+
+  So a score with a missing input is not a score. It returns
+  `{ complete: false, missing: [...] }`, which has no `score` field at all —
+  there is no number to render and no way to misread one. Each criterion
+  distinguishes three states, not two: present, looked-for-and-absent, and
+  unstated; only the last refuses.
+
+  NEWS2 escalates on any single parameter scoring 3 even when the aggregate is
+  low, because a patient can be profoundly abnormal in one axis and
+  unremarkable in the rest. Every result carries the instrument's published
+  interpretation rather than an instruction, and HAS-BLED says in words that a
+  high score is a prompt to address modifiable risk, not a reason to withhold
+  anticoagulation. Hazards H-100 through H-102.
+
+  This is decision support, not a decision, and Portage is not a certified
+  medical device.
+
 ## 0.7.0 — 2026-08-26
 
 What a prescription does after it leaves, and what an extract does before it
