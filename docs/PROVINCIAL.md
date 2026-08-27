@@ -1,8 +1,8 @@
 # Provincial primary-care platform — what exists and what does not
 
 This is a map of the 23-section provincial EMR specification against this
-repository. It is not a bid response and it is not a claim that Portage is
-that platform. Portage is a health integration engine with a growing clinical
+repository. It is not a bid response and it is not a claim that Northstar is
+that platform. Northstar is a health integration engine with a growing clinical
 record. The specification is the destination; this file is the honest
 distance.
 

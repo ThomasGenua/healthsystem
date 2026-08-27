@@ -3,7 +3,7 @@
  *
  * Canadian health privacy law — PHIPA in Ontario, HIA in Alberta, ATIPP and
  * the Health Information Act in the territories — obliges a custodian to know
- * who looked at whose record. Portage stores patient data in the facade and
+ * who looked at whose record. Northstar stores patient data in the facade and
  * raw HL7 in the message log, so it has to answer that question.
  *
  * What is recorded, and what deliberately is not:
@@ -393,6 +393,12 @@ export class AuditStore {
       ...(r.detail ? { outcomeDesc: r.detail } : {}),
       agent: [
         {
+          // The URN keeps its original spelling deliberately. A namespace
+          // identifier exists to be stable: exports made before and after the
+          // rename have to remain comparable, and anything downstream that
+          // filters audit history on this system string would silently match
+          // only half the record if it moved. It names an identifier scheme,
+          // not the product.
           who: { identifier: { system: `urn:portage:principal:${r.principal_kind}`, value: r.principal_id } },
           requestor: true,
           ...(r.source_ip ? { network: { address: r.source_ip, type: "2" } } : {}),

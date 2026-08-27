@@ -41,7 +41,7 @@ export function effectiveScopes(granted: Iterable<string>): Set<Scope> {
 /**
  * SMART on FHIR scopes map onto the three above. A token minted by an identity
  * provider speaks `system/Patient.read`, not `read`, so translate rather than
- * demanding callers configure Portage-specific scope names in their IdP.
+ * demanding callers configure Northstar-specific scope names in their IdP.
  *
  * Both SMART v1 (`.read` / `.write` / `.*`) and v2 (`.rs` / `.cud` / `.cruds`)
  * verb syntax are accepted.
@@ -53,9 +53,14 @@ export function scopesFromSmart(raw: Iterable<string>): Set<Scope> {
       out.add(s);
       continue;
     }
-    // portage/admin is the escape hatch for operator tokens, since SMART has
-    // no notion of "administer the interface engine".
-    if (s === "portage/admin" || s === "system/*.admin") {
+    // northstar/admin is the escape hatch for operator tokens, since SMART
+    // has no notion of "administer the interface engine". `portage/admin` is
+    // the pre-rename spelling and stays accepted: the scope is a string inside
+    // tokens that have already been issued and inside identity-provider
+    // configuration this repository does not control, so dropping it would not
+    // fail a token — it would silently demote an operator to no admin rights
+    // and turn every administrative call into a 403 nobody could explain.
+    if (s === "northstar/admin" || s === "portage/admin" || s === "system/*.admin") {
       out.add("admin");
       continue;
     }

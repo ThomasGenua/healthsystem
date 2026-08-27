@@ -40,8 +40,8 @@ const CHILD = fileURLToPath(new URL("./crash-child.ts", import.meta.url));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function main(): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "portage-crash-"));
-  const dbPath = join(dir, "portage.db");
+  const dir = mkdtempSync(join(tmpdir(), "northstar-crash-"));
+  const dbPath = join(dir, "northstar.db");
 
   /** Records arrival order. Lives in the parent, so it survives every kill. */
   const received: number[] = [];

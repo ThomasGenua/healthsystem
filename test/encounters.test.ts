@@ -38,8 +38,8 @@ function clinic(): {
   meds: MedicationStore;
   cleanup: () => void;
 } {
-  const dir = mkdtempSync(join(tmpdir(), "portage-encounters-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-encounters-"));
+  const db = new Db(join(dir, "northstar.db"));
   return {
     db,
     encounters: new Encounters(db),

@@ -1,6 +1,7 @@
-/** Portage entry point. */
+/** Northstar entry point. */
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { encryptionAtRest, shouldWarn } from "./core/atrest.ts";
+import { readEnv, legacyEnvWarning, resolveDbPath, legacyDbNotice } from "./core/naming.ts";
 import { RemoteBackup, remoteBackupWarning } from "./core/remote.ts";
 import { join } from "node:path";
 import { Engine } from "./core/engine.ts";
@@ -10,13 +11,13 @@ import { AuthGate } from "./auth/gate.ts";
 import { JwtVerifier } from "./auth/jwt.ts";
 import type { ChannelConfig, MappingDoc } from "./types.ts";
 
-const PORT = parseInt(process.env.PORTAGE_PORT ?? "8686", 10);
-const DATA_DIR = process.env.PORTAGE_DATA ?? join(process.cwd(), "data");
-const CHANNELS_DIR = process.env.PORTAGE_CHANNELS ?? join(process.cwd(), "channels");
-const MAPPINGS_DIR = process.env.PORTAGE_MAPPINGS ?? join(process.cwd(), "mappings");
-const TERMINOLOGY_DIR = process.env.PORTAGE_TERMINOLOGY ?? join(process.cwd(), "terminology");
-const CONFORMANCE_DIR = process.env.PORTAGE_CONFORMANCE ?? join(process.cwd(), "conformance");
-const LABS_DIR = process.env.PORTAGE_LABS ?? join(process.cwd(), "labs");
+const PORT = parseInt(readEnv("PORT") ?? "8686", 10);
+const DATA_DIR = readEnv("DATA") ?? join(process.cwd(), "data");
+const CHANNELS_DIR = readEnv("CHANNELS") ?? join(process.cwd(), "channels");
+const MAPPINGS_DIR = readEnv("MAPPINGS") ?? join(process.cwd(), "mappings");
+const TERMINOLOGY_DIR = readEnv("TERMINOLOGY") ?? join(process.cwd(), "terminology");
+const CONFORMANCE_DIR = readEnv("CONFORMANCE") ?? join(process.cwd(), "conformance");
+const LABS_DIR = readEnv("LABS") ?? join(process.cwd(), "labs");
 
 /**
  * Authentication is on unless explicitly switched off. `apikey` is the default
@@ -24,7 +25,7 @@ const LABS_DIR = process.env.PORTAGE_LABS ?? join(process.cwd(), "labs");
  * minted at boot and printed once, so `npm start` stays a single command
  * without leaving the API open to anyone who can reach the port.
  */
-const AUTH_MODE = (process.env.PORTAGE_AUTH_MODE ?? "apikey").toLowerCase();
+const AUTH_MODE = (readEnv("AUTH_MODE") ?? "apikey").toLowerCase();
 
 /**
  * node:sqlite is still flagged experimental below Node 24, and durable
@@ -48,13 +49,13 @@ function warnIfSqliteExperimental(): void {
 
 function buildAuthGate(engine: Engine): AuthGate {
   if (AUTH_MODE === "off") {
-    console.warn("WARNING: PORTAGE_AUTH_MODE=off — the API is unauthenticated and open to anyone who can reach it");
+    console.warn("WARNING: NORTHSTAR_AUTH_MODE=off — the API is unauthenticated and open to anyone who can reach it");
     return new AuthGate();
   }
 
   const modes = new Set(AUTH_MODE.split(/[+,\s]+/).filter(Boolean));
   const unknown = [...modes].filter((m) => m !== "apikey" && m !== "oauth");
-  if (unknown.length) throw new Error(`unknown PORTAGE_AUTH_MODE value(s): ${unknown.join(", ")}`);
+  if (unknown.length) throw new Error(`unknown NORTHSTAR_AUTH_MODE value(s): ${unknown.join(", ")}`);
 
   // The tenant directory, so a suspended custodian's credentials stop working
   // at once rather than at the next restart.
@@ -82,12 +83,12 @@ function buildAuthGate(engine: Engine): AuthGate {
   }
 
   if (modes.has("oauth")) {
-    const issuer = process.env.PORTAGE_OIDC_ISSUER;
-    if (!issuer) throw new Error("PORTAGE_AUTH_MODE includes oauth but PORTAGE_OIDC_ISSUER is not set");
+    const issuer = readEnv("OIDC_ISSUER");
+    if (!issuer) throw new Error("NORTHSTAR_AUTH_MODE includes oauth but NORTHSTAR_OIDC_ISSUER is not set");
     gate.jwt = new JwtVerifier({
       issuer,
-      audience: process.env.PORTAGE_OIDC_AUDIENCE,
-      jwksUri: process.env.PORTAGE_OIDC_JWKS,
+      audience: readEnv("OIDC_AUDIENCE"),
+      jwksUri: readEnv("OIDC_JWKS"),
     });
     console.log(`oauth enabled: issuer ${issuer}`);
   }
@@ -98,11 +99,26 @@ function buildAuthGate(engine: Engine): AuthGate {
 async function main(): Promise<void> {
   warnIfSqliteExperimental();
 
+  // Which database this boot is about to open, and under which name. Said
+  // before anything else touches it: an engine that silently created an empty
+  // database next to a full one would come up healthy and serve nobody's
+  // chart, and the operator's only clue would be a site that had lost every
+  // patient overnight.
+  const dbChoice = resolveDbPath(DATA_DIR);
+  const dbNotice = legacyDbNotice(dbChoice);
+  if (dbNotice) console.log(dbNotice);
+
   // Said at boot for the same reason the line above is: an operator should
   // not learn from a footnote that the file holding every chart is plain
   // text. Once, loudly, at the moment it becomes their problem.
   const atRest = encryptionAtRest(DATA_DIR);
   if (shouldWarn(atRest)) console.warn(`WARNING: ${atRest.detail}`);
+
+  // Not a warning: the old names are supported, not deprecated-with-a-deadline.
+  // But an operator renaming their unit file should be able to see which ones
+  // are still in play without grepping for them.
+  const envNotice = legacyEnvWarning();
+  if (envNotice) console.log(envNotice);
 
   // Same reason, same moment: an operator should not learn from a footnote
   // that every snapshot still lives on the disk that is about to die.
@@ -126,12 +142,12 @@ async function main(): Promise<void> {
   };
 
   const engine = new Engine({
-    dbPath: join(DATA_DIR, "portage.db"),
-    validatePack: process.env.PORTAGE_VALIDATE_PACK,
-    validateMode: process.env.PORTAGE_VALIDATE_MODE === "annotate" ? "annotate" : "reject",
+    dbPath: dbChoice.path,
+    validatePack: readEnv("VALIDATE_PACK"),
+    validateMode: readEnv("VALIDATE_MODE") === "annotate" ? "annotate" : "reject",
     retention: {
-      redactAfterDays: days(process.env.PORTAGE_REDACT_AFTER_DAYS),
-      purgeAfterDays: days(process.env.PORTAGE_PURGE_AFTER_DAYS),
+      redactAfterDays: days(readEnv("REDACT_AFTER_DAYS")),
+      purgeAfterDays: days(readEnv("PURGE_AFTER_DAYS")),
     },
   });
 
@@ -187,10 +203,10 @@ async function main(): Promise<void> {
   }
 
   const tls = tlsFromEnv({
-    certPath: process.env.PORTAGE_TLS_CERT,
-    keyPath: process.env.PORTAGE_TLS_KEY,
-    caPath: process.env.PORTAGE_TLS_CLIENT_CA,
-    requireClientCert: process.env.PORTAGE_TLS_CLIENT_CA !== undefined,
+    certPath: readEnv("TLS_CERT"),
+    keyPath: readEnv("TLS_KEY"),
+    caPath: readEnv("TLS_CLIENT_CA"),
+    requireClientCert: readEnv("TLS_CLIENT_CA") !== undefined,
   });
 
   const rate = (v: string | undefined): number | undefined => {
@@ -204,14 +220,14 @@ async function main(): Promise<void> {
     auth: buildAuthGate(engine),
     tls: tls ?? undefined,
     rateLimit: {
-      enabled: process.env.PORTAGE_RATE_LIMIT !== "off",
-      authenticatedPerMinute: rate(process.env.PORTAGE_RATE_AUTHENTICATED),
-      anonymousPerMinute: rate(process.env.PORTAGE_RATE_ANONYMOUS),
+      enabled: readEnv("RATE_LIMIT") !== "off",
+      authenticatedPerMinute: rate(readEnv("RATE_AUTHENTICATED")),
+      anonymousPerMinute: rate(readEnv("RATE_ANONYMOUS")),
     },
     remote,
   });
   console.log(
-    `Portage listening on :${api.port} (${api.tls ? (tls?.mutual ? "mutual TLS" : "TLS") : "plain HTTP"}, auth ${AUTH_MODE})`
+    `Northstar listening on :${api.port} (${api.tls ? (tls?.mutual ? "mutual TLS" : "TLS") : "plain HTTP"}, auth ${AUTH_MODE})`
   );
   for (const ch of engine.listChannels()) {
     const port = ch.mllpPort ? ` mllp:${ch.mllpPort}` : "";
@@ -219,7 +235,7 @@ async function main(): Promise<void> {
   }
 
   if (!api.limiter.enabled) {
-    console.warn("WARNING: PORTAGE_RATE_LIMIT=off — a single client can saturate this node");
+    console.warn("WARNING: NORTHSTAR_RATE_LIMIT=off — a single client can saturate this node");
   }
 
   if (engine.retention.enabled) {

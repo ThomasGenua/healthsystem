@@ -1,6 +1,6 @@
 # Security policy
 
-Portage moves and stores personal health information. A defect in it is not an
+Northstar moves and stores personal health information. A defect in it is not an
 availability problem with a privacy footnote — a record served to the wrong
 clinician, an audit row that was never written, or a lockbox that reports
 itself in force while enforcing nothing are all, on their own, the failure this
@@ -62,7 +62,7 @@ intentions rather than a contractual SLA:
 You will be credited in the advisory by whatever name you ask for, or not at
 all if you prefer. There is no bug bounty.
 
-## Testing against Portage
+## Testing against Northstar
 
 Security research against **your own deployment or a local checkout** is
 welcome and needs no permission. Please do not test against a live deployment
@@ -101,7 +101,7 @@ response.
 
 ## Supported versions
 
-Portage is pre-1.0 and moving quickly. Only the latest minor release receives
+Northstar is pre-1.0 and moving quickly. Only the latest minor release receives
 security fixes; there are no long-term support branches. A site running an
 older version should expect to upgrade to receive a fix — `test/migration.test.ts`
 exists precisely so that upgrading is not the risky part.
@@ -133,4 +133,4 @@ discussion, but they will not be treated as advisories:
   outside the withheld one, and is refused. Fails closed on purpose; it is
   over-restrictive, not permissive.
 - **Decision support ships as a mechanism without content**, and nothing in
-  Portage uses machine learning. No output should be read as though it did.
+  Northstar uses machine learning. No output should be read as though it did.

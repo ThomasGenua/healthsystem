@@ -23,8 +23,8 @@ import { ClinicalRecord } from "../src/clinical/record.ts";
 import { Encounters } from "../src/clinical/encounters.ts";
 
 function chart(): { db: Db; rec: ClinicalRecord; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "portage-chart-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-chart-"));
+  const db = new Db(join(dir, "northstar.db"));
   return {
     db,
     rec: new ClinicalRecord(db),
@@ -310,8 +310,8 @@ test("provenance is recorded on every version, including who and where from", ()
 test("charts are confined to their tenant", () => {
   // The most sensitive surface on the platform, so the boundary is checked
   // here too rather than assumed from the storage tests.
-  const dir = mkdtempSync(join(tmpdir(), "portage-chart-iso-"));
-  const root = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-chart-iso-"));
+  const root = new Db(join(dir, "northstar.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");

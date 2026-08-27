@@ -41,7 +41,7 @@ function get(
 }
 
 test("mutual TLS: a trusted client certificate is required to reach the API", { skip: !haveOpenssl() }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-certs-"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-certs-"));
   try {
     execFileSync("bash", [SCRIPT, dir], { stdio: "ignore" });
 
@@ -90,5 +90,5 @@ test("TLS configuration is all-or-nothing rather than silently plaintext", () =>
 
   // Asking for mutual TLS without a listener certificate must fail loudly; the
   // dangerous outcome would be starting anyway, unencrypted.
-  assert.throws(() => tlsFromEnv({ requireClientCert: true }), /without PORTAGE_TLS_CERT/);
+  assert.throws(() => tlsFromEnv({ requireClientCert: true }), /without NORTHSTAR_TLS_CERT/);
 });

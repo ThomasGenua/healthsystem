@@ -29,8 +29,8 @@ const ED = { actorId: "dr-hale", actorKind: "practitioner" };
 const EXCLUDED = { actorId: "dr-tetso", actorKind: "practitioner" };
 
 function office(overrideHours?: number) {
-  const dir = mkdtempSync(join(tmpdir(), "portage-consent-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-consent-"));
+  const db = new Db(join(dir, "northstar.db"));
   return {
     db,
     c: new ConsentDirectives(db, overrideHours ? { overrideHours } : {}),
@@ -410,8 +410,8 @@ test("breaking glass where there is no directive is still recorded", () => {
 });
 
 test("directives and overrides are confined to their tenant", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-consent-iso-"));
-  const root = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-consent-iso-"));
+  const root = new Db(join(dir, "northstar.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");

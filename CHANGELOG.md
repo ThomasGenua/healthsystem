@@ -3,13 +3,81 @@
 Notable changes per release. Dates are the release date; a version is cut when
 a coherent block of capability is finished and tested, not on a calendar.
 
-Portage is pre-1.0: minor versions may change interfaces. Database upgrades are
+Northstar is pre-1.0: minor versions may change interfaces. Database upgrades are
 always forward-compatible and run automatically on open — see
 [Upgrading](docs/RUNBOOK.md#upgrading).
 
 ## Unreleased
 
-**Fixed**
+**Changed**
+
+- **Portage is now Northstar.** The product, the documentation, the admin UI
+  and the package name. Release notes below this entry keep the old name,
+  because that is what those versions shipped as.
+
+  **An existing site upgrades with no configuration changes at all.** That is
+  the part worth stating plainly, because almost nothing about a rename fails
+  loudly, and every one of these would have been silent:
+
+  - **The database.** SQLite creates what it cannot open. A build looking for
+    `northstar.db` in a directory holding `portage.db` does not error — it
+    makes an empty database, and the site comes up healthy with no patients in
+    it. An existing file now always wins over the preferred name, whichever
+    name it carries, and opening one under its old name is announced at boot.
+    Renaming it is an operator step taken with the engine stopped, documented
+    with the `-wal` and `-shm` sidecars that have to move with it.
+
+  - **Backups.** The snapshot listers matched a filename prefix. Changing it
+    would have made every existing snapshot invisible at once — nothing to
+    restore, and a reading-station check reporting no recent backup, for a site
+    whose snapshots were sitting right there. Both prefixes are matched on
+    every read path. Ordering moved off the filename at the same time: a plain
+    sort puts `northstar-` before `portage-`, which would have placed today's
+    snapshot at the oldest end of the list, handed a restore a two-month-old
+    database, and had retention delete the newest file it had.
+
+  - **Environment variables.** `PORTAGE_*` is read alongside `NORTHSTAR_*`, the
+    new name winning where both are set, so a unit file can migrate one line at
+    a time. Reading only the new names would not have thrown; the values would
+    have gone absent, and absent means TLS off, encryption unasserted,
+    authentication unconfigured, on a site that had configured all three.
+
+  - **Identity.** `portage_tenant`, `portage_organization` and
+    `portage_practitioner` are still accepted, and are not scheduled for
+    removal — the claim name lives in somebody's Keycloak realm, not in this
+    repository. An unread tenant claim arrives as an absence rather than an
+    error, and every downstream check would then decide tenancy on nothing.
+    That is the one failure here that ends with one site reading another's
+    charts. `portage/admin` likewise still grants admin, because the scope is
+    inside tokens already issued.
+
+  - **Metrics.** Every series is exposed under both `northstar_*` and
+    `portage_*`. A renamed metric does not break an alerting rule loudly — the
+    series stops existing, the rule evaluates against no data, and the alert
+    watching for a dead-letter backlog quietly never fires again.
+
+  - **The wire.** MSH-3 on outbound acknowledgements is still `PORTAGE`. It is
+    not branding: it is the receiving-application name each sending facility
+    typed into their own interface configuration, and changing it unilaterally
+    has their engine reject our acknowledgements — visible at their end as
+    messages never acknowledged, and not visible at ours at all. It moves when
+    a deployment sets `NORTHSTAR_HL7_APPLICATION`, having agreed the change
+    with the sites on the other end.
+
+  Two identifier namespaces also keep their spelling: the audit-export URN
+  `urn:portage:principal:*`, and the `https://portage.dev/fhir/NamingSystem/*`
+  systems the shipped mappings stamp onto resource identifiers. A namespace
+  identifier exists to be stable. Moving them would give resources created
+  either side of the rename different identifier systems, so the same
+  observation ingested twice would stop matching itself and file as two — and
+  audit exports from before and after would no longer be comparable. Both name
+  an identifier scheme, not the product.
+
+  Hazards H-108 to H-113, `docs/RUNBOOK.md` → "Upgrading a site installed as
+  Portage", and `test/rename-compat.test.ts`, whose regressions were checked
+  against the unfixed source.
+
+**Fixed
 
 - **The not-on-care-team flag never fired on real traffic** (H-106). The
   privacy office's review joined `principal_id` and required

@@ -1,7 +1,7 @@
 /**
  * Client-side encryption for a snapshot that is about to leave the machine.
  *
- * The live database sits on a volume Portage does not encrypt (see
+ * The live database sits on a volume Northstar does not encrypt (see
  * `atrest.ts`). A copy of that file on someone else's disk is the same
  * plaintext in a place this process cannot see, so the snapshot is wrapped
  * here before it is handed to a destination — AES-256-GCM, key from a file
@@ -42,14 +42,14 @@ export function loadBackupKey(path: string): Buffer {
     raw = readFileSync(path);
   } catch (err) {
     throw new BackupKeyError(
-      `cannot read PORTAGE_BACKUP_KEY_FILE at ${path}: ${(err as Error).message}`
+      `cannot read NORTHSTAR_BACKUP_KEY_FILE at ${path}: ${(err as Error).message}`
     );
   }
   const text = raw.toString("utf8").trim();
   if (/^[0-9a-fA-F]{64}$/.test(text)) return Buffer.from(text, "hex");
   if (raw.length === BACKUP_KEY_BYTES) return raw;
   throw new BackupKeyError(
-    `PORTAGE_BACKUP_KEY_FILE must be 32 raw bytes or 64 hex characters; ${path} is ${raw.length} bytes`
+    `NORTHSTAR_BACKUP_KEY_FILE must be 32 raw bytes or 64 hex characters; ${path} is ${raw.length} bytes`
   );
 }
 
@@ -99,7 +99,7 @@ export function decryptSnapshot(blob: Buffer, key: Buffer): Buffer {
     throw new BackupKeyError("snapshot is too short to be an encrypted backup");
   }
   if (!isEncryptedSnapshot(blob)) {
-    throw new BackupKeyError("snapshot is not an encrypted Portage backup (missing PTGB1 header)");
+    throw new BackupKeyError("snapshot is not an encrypted Northstar backup (missing PTGB1 header)");
   }
   const iv = blob.subarray(MAGIC.length, MAGIC.length + IV_LEN);
   const tag = blob.subarray(MAGIC.length + IV_LEN, MAGIC.length + IV_LEN + TAG_LEN);

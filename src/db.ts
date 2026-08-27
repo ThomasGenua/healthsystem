@@ -520,7 +520,7 @@ CREATE TABLE IF NOT EXISTS referrals (
   to_service TEXT NOT NULL,
   -- The directory service this names, when it names one. Three-valued on
   -- purpose: an id means a known service, to_external = 1 means a deliberate
-  -- referral out to somewhere Portage does not hold, and both NULL means
+  -- referral out to somewhere Northstar does not hold, and both NULL means
   -- nobody said which — an unverified free-text target, and a different thing
   -- from a declared external one.
   to_service_id TEXT,

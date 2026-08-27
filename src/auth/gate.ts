@@ -117,7 +117,7 @@ export class AuthGate {
 
   /** The WWW-Authenticate value to return with a 401. */
   get challenge(): string {
-    return this.opts.jwt ? 'Bearer realm="portage"' : 'Bearer realm="portage", scheme="api-key"';
+    return this.opts.jwt ? 'Bearer realm="northstar"' : 'Bearer realm="northstar", scheme="api-key"';
   }
 
   async check(method: string, path: string, headers: IncomingHttpHeaders): Promise<AuthOutcome> {

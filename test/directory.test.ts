@@ -30,8 +30,8 @@ import { ReferralStore } from "../src/work/referrals.ts";
 const CLERK = { actorId: "clerk", actorKind: "staff" };
 
 function region(): { db: Db; dir: Directory; cleanup: () => void } {
-  const d = mkdtempSync(join(tmpdir(), "portage-directory-"));
-  const db = new Db(join(d, "portage.db"));
+  const d = mkdtempSync(join(tmpdir(), "northstar-directory-"));
+  const db = new Db(join(d, "northstar.db"));
   return {
     db,
     dir: new Directory(db),

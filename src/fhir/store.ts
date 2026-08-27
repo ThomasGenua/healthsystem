@@ -280,8 +280,8 @@ export class FhirStore {
       kind: "instance",
       fhirVersion: "4.0.1",
       format: ["application/fhir+json"],
-      implementation: { description: "Portage FHIR facade", url: `${baseUrl}/fhir` },
-      software: { name: "Portage", version },
+      implementation: { description: "Northstar FHIR facade", url: `${baseUrl}/fhir` },
+      software: { name: "Northstar", version },
       rest: [
         {
           mode: "server",

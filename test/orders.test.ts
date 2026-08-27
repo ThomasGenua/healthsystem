@@ -22,8 +22,8 @@ import { Db } from "../src/db.ts";
 import { OrderStore } from "../src/orders/store.ts";
 
 function lab(): { db: Db; orders: OrderStore; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "portage-orders-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-orders-"));
+  const db = new Db(join(dir, "northstar.db"));
   return {
     db,
     orders: new OrderStore(db),
@@ -375,8 +375,8 @@ test("transitions out of order are refused rather than silently accepted", () =>
 });
 
 test("orders and results are confined to their tenant", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-orders-iso-"));
-  const root = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-orders-iso-"));
+  const root = new Db(join(dir, "northstar.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");

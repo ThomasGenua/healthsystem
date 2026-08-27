@@ -3,11 +3,11 @@
  *
  * No dependency: node:crypto can build a key from a JWK and verify RSA and
  * ECDSA signatures directly. Works against any OIDC provider — Entra ID,
- * Keycloak, Auth0 — by pointing PORTAGE_OIDC_ISSUER at it; nothing here is
+ * Keycloak, Auth0 — by pointing NORTHSTAR_OIDC_ISSUER at it; nothing here is
  * provider-specific.
  *
  * The algorithm is chosen from a fixed table keyed by the token header, so an
- * `alg: none` token, or one naming an algorithm Portage does not implement, is
+ * `alg: none` token, or one naming an algorithm Northstar does not implement, is
  * rejected before any key material is touched.
  */
 import { constants, createPublicKey, verify as cryptoVerify, type KeyObject } from "node:crypto";
@@ -18,7 +18,7 @@ export interface OidcConfig {
   audience?: string;
   /** Explicit JWKS URI. Discovered from the issuer when omitted. */
   jwksUri?: string;
-  /** Tolerance for clock drift between Portage and the identity provider. */
+  /** Tolerance for clock drift between Northstar and the identity provider. */
   clockSkewSec?: number;
   /** How long a fetched JWKS is reused before refetching. */
   cacheTtlMs?: number;
@@ -60,6 +60,20 @@ function decodeSegment(seg: string): Record<string, unknown> {
   return JSON.parse(Buffer.from(seg, "base64url").toString("utf8")) as Record<string, unknown>;
 }
 
+/**
+ * Reads a deployment-named claim under every spelling Northstar has used.
+ *
+ * Order is precedence: the current prefixed name, then the pre-rename one,
+ * then the bare convention. Prefixed first because it exists precisely for an
+ * issuer whose bare `tenant` already means something else, so the bare claim
+ * must not shadow it.
+ */
+function pickClaim(claims: Record<string, unknown>, name: string): string | undefined {
+  const candidates = [claims[`northstar_${name}`], claims[`portage_${name}`], claims[name]];
+  const found = candidates.find((c) => typeof c === "string" && c.length > 0);
+  return typeof found === "string" ? found : undefined;
+}
+
 export interface VerifiedToken {
   subject: string;
   scopes: Set<Scope>;
@@ -79,14 +93,15 @@ export interface VerifiedToken {
    * SMART on FHIR does not standardise this — it standardises what a caller
    * may *do*, not which organization they belong to — so the claim name is a
    * deployment decision rather than something to infer. `organization` is the
-   * common convention; `portage_organization` is the escape hatch for an
-   * issuer that already uses `organization` for something else.
+   * common convention; `northstar_organization` (or the pre-rename
+   * `portage_organization`) is the escape hatch for an issuer that already
+   * uses `organization` for something else.
    */
   organizationId?: string;
   /**
    * The practitioner the token acts as, from a claim the provider controls.
-   * `practitioner` by convention; `portage_practitioner` where an issuer
-   * already uses that name. Absent for a token that acts as no one.
+   * `practitioner` by convention; `northstar_practitioner` or the pre-rename
+   * `portage_practitioner` where an issuer already uses that name. Absent for a token that acts as no one.
    */
   practitionerId?: string;
 }
@@ -196,19 +211,24 @@ export class JwtVerifier {
     }
 
     // The tenant claim the provider asserts. `tenant` is what most issuers
-    // call it; `portage_tenant` is the escape hatch for one that already uses
-    // `tenant` for something else.
-    const tenantClaim = [claims.portage_tenant, claims.tenant].find((c) => typeof c === "string" && c.length > 0);
+    // call it; the prefixed names are the escape hatch for one that already
+    // uses `tenant` for something else.
+    //
+    // `portage_*` is read alongside `northstar_*` and is not going away. The
+    // claim name lives in somebody's Keycloak realm or Auth0 rule, not in this
+    // repository, and dropping the old spelling would not raise an error — the
+    // claim would simply stop being found, and a token that had carried a
+    // tenant would arrive carrying none. Every downstream check would then be
+    // making a tenancy decision on an absence. That is the one failure in this
+    // rename that ends with one site reading another's charts, so both
+    // spellings are accepted for as long as any issuer emits either.
+    const tenantClaim = pickClaim(claims, "tenant");
     // Same shape and the same reasoning as the tenant claim above: asserted by
     // the provider, never taken from the request. A caller who could name their
     // own organization could name their way out of a directive that withholds
     // from it.
-    const orgClaim = [claims.portage_organization, claims.organization].find(
-      (c) => typeof c === "string" && c.length > 0
-    );
-    const practClaim = [claims.portage_practitioner, claims.practitioner].find(
-      (c) => typeof c === "string" && c.length > 0
-    );
+    const orgClaim = pickClaim(claims, "organization");
+    const practClaim = pickClaim(claims, "practitioner");
     return {
       subject: typeof claims.sub === "string" ? claims.sub : "unknown",
       scopes: scopesFromSmart(rawScopes(claims)),

@@ -23,8 +23,8 @@ import { Db } from "../src/db.ts";
 import { ApiKeyStore } from "../src/auth/keys.ts";
 
 function vault() {
-  const dir = mkdtempSync(join(tmpdir(), "portage-keys-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-keys-"));
+  const db = new Db(join(dir, "northstar.db"));
   return {
     db,
     keys: new ApiKeyStore(db),
@@ -201,8 +201,8 @@ test("keys about to lapse are surfaced before they do", () => {
 });
 
 test("key lifecycle is confined to its tenant", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-keys-iso-"));
-  const root = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-keys-iso-"));
+  const root = new Db(join(dir, "northstar.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");

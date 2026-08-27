@@ -9,7 +9,7 @@
  *
  * This is the durable record of that conversation. It is not a portal,
  * not email, and not a claim that anything was delivered to a phone.
- * Portage still does not know how to reach a patient (see
+ * Northstar still does not know how to reach a patient (see
  * `src/patient/notice.ts`). A future portal would write through this
  * store; until then a clerk records what the patient said, the same way
  * they write a phone message today.

@@ -13,7 +13,7 @@ built; this document is the issue's first checkbox, not its last.
 
 ## The claims, and where they physically live
 
-A Portage node makes six claims that a multi-writer design must not quietly
+A Northstar node makes six claims that a multi-writer design must not quietly
 weaken. They are not aspirations; each is a mechanism with a file name and a
 test, which is what makes the evaluation below concrete rather than
 rhetorical.
