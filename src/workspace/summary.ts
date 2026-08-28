@@ -36,6 +36,7 @@ import type { Immunizations, ImmunizationView, ImmunizationHistory } from "../cl
 import type { Vitals, VitalView, VitalHistory } from "../clinical/vitals.ts";
 import type { Procedures, ProcedureView, ProcedureHistory } from "../clinical/procedures.ts";
 import type { CarePlans, CarePlanView, CarePlanHistory } from "../clinical/careplans.ts";
+import type { PatientDocuments, PatientDocumentView, DocumentHistory } from "../clinical/documents.ts";
 import type { CareTeam, CareTeamRow } from "../clinical/careteam.ts";
 import type { Coverage, CoverageRow } from "../clinical/coverage.ts";
 import type { Schedule, SlotRow, BookingRow } from "../schedule/store.ts";
@@ -93,6 +94,7 @@ export interface ChartSummary {
   vitalStatus: VitalHistory | "unavailable";
   procedureStatus: ProcedureHistory | "unavailable";
   carePlanStatus: CarePlanHistory | "unavailable";
+  documentStatus: DocumentHistory | "unavailable";
 
   allergies: Section<AllergyRow>;
   medications: Section<MedRow>;
@@ -100,6 +102,7 @@ export interface ChartSummary {
   vitals: Section<VitalView>;
   procedures: Section<ProcedureView>;
   carePlans: Section<CarePlanView>;
+  documents: Section<PatientDocumentView>;
   careTeam: Section<CareTeamRow>;
   coverage: Section<CoverageRow>;
   /** Reported and not yet read by anybody, worst first. */
@@ -190,6 +193,7 @@ export interface WorkspaceSources {
   vitals?: Vitals;
   procedures?: Procedures;
   carePlans?: CarePlans;
+  documents?: PatientDocuments;
   careTeam?: CareTeam;
   coverage?: Coverage;
   schedule?: Schedule;
@@ -247,7 +251,8 @@ export function describe(name: string, s: Section<unknown>): string | null {
  * whole chart. Listed rather than derived because the mapping is a clinical
  * judgement, not a naming convention: a patient who locks `ServiceRequest` has
  * locked both their orders and their referrals, and somebody should have to
- * decide that on purpose.
+ * decide that on purpose. Locking `DocumentReference` likewise withholds both
+ * clinic notes and patient-supplied documents.
  */
 export const SECTION_TYPES = {
   allergies: "AllergyIntolerance",
@@ -256,6 +261,7 @@ export const SECTION_TYPES = {
   vitals: "Observation",
   procedures: "Procedure",
   carePlans: "CarePlan",
+  documents: "DocumentReference",
   careTeam: "CareTeam",
   coverage: "Coverage",
   unacknowledgedResults: "Observation",
@@ -316,7 +322,7 @@ export class Workspace {
    * seen everything.
    */
   chart(patientId: string, opts: SummaryOptions = {}): ChartSummary {
-    const { record, notes, meds, orders, referrals, tasks, immunizations, vitals, procedures, carePlans, careTeam, coverage, messaging } =
+    const { record, notes, meds, orders, referrals, tasks, immunizations, vitals, procedures, carePlans, documents, careTeam, coverage, messaging } =
       this.sources;
     const limit = opts.limit ?? 50;
     const noteLimit = opts.noteLimit ?? 10;
@@ -361,6 +367,7 @@ export class Workspace {
     const vitalSection = sect("vitals", vitals ? across((id) => vitals.forPatient(id)) : undefined, limit);
     const procedureSection = sect("procedures", procedures ? across((id) => procedures.forPatient(id)) : undefined, limit);
     const carePlanSection = sect("carePlans", carePlans ? across((id) => carePlans.forPatient(id)) : undefined, limit);
+    const documentSection = sect("documents", documents ? across((id) => documents.forPatient(id)) : undefined, limit);
     const careTeamSection = sect("careTeam", careTeam ? across((id) => careTeam.forPatient(id, { includeRetired: true })) : undefined, limit);
     const coverageSection = sect("coverage", coverage ? across((id) => coverage.history(id)) : undefined, limit);
     const openThreads = sect("openThreads", messaging ? across((id) => messaging.forPatient(id)) : undefined, limit);
@@ -438,6 +445,15 @@ export class Workspace {
       );
     }
 
+    let documentStatus: DocumentHistory | "unavailable" = "unavailable";
+    if (documents && !hidden.has(SECTION_TYPES.documents)) {
+      documentStatus = worstOf<DocumentHistory | "unavailable">(
+        ["never-received", "unavailable", "documented"],
+        "unavailable",
+        (id) => documents.historyStatus(id)
+      );
+    }
+
     let patient: PatientSummary | undefined;
     try {
       patient = record?.patientIndex.get(patientId);
@@ -452,6 +468,7 @@ export class Workspace {
       ["Vitals", vitalSection],
       ["Procedures", procedureSection],
       ["Care plans", carePlanSection],
+      ["Patient-supplied documents", documentSection],
       ["Care team", careTeamSection],
       ["Coverage", coverageSection],
       ["Unacknowledged results", unacknowledgedResults],
@@ -490,6 +507,11 @@ export class Workspace {
       omissions.push("Care plans: no care plan has ever been recorded for this patient");
     } else if (carePlanStatus === "unavailable" && !hidden.has(SECTION_TYPES.carePlans)) {
       omissions.push("Care plans: care-plan history could not be determined");
+    }
+    if (documentStatus === "never-received") {
+      omissions.push("Patient-supplied documents: no document the patient supplied has ever been recorded");
+    } else if (documentStatus === "unavailable" && !hidden.has(SECTION_TYPES.documents)) {
+      omissions.push("Patient-supplied documents: document history could not be determined");
     }
     if (careTeam && careTeamSection.complete && !hidden.has(SECTION_TYPES.careTeam)) {
       const currentPrimary = careTeamSection.items.find((r) => r.role === "primary" && !r.active_to);
@@ -549,12 +571,14 @@ export class Workspace {
       vitalStatus,
       procedureStatus,
       carePlanStatus,
+      documentStatus,
       allergies,
       medications,
       immunizations: immunizationSection,
       vitals: vitalSection,
       procedures: procedureSection,
       carePlans: carePlanSection,
+      documents: documentSection,
       careTeam: careTeamSection,
       coverage: coverageSection,
       unacknowledgedResults,
@@ -574,7 +598,8 @@ export class Workspace {
         (immunizationStatus !== "unavailable" || hidden.has(SECTION_TYPES.immunizations)) &&
         (vitalStatus !== "unavailable" || hidden.has(SECTION_TYPES.vitals)) &&
         (procedureStatus !== "unavailable" || hidden.has(SECTION_TYPES.procedures)) &&
-        (carePlanStatus !== "unavailable" || hidden.has(SECTION_TYPES.carePlans)),
+        (carePlanStatus !== "unavailable" || hidden.has(SECTION_TYPES.carePlans)) &&
+        (documentStatus !== "unavailable" || hidden.has(SECTION_TYPES.documents)),
       omissions,
     };
   }

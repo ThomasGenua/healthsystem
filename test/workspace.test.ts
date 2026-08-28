@@ -29,6 +29,7 @@ import { Immunizations } from "../src/clinical/immunizations.ts";
 import { Vitals } from "../src/clinical/vitals.ts";
 import { Procedures } from "../src/clinical/procedures.ts";
 import { CarePlans } from "../src/clinical/careplans.ts";
+import { PatientDocuments } from "../src/clinical/documents.ts";
 import { CareTeam } from "../src/clinical/careteam.ts";
 import { Coverage } from "../src/clinical/coverage.ts";
 import { Schedule } from "../src/schedule/store.ts";
@@ -56,6 +57,7 @@ function ward() {
   const vitals = new Vitals(record);
   const procedures = new Procedures(record);
   const carePlans = new CarePlans(record);
+  const documents = new PatientDocuments(record);
   const careTeam = new CareTeam(db);
   const coverage = new Coverage(db);
   const schedule = new Schedule(db);
@@ -73,6 +75,7 @@ function ward() {
     vitals,
     procedures,
     carePlans,
+    documents,
     careTeam,
     coverage,
     schedule,
@@ -88,6 +91,7 @@ function ward() {
       vitals,
       procedures,
       carePlans,
+      documents,
       careTeam,
       coverage,
       schedule,
@@ -196,6 +200,13 @@ function populate(w: ReturnType<typeof ward>) {
     reviewBy: PAST,
     by: GP_AUTHOR,
   });
+  w.documents.receive({
+    patientId: P,
+    title: "Cardiology letter",
+    source: "patient-brought",
+    receivedAt: "2026-08-20T10:00:00Z",
+    by: GP_AUTHOR,
+  });
   w.careTeam.assign({ patientId: P, practitionerId: "dr-tetso", role: "primary", by: { actorId: "ops" } });
   w.coverage.record({
     patientId: P,
@@ -243,6 +254,9 @@ test("the assembled chart pulls every store into one view", () => {
     assert.equal(chart.procedures.items[0].display, "Knee injection");
     assert.equal(chart.carePlanStatus, "documented");
     assert.equal(chart.carePlans.items[0].title, "Type 2 diabetes care plan");
+    assert.equal(chart.documentStatus, "documented");
+    assert.equal(chart.documents.items[0].title, "Cardiology letter");
+    assert.equal("data" in chart.documents.items[0], false, "the chart lists metadata, not the payload");
     assert.equal(chart.careTeam.items[0].role, "primary");
     assert.equal(chart.coverage.items[0].plan, "NIHB");
     assert.equal(chart.openThreads.items[0].subject, "Renewal — metformin");
@@ -320,6 +334,7 @@ test("a store nobody wired in is an omission, not an empty panel", () => {
     assert.equal(chart.medications.complete, false);
     assert.equal(chart.allergies.complete, false);
     assert.equal(chart.allergyStatus, "unavailable", "never silently 'none'");
+    assert.equal(chart.documentStatus, "unavailable");
     assert.equal(chart.complete, false);
     assert.ok(chart.omissions.some((o) => /Medications: could not be loaded \(not configured/.test(o)));
     assert.ok(chart.omissions.includes("Allergies: allergy status could not be determined"));
@@ -448,6 +463,10 @@ test("an empty immunization panel is never-asked, not none", () => {
     assert.ok(chart.omissions.includes("Procedures: no procedure has ever been recorded for this patient"));
     assert.equal(chart.carePlanStatus, "never-planned");
     assert.ok(chart.omissions.includes("Care plans: no care plan has ever been recorded for this patient"));
+    assert.equal(chart.documentStatus, "never-received");
+    assert.ok(
+      chart.omissions.includes("Patient-supplied documents: no document the patient supplied has ever been recorded")
+    );
   } finally {
     w.cleanup();
   }

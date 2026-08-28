@@ -11,6 +11,16 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Patient-supplied documents as chart facts, not notes.** They write onto
+  the existing append-only clinical record as `DocumentReference` with
+  category `patient-supplied`, so the notes module will not read them as SOAP.
+  A title, a source and a received date are required; the bytes are optional.
+  Lists and the patient summary carry metadata only. HTML, SVG and
+  executables are refused; a payload over 256 KiB is refused. An empty panel
+  is `never-received`, not none. Locking `DocumentReference` withholds both
+  clinic notes and patient-supplied documents. Not a portal, not a virus
+  scanner, not WCAG. Hazards H-124 to H-127. 846 tests.
+
 - **Procedures and care plans as first-class chart stores.** They write
   onto the existing append-only clinical record. A completed procedure
   needs the date it was performed; a not-done procedure needs twelve

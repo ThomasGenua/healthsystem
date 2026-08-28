@@ -24,6 +24,7 @@ import { Immunizations } from "../clinical/immunizations.ts";
 import { Vitals } from "../clinical/vitals.ts";
 import { Procedures } from "../clinical/procedures.ts";
 import { CarePlans } from "../clinical/careplans.ts";
+import { PatientDocuments } from "../clinical/documents.ts";
 import { CareTeam } from "../clinical/careteam.ts";
 import { Coverage } from "../clinical/coverage.ts";
 import { MedicationStore } from "../meds/store.ts";
@@ -102,6 +103,7 @@ export interface TenantView {
   vitals: Vitals;
   procedures: Procedures;
   carePlans: CarePlans;
+  documents: PatientDocuments;
   careTeam: CareTeam;
   coverage: Coverage;
   meds: MedicationStore;
@@ -319,6 +321,7 @@ export class Engine {
     const vitals = new Vitals(clinical);
     const procedures = new Procedures(clinical);
     const carePlans = new CarePlans(clinical);
+    const documents = new PatientDocuments(clinical);
     const careTeam = new CareTeam(db);
     const coverage = new Coverage(db);
     const schedule = new Schedule(db);
@@ -376,6 +379,7 @@ export class Engine {
       vitals,
       procedures,
       carePlans,
+      documents,
       careTeam,
       coverage,
       meds,
@@ -404,6 +408,7 @@ export class Engine {
         vitals,
         procedures,
         carePlans,
+        documents,
         careTeam,
         coverage,
         schedule,

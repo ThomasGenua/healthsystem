@@ -728,6 +728,12 @@ async function route(
           status: tenant.carePlans.historyStatus(patientId),
           active: tenant.carePlans.active(patientId),
         },
+        documents: {
+          // Metadata only. Lists never carry the payload — a patient summary
+          // is not a file download, and this is not a portal.
+          status: tenant.documents.historyStatus(patientId),
+          items: tenant.documents.forPatient(patientId),
+        },
         careTeam: tenant.careTeam.forPatient(patientId),
         coverage: tenant.coverage.current(patientId) ?? null,
       }));
@@ -1969,6 +1975,22 @@ async function route(
         status: tenant.carePlans.historyStatus(patient),
         carePlans: tenant.carePlans.forPatient(patient),
       }));
+    }
+    if (path === "/api/clinical/patient-documents" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("DocumentReference", () => ({
+        status: tenant.documents.historyStatus(patient),
+        documents: tenant.documents.forPatient(patient, {
+          ...(url.searchParams.get("encounter") ? { encounterId: url.searchParams.get("encounter")! } : {}),
+        }),
+      }));
+    }
+    if (path === "/api/clinical/patient-document" && method === "GET") {
+      const id = url.searchParams.get("id");
+      if (!id) return send(res, 400, { error: "id required" });
+      const row = tenant.documents.get(id);
+      if (!row) return send(res, 404, { error: `no patient-supplied document ${id}` });
+      return phiFor(row.patientId, "DocumentReference", () => row);
     }
     if (path === "/api/clinical/care-team" && method === "GET") {
       if (!patient) return send(res, 400, { error: "patient required" });
@@ -3395,6 +3417,33 @@ async function route(
           authorId: who,
           authorKind: auth.ok ? auth.principal.kind : "unknown",
           reason: body.reason!,
+        })
+      );
+    }
+    if (path === "/api/clinical/patient-document-record" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        title?: string;
+        source?: "patient-brought" | "patient-submitted" | "clinic-scanned";
+        receivedAt?: string;
+        contentType?: string;
+        data?: string;
+        encounter?: string;
+      };
+      if (!body.patient || !body.title || !body.source || !body.receivedAt) {
+        return send(res, 400, { error: "patient, title, source and receivedAt required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(body.patient, "DocumentReference", () =>
+        tenant.documents.receive({
+          patientId: body.patient!,
+          title: body.title!,
+          source: body.source!,
+          receivedAt: body.receivedAt!,
+          by: { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown" },
+          ...(body.contentType ? { contentType: body.contentType } : {}),
+          ...(body.data !== undefined ? { data: body.data } : {}),
+          ...(body.encounter ? { encounterId: body.encounter } : {}),
         })
       );
     }

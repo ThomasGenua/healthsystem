@@ -181,6 +181,13 @@ test(
         reviewBy: "2020-01-01T00:00:00Z",
         by: { authorId: HOSTILE_CLINICIAN, authorKind: "practitioner" },
       });
+      t.documents.receive({
+        patientId: HOSTILE_PATIENT,
+        title: payloads[1],
+        source: "patient-brought",
+        receivedAt: "2026-08-20T10:00:00Z",
+        by: { authorId: HOSTILE_CLINICIAN, authorKind: "practitioner" },
+      });
       // Narrowed, not a full lockbox. An unscoped directive would make the
       // chart answer 403 and render a refusal banner containing nothing
       // hostile — so this test would pass while proving nothing about the tab
