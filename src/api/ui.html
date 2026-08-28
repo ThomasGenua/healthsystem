@@ -437,7 +437,11 @@ window.reviewed=async(id)=>{
 async function privacyTab(m){
   m.innerHTML=`<p class="none">loading…</p>`;
   try{
-    const {data}=await j("/api/clinical/privacy-inbox");
+    const [{data},{data:enrol},{data:notices}]=await Promise.all([
+      j("/api/clinical/privacy-inbox"),
+      j("/api/clinical/enrolments?status=pending"),
+      j("/api/clinical/patient-notices"),
+    ]);
     const list=(rows,empty,render)=>rows&&rows.length?`<ul>${rows.map(render).join("")}</ul>`:`<p class="none">${esc(empty)}</p>`;
     const glass=data.unreviewedBreakGlass||[];
     const access=data.pendingAccess||[];
@@ -445,15 +449,27 @@ async function privacyTab(m){
     const holds=data.activeHolds||[];
     const incidents=data.openIncidents||[];
     const findings=data.openFindings||[];
+    const pendingEnrol=Array.isArray(enrol)?enrol:[];
+    const noticeRows=Array.isArray(notices)?notices:[];
+    const failedNotices=noticeRows.filter(n=>n.status==="failed");
+    const untoldNotices=noticeRows.filter(n=>!n.told_at);
     m.innerHTML=`
       <div class="banner"><b>Privacy office.</b>
-        <p>Queues, clocks and holds. A chain nobody reads proves only that nobody tampered with a log nobody reads. After-hours uses UTC clinic hours, not local time.</p></div>
+        <p>Queues, clocks and holds. A pending enrolment is not authority. Dispatching a notice is not the patient being told. After-hours uses UTC clinic hours, not local time.</p></div>
       <div class="panel ${glass.length?"warn":""}"><h3>Unreviewed break-glass ${tag(String(glass.length),glass.length?"warn":"ok")}</h3>
         ${list(glass,"nothing waiting for review",o=>`<li><a href="#" onclick="openChart('${esc(o.patient_id)}');go('Chart');return false">${esc(o.patient_id)}</a>
           ${esc(o.subject_id)} — ${esc(o.reason)}</li>`)}</div>
       <div class="panel ${access.length?"warn":""}"><h3>Access and correction requests ${tag(String(access.length),access.length?"warn":"ok")}</h3>
         ${list(access,"no pending requests",r=>`<li>${esc(r.kind)} for ${esc(r.patientId)} due ${esc(r.dueAt)}
           ${r.overdue?tag("overdue","bad"):""}${r.completedWithoutDisclosure?tag("completed without disclosure","warn"):""}</li>`)}</div>
+      <div class="panel ${pendingEnrol.length?"warn":""}"><h3>Pending enrolments ${tag(String(pendingEnrol.length),pendingEnrol.length?"warn":"ok")}</h3>
+        <p class="why">A named clerk still has to write how they checked. Until then the subject cannot read the chart.</p>
+        ${list(pendingEnrol,"no pending enrolments",e=>`<li><a href="#" onclick="openChart('${esc(e.patient_id)}');go('Chart');return false">${esc(e.patient_id)}</a>
+          ${esc(e.subject_id)} ${esc(e.relationship)} — requested by ${esc(e.requested_by)}</li>`)}</div>
+      <div class="panel ${failedNotices.length||untoldNotices.length?"warn":""}"><h3>Patient notices ${tag(String(untoldNotices.length),untoldNotices.length?"warn":"ok")}</h3>
+        <p class="why">Dispatching hands the fact to a channel. Recording that the patient was told is a separate act.</p>
+        ${list(failedNotices,"no undelivered notices",n=>`<li>${esc(n.kind)} for ${esc(n.patient_id)} — ${esc(n.summary)} ${tag("undelivered","bad")} ${esc(n.error||"")}</li>`)}
+        ${list(untoldNotices.filter(n=>n.status!=="failed"),"no dispatched notices still untold",n=>`<li>${esc(n.kind)} for ${esc(n.patient_id)} — ${esc(n.summary)} ${tag(n.status,"warn")}</li>`)}</div>
       <div class="panel ${reviews.length?"warn":""}"><h3>Open reviews ${tag(String(reviews.length),reviews.length?"warn":"ok")}</h3>
         ${list(reviews,"no open reviews",r=>`<li>${esc(r.id)} — ${(r.flags||[]).length} flag(s) ${stTag(r.status)}</li>`)}</div>
       <div class="panel ${holds.length?"warn":""}"><h3>Active legal holds ${tag(String(holds.length),holds.length?"warn":"ok")}</h3>

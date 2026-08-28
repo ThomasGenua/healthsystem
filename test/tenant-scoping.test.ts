@@ -43,6 +43,8 @@ const SQL_SOURCES = [
   "../src/clinical/careteam.ts",
   "../src/clinical/coverage.ts",
   "../src/patient/messaging.ts",
+  "../src/patient/enrolment.ts",
+  "../src/patient/notice.ts",
   "../src/orders/intake.ts",
   "../src/meds/prescribe.ts",
   "../src/migrate/run.ts",

@@ -9,6 +9,22 @@ always forward-compatible and run automatically on open — see
 
 ## Unreleased
 
+**Added**
+
+- **Clinic-attested enrolment, and notices that publish fact rather than the
+  chart.** Binding an OAuth subject to a chart is no longer `grantSelf` with
+  nothing on the record saying how the clerk knew. A named person writes, in
+  their own words, how they checked — twelve characters, same bar as breaking
+  glass — and only then does the existing grant path run. A pending row is
+  not authority. `GET /me` still does not enrol anyone; there is no
+  `/patient/enrol`. Proxy enrolments still need an expiry, a purpose and
+  explicit permissions. Completing an access request queues a notice whose
+  payload is the fact, never a result value. Dispatching that notice onto the
+  same configured channel as break-glass is not recording that the patient
+  was told. No channel is a visible failure, not a quiet skip. Not
+  identity-proofing, not ONE ID, not a certified portal, not WCAG. Hazards
+  H-114 to H-117. 826 tests.
+
 **Changed**
 
 - **Portage is now Northstar.** The product, the documentation, the admin UI
