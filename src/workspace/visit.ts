@@ -26,6 +26,7 @@ import type { MedicationStore, MedRow } from "../meds/store.ts";
 import type { OrderStore, OrderRow, ResultRow } from "../orders/store.ts";
 import type { Encounters, EncounterRow, ParticipantRow } from "../clinical/encounters.ts";
 import { Vitals, type VitalView } from "../clinical/vitals.ts";
+import { Procedures, type ProcedureView } from "../clinical/procedures.ts";
 import { type Section, section, describe } from "./summary.ts";
 
 export interface VisitSources {
@@ -61,7 +62,9 @@ export interface VisitSummary {
   notes: Section<ClinicalEntry>;
   /** Vital signs taken at this visit. Empty here is ordinary, not "never measured". */
   vitals: Section<VitalView>;
-  /** Problems, observations and procedures recorded against this visit. */
+  /** Procedures recorded against this visit. Empty here is ordinary, not "never recorded". */
+  procedures: Section<ProcedureView>;
+  /** Problems and observations recorded against this visit. Procedures have their own section. */
   findings: Section<ClinicalEntry>;
 
   complete: boolean;
@@ -77,6 +80,7 @@ export const VISIT_SECTION_TYPES = {
   medications: "MedicationStatement",
   notes: "DocumentReference",
   vitals: "Observation",
+  procedures: "Procedure",
   findings: "Condition",
 } as const;
 
@@ -154,13 +158,19 @@ export class VisitView {
       patientId ? "not configured in this deployment" : "the encounter could not be read, so its vitals cannot be found"
     );
 
+    const procedures = sect<ProcedureView>(
+      "procedures",
+      record && patientId ? () => new Procedures(record).forPatient(patientId, { encounterId }) : undefined,
+      patientId ? "not configured in this deployment" : "the encounter could not be read, so its procedures cannot be found"
+    );
+
     const findings = sect<ClinicalEntry>(
       "findings",
       record && patientId
         ? () =>
             record
               .chart(patientId, { encounterId })
-              .filter((e) => e.entry_type === "Condition" || e.entry_type === "Observation" || e.entry_type === "Procedure")
+              .filter((e) => e.entry_type === "Condition" || e.entry_type === "Observation")
         : undefined,
       patientId ? "not configured in this deployment" : "the encounter could not be read, so its findings cannot be found"
     );
@@ -172,6 +182,7 @@ export class VisitView {
       ["medications", medications],
       ["notes", notes],
       ["vitals", vitals],
+      ["procedures", procedures],
       ["findings", findings],
     ];
     const omissions = sections.map(([name, s]) => describe(name, s)).filter((d): d is string => d !== null);
@@ -187,6 +198,7 @@ export class VisitView {
       medications,
       notes,
       vitals,
+      procedures,
       findings,
       complete: omissions.length === 0,
       omissions,

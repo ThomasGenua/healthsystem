@@ -346,6 +346,21 @@ test("every clinical route leaves an audit row, including ones added later", asy
       role: "allied",
       by: { actorId: "ops" },
     });
+    const planToComplete = s.engine.forTenant("default").carePlans.record({
+      patientId: P,
+      title: "COPD action plan",
+      goals: ["no unscheduled visits this winter"],
+      reviewBy: "2026-12-01T00:00:00Z",
+      by: GP_AUTHOR,
+    });
+    const planToRevoke = s.engine.forTenant("default").carePlans.record({
+      patientId: P,
+      title: "Draft smoking-cessation plan",
+      goals: ["set a quit date with the patient"],
+      reviewBy: "2026-11-01T00:00:00Z",
+      status: "draft",
+      by: GP_AUTHOR,
+    });
     const messaging = s.engine.forTenant("default").messaging;
     const thread = messaging.open({
       patientId: P,
@@ -655,10 +670,16 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/book": "POST",
       "/api/clinical/immunizations": `?patient=${P}`,
       "/api/clinical/vitals": `?patient=${P}`,
+      "/api/clinical/procedures": `?patient=${P}`,
+      "/api/clinical/care-plans": `?patient=${P}`,
       "/api/clinical/care-team": `?patient=${P}`,
       "/api/clinical/coverage": `?patient=${P}`,
       "/api/clinical/immunization-record": "POST",
       "/api/clinical/vital-record": "POST",
+      "/api/clinical/procedure-record": "POST",
+      "/api/clinical/care-plan-record": "POST",
+      "/api/clinical/care-plan-complete": "POST",
+      "/api/clinical/care-plan-revoke": "POST",
       "/api/clinical/care-team-assign": "POST",
       "/api/clinical/care-team-retire": "POST",
       "/api/clinical/coverage-record": "POST",
@@ -809,6 +830,25 @@ test("every clinical route leaves an audit row, including ones added later", asy
         value: 72,
         unit: "/min",
         takenAt: "2026-08-24T10:00:00Z",
+      },
+      "/api/clinical/procedure-record": {
+        patient: P,
+        procedure: "IUD insertion",
+        performedAt: "2025-03-01T12:00:00Z",
+      },
+      "/api/clinical/care-plan-record": {
+        patient: P,
+        title: "Asthma action plan",
+        goals: ["no unscheduled visits this winter"],
+        reviewBy: "2026-12-01T00:00:00Z",
+      },
+      "/api/clinical/care-plan-complete": {
+        id: planToComplete.recordId,
+        outcome: "goals met at annual review; HbA1c 6.8",
+      },
+      "/api/clinical/care-plan-revoke": {
+        id: planToRevoke.recordId,
+        reason: "patient moved; care transferred to Fort Smith",
       },
       "/api/clinical/care-team-assign": { patient: P, practitioner: "dr-tetso", role: "covering" },
       "/api/clinical/care-team-retire": { id: membership.id },
@@ -1058,7 +1098,7 @@ test("a patient directive stops the chart at the API, and the refusal is on the 
       assert.match(row.detail ?? "", /withheld by patient directive/);
 
       // Every patient-scoped route, not just the chart.
-      for (const p of ["medications", "allergies", "orders", "notes", "appointments", "immunizations", "vitals", "care-team", "coverage", "threads"]) {
+      for (const p of ["medications", "allergies", "orders", "notes", "appointments", "immunizations", "vitals", "procedures", "care-plans", "care-team", "coverage", "threads"]) {
         assert.equal((await s.get(`/api/clinical/${p}?patient=${P}`)).status, 403, `${p} honoured the directive`);
       }
     } finally {

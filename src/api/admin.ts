@@ -720,6 +720,14 @@ async function route(
           items: tenant.immunizations.forPatient(patientId),
         },
         latestVitals: tenant.vitals.latest(patientId),
+        procedures: {
+          status: tenant.procedures.historyStatus(patientId),
+          items: tenant.procedures.forPatient(patientId),
+        },
+        carePlans: {
+          status: tenant.carePlans.historyStatus(patientId),
+          active: tenant.carePlans.active(patientId),
+        },
         careTeam: tenant.careTeam.forPatient(patientId),
         coverage: tenant.coverage.current(patientId) ?? null,
       }));
@@ -1944,6 +1952,22 @@ async function route(
         vitals: tenant.vitals.forPatient(patient, {
           ...(url.searchParams.get("encounter") ? { encounterId: url.searchParams.get("encounter")! } : {}),
         }),
+      }));
+    }
+    if (path === "/api/clinical/procedures" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("Procedure", () => ({
+        status: tenant.procedures.historyStatus(patient),
+        procedures: tenant.procedures.forPatient(patient, {
+          ...(url.searchParams.get("encounter") ? { encounterId: url.searchParams.get("encounter")! } : {}),
+        }),
+      }));
+    }
+    if (path === "/api/clinical/care-plans" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("CarePlan", () => ({
+        status: tenant.carePlans.historyStatus(patient),
+        carePlans: tenant.carePlans.forPatient(patient),
       }));
     }
     if (path === "/api/clinical/care-team" && method === "GET") {
@@ -3287,6 +3311,90 @@ async function route(
           ...(body.systolic !== undefined ? { systolic: body.systolic } : {}),
           ...(body.diastolic !== undefined ? { diastolic: body.diastolic } : {}),
           ...(body.encounter ? { encounterId: body.encounter } : {}),
+        })
+      );
+    }
+    if (path === "/api/clinical/procedure-record" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        procedure?: string;
+        status?: "completed" | "in-progress" | "not-done";
+        performedAt?: string;
+        procedureCode?: string;
+        procedureSystem?: string;
+        reason?: string;
+        encounter?: string;
+      };
+      if (!body.patient || !body.procedure) {
+        return send(res, 400, { error: "patient and procedure required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(body.patient, "Procedure", () =>
+        tenant.procedures.record({
+          patientId: body.patient!,
+          procedure: body.procedure!,
+          by: { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown" },
+          ...(body.status ? { status: body.status } : {}),
+          ...(body.performedAt ? { performedAt: body.performedAt } : {}),
+          ...(body.procedureCode ? { procedureCode: body.procedureCode } : {}),
+          ...(body.procedureSystem ? { procedureSystem: body.procedureSystem } : {}),
+          ...(body.reason ? { reason: body.reason } : {}),
+          ...(body.encounter ? { encounterId: body.encounter } : {}),
+        })
+      );
+    }
+    if (path === "/api/clinical/care-plan-record" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        title?: string;
+        goals?: string[];
+        reviewBy?: string;
+        status?: "draft" | "active";
+        description?: string;
+        encounter?: string;
+      };
+      if (!body.patient || !body.title || !body.reviewBy || !Array.isArray(body.goals)) {
+        return send(res, 400, { error: "patient, title, goals and reviewBy required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(body.patient, "CarePlan", () =>
+        tenant.carePlans.record({
+          patientId: body.patient!,
+          title: body.title!,
+          goals: body.goals!,
+          reviewBy: body.reviewBy!,
+          by: { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown" },
+          ...(body.status ? { status: body.status } : {}),
+          ...(body.description ? { description: body.description } : {}),
+          ...(body.encounter ? { encounterId: body.encounter } : {}),
+        })
+      );
+    }
+    if (path === "/api/clinical/care-plan-complete" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; outcome?: string };
+      if (!body.id || !body.outcome) return send(res, 400, { error: "id and outcome required" });
+      const plan = tenant.carePlans.get(body.id);
+      if (!plan) return send(res, 404, { error: `no care plan ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(plan.patientId, "CarePlan", () =>
+        tenant.carePlans.complete(body.id!, {
+          authorId: who,
+          authorKind: auth.ok ? auth.principal.kind : "unknown",
+          outcome: body.outcome!,
+        })
+      );
+    }
+    if (path === "/api/clinical/care-plan-revoke" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; reason?: string };
+      if (!body.id || !body.reason) return send(res, 400, { error: "id and reason required" });
+      const plan = tenant.carePlans.get(body.id);
+      if (!plan) return send(res, 404, { error: `no care plan ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(plan.patientId, "CarePlan", () =>
+        tenant.carePlans.revoke(body.id!, {
+          authorId: who,
+          authorKind: auth.ok ? auth.principal.kind : "unknown",
+          reason: body.reason!,
         })
       );
     }

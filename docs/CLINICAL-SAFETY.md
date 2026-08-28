@@ -47,6 +47,7 @@ In scope, as stores and an authenticated HTTP API:
 
 - an append-only clinical record and a derived patient index
 - visits (encounters) that own what happened inside them
+- procedures and care plans on the clinical log, with empty meaning never-recorded / never-planned
 - orders and results, including acknowledgement that cannot be inherited
 - medications, allergies, a safety check, and reconciliation
 - referrals and a unified work inbox
@@ -67,7 +68,7 @@ These are not gaps discovered later. They are scope:
 |---|---|
 | A clinician user interface | The chart is an API. "A clinician can use this today" is not claimed. A consumer that ignores `complete === false` reintroduces H-06. |
 | A patient application | `GET /me` is chrome (EN/FR, landmarks, an honest banner) and does not enrol anyone. Clinic attestation binds a subject after a named person writes how they checked; it is not identity-proofing, not ONE ID, not a certified portal. Notices publish fact onto a channel; dispatching is not telling. Accessibility validation is not claimed. Do not call `/me` a portal. |
-| Clinical decision-support *content* | The check is here; the interaction table is not. An 80% complete table is one prescribers learn to trust. |
+| Clinical decision-support *content* | The check is here; the interaction table is not. An 80% complete table is one prescribers learn to trust. Procedure libraries and care-plan pathways are the same shape of content, and are not here. |
 | Machine learning | Nothing in this repository infers, predicts or scores. No output should be read as though it did. |
 | A certified PSI / Projectathon result | Conformance packs encode published profiles and pass shipped fixtures. |
 | Authoritative provincial directories | The local registry is maintained here. Syncing from a provincial source is a later question. |
@@ -180,6 +181,12 @@ makes the control a fact rather than a comment.
 | H-46 | Half a blood pressure filed as a vital | Systolic stored without diastolic | A trend and a dose are calculated from one number | Major | Low | Blood pressure refused unless both numbers arrive together | `test/vitals.test.ts` — "blood pressure needs both systolic and diastolic" |
 | H-47 | Two current primary providers | A locum assigned as MRP without retiring the last | A result is routed to neither inbox | Major | Low | At most one current primary; retire before assigning another | `test/careteam.test.ts` — "a second current primary is refused until the first is retired" |
 | H-48 | Coverage overwritten in place | Eligibility `UPDATE`d when the card changes | "Were they covered when this visit happened" is unanswerable | Major | Low | New row supersedes; the previous claim stays | `test/coverage.test.ts` — "a change of eligibility keeps the previous claim" |
+| H-118 | Empty procedure panel read as "none" | Never recorded and documented-empty render the same | A procedure that was never asked about is read as not having happened | Major | Medium | `never-recorded` is a status; an empty panel is a gap, not an answer | `test/procedures.test.ts` — "an empty procedure panel is never-recorded, not none" |
+| H-119 | A procedure is filed without the fact that makes it one | Completed with no date, or not-done with no reason | A later reader cannot tell a knee injection that happened from one nobody recorded | Major | Medium | Completed needs `performedAt`; not-done needs twelve characters of reason, the same bar as breaking glass | `test/procedures.test.ts` — "a completed procedure needs a date it was performed"; `test/procedures.test.ts` — "a procedure that was not done needs a written reason" |
+| H-120 | A care plan without a review date never ends | `reviewBy` omitted or defaulted | The plan looks current because nobody is looking at it | Catastrophic | Medium | Recording refuses a missing or unparseable review date; it is stored as `reviewBy`, not faked as `period.end` | `test/careplans.test.ts` — "a care plan without a review date is refused, not defaulted" |
+| H-121 | Completing a care plan without a written outcome | Status flipped to completed with a click | The next clinician cannot tell what was achieved from a plan that was abandoned | Major | Medium | Complete and revoke are amendments; complete needs twelve characters of outcome; revoke needs twelve of reason | `test/careplans.test.ts` — "completing a care plan needs a written outcome" |
+| H-122 | A care plan past its review date is silent | Review date sits on the plan and on nobody's list | The annual diabetes review is a year late with nobody owed the look | Major | Medium | Active plans past `reviewBy` are a worklist section, service-wide like stalled referrals | `test/careplans.test.ts` — "a care plan past its review date is work, not a status" |
+| H-123 | One custodian reads another's procedures or care plans | Query not tenant-bound | A procedure or plan from the north appears on a southern chart | Catastrophic | Low | Stores read the clinical log through the tenant-bound record; isolation is tested, not assumed | `test/procedures.test.ts` — "one custodian cannot read another's procedures"; `test/careplans.test.ts` — "one custodian cannot read another's care plans" |
 | H-49 | Patient message closed without saying what was done | Inbox cleared with a click | A renewal or a result question is treated as finished | Major | Medium | Close needs a reason; a waiting patient needs a longer one | `test/messaging.test.ts` — "closing a thread the patient is still waiting on needs to say what was done" |
 | H-50 | Unowned patient message is nobody's work | No owner, no list | The question sits until it is stale | Major | Medium | `unassigned()` is a queue; open assigns the MRP when there is one | `test/messaging.test.ts` — "an unowned patient message is a list, not a missing inbox" |
 

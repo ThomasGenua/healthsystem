@@ -11,6 +11,19 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Procedures and care plans as first-class chart stores.** They write
+  onto the existing append-only clinical record. A completed procedure
+  needs the date it was performed; a not-done procedure needs twelve
+  characters of reason. An empty procedure panel is `never-recorded`, not
+  none. A care plan needs a goal and a review date (`reviewBy`, not faked
+  as `period.end`); completing it needs a written outcome and revoking it
+  needs a written reason, both as amendments. An active plan past its
+  review date is a worklist item, service-wide like a stalled referral.
+  Visit assembly gives procedures their own section. The patient summary
+  carries procedures and active care plans. Not CDS, not a specialty
+  procedure library, not a provincial care-plan product. Hazards H-118 to
+  H-123.
+
 - **Clinic-attested enrolment, and notices that publish fact rather than the
   chart.** Binding an OAuth subject to a chart is no longer `grantSelf` with
   nothing on the record saying how the clerk knew. A named person writes, in
