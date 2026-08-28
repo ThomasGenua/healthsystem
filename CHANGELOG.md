@@ -23,7 +23,7 @@ always forward-compatible and run automatically on open — see
   same configured channel as break-glass is not recording that the patient
   was told. No channel is a visible failure, not a quiet skip. Not
   identity-proofing, not ONE ID, not a certified portal, not WCAG. Hazards
-  H-114 to H-117.
+  H-114 to H-117. 826 tests.
 
 **Changed**
 
