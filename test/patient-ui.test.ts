@@ -46,11 +46,39 @@ test("GET /me serves the patient shell without credentials", async () => {
     assert.match(html, /identity-proofing/);
     assert.match(html, /WCAG/);
     assert.match(html, /\/patient\//);
+    assert.match(html, /does not enrol anyone/);
     assert.equal(
       engine.forTenant("default").audit.list({ limit: 10 }).length,
       before,
       "/me is chrome, not a patient-data access"
     );
+  } finally {
+    await close();
+  }
+});
+
+test("GET /me still does not enrol anyone", async () => {
+  // Opening the shell, or guessing /patient/enrol, must not bind a subject.
+  // Clinic attestation is a clerk writing a method, not a page on the internet
+  // naming a chart (H-52).
+  const { engine, base, close } = await boot();
+  try {
+    const html = await (await fetch(`${base}/me`)).text();
+    assert.match(html, /does not enrol anyone/);
+    assert.match(html, /identity-proofing/);
+    assert.match(html, /WCAG/);
+    assert.equal(engine.forTenant("default").enrolment.list().length, 0);
+
+    const guessed = await fetch(`${base}/patient/enrol`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ patient: "NT123456", subject: "anyone" }),
+    });
+    assert.notEqual(guessed.status, 200);
+    assert.notEqual(guessed.status, 201);
+    assert.ok(guessed.status === 401 || guessed.status === 403 || guessed.status === 404);
+    assert.equal(engine.forTenant("default").enrolment.list().length, 0);
+    assert.equal(engine.forTenant("default").patientAccess.whoCanSee("NT123456").length, 0);
   } finally {
     await close();
   }

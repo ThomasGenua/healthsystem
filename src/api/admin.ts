@@ -46,7 +46,7 @@
  *   GET /api/conformance/capability?pack=
  * Subscriptions: GET|POST /fhir/Subscription, GET|DELETE /fhir/Subscription/:id
  * Admin UI:     GET / (single-file, no build step)
- * Patient shell: GET /me (EN/FR chrome; not a certified portal)
+ * Patient shell: GET /me (EN/FR chrome; not a certified portal; does not enrol)
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { encryptionAtRest } from "../core/atrest.ts";
@@ -2476,14 +2476,22 @@ async function route(
         }))
       );
     }
+    // Binding a subject goes through clinic-attested enrolment. A grant
+    // with no written method is how the wrong OAuth account reads a chart
+    // for years. This is not identity-proofing and not GET /me.
     if (path === "/api/clinical/authority-self" && method === "POST") {
-      const body = JSON.parse(await readBody(req)) as { patient?: string; subject?: string };
-      if (!body.patient || !body.subject) return send(res, 400, { error: "patient and subject required" });
+      const body = JSON.parse(await readBody(req)) as { patient?: string; subject?: string; method?: string };
+      if (!body.patient || !body.subject || !body.method) {
+        return send(res, 400, { error: "patient, subject and method required" });
+      }
       const who = auth.ok ? auth.principal.id : "unauthenticated";
       return phiFor(body.patient, "Consent", () =>
-        tenant.patientAccess.grantSelf(body.patient!, body.subject!, {
-          actorId: who,
-          actorKind: auth.ok ? auth.principal.kind : "unknown",
+        tenant.enrolment.attestInPerson({
+          patientId: body.patient!,
+          subjectId: body.subject!,
+          relationship: "self",
+          method: body.method!,
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
         })
       );
     }
@@ -2495,6 +2503,7 @@ async function route(
         expiresAt?: string;
         permissions?: PatientPermission[];
         purpose?: string;
+        method?: string;
       };
       if (
         !body.patient ||
@@ -2502,21 +2511,23 @@ async function route(
         !body.relationship ||
         !body.expiresAt ||
         !body.permissions ||
-        !body.purpose
+        !body.purpose ||
+        !body.method
       ) {
         return send(res, 400, {
-          error: "patient, subject, relationship, expiresAt, permissions and purpose required",
+          error: "patient, subject, relationship, expiresAt, permissions, purpose and method required",
         });
       }
       const who = auth.ok ? auth.principal.id : "unauthenticated";
       return phiFor(body.patient, "Consent", () =>
-        tenant.patientAccess.grantProxy({
+        tenant.enrolment.attestInPerson({
           patientId: body.patient!,
           subjectId: body.subject!,
           relationship: body.relationship!,
           expiresAt: body.expiresAt!,
           permissions: body.permissions!,
           purpose: body.purpose!,
+          method: body.method!,
           by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
         })
       );
@@ -2533,6 +2544,99 @@ async function route(
           actorKind: auth.ok ? auth.principal.kind : "unknown",
           reason: body.reason!,
         })
+      );
+    }
+    if (path === "/api/clinical/enrolments" && method === "GET") {
+      const status = url.searchParams.get("status") as "pending" | "attested" | "declined" | null;
+      if (patient) {
+        return phi("Consent", () =>
+          tenant.enrolment.list({ patientId: patient, ...(status ? { status } : {}) })
+        );
+      }
+      return phi("Consent", () => tenant.enrolment.list(status ? { status } : {}), (rows) => rows.length);
+    }
+    if (path === "/api/clinical/enrolment" && method === "GET") {
+      const id = url.searchParams.get("id");
+      if (!id) return send(res, 400, { error: "id required" });
+      const row = tenant.enrolment.get(id);
+      if (!row) return send(res, 404, { error: `no enrolment ${id}` });
+      return phiFor(row.patient_id, "Consent", () => row);
+    }
+    if (path === "/api/clinical/enrolment-request" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        subject?: string;
+        relationship?: "self" | "parent-guardian" | "substitute-decision-maker" | "representative";
+        purpose?: string;
+        permissions?: PatientPermission[];
+        expiresAt?: string;
+      };
+      if (!body.patient || !body.subject || !body.relationship) {
+        return send(res, 400, { error: "patient, subject and relationship required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(body.patient, "Consent", () =>
+        tenant.enrolment.request({
+          patientId: body.patient!,
+          subjectId: body.subject!,
+          relationship: body.relationship!,
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+          ...(body.purpose ? { purpose: body.purpose } : {}),
+          ...(body.permissions ? { permissions: body.permissions } : {}),
+          ...(body.expiresAt ? { expiresAt: body.expiresAt } : {}),
+        })
+      );
+    }
+    if (path === "/api/clinical/enrolment-attest" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; method?: string };
+      if (!body.id || !body.method) return send(res, 400, { error: "id and method required" });
+      const row = tenant.enrolment.get(body.id);
+      if (!row) return send(res, 404, { error: `no enrolment ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(row.patient_id, "Consent", () =>
+        tenant.enrolment.attest(body.id!, {
+          method: body.method!,
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+        })
+      );
+    }
+    if (path === "/api/clinical/enrolment-decline" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; reason?: string };
+      if (!body.id || !body.reason) return send(res, 400, { error: "id and reason required" });
+      const row = tenant.enrolment.get(body.id);
+      if (!row) return send(res, 404, { error: `no enrolment ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(row.patient_id, "Consent", () =>
+        tenant.enrolment.decline(body.id!, {
+          reason: body.reason!,
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+        })
+      );
+    }
+    if (path === "/api/clinical/patient-notices" && method === "GET") {
+      const status = url.searchParams.get("status") as "queued" | "dispatched" | "failed" | "told" | null;
+      if (patient) {
+        return phi("AuditEvent", () =>
+          tenant.notices.list({ patientId: patient, ...(status ? { status } : {}) })
+        );
+      }
+      return phi("AuditEvent", () => tenant.notices.list(status ? { status } : {}), (rows) => rows.length);
+    }
+    if (path === "/api/clinical/patient-notice-dispatch" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      const existing = tenant.notices.get(body.id);
+      if (!existing) return send(res, 404, { error: `no patient notice ${body.id}` });
+      return phiFor(existing.patient_id, "AuditEvent", () => tenant.notices.dispatch(body.id!));
+    }
+    if (path === "/api/clinical/patient-notice-told" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      const existing = tenant.notices.get(body.id);
+      if (!existing) return send(res, 404, { error: `no patient notice ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(existing.patient_id, "AuditEvent", () =>
+        tenant.notices.markTold(body.id!, { actorId: who })
       );
     }
     if (path === "/api/clinical/patient-requests" && method === "GET") {
@@ -2564,13 +2668,20 @@ async function route(
       const who = auth.ok ? auth.principal.id : "unauthenticated";
       if (path.endsWith("-complete")) {
         if (!body.outcome) return send(res, 400, { error: "outcome required" });
-        return phiFor(row.patient_id, "Task", () =>
-          tenant.patientAccess.completeRequest(body.request!, {
+        return phiFor(row.patient_id, "Task", () => {
+          const done = tenant.patientAccess.completeRequest(body.request!, {
             actorId: who,
             actorKind: auth.ok ? auth.principal.kind : "unknown",
             outcome: body.outcome!,
-          })
-        );
+          });
+          tenant.notices.queue({
+            patientId: done.patient_id,
+            kind: "request-completed",
+            aboutId: done.id,
+            summary: `Your ${done.kind} request was completed. Reference ${done.id}.`,
+          });
+          return done;
+        });
       }
       if (!body.reason) return send(res, 400, { error: "reason required" });
       return phiFor(row.patient_id, "Task", () =>

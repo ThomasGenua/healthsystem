@@ -60,11 +60,12 @@ v0.7.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A snapshot that leaves the machine**, encrypted, put, read back and walked again, so the stated RPO is not only for failures that spare the backup directory.
 - **A chart that can say whether anyone asked about immunizations or took a vital**, and that names a primary provider and a coverage claim without overwriting the last ones. Blood pressure is two numbers; a second current MRP is refused; today's appointments sit on the worklist. This is still not a provincial EMR — see [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
 - **Durable patient–clinic messaging.** A question is a thread that cannot be deleted. Closing it needs a reason. Awaiting the clinic and belonging to nobody are lists. This is not a portal and not a claim that anything was delivered.
+- **Clinic-attested enrolment, and notices that are fact rather than the chart.** A named clerk writes how they checked identity (twelve characters, same bar as breaking glass) before an OAuth subject is bound. A pending row is not a grant. Completing an access request queues a notice onto the same channel as break-glass; dispatching it is not recording that the patient was told. Not identity-proofing, not ONE ID, not a certified portal.
 - **An OAuth-only patient/proxy API.** A patient-context SMART token cannot read the general FHIR facade; every chart is authorized again through an active grant with explicit scope, purpose and expiry. Held results, appointments, messages, access history, delegates and requests are patient-safe views, not the clinician Workspace.
 - **Migration that cannot report success over a gap.** Completeness is declared and checked, not inferred from the absence of errors; rejects keep their payloads; a trial rolls back by retraction and a cutover with clinical activity refuses to.
 - **A laboratory result bridge that closes the order loop**, not just a mapping onto the facade: a resend writes nothing, a correction supersedes and arrives unacknowledged, a stale preliminary is ignored, and a result whose patient cannot be identified is held for a person rather than filed against a guess. No vendor interface is claimed — see [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
 - **A privacy office a privacy officer can actually run.** Reviews cannot close with unaddressed flags. A legal hold skips the message-log retention sweep. An incident cannot close without saying whether patients were told. Access clocks queue; they do not hard-stop. Completing an access request without a disclosure is flagged, not blocked. The assurance catalogue cannot close a finding by forgetting the residual risk. `BACKUP-02` stays partial.
-- **A patient HTML shell at `GET /me`.** Language, landmarks, an honest banner. Not a certified portal: no identity-proofing, no notification that a result reached the patient, no WCAG claim. Chart access is `/patient/*` plus OAuth.
+- **A patient HTML shell at `GET /me`.** Language, landmarks, an honest banner. Not a certified portal: no identity-proofing, no ONE ID, no WCAG claim, and this page does not enrol anyone. Clinic attestation is a named clerk writing how they checked. Chart access is `/patient/*` plus OAuth.
 - **An access review of the trail.** `GET /api/audit/review?patient=` joins who looked to whether anything clinical linked them, with flags a person can dismiss with a reason. Complementary to the operational office: this one reads the trail; that one runs the queues.
 - **Travelling clinics and a waitlist whose ordering is stated policy.** A visit is planned, repeated, moved and cancelled as one thing. Cancelling it puts every booked patient on a waitlist: priority, then waited-longest, then most-bumped. An offer resolves as accepted, declined or unreachable.
 - **Channel configuration as a ledger.** Every change is a version with who, when and why. Export and import go through the same store; a dry run writes nothing; every message records which configuration processed it.
@@ -87,7 +88,7 @@ Honest limits, so nobody discovers them in production:
 - **The database file is not encrypted.** `node:sqlite` cannot encrypt, so the control that fits a single-file store is an encrypted volume underneath it. Northstar does not assume one is there: it checks at boot and on `/api/health`, and says so loudly when it cannot find one. See [Encryption at rest](#encryption-at-rest).
 - **The conformance packs are not certified.** They encode the published profiles as data and pass the shipped fixtures, but no projectathon has scored them.
 - **The clinical platform has no user interface.** Every module described below — the chart, medications, orders, referrals, scheduling, registries — is a store and an HTTP API with tests. The admin UI covers interface operations only. This is deliberate ordering, not an oversight, but "a clinician can use this today" is not a claim being made.
-- **No certified patient portal.** `GET /me` is chrome: English/French copy, a skip link, landmarks, and a banner that says what this page is not. The JSON patient/proxy boundary is mounted at `/patient/*`; it is OAuth-only and checks a live, explicitly scoped authority grant on every chart. There is no identity-proofing enrolment flow, notification delivery, or accessibility claim. A shell people can open is not a portal people can use.
+- **No certified patient portal.** `GET /me` is chrome: English/French copy, a skip link, landmarks, and a banner that says what this page is not. It does not enrol anyone. The JSON patient/proxy boundary is mounted at `/patient/*`; it is OAuth-only and checks a live, explicitly scoped authority grant on every chart. Binding a subject is clinic-attested enrolment — a named person writes how they checked — not identity-proofing and not ONE ID. Notices publish fact onto a configured channel; dispatching is not telling. There is no WCAG or AODA claim. A shell people can open is not a portal people can use.
 - **No clinical decision support content.** The medication safety mechanism is here — the check, the severities, the override with its record — and ships a deliberately small cross-reactivity set covering the classes with the clearest consensus. Drug interactions come from a licensed database through the `InteractionSource` seam. An interaction table that is 80% complete is one prescribers learn to trust, and the missing 20% is then invisible.
 - **Nothing here uses machine learning.** Section 7 of the requirements asks for it; nothing in this repository does anything of the sort, and no output should be read as though it did.
 
@@ -767,7 +768,7 @@ A chart that is short says so at the top, above the panels: *"This is not the wh
 
 **Break-glass.** The two queues, and the controls that discharge them. A lockbox nobody can find out was opened is a lockbox with no lock.
 
-**Privacy.** The queues a privacy officer actually runs: unreviewed break-glass, overdue access requests, open reviews, active holds, incidents and assurance findings. Opening a review of the last 24 hours is a button; closing one with flags still open is not. After-hours uses UTC clinic hours, not local time.
+**Privacy.** The queues a privacy officer actually runs: unreviewed break-glass, overdue access requests, pending enrolments, undelivered and untold patient notices, open reviews, active holds, incidents and assurance findings. Opening a review of the last 24 hours is a button; closing one with flags still open is not. After-hours uses UTC clinic hours, not local time.
 
 Hostile content in this console runs in the browser session of the person holding an admin key, so `test/ui-xss.test.ts` drives the operational tabs in a real Chromium against genuinely hostile input — a patient's name from an ADT feed, and the free text a clerk types into a referral, a task or a break-glass reason — and asserts both that nothing executed and that the payloads actually reached the DOM. The Privacy tab is driven too; its honesty check is the inbox tests, because an empty queue would pass an XSS check having rendered nothing.
 
@@ -780,8 +781,9 @@ every request. A patient scope cannot read `/fhir/*`; an admin scope does not
 imply patient; an API key cannot be issued patient scope.
 
 `GET /me` is a static English/French shell with landmarks and an honest banner.
-It loads no chart. There is still no identity-proofing enrolment, notification
-delivery, or accessibility claim.
+It loads no chart and does not enrol anyone. Clinic attestation is a named
+clerk writing a method; it is not identity-proofing. Notices publish fact onto
+a channel; dispatching is not telling. There is still no WCAG or AODA claim.
 
 ## The privacy office
 
@@ -851,6 +853,23 @@ So authority is time-bounded by construction:
 
 The expired grant row stays. Who was entitled when is not something to delete — it simply stops being authority.
 
+### Clinic-attested enrolment
+
+Until a named person writes how they checked, an OAuth subject is not on the
+chart. `POST /api/clinical/authority-self` and `authority-proxy` require a
+`method` of at least twelve characters — "in person" is not a method — and
+go through `PatientEnrolment`. A pending row is not a grant. `GET /me` does
+not enrol anyone; there is no `/patient/enrol`, because naming a chart from
+the internet is H-52. Proxy enrolments still need an expiry, a purpose and
+explicit permissions. This is not identity-proofing and not ONE ID.
+
+Completing an access request queues a patient notice whose payload is the
+fact (kind, reference, a summary) and never a result value. The notice is
+published onto the same configured channel as break-glass. Dispatching it is
+not recording that the patient was told; a missing channel is a visible
+failure. The Privacy tab lists pending enrolments and undelivered or untold
+notices.
+
 ### The patient/proxy API
 
 `GET /patient/authorities` is the starting point: the charts this OAuth subject
@@ -883,8 +902,8 @@ without both trails.
 `GET /me` is public on purpose, the way `GET /` is: it is chrome, not a record.
 An unauthenticated GET is not audited as a reach for a patient. The page says,
 in English and in French, that it is not a certified portal — no
-identity-proofing, no notification that a result or message reached the
-patient, no WCAG or AODA claim. Chart access is `/patient/*` with a live grant.
+identity-proofing, no ONE ID, no WCAG or AODA claim — and that this page does
+not enrol anyone. Chart access is `/patient/*` with a live grant.
 
 ### Release timing
 
@@ -1367,6 +1386,8 @@ src/
   schedule/clinics.ts      travelling-clinic visits and the waitlist
   population/registry.ts   cohorts, care gaps, quality measures with honest denominators
   patient/access.ts        patient and proxy authority, result release timing
+  patient/enrolment.ts     clinic-attested binding of an OAuth subject; pending is not a grant
+  patient/notice.ts        break-glass and patient notices; dispatching is not telling
   patient/consent.ts       consent directives and break-glass
   privacy/office.ts        reviews, holds, incidents, clocks, assurance catalogue
   workspace/summary.ts     the assembled chart, declaring what it left out
@@ -1633,7 +1654,7 @@ All of these are engine sources, so everything downstream — pipeline, lineage,
 
 `GET /` serves a single-file, no-build UI over the public API: a dashboard with live counts, history charts, an access audit view, channels with hash-chain verification, a channel designer, a mapping editor with live fixtures, a message browser with per-step lineage, the delivery queue with dead-letter replay and discard, a FHIR facade browser, subscription management, terminology lookups, a conformance validator, and a **Privacy** tab over the office queues. It is deliberately thin; anything it does, curl does.
 
-`GET /me` is a separate file: English/French chrome, a skip link, landmarks, and a banner that says this is not a certified portal. It does not load a chart.
+`GET /me` is a separate file: English/French chrome, a skip link, landmarks, and a banner that says this is not a certified portal and that the page does not enrol anyone. It does not load a chart.
 
 Paste an API key into the box in the header and it is attached to every request; it is held in browser local storage and sent nowhere else.
 
@@ -1718,7 +1739,7 @@ a scope-narrowed directive withholds its section rather than the chart around it
 [#35](https://github.com/ThomasGenua/healthsystem/issues/35) is done in two complementary pieces. A privacy officer can open a review of the last 24 hours, address flags with a written reason, place a legal hold that skips the retention sweep, record a disclosure when fulfilling an access request, and close an incident only after saying whether patients were told. The assurance catalogue cannot close a finding by forgetting it. Separately, `GET /api/audit/review?patient=` answers who looked, whether anything clinical linked them to the patient, and what to look at first — with each flag saying why it fired, dismissible with a reason that is kept, and the chain's verification attached to the report. Credentials carry a practitioner to make that join possible. It is not a SIEM, not a PIA product, and after-hours is UTC.
 
 - [#23 Validate the conformance packs against the published Projectathon scripts](https://github.com/ThomasGenua/healthsystem/issues/23) — the packs validate against this project's reading of the specifications, which is not the same as conforming to them.
-- [#24 The patient-facing surface, and its separate identity boundary](https://github.com/ThomasGenua/healthsystem/issues/24) — the backend boundary is done, and `GET /me` is chrome with English/French copy and landmarks. What remains is identity-proofing enrolment, notification delivery and accessibility validation. Do not call `/me` a portal.
+- [#24 The patient-facing surface, and its separate identity boundary](https://github.com/ThomasGenua/healthsystem/issues/24) — the backend boundary is done, clinic-attested enrolment binds a subject after a named clerk writes how they checked, and notices publish fact onto a channel (dispatching is not telling). `GET /me` is chrome and does not enrol anyone. What remains is identity-proofing / ONE ID, delivery to a phone or inbox the patient owns, and accessibility validation. Do not call `/me` a portal.
 [#40](https://github.com/ThomasGenua/healthsystem/issues/40) is done: a prescription has a transmission lifecycle, a second transmission is refused because a pharmacy may dispense twice, and each way one is lost — never sent, sent and unacknowledged, failed, cancelled without telling the pharmacy — is a chase list. No pharmacy network has received a message.
 
 **Built for where it actually runs.**

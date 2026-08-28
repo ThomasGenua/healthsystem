@@ -121,11 +121,15 @@ discussion, but they will not be treated as advisories:
   There is no clustering, and a hardware failure is an outage until the standby
   is promoted by hand.
 - **No certified patient portal.** `GET /me` is chrome (EN/FR copy, landmarks,
-  an honest banner) and loads no chart. The patient/proxy JSON boundary is
-  mounted at `/patient/*`, but it is not an enrolment or identity-proofing
-  flow, notification delivery, or an accessibility claim. It is OAuth-only; a
-  patient-context token cannot read the general FHIR facade, and each chart
-  still needs a live, explicitly scoped subject-to-patient grant.
+  an honest banner) and loads no chart. It does not enrol anyone. The
+  patient/proxy JSON boundary is mounted at `/patient/*`. Binding a subject
+  is clinic-attested enrolment: a named person writes how they checked, and
+  a pending row is not a grant. Notices publish fact onto a configured
+  channel; dispatching is not telling. None of that is identity-proofing,
+  ONE ID, notification that a letter arrived, or an accessibility claim.
+  It is OAuth-only; a patient-context token cannot read the general FHIR
+  facade, and each chart still needs a live, explicitly scoped
+  subject-to-patient grant.
 - **A credential that carries no organization is withheld from by every
   `withhold-from-organization` directive.** Credentials can now carry one, so a
   directive against one clinic no longer withholds from the whole territory —

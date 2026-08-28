@@ -571,6 +571,41 @@ test("every clinical route leaves an audit row, including ones added later", asy
       officer
     );
 
+    // Enrolment and patient-notice fixtures. Dedicated rows so attest,
+    // decline, dispatch and told do not depend on the order the discovery
+    // loop happens to visit the paths. A pending enrolment is not a grant;
+    // queue() dispatches immediately, and with no channel that is a visible
+    // failure — which is the path the dispatch route still has to audit.
+    const clerk = { actorId: "registration-desk", actorKind: "practitioner" as const };
+    const pendingToAttest = tPriv.enrolment.request({
+      patientId: P,
+      subjectId: "enrol-attest-subject",
+      relationship: "self",
+      by: clerk,
+    });
+    const pendingToDecline = tPriv.enrolment.request({
+      patientId: P,
+      subjectId: "enrol-decline-subject",
+      relationship: "self",
+      by: clerk,
+    });
+    const pendingToRead = tPriv.enrolment.request({
+      patientId: P,
+      subjectId: "enrol-read-subject",
+      relationship: "self",
+      by: clerk,
+    });
+    const noticeToDispatch = tPriv.notices.queue({
+      patientId: P,
+      kind: "request-completed",
+      summary: "Your access request was completed. Reference fixture-dispatch.",
+    });
+    const noticeToTell = tPriv.notices.queue({
+      patientId: P,
+      kind: "enrolment-attested",
+      summary: "Your clinic has attested your identity. Reference fixture-told.",
+    });
+
     // Arguments good enough for each route to do real work. A route that
     // needs one not listed here 400s, which this treats as a failure rather
     // than a pass — an untested route is the thing being guarded against.
@@ -639,6 +674,14 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/authority-self": "POST",
       "/api/clinical/authority-proxy": "POST",
       "/api/clinical/authority-revoke": "POST",
+      "/api/clinical/enrolments": "",
+      "/api/clinical/enrolment": `?id=${pendingToRead.id}`,
+      "/api/clinical/enrolment-request": "POST",
+      "/api/clinical/enrolment-attest": "POST",
+      "/api/clinical/enrolment-decline": "POST",
+      "/api/clinical/patient-notices": "",
+      "/api/clinical/patient-notice-dispatch": "POST",
+      "/api/clinical/patient-notice-told": "POST",
       "/api/clinical/patient-requests": "",
       "/api/clinical/patient-request-complete": "POST",
       "/api/clinical/patient-request-decline": "POST",
@@ -787,7 +830,11 @@ test("every clinical route leaves an audit row, including ones added later", asy
       },
       "/api/clinical/thread-reopen": { id: toReopen.id, reason: "patient called back with a new question" },
       "/api/clinical/thread-assign": { id: toAssign.id, owner: "dr-tetso", reason: "picked up from the unowned queue" },
-      "/api/clinical/authority-self": { patient: P, subject: "patient-oauth-subject" },
+      "/api/clinical/authority-self": {
+        patient: P,
+        subject: "patient-oauth-subject",
+        method: "photo ID and health card matched at the desk",
+      },
       "/api/clinical/authority-proxy": {
         patient: P,
         subject: "proxy-oauth-subject",
@@ -795,8 +842,24 @@ test("every clinical route leaves an audit row, including ones added later", asy
         expiresAt: "2027-08-24T00:00:00Z",
         permissions: ["appointments", "messages"],
         purpose: "book appointments and exchange messages",
+        method: "photo ID and health card matched at the desk",
       },
       "/api/clinical/authority-revoke": { authority: authorityToRevoke.id, reason: "patient withdrew access" },
+      "/api/clinical/enrolment-request": {
+        patient: P,
+        subject: "enrol-request-subject",
+        relationship: "self",
+      },
+      "/api/clinical/enrolment-attest": {
+        id: pendingToAttest.id,
+        method: "photo ID and health card matched at the desk",
+      },
+      "/api/clinical/enrolment-decline": {
+        id: pendingToDecline.id,
+        reason: "could not confirm identity from the documents presented",
+      },
+      "/api/clinical/patient-notice-dispatch": { id: noticeToDispatch.id },
+      "/api/clinical/patient-notice-told": { id: noticeToTell.id },
       "/api/clinical/patient-request-complete": {
         request: requestToComplete.id,
         outcome: "encrypted chart export provided to the patient",

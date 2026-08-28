@@ -186,6 +186,17 @@ test(
         by: { actorId: payloads[3], actorKind: "practitioner" },
         reason: `${payloads[0]} — unresponsive on arrival, need the allergy list now`,
       });
+      t.enrolment.request({
+        patientId: HOSTILE_PATIENT,
+        subjectId: payloads[0],
+        relationship: "self",
+        by: HOSTILE_ACTOR,
+      });
+      t.notices.queue({
+        patientId: HOSTILE_PATIENT,
+        kind: "request-completed",
+        summary: payloads[1],
+      });
 
       chrome = spawn(CHROME!, [
         "--headless=new",
