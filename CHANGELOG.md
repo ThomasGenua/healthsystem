@@ -22,7 +22,7 @@ always forward-compatible and run automatically on open — see
   Visit assembly gives procedures their own section. The patient summary
   carries procedures and active care plans. Not CDS, not a specialty
   procedure library, not a provincial care-plan product. Hazards H-118 to
-  H-123.
+  H-123. 839 tests.
 
 - **Clinic-attested enrolment, and notices that publish fact rather than the
   chart.** Binding an OAuth subject to a chart is no longer `grantSelf` with
