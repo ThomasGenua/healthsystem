@@ -281,7 +281,10 @@ window.loadChart=async()=>{
     <div class="cards"><div class="card"><div class="n">${esc(p.family||"—")}, ${esc(p.given||"")}</div><div class="l">${esc(c.patientId)}${p.birthDate?" · born "+esc(p.birthDate):""}${p.preferredLanguage?" · "+esc(p.preferredLanguage):""}${p.phone?" · "+esc(p.phone):""}</div></div>
       <div class="card"><div class="n">${statusTag}</div><div class="l">allergy status</div></div>
       <div class="card"><div class="n">${c.immunizationStatus==="never-asked"?tag("never asked","bad"):tag(esc(String(c.immunizationStatus||"")),"ok")}</div><div class="l">immunization history</div></div>
-      <div class="card"><div class="n">${c.vitalStatus==="never-measured"?tag("never measured","bad"):tag(esc(String(c.vitalStatus||"")),"ok")}</div><div class="l">vital signs</div></div></div>
+      <div class="card"><div class="n">${c.vitalStatus==="never-measured"?tag("never measured","bad"):tag(esc(String(c.vitalStatus||"")),"ok")}</div><div class="l">vital signs</div></div>
+      <div class="card"><div class="n">${c.procedureStatus==="never-recorded"?tag("never recorded","bad"):tag(esc(String(c.procedureStatus||"")),"ok")}</div><div class="l">procedures</div></div>
+      <div class="card"><div class="n">${c.carePlanStatus==="never-planned"?tag("never planned","bad"):tag(esc(String(c.carePlanStatus||"")),"ok")}</div><div class="l">care plans</div></div>
+      <div class="card"><div class="n">${c.documentStatus==="never-received"?tag("never received","bad"):tag(esc(String(c.documentStatus||"")),"ok")}</div><div class="l">patient documents</div></div></div>
     ${c.stale?`<div class="banner bad"><b>This chart is a cache, as of ${esc(String(c.stale.ageHours))} hours ago.</b>
       <p>${esc(c.stale.note)} Ask the patient again before acting on an empty panel — especially the allergy list.</p></div>`:""}
     ${c.linked?`<div class="banner"><b>Assembled across linked charts: ${c.linked.members.map(m=>esc(m)).join(", ")}.</b>
@@ -296,6 +299,9 @@ window.loadChart=async()=>{
         ${panel("Problems",c.problems,x=>{const b=body(x);return `<li>${esc((b.code&&(b.code.text||(b.code.coding&&b.code.coding[0]&&b.code.coding[0].display)))||b.resourceType||x.entry_type)}${b.clinicalStatus?" "+tag(esc(String(b.clinicalStatus.text||b.clinicalStatus)),"dim"):""}</li>`})}
         ${panel("Immunizations",c.immunizations,x=>`<li>${esc(x.vaccine)} ${stTag(x.status)} <span class="none">${esc(x.occurrenceAt||"")}</span></li>`)}
         ${panel("Vitals",c.vitals,x=>`<li>${esc(x.kind)} ${x.kind==="blood-pressure"?`<b>${esc(String(x.systolic))}/${esc(String(x.diastolic))}</b>`:`<b>${esc(String(x.value))}</b>`} <span class="none">${esc(x.unit||"")} ${when(x.takenAt)}</span></li>`)}
+        ${panel("Procedures",c.procedures,x=>`<li>${esc(x.display)} ${stTag(x.status)} <span class="none">${esc(x.performedAt||"")} ${esc(x.reason||"")}</span></li>`)}
+        ${panel("Care plans",c.carePlans,x=>`<li>${esc(x.title)} ${stTag(x.status)} <span class="none">review ${esc(x.reviewBy||"")} ${esc((x.goals&&x.goals[0])||"")}</span></li>`)}
+        ${panel("Patient-supplied documents",c.documents,x=>`<li>${esc(x.title)} ${stTag(x.source)} <span class="none">${esc(x.contentType||"")} ${esc(x.receivedAt||"")}${x.hasContent?" · on file":" · recorded, not scanned"}</span></li>`)}
         ${panel("Care team",c.careTeam,x=>`<li>${esc(x.role)} — ${esc(x.practitioner_id)}${x.active_to?" "+tag("ended","dim"):""}</li>`)}
         ${panel("Coverage",c.coverage,x=>`<li>${esc(x.plan)} ${stTag(x.eligibility)} <span class="none">${esc(x.identifier_value||"")}</span></li>`)}
         ${panel("Open messages",c.openThreads,x=>`<li>${esc(x.subject)} ${stTag(x.status)} <span class="none">${esc(x.owner_id||"unowned")}</span></li>`)}
@@ -362,6 +368,9 @@ window.loadWorklist=async()=>{
       ${panel("Referrals that have gone quiet",w.stalledReferrals,r=>`<li>${esc(r.to_service)} for
         <a href="#" onclick="openChart('${esc(r.patient_id)}');go('Chart');return false">${esc(r.patient_id)}</a>
         ${stTag(r.status)} ${due("due",r.expected_by)}</li>`)}
+      ${panel("Care plans past their review date",w.overdueCarePlans,x=>`<li>${esc(x.title)} for
+        <a href="#" onclick="openChart('${esc(x.patientId)}');go('Chart');return false">${esc(x.patientId)}</a>
+        ${stTag(x.status)} ${due("review by",x.reviewBy)}</li>`)}
       ${panel("Orders with no result back",w.ordersAwaitingResult,o=>`<li>${esc(o.display)} for
         <a href="#" onclick="openChart('${esc(o.patient_id)}');go('Chart');return false">${esc(o.patient_id)}</a>
         ${due("expected",o.expected_by)}</li>`)}

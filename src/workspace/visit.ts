@@ -12,8 +12,11 @@
  *
  * The sections come from the stores that already own an `encounter_id`: orders
  * and their results, medication statements, and the clinical entries — notes,
- * problems, observations — that were filed against the visit. This module owns
- * no data and assembles what exists, exactly as `Workspace` does for the chart.
+ * problems, observations, procedures, and documents the patient supplied —
+ * that were filed against the visit. A letter brought in is not a SOAP note;
+ * notes and documents share `DocumentReference` on the log and are split here
+ * the same way the chart splits them. This module owns no data and assembles
+ * what exists, exactly as `Workspace` does for the chart.
  *
  * One thing it deliberately does not do: infer membership. Only content that
  * names this encounter belongs to it. The alternative — a time window around
@@ -26,6 +29,9 @@ import type { MedicationStore, MedRow } from "../meds/store.ts";
 import type { OrderStore, OrderRow, ResultRow } from "../orders/store.ts";
 import type { Encounters, EncounterRow, ParticipantRow } from "../clinical/encounters.ts";
 import { Vitals, type VitalView } from "../clinical/vitals.ts";
+import { Procedures, type ProcedureView } from "../clinical/procedures.ts";
+import { isClinicalNoteEntry } from "../clinical/notes.ts";
+import { PatientDocuments, type PatientDocumentView } from "../clinical/documents.ts";
 import { type Section, section, describe } from "./summary.ts";
 
 export interface VisitSources {
@@ -61,7 +67,11 @@ export interface VisitSummary {
   notes: Section<ClinicalEntry>;
   /** Vital signs taken at this visit. Empty here is ordinary, not "never measured". */
   vitals: Section<VitalView>;
-  /** Problems, observations and procedures recorded against this visit. */
+  /** Procedures recorded against this visit. Empty here is ordinary, not "never recorded". */
+  procedures: Section<ProcedureView>;
+  /** Documents the patient supplied at this visit. Empty here is ordinary, not "never received". */
+  documents: Section<PatientDocumentView>;
+  /** Problems and observations recorded against this visit. Procedures have their own section. */
   findings: Section<ClinicalEntry>;
 
   complete: boolean;
@@ -76,7 +86,9 @@ export const VISIT_SECTION_TYPES = {
   results: "Observation",
   medications: "MedicationStatement",
   notes: "DocumentReference",
+  documents: "DocumentReference",
   vitals: "Observation",
+  procedures: "Procedure",
   findings: "Condition",
 } as const;
 
@@ -140,9 +152,20 @@ export class VisitView {
     const notes = sect<ClinicalEntry>(
       "notes",
       record && patientId
-        ? () => record.chart(patientId, { entryType: "DocumentReference", encounterId })
+        ? () =>
+            record.chart(patientId, { entryType: "DocumentReference", encounterId }).filter(isClinicalNoteEntry)
         : undefined,
       patientId ? "not configured in this deployment" : "the encounter could not be read, so its notes cannot be found"
+    );
+
+    const documents = sect<PatientDocumentView>(
+      "documents",
+      record && patientId
+        ? () => new PatientDocuments(record).forPatient(patientId, { encounterId })
+        : undefined,
+      patientId
+        ? "not configured in this deployment"
+        : "the encounter could not be read, so its patient-supplied documents cannot be found"
     );
 
     // Taken at this visit only. "Never measured" belongs on the chart, not
@@ -154,13 +177,19 @@ export class VisitView {
       patientId ? "not configured in this deployment" : "the encounter could not be read, so its vitals cannot be found"
     );
 
+    const procedures = sect<ProcedureView>(
+      "procedures",
+      record && patientId ? () => new Procedures(record).forPatient(patientId, { encounterId }) : undefined,
+      patientId ? "not configured in this deployment" : "the encounter could not be read, so its procedures cannot be found"
+    );
+
     const findings = sect<ClinicalEntry>(
       "findings",
       record && patientId
         ? () =>
             record
               .chart(patientId, { encounterId })
-              .filter((e) => e.entry_type === "Condition" || e.entry_type === "Observation" || e.entry_type === "Procedure")
+              .filter((e) => e.entry_type === "Condition" || e.entry_type === "Observation")
         : undefined,
       patientId ? "not configured in this deployment" : "the encounter could not be read, so its findings cannot be found"
     );
@@ -171,7 +200,9 @@ export class VisitView {
       ["results", results],
       ["medications", medications],
       ["notes", notes],
+      ["documents", documents],
       ["vitals", vitals],
+      ["procedures", procedures],
       ["findings", findings],
     ];
     const omissions = sections.map(([name, s]) => describe(name, s)).filter((d): d is string => d !== null);
@@ -186,7 +217,9 @@ export class VisitView {
       results,
       medications,
       notes,
+      documents,
       vitals,
+      procedures,
       findings,
       complete: omissions.length === 0,
       omissions,

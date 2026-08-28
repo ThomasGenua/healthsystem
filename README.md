@@ -58,7 +58,7 @@ v0.7.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A lockbox that can cover part of a chart**, where the locked panel says a directive withheld it rather than rendering as "none" — so a patient can withhold one section without taking the rest of their chart away from the clinician treating them.
 - **A restore that has actually been rehearsed**, to somewhere the database has never been, with a measured RTO — because a verified snapshot only proves the bytes hashed correctly when they were written.
 - **A snapshot that leaves the machine**, encrypted, put, read back and walked again, so the stated RPO is not only for failures that spare the backup directory.
-- **A chart that can say whether anyone asked about immunizations or took a vital**, and that names a primary provider and a coverage claim without overwriting the last ones. Blood pressure is two numbers; a second current MRP is refused; today's appointments sit on the worklist. This is still not a provincial EMR — see [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
+- **A chart that can say whether anyone asked about immunizations, took a vital, recorded a procedure, wrote a care plan or received a document the patient supplied**, and that names a primary provider and a coverage claim without overwriting the last ones. Blood pressure is two numbers; a completed procedure needs a date; a care plan needs a goal and a review date; a letter the patient brought in is not a SOAP note; a second current MRP is refused; today's appointments and overdue care plans sit on the worklist. This is still not a provincial EMR — see [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
 - **Durable patient–clinic messaging.** A question is a thread that cannot be deleted. Closing it needs a reason. Awaiting the clinic and belonging to nobody are lists. This is not a portal and not a claim that anything was delivered.
 - **Clinic-attested enrolment, and notices that are fact rather than the chart.** A named clerk writes how they checked identity (twelve characters, same bar as breaking glass) before an OAuth subject is bound. A pending row is not a grant. Completing an access request queues a notice onto the same channel as break-glass; dispatching it is not recording that the patient was told. Not identity-proofing, not ONE ID, not a certified portal.
 - **An OAuth-only patient/proxy API.** A patient-context SMART token cannot read the general FHIR facade; every chart is authorized again through an active grant with explicit scope, purpose and expiry. Held results, appointments, messages, access history, delegates and requests are patient-safe views, not the clinician Workspace.
@@ -76,7 +76,7 @@ v0.7.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A migration you can rehearse, and an extract reader that loses nothing.** `dryRun()` runs the whole load through the ordinary stores inside a transaction that is always rolled back — it *is* the loader, so it cannot approve what a real load would refuse, and nothing survives it. The FHIR Bundle and NDJSON reader skips nothing: a resource it cannot map comes back with its reason and the resource itself, one it can map but the stores refuse reaches the reject queue with its payload, and the declared count comes from the export's own `total` rather than from what happened to arrive.
 - **Value sets and concept maps from real releases.** FHIR ValueSet and ConceptMap resources plus SNOMED RF2 refsets and cross-maps, replacing hand-written pack JSON. A value set that cannot be fully resolved — a filter, an exclusion, a reference this store cannot follow — refuses to import at all, because one carrying the publisher's name and a smaller membership is worse than none.
 
-826 tests. Backend first, then the interface that makes the backend's honesty visible.
+846 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -132,7 +132,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 826 tests
+npm test          # 846 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -472,11 +472,11 @@ Every criterion given must match — a search that widened as the clinician supp
 
 The index also carries preferred language and telecom, recovered from the Patient resource the same way the name is. A rebuild still reproduces them, so they are not a second source of truth.
 
-### Immunizations, vitals, care team and coverage
+### Immunizations, vitals, procedures, care plans, patient-supplied documents, care team and coverage
 
-Four things a primary-care chart has to be able to say, and that used to live only as untyped entries or as a string on a note.
+Things a primary-care chart has to be able to say, and that used to live only as untyped entries or as a string on a note.
 
-**Immunizations and vitals write onto the clinical log.** They are not a second table. A given dose needs a vaccine and a date; a refusal needs a reason; blood pressure needs both numbers. A laboratory Observation is not a vital — mixing them would make a potassium look like a pulse. History is three-valued, the same way allergies are: `never-asked` and `never-measured` are findings, not empty panels.
+**Immunizations, vitals, procedures, care plans and patient-supplied documents write onto the clinical log.** They are not a second table. A given dose needs a vaccine and a date; a refusal needs a reason; blood pressure needs both numbers; a completed procedure needs the date it was performed; a not-done procedure needs a reason; a care plan needs a goal and a review date. A laboratory Observation is not a vital — mixing them would make a potassium look like a pulse. A specialist letter the patient brought in is not a SOAP note — mixing those would make an unsigned "note" nobody attested. Completing or revoking a care plan is an amendment. History is three-valued, the same way allergies are: `never-asked`, `never-measured`, `never-recorded`, `never-planned` and `never-received` are findings, not empty panels. An active care plan past its review date is work, not a status. The bytes of a document are optional: a clerk can record that paper arrived without pretending it was scanned. HTML, SVG and executables are refused; a payload over 256 KiB is refused. Lists never carry the payload. This is not a portal, not a virus scanner, and not a WCAG PDF.
 
 **Care team and coverage are their own tables**, because a relationship and an eligibility claim are not generic chart entries. At most one *current* primary: two people who both believe they are most responsible is how a result goes to neither inbox. Retiring a membership sets an end date; the visits they attended stay theirs. A coverage change is a new row that supersedes the last one, so "were they covered when this visit happened" stays answerable. `unknown` is a recorded eligibility, not a missing field.
 
@@ -644,9 +644,9 @@ Every section therefore carries its own completeness, and the summary carries `c
 
 A failing store does not take the chart down — six panels beat an error page — but the panel it leaves behind never passes for "none". `complete === false` is the flag a renderer must surface, not a detail it may ignore.
 
-Allergy, immunization and vital-sign status are carried to the top of the summary rather than left inside their panels, and read from the stores rather than inferred from the panel's contents. Inferring them would undo the distinction those stores exist for: a clinician scanning a chart has to see "never asked" or "never measured" without interpreting an empty box. A chart with no current primary or no coverage claim says so in `omissions` the same way.
+Allergy, immunization, vital-sign, procedure, care-plan and patient-document status are carried to the top of the summary rather than left inside their panels, and read from the stores rather than inferred from the panel's contents. Inferring them would undo the distinction those stores exist for: a clinician scanning a chart has to see "never asked", "never measured", "never recorded", "never planned" or "never received" without interpreting an empty box. A chart with no current primary or no coverage claim says so in `omissions` the same way.
 
-`worklist()` is the same idea across the day rather than across one patient. A clinician's work is not one queue — today's appointments, messages awaiting a reply, unowned messages, results, referrals, tasks, and each system reports its own as though it were the whole picture. The value of a single view is that nothing is owed to them somewhere they are not looking, which is only true if the view says what it could not reach. Today's list is that clinician's booked and attended appointments on the UTC day of `asOf`, not every empty slot in the diary.
+`worklist()` is the same idea across the day rather than across one patient. A clinician's work is not one queue — today's appointments, messages awaiting a reply, unowned messages, results, referrals, tasks, care plans past their review date, and each system reports its own as though it were the whole picture. The value of a single view is that nothing is owed to them somewhere they are not looking, which is only true if the view says what it could not reach. Today's list is that clinician's booked and attended appointments on the UTC day of `asOf`, not every empty slot in the diary. Overdue care plans are the service's, like stalled referrals: said plainly rather than filtered to nothing.
 
 ### Patient messaging
 
@@ -692,7 +692,7 @@ The same parties are served on the FHIR facade as `Practitioner`, `PractitionerR
 
 ## The clinical API, and audit by construction
 
-Everything above — the chart, the patient index, medications, allergies, immunizations, vitals, care team, coverage, orders, results, referrals, tasks, notes, message threads and the assembled summary — is served under `/api/clinical/*`, behind the `admin` scope and inside the caller's tenant like the rest of the API.
+Everything above — the chart, the patient index, medications, allergies, immunizations, vitals, procedures, care plans, patient-supplied documents, care team, coverage, orders, results, referrals, tasks, notes, message threads and the assembled summary — is served under `/api/clinical/*`, behind the `admin` scope and inside the caller's tenant like the rest of the API.
 
 Exposing it is the moment the audit requirement in §18 starts to bite. Until now the clinical stores were libraries: nothing reached them over a network, so nothing went unrecorded. A route is a way in, and **an audit guarantee that depends on each new route remembering to call `audit()` is one that holds until somebody forgets** — and the forgetting is invisible, because the route works, the data is served, and nothing anywhere says the trail is short.
 
@@ -878,8 +878,10 @@ grant. Every other route takes one of those patient ids and checks it again;
 accepting a patient id is not accepting its authority.
 
 - `/patient/summary` — demographics, allergy status, medication lists,
-  immunizations, latest vitals, current care team and coverage. It is not the
-  clinician Workspace: no internal tasks and no unacknowledged result values.
+  immunizations, latest vitals, procedures, active care plans, patient-supplied
+  document metadata (never the bytes), current care team and coverage. It is
+  not the clinician Workspace: no internal tasks and no unacknowledged result
+  values.
 - `/patient/results` — only `PatientAccess.resultsFor()`, so a held result is
   visible while its value is not.
 - `/patient/appointments` — bookings joined to their time and service.

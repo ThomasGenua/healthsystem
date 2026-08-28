@@ -285,11 +285,22 @@ test("the patient summary is patient-safe, not the clinician workspace", async (
       ownerId: "dr-tetso",
       by: GP,
     });
+    s.tenant.documents.receive({
+      patientId: P,
+      title: "Cardiology letter",
+      source: "patient-brought",
+      receivedAt: "2026-08-20T10:00:00Z",
+      contentType: "text/plain",
+      data: "SECRET-LETTER-BODY-SHOULD-NOT-APPEAR",
+      by: { authorId: "registration", authorKind: "practitioner" },
+    });
     const res = await s.request("patient-marie", `/patient/summary?patient=${P}`);
     assert.equal(res.status, 200);
     const body = JSON.stringify(await res.json());
     assert.ok(body.includes("Beaulieu"));
     assert.ok(body.includes("Metformin"));
+    assert.ok(body.includes("Cardiology letter"));
+    assert.ok(!body.includes("SECRET-LETTER-BODY-SHOULD-NOT-APPEAR"), "a patient summary lists metadata, not the file");
     assert.ok(!body.includes("Adenocarcinoma"), "held and unacknowledged result values are not in the summary");
     assert.ok(!body.includes("INTERNAL:"), "internal tasks are not a patient chart section");
   } finally {

@@ -11,6 +11,29 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Patient-supplied documents as chart facts, not notes.** They write onto
+  the existing append-only clinical record as `DocumentReference` with
+  category `patient-supplied`, so the notes module will not read them as SOAP.
+  A title, a source and a received date are required; the bytes are optional.
+  Lists and the patient summary carry metadata only. HTML, SVG and
+  executables are refused; a payload over 256 KiB is refused. An empty panel
+  is `never-received`, not none. Locking `DocumentReference` withholds both
+  clinic notes and patient-supplied documents. Not a portal, not a virus
+  scanner, not WCAG. Hazards H-124 to H-127. 846 tests.
+
+- **Procedures and care plans as first-class chart stores.** They write
+  onto the existing append-only clinical record. A completed procedure
+  needs the date it was performed; a not-done procedure needs twelve
+  characters of reason. An empty procedure panel is `never-recorded`, not
+  none. A care plan needs a goal and a review date (`reviewBy`, not faked
+  as `period.end`); completing it needs a written outcome and revoking it
+  needs a written reason, both as amendments. An active plan past its
+  review date is a worklist item, service-wide like a stalled referral.
+  Visit assembly gives procedures their own section. The patient summary
+  carries procedures and active care plans. Not CDS, not a specialty
+  procedure library, not a provincial care-plan product. Hazards H-118 to
+  H-123. 839 tests.
+
 - **Clinic-attested enrolment, and notices that publish fact rather than the
   chart.** Binding an OAuth subject to a chart is no longer `grantSelf` with
   nothing on the record saying how the clerk knew. A named person writes, in

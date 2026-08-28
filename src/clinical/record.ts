@@ -329,6 +329,28 @@ export class ClinicalRecord {
       .all(...(args as never[])) as unknown as ClinicalEntry[];
   }
 
+  /**
+   * The current version of every record of one type, across every patient
+   * in this tenant.
+   *
+   * A worklist that has to find care plans past their review date cannot
+   * walk the patient index and hope. Retracted rows stay out, the same way
+   * they stay off a chart: the working list is what is believed to be true
+   * now.
+   */
+  currentOfType(entryType: EntryType): ClinicalEntry[] {
+    return this.db.sql
+      .prepare(
+        `SELECT * FROM clinical_entries
+          WHERE tenant_id = ? AND entry_type = ? AND status != 'entered-in-error'
+            AND version = (
+              SELECT MAX(v.version) FROM clinical_entries v
+               WHERE v.tenant_id = clinical_entries.tenant_id AND v.record_id = clinical_entries.record_id)
+          ORDER BY seq`
+      )
+      .all(this.db.tenantId, entryType) as unknown as ClinicalEntry[];
+  }
+
   /** Every version written for a patient, oldest first. */
   entries(patientId: string): ClinicalEntry[] {
     return this.db.sql
