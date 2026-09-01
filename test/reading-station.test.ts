@@ -11,7 +11,7 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Db } from "../src/db.ts";
@@ -74,7 +74,7 @@ async function outageRig(opts: { budgetHours?: number; stamp?: string } = {}) {
     close: () => {
       primary.close();
       stationDb.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -119,7 +119,7 @@ test("a station dates its cache from when the data was true, not when the copy l
     assert.equal(fallback.fromName, false);
     assert.ok(Date.parse(fallback.takenAt) > 0);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -622,4 +622,39 @@ test("filling twice replaces the cache and resets the clock", async () => {
   } finally {
     rig.close();
   }
+});
+
+test("a cache that cannot be destroyed still refuses to serve, and does not fault", () => {
+  // Expiry destroys the cache, and on Windows deleting a database another
+  // handle still holds throws EPERM. That throw used to escape into whichever
+  // request triggered the purge, turning the deliberate 503 for an expired
+  // station into a 500 — a broken server rather than a station past its
+  // budget, which sends an operator looking in the wrong place.
+  //
+  // The lock is simulated here by putting a directory where the cache file
+  // goes, because that fails the same way on every platform: this file's
+  // point is that the behaviour is now checked from Linux too.
+  return (async () => {
+    const rig = await outageRig({ budgetHours: 1, stamp: "20260101T000000Z" });
+    try {
+      rmSync(rig.cachePath, { force: true, maxRetries: 10, retryDelay: 100 });
+      mkdirSync(rig.cachePath);
+      writeFileSync(join(rig.cachePath, "held-open"), "a handle nothing here can release");
+
+      const past = new Date(Date.now() + 48 * 3600 * 1000);
+      const state = rig.station.state(past);
+      assert.equal(state.serving, false, "past its budget the station does not serve");
+
+      // The whole point: this returns rather than throwing.
+      const out = rig.station.expire(past);
+      assert.equal(out.purged, false);
+      assert.match(out.detail, /could not be destroyed/);
+      assert.match(out.detail, /not being served/);
+
+      // And the manifest does not claim a purge that did not happen.
+      assert.equal(rig.station.state(past).serving, false, "it still refuses after a failed purge");
+    } finally {
+      rig.close();
+    }
+  })();
 });

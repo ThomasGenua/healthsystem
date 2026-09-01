@@ -483,12 +483,19 @@ export class OrderStore {
       refuse(`this result was corrected; acknowledge ${newer} instead`);
     }
     return this.db.transaction(() => {
-      this.db.sql
+      // Conditional on the state the check above read. Two clinicians opening
+      // the same critical result and both acting on it is the ordinary case,
+      // not the exotic one — and an unconditional write would record the
+      // second silently over the first, losing what the first said they did.
+      const done = this.db.sql
         .prepare(
           `UPDATE order_results SET acknowledged_by = ?, acknowledged_at = ?, acknowledgement_action = ?
-            WHERE tenant_id = ? AND id = ?`
+            WHERE tenant_id = ? AND id = ? AND acknowledged_at IS NULL`
         )
         .run(by.actorId, new Date().toISOString(), by.action, this.db.tenantId, resultId);
+      if (done.changes === 0) {
+        refuse("this result has already been acknowledged", 409);
+      }
       if (r.order_id) {
         this.event(r.order_id, "result-acknowledged", by, { detail: `${r.display}: ${by.action}` });
       }

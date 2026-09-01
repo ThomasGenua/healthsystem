@@ -36,7 +36,7 @@ function office(overrideHours?: number) {
     c: new ConsentDirectives(db, overrideHours ? { overrideHours } : {}),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -434,6 +434,6 @@ test("directives and overrides are confined to their tenant", () => {
     assert.equal(south.overridesFor(P).length, 0);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

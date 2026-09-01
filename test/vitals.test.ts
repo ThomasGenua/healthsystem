@@ -29,7 +29,7 @@ function clinic() {
     vitals: new Vitals(record),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -162,6 +162,6 @@ test("one custodian's vitals are not another's", () => {
     assert.equal(south.historyStatus(P), "never-measured");
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

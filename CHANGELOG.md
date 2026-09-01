@@ -9,7 +9,175 @@ always forward-compatible and run automatically on open — see
 
 ## Unreleased
 
+**Fixed**
+
+- **A backup destination on Windows went somewhere else, quietly.** `fs:` and
+  `file://` destinations were parsed by slicing the scheme off and requiring a
+  leading `/`. `C:\backups` has no leading slash, so an absolute Windows path
+  was refused as relative; and `file:///C:/backups` sliced down to
+  `/C:/backups`, which is not a path — the backups landed in a directory named
+  `C:` at the root of the current drive. Both failures hit the one setting
+  whose whole job is to put backups somewhere other than the machine holding
+  the database. Parsing now goes through `fileURLToPath`, which knows the
+  drive-letter and percent-encoding rules, and absoluteness is checked with
+  the rules of the platform being targeted rather than of POSIX. Hazard H-158.
+
+- **An expired reading station answered 500 instead of 503.** The first
+  request past the serving budget destroys the cache, and `rmSync`'s `force`
+  suppresses a missing file but not a locked one: on Windows, deleting a
+  database another handle still holds throws EPERM, and the throw escaped into
+  the request. The station's deliberate refusal — with the remedy an operator
+  needs — became a generic fault. Refusing to serve is the guarantee and
+  destroying the file is the tidying that usually accompanies it, so a failed
+  purge is now reported rather than thrown, and the manifest is left unpurged
+  rather than claiming a destruction that did not happen. Hazard H-157.
+
+- **Platform-dependent logic is now testable from either platform.** CI runs
+  on Ubuntu only, so every Windows branch was unexecuted — which shows up as a
+  green build on a machine that never took the branch, and failures found on
+  somebody's laptop. Encryption-at-rest detection takes the platform as a
+  parameter, so its Linux path is exercised from any host instead of being
+  skipped into a "cannot check" branch. Temporary-directory cleanup across the
+  suite retries, which is inert on Linux and rides out the brief EPERM while a
+  Windows handle or virus scanner still holds a file.
+
+- **A medication reconciliation could be completed twice.** The status check
+  and the count of undecided items ran outside the transaction and the write
+  did not name the state they had read, so two clinicians completing the same
+  reconciliation both passed the guard and both wrote — two people each told
+  it was done, and a record naming only the second. The checks now run inside
+  the transaction and the write is conditional on the reconciliation still
+  being open.
+
+- **A referral's status and its event log could disagree.** `transition()`
+  moved the status and appended the event as two writes outside any
+  transaction, so a failure between them left a referral in a state its own
+  history did not account for — and that history is what the stalled-referral
+  review reads. Both writes now commit together or not at all.
+
+- **Lifecycle writes name the state they expect.** Result acknowledgement,
+  referral transitions, reconciliation completion and prescription
+  acknowledge/fail update conditionally on the status their check read, and a
+  write that changes no rows refuses with 409 rather than silently succeeding.
+  A score's approval chain is kept linear by the database as well as by the
+  code: one root decision per score, and one successor per decision, so a
+  score cannot acquire two current approvals. Hazards H-160 and H-161.
+
+**Security**
+
+- **`NORTHSTAR_OIDC_AUDIENCE` is now required when OAuth is enabled, and a
+  site without it will not boot.** It was optional, and an absent audience
+  skipped the check entirely: every token the configured issuer had ever
+  signed was accepted, including tokens minted for a different application in
+  the same directory. An identity provider serves many resource servers, so a
+  token for the expenses system, signed by the same Entra or Keycloak tenant,
+  was a valid Northstar token — and the deployments that never set the
+  variable were exactly the ones running without the check.
+
+  **Breaking, deliberately.** A site that cannot start is a site somebody
+  fixes; one that starts and honours another application's tokens is not. Set
+  `NORTHSTAR_OIDC_AUDIENCE` to the identifier this deployment is registered
+  under at the issuer. A token carrying no `aud` claim at all is now refused
+  for the same reason as one naming somebody else. Hazard H-162.
+
+- **`.well-known/smart-configuration`**, generated from what this deployment
+  is configured with. Northstar is a resource server — it validates tokens and
+  does not issue them — so the document advertises the site's own
+  authorization server, and lists only capabilities this end actually
+  enforces. A discovery document claiming a capability the server does not
+  have is how a client comes to trust a check that never runs.
+
+- **SMART launch context is surfaced and type-checked.** `patient`,
+  `encounter` and `fhirUser` are read from the token and exposed on the
+  verified result, with a structured value dropped rather than carried around
+  as though it were an identifier. It is not yet required: a patient token is
+  bound to a chart here through an explicit authority grant, which is the
+  stronger control, and demanding a launch claim as well would refuse tokens
+  that are already correctly constrained.
+
 **Added**
+
+- **Properties that hold across every instrument, not just the thresholds
+  somebody wrote down.** A risk score is a sum of things that make a patient
+  worse, so finding one more of them cannot make the total smaller — a
+  constraint no individual boundary test states, and one an implementation can
+  violate while passing all of them. Adding any positive criterion, stepping
+  any graded criterion up, and moving any numeric criterion in its declared
+  direction of risk are all asserted never to lower a score, across all ten
+  instruments. Structural properties come with them: an additive score equals
+  the sum of the components it publishes, a score is a function of its input
+  alone, removing any one required input withholds the number entirely, and a
+  higher total never lands in a safer band. Where the shape genuinely bends it
+  is named rather than skipped: NEWS2 scores derangement in both directions,
+  so its respiratory rate, blood pressure, heart rate and temperature are
+  asserted to *be* U-shaped, and MELD-Na's components are asserted not to sum,
+  because they are the working of a logarithmic formula rather than addends.
+  These establish implementation behaviour only; the last test asserts the
+  assurance state is still unreviewed, with no clinical owner and no review
+  date. Hazard H-156.
+
+- **Every clinical score is disabled until somebody accountable approves it
+  here.** Correct arithmetic is not permission to act on the number: an
+  instrument derived in one population, implemented from a paper and never
+  looked at by anybody at this site is a calculator, and a calculator wired
+  into a chart returning a band and an interpretation is indistinguishable at
+  the point of care from a decision somebody stands behind. `score_approvals`
+  records that decision, and its absence is the default — the empty table is
+  the safe state, not an unconfigured one.
+
+  Nothing can be invented. The review date is supplied and never computed from
+  an interval, because a date the system picked is not a commitment anybody
+  made. The clinical owner must resolve to a practitioner the tenant's own
+  directory holds and has not retired. A reason of at least twelve characters
+  is required to approve or to disable — the same bar as breaking the glass.
+  The operator who records the decision is a separate column from the
+  clinician who owns it, because they are usually different people and a
+  record that conflates them can answer neither question afterwards.
+
+  An approval stops being one in four ways, each disabling the score and none
+  of them self-clearing: it passes its review date, the implementation version
+  it was granted for stops matching the arithmetic the build runs, its owner
+  is retired, or somebody withdraws it. `ScoreGovernance.expiring(withinDays,
+  asOf)` reports what is due and what is already past; reading it renews
+  nothing. The table is append-only, so a withdrawal supersedes an approval
+  without erasing it and "who allowed this, and what did they know" survives
+  the reversal. Approvals are tenant-scoped, so one site's decision cannot
+  enable another's score. `POST /api/clinical/score` and `/score/v2` refuse
+  with 403 unless a decision in force permits use, and there is deliberately
+  no route that enables more than one score at a time. Hazard H-159.
+  1061 tests.
+
+- **A registry for every standard this deployment claims to conform to.**
+  The conformance packs under `conformance/` are hand-written and say nothing
+  about their own provenance: which published release they came from, at what
+  version, or whether the bytes have changed since. Every implementation
+  guide, terminology release, security profile and schema is now recorded
+  with its canonical URL, package identifier, exact version, FHIR version,
+  licence, publication status and a checksum, and nothing is in force until
+  an operator activates it with a written reason.
+
+  `checksumVerified` is the column that carries the weight: a hash copied
+  from a release note proves the release note said it, so the flag is set
+  only by hashing an artifact actually in hand. Activation in production is
+  refused when the checksum is unverified, when the publication status is
+  ballot, draft or unknown, or when the version names a moving target such as
+  `current` — each being a reason the claim cannot be checked later. An
+  operator may override in writing; the reason is recorded on the row and
+  appears beside the package everywhere it is read, including on the
+  generated conformance page. The database keeps at most one active version
+  of a package per tenant, because two versions of one guide in force at once
+  is a question nobody can answer about which rules applied to a resource.
+
+  The public conformance page is generated from the registry rather than
+  written by hand, so it cannot drift from what is installed, and it carries
+  each package's outstanding caveats rather than only the claim.
+
+- **`docs/STATE_OF_THE_ART_ROADMAP.md`**, recording for each target standard
+  the current capability, the exact version intended, implementation status,
+  the evidence behind it, the external validation still required, and the
+  rollback path. Nothing in this repository may promote a capability past
+  `SELF_TESTED`; the two statuses above it record events that happen outside
+  this codebase.
 
 - **Governed provenance for every clinical risk score.** A result now carries
   the exact instrument and Northstar implementation versions, original source,

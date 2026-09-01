@@ -52,7 +52,7 @@ function portal() {
     pa: new PatientAccess(db, orders, tasks),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -481,6 +481,6 @@ test("authority and holds are confined to their tenant", () => {
     assert.equal(north.resultsFor(P).length, 1);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

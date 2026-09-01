@@ -37,7 +37,7 @@ function region(): { db: Db; dir: Directory; cleanup: () => void } {
     dir: new Directory(db),
     cleanup: () => {
       db.close();
-      rmSync(d, { recursive: true, force: true });
+      rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }

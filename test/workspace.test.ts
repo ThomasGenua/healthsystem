@@ -99,7 +99,7 @@ function ward() {
     }),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -570,7 +570,7 @@ test("the summary is confined to its tenant", () => {
     assert.ok(s.omissions.some((o) => /no allergy history has ever been recorded/.test(o)));
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 

@@ -238,7 +238,7 @@ test("a replica is encrypted, read back, decrypted and walked before success", a
     assert.ok(!isEncryptedSnapshot(readFileSync(fetched.path)), "the file restore sees is plaintext");
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -253,7 +253,7 @@ test("an upload that returns 200 is not a copy: a corrupt read-back fails", asyn
     await assert.rejects(() => replicateSnapshot(snap.path, store, key), /does not match what was uploaded/);
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -269,7 +269,7 @@ test("a put that throws is a failed replica, and the local snapshot is still the
     assert.ok(existsSync(snap.path), "the local snapshot survived the failed replica");
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -298,7 +298,7 @@ test("remote retention is independent of local keep, and a refused delete is not
     assert.ok(store.files.size >= 3, "nothing was deleted");
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -316,7 +316,7 @@ test("the filesystem destination is the same store the rehearsal uses", async ()
     assert.equal(fetched.verified.messages, 1);
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -339,7 +339,7 @@ test("the SFTP destination puts and gets bytes, not utf8 text", async () => {
     assert.equal(fetched.verified.messages, 2);
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -378,7 +378,7 @@ test("a configured destination whose last attempt failed is degraded", async () 
     assert.match(broken.status().detail, /failed/);
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -402,7 +402,7 @@ test("last success survives a restart via the sidecar, so health does not forget
     assert.ok((remoteAgeSec(second.status()) as number) >= 0);
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -507,7 +507,7 @@ test("POST /api/backup replicates when a remote is configured, and 500s if the r
     else process.env.PORTAGE_BACKUP_DIR = previous.dir;
     if (previous.keep === undefined) delete process.env.PORTAGE_BACKUP_KEEP;
     else process.env.PORTAGE_BACKUP_KEEP = previous.keep;
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -539,7 +539,7 @@ test("a restore from the remote copy is the same database, and does not need the
     }
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 

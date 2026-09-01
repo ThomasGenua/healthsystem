@@ -36,7 +36,7 @@ function tempDb(): { db: Db; cleanup: () => void } {
     db,
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -208,7 +208,7 @@ test("a truncated snapshot is rejected at backup-verify time", async () => {
     assert.throws(() => verifyBackup(snap2.path), /audit trail is missing 2 of 5 entries/);
   } finally {
     db.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 

@@ -62,7 +62,7 @@ function twoTenants(): { north: Db; south: Db; cleanup: () => void } {
     south,
     cleanup: () => {
       root.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }

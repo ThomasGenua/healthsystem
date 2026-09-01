@@ -108,6 +108,8 @@ export const TENANT_SCOPED_TABLES = [
   "assurance_findings",
   "assurance_exercises",
   "subprocessors",
+  "score_approvals",
+  "conformance_packages",
 ] as const;
 
 /**
@@ -1983,6 +1985,122 @@ CREATE TABLE IF NOT EXISTS subprocessors (
   created_at TEXT NOT NULL,
   PRIMARY KEY (tenant_id, id)
 );
+
+-- A clinical score is arithmetic until somebody accountable says it may be
+-- used here. This table is that decision, and its absence is the default: a
+-- score with no row is not enabled, which is why the table being empty is the
+-- safe state rather than an unconfigured one.
+--
+-- Append-only, like the clinical record. A renewal, a re-approval after the
+-- arithmetic changed, and a withdrawal are all new rows pointing at the one
+-- they supersede; nothing is updated. So "who allowed this, and what did they
+-- know at the time" always has an answer, including after the decision was
+-- reversed.
+--
+-- Every column that could be invented is required instead. review_due is
+-- supplied by the person approving and is never computed from a default
+-- interval, because a review date the system picked is not a commitment
+-- anybody made. clinical_owner_id must resolve to a practitioner the
+-- directory holds and has not retired. reason is written, because a decision
+-- with no stated basis cannot be reviewed later.
+CREATE TABLE IF NOT EXISTS score_approvals (
+  tenant_id TEXT NOT NULL DEFAULT 'default',
+  id TEXT NOT NULL,
+  score_id TEXT NOT NULL,
+  -- The exact implementation the decision was made about. Arithmetic that has
+  -- changed since is not what anybody approved, so this is compared rather
+  -- than assumed to still match.
+  implementation_version TEXT NOT NULL,
+  decision TEXT NOT NULL CHECK (decision IN ('approved', 'disabled')),
+  reason TEXT NOT NULL,
+  -- Present on an approval, absent on a withdrawal.
+  clinical_owner_id TEXT,
+  -- A readable snapshot taken at the moment of the decision, so the record
+  -- stays legible after the directory renames or retires the person.
+  clinical_owner_display TEXT,
+  review_due TEXT,
+  -- The authenticated operator who recorded the decision, kept separate from
+  -- the clinician who owns it. They are frequently not the same person, and a
+  -- record that conflates them can answer neither question afterwards.
+  recorded_by_id TEXT NOT NULL,
+  recorded_by_kind TEXT NOT NULL,
+  supersedes TEXT,
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- What this deployment claims to conform to, and where each claim came from.
+--
+-- The conformance packs in conformance/*.json are hand-written and say
+-- nothing about their own provenance: which published release they were
+-- derived from, at what version, or whether the bytes have changed since.
+-- A profile pack carrying a publisher's name and a membership nobody can
+-- trace is worse than none, because it is the one somebody cites.
+--
+-- So every implementation guide, terminology release, security profile and
+-- schema is recorded here with its canonical URL, package identifier, exact
+-- version and a checksum, and nothing is active until somebody activates it.
+--
+-- checksum_verified is the column that matters. A checksum copied from a
+-- release note proves nothing; this flag is set only when the bytes were
+-- hashed here and matched. An entry that has not been verified is refused
+-- activation in production unless somebody overrides it in writing, which is
+-- recorded rather than assumed.
+CREATE TABLE IF NOT EXISTS conformance_packages (
+  tenant_id TEXT NOT NULL DEFAULT 'default',
+  id TEXT NOT NULL,
+  -- The identity the publisher uses. Both, because a package id without a
+  -- canonical URL cannot be resolved and a URL without a package id cannot be
+  -- installed.
+  canonical_url TEXT NOT NULL,
+  package_id TEXT NOT NULL,
+  version TEXT NOT NULL,
+  fhir_version TEXT,
+  license TEXT,
+  -- release | trial-use | ballot | draft | unknown
+  publication_status TEXT NOT NULL CHECK (
+    publication_status IN ('release', 'trial-use', 'ballot', 'draft', 'unknown')
+  ),
+  -- 1 where the version string names a moving target: current, dev, latest.
+  -- A mutable version cannot be conformed to, because what it points at today
+  -- is not what it pointed at when the claim was made.
+  mutable_version INTEGER NOT NULL DEFAULT 0 CHECK (mutable_version IN (0, 1)),
+  checksum TEXT,
+  checksum_verified INTEGER NOT NULL DEFAULT 0 CHECK (checksum_verified IN (0, 1)),
+  installed_at TEXT NOT NULL,
+  -- registered | active | retired
+  activation_state TEXT NOT NULL DEFAULT 'registered' CHECK (
+    activation_state IN ('registered', 'active', 'retired')
+  ),
+  activated_at TEXT,
+  activated_by TEXT,
+  activation_reason TEXT,
+  -- Set where a package that would otherwise be refused was activated anyway.
+  -- The reason is required, so the exception is legible later.
+  override_reason TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id),
+  -- One record per package version. Registering the same version twice would
+  -- allow two entries disagreeing about its checksum.
+  UNIQUE (tenant_id, package_id, version)
+);
+-- At most one active version of a package per tenant. Two versions of one
+-- implementation guide active at once is not a configuration, it is a
+-- question nobody can answer about which rules applied to a given resource.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conformance_active
+  ON conformance_packages(tenant_id, package_id) WHERE activation_state = 'active';
+
+CREATE INDEX IF NOT EXISTS idx_score_approvals_score
+  ON score_approvals(tenant_id, score_id, recorded_at DESC);
+-- The chain stays linear, and the database is what keeps it that way: a
+-- transaction only binds writers sharing one process, and two decisions
+-- superseding the same one would leave a score with two current approvals and
+-- no way to say which of them governed a result that has already gone out.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_score_approvals_successor
+  ON score_approvals(tenant_id, score_id, supersedes) WHERE supersedes IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_score_approvals_root
+  ON score_approvals(tenant_id, score_id) WHERE supersedes IS NULL;
+
 
 -- Lookup index over the charts.
 --

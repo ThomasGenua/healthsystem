@@ -106,7 +106,12 @@ export function encryptionAtRest(
   // Injectable so the no-mount-found path can be reached at all: every real
   // Linux box has "/" covering every path, so that branch is unreachable
   // from a live mount table and would otherwise go untested.
-  mounts?: MountEntry[]
+  mounts?: MountEntry[],
+  // Injectable for the same reason one step out. The detection logic is
+  // Linux-only, so on any other host every test of it asserted the "cannot
+  // check" branch instead — the checks passed on Windows by not running.
+  // Naming the platform lets both paths be exercised from either.
+  os: string = platform()
 ): AtRestReport {
   const asserted = (readEnv("ENCRYPTED_AT_REST", env) ?? "").toLowerCase();
   if (asserted === "yes" || asserted === "true" || asserted === "1") {
@@ -117,10 +122,10 @@ export function encryptionAtRest(
     };
   }
 
-  if (platform() !== "linux") {
+  if (os !== "linux") {
     return {
       state: "unknown",
-      detail: `cannot check encryption at rest on ${platform()}; set NORTHSTAR_ENCRYPTED_AT_REST=yes once the volume is confirmed`,
+      detail: `cannot check encryption at rest on ${os}; set NORTHSTAR_ENCRYPTED_AT_REST=yes once the volume is confirmed`,
     };
   }
 

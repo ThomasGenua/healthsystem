@@ -27,7 +27,7 @@ function clinic() {
     plans: new CarePlans(record),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -184,6 +184,6 @@ test("one custodian cannot read another's care plans", () => {
     assert.equal(south.overdue("2027-01-01T00:00:00Z").length, 0);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
