@@ -71,6 +71,7 @@ import { readFhirBundle, readFhirNdjson } from "../migrate/read-fhir.ts";
 import { score as computeScore, SCORE_IDS } from "../clinical/scores.ts";
 import { ingest, MEASURED_FIELDS, SCORE_MEASUREMENTS, type Measurement } from "../clinical/measurement.ts";
 import type { ScoreId } from "../clinical/score-definitions.ts";
+import type { PublicationStatus } from "../conformance/standards.ts";
 import { news2FromChart, curb65FromChart } from "../clinical/score-from-chart.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
@@ -2913,6 +2914,64 @@ async function route(
     // actions each need a written reason. There is deliberately no route that
     // enables more than one score, because "enable all" is the request nobody
     // should be able to satisfy in a single click.
+    if (path === "/api/clinical/standards" && method === "GET") {
+      return phiOffice("Bundle", () => ({
+        statement: tenant.standards.conformanceStatement(),
+        registered: tenant.standards.list(),
+      }));
+    }
+    if (path === "/api/clinical/standards-register" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        canonicalUrl?: string;
+        packageId?: string;
+        version?: string;
+        publicationStatus?: PublicationStatus;
+        fhirVersion?: string;
+        license?: string;
+        checksum?: string;
+      };
+      if (!body.canonicalUrl || !body.packageId || !body.version || !body.publicationStatus) {
+        return send(res, 400, { error: "canonicalUrl, packageId, version and publicationStatus are required" });
+      }
+      const entry = tenant.standards.register({
+        canonicalUrl: body.canonicalUrl,
+        packageId: body.packageId,
+        version: body.version,
+        publicationStatus: body.publicationStatus,
+        ...(body.fhirVersion ? { fhirVersion: body.fhirVersion } : {}),
+        ...(body.license ? { license: body.license } : {}),
+        ...(body.checksum ? { checksum: body.checksum } : {}),
+      });
+      audit({
+        action: "C",
+        outcome: 0,
+        resourceType: "Bundle",
+        detail:
+          `standards package registered: ${entry.packageId}@${entry.version} (${entry.canonicalUrl}), ` +
+          `status ${entry.publicationStatus}, checksum ${entry.checksum ?? "none"}, unverified`,
+      });
+      return send(res, 200, { entry, objections: tenant.standards.objections(entry) });
+    }
+    if (path === "/api/clinical/standards-activate" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; reason?: string; override?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      const entry = tenant.standards.activate({
+        id: body.id,
+        reason: body.reason ?? "",
+        by: who,
+        ...(body.override ? { override: body.override } : {}),
+      });
+      audit({
+        action: "U",
+        outcome: 0,
+        resourceType: "Bundle",
+        detail:
+          `standards package activated: ${entry.packageId}@${entry.version}, by ${who}` +
+          (entry.overrideReason ? `, over objections: ${entry.overrideReason}` : ""),
+      });
+      return send(res, 200, entry);
+    }
     if (path === "/api/clinical/score-governance" && method === "GET") {
       const within = Number(url.searchParams.get("expiringWithinDays") ?? 30);
       return phiOffice("RiskAssessment", () => ({

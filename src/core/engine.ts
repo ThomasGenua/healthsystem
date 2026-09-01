@@ -40,6 +40,7 @@ import { VisitView } from "../workspace/visit.ts";
 import { Encounters } from "../clinical/encounters.ts";
 import { Directory } from "../directory/store.ts";
 import { ScoreGovernance } from "../clinical/score-governance.ts";
+import { StandardsRegistry } from "../conformance/standards.ts";
 import { ingestFhir } from "../directory/fhir.ts";
 import { ChannelNoticeDispatcher, PatientNotices } from "../patient/notice.ts";
 import { AccessReview } from "../audit/review.ts";
@@ -121,6 +122,7 @@ export interface TenantView {
   /** Clinic-attested binding of an OAuth subject to a chart. Not identity-proofing. */
   enrolment: PatientEnrolment;
   scoreGovernance: ScoreGovernance;
+  standards: StandardsRegistry;
   /** Notices a patient is owed, published onto a channel. Dispatching is not telling. */
   notices: PatientNotices;
   registry: Registry;
@@ -356,6 +358,9 @@ export class Engine {
     // Reads the directory, so it is built after it: a clinical owner must be
     // a practitioner this tenant actually registered.
     const scoreGovernance = new ScoreGovernance(db);
+    // Distinct from `conformance` above, which holds the validation packs:
+    // this records which published standards this deployment claims.
+    const standards = new StandardsRegistry(db);
     const fhir = new FhirStore(db, this.validation, directory);
     const subs = new SubscriptionManager(db, this.worker);
     fhir.onChange((result, resource) => {
@@ -398,6 +403,7 @@ export class Engine {
       patientAccess,
       enrolment,
       scoreGovernance,
+      standards,
       notices,
       registry: new Registry(db),
       migration: new Migration(db, { clinical, meds }),

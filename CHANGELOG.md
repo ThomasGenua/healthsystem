@@ -9,6 +9,40 @@ always forward-compatible and run automatically on open — see
 
 ## Unreleased
 
+**Added**
+
+- **A registry for every standard this deployment claims to conform to.**
+  The conformance packs under `conformance/` are hand-written and say nothing
+  about their own provenance: which published release they came from, at what
+  version, or whether the bytes have changed since. Every implementation
+  guide, terminology release, security profile and schema is now recorded
+  with its canonical URL, package identifier, exact version, FHIR version,
+  licence, publication status and a checksum, and nothing is in force until
+  an operator activates it with a written reason.
+
+  `checksumVerified` is the column that carries the weight: a hash copied
+  from a release note proves the release note said it, so the flag is set
+  only by hashing an artifact actually in hand. Activation in production is
+  refused when the checksum is unverified, when the publication status is
+  ballot, draft or unknown, or when the version names a moving target such as
+  `current` — each being a reason the claim cannot be checked later. An
+  operator may override in writing; the reason is recorded on the row and
+  appears beside the package everywhere it is read, including on the
+  generated conformance page. The database keeps at most one active version
+  of a package per tenant, because two versions of one guide in force at once
+  is a question nobody can answer about which rules applied to a resource.
+
+  The public conformance page is generated from the registry rather than
+  written by hand, so it cannot drift from what is installed, and it carries
+  each package's outstanding caveats rather than only the claim.
+
+- **`docs/STATE_OF_THE_ART_ROADMAP.md`**, recording for each target standard
+  the current capability, the exact version intended, implementation status,
+  the evidence behind it, the external validation still required, and the
+  rollback path. Nothing in this repository may promote a capability past
+  `SELF_TESTED`; the two statuses above it record events that happen outside
+  this codebase.
+
 **Fixed**
 
 - **A medication reconciliation could be completed twice.** The status check

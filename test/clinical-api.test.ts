@@ -15,6 +15,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { Engine } from "../src/core/engine.ts";
 import { startApi } from "../src/api/admin.ts";
 import { AuthGate } from "../src/auth/gate.ts";
@@ -670,6 +671,22 @@ test("every clinical route leaves an audit row, including ones added later", asy
       summary: "Your clinic has attested your identity. Reference fixture-told.",
     });
 
+    // A registered, verified standards package for the activation route to
+    // put into force. Synthetic bytes: this fixture is not a real package,
+    // and the registry's whole point is that it cannot tell the difference
+    // between a real one and this except by hashing what it is given.
+    const stdBytes = "a synthetic package tarball for the route test";
+    const stdPackage = tPriv.standards.register({
+      canonicalUrl: "http://example.invalid/fhir/test-ig/",
+      packageId: "example.fixture.ig",
+      version: "1.0.0",
+      publicationStatus: "release",
+      fhirVersion: "4.0.1",
+      license: "CC0-1.0",
+      checksum: createHash("sha256").update(stdBytes).digest("hex"),
+    });
+    tPriv.standards.verify(stdPackage.id, stdBytes);
+
     // Arguments good enough for each route to do real work. A route that
     // needs one not listed here 400s, which this treats as a failure rather
     // than a pass — an untested route is the thing being guarded against.
@@ -769,6 +786,9 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/lab-resolve": "POST",
       "/api/clinical/score": "POST",
       "/api/clinical/score/v2": "POST",
+      "/api/clinical/standards": "",
+      "/api/clinical/standards-register": "POST",
+      "/api/clinical/standards-activate": "POST",
       "/api/clinical/score-governance": "",
       "/api/clinical/score-governance-history": "?score=curb-65",
       "/api/clinical/score-governance-expiring": "?withinDays=30",
@@ -1020,6 +1040,18 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/score-disable": {
         score: "has-bled",
         reason: "synthetic withdrawal recorded by the route test",
+      },
+      "/api/clinical/standards-register": {
+        canonicalUrl: "http://example.invalid/fhir/other-ig/",
+        packageId: "example.fixture.other",
+        version: "2.0.0",
+        publicationStatus: "release",
+        fhirVersion: "4.0.1",
+        license: "CC0-1.0",
+      },
+      "/api/clinical/standards-activate": {
+        id: stdPackage.id,
+        reason: "putting the fixture package into force for the route test",
       },
       "/api/clinical/prescribe": { statement: statement.id, instructions: "One tablet twice daily with food" },
       "/api/clinical/prescription-transmit": { prescription: rxToTransmit, pharmacy: "yk-pharmacy" },
