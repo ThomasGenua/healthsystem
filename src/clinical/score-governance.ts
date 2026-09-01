@@ -333,6 +333,28 @@ export class ScoreGovernance {
     }
 
     const at = (input.at ?? new Date()).toISOString();
+    return this.db.transaction(() => this.write(scoreId, decision, reason, ownerId, ownerDisplay, reviewDue, by, at));
+  }
+
+  /**
+   * Writes one decision onto the end of a score's chain.
+   *
+   * Reading the previous decision and appending to it is a check and an act,
+   * so it happens in one transaction — and the database keeps the chain
+   * linear besides, because a transaction only binds writers who share this
+   * process. Two decisions superseding the same one would leave a score with
+   * two current approvals and no way to say which governed a result.
+   */
+  private write(
+    scoreId: ScoreId,
+    decision: "approved" | "disabled",
+    reason: string,
+    ownerId: string | null,
+    ownerDisplay: string | null,
+    reviewDue: string | null,
+    by: { id: string; kind: string },
+    at: string
+  ): ApprovalRow {
     const prior = this.latest(scoreId);
     const row: ApprovalRow = {
       id: randomUUID(),

@@ -9,6 +9,30 @@ always forward-compatible and run automatically on open — see
 
 ## Unreleased
 
+**Fixed**
+
+- **A medication reconciliation could be completed twice.** The status check
+  and the count of undecided items ran outside the transaction and the write
+  did not name the state they had read, so two clinicians completing the same
+  reconciliation both passed the guard and both wrote — two people each told
+  it was done, and a record naming only the second. The checks now run inside
+  the transaction and the write is conditional on the reconciliation still
+  being open.
+
+- **A referral's status and its event log could disagree.** `transition()`
+  moved the status and appended the event as two writes outside any
+  transaction, so a failure between them left a referral in a state its own
+  history did not account for — and that history is what the stalled-referral
+  review reads. Both writes now commit together or not at all.
+
+- **Lifecycle writes name the state they expect.** Result acknowledgement,
+  referral transitions, reconciliation completion and prescription
+  acknowledge/fail update conditionally on the status their check read, and a
+  write that changes no rows refuses with 409 rather than silently succeeding.
+  A score's approval chain is kept linear by the database as well as by the
+  code: one root decision per score, and one successor per decision, so a
+  score cannot acquire two current approvals.
+
 **Added**
 
 - **Every clinical score is disabled until somebody accountable approves it

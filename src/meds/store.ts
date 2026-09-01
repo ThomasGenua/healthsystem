@@ -556,18 +556,22 @@ export class MedicationStore {
    * unresolved lines are named in the error so the refusal is actionable.
    */
   completeReconciliation(reconciliationId: string, by: Actor): ReconciliationRow {
-    const rec = this.requireReconciliation(reconciliationId);
-    if (rec.status !== "open") throw new Error(`this reconciliation is already ${rec.status}`);
-    const open = this.items(reconciliationId).filter((i) => i.decision === "unresolved");
-    if (open.length > 0) {
-      throw new Error(`${open.length} medication(s) still undecided: ${open.map((i) => i.display).join(", ")}`);
-    }
+    // The checks were outside the transaction and the write did not name the
+    // state they had read, so two clinicians completing the same
+    // reconciliation both passed the guard and both wrote: two people each
+    // told it was done, and a record naming only the second.
     return this.db.transaction(() => {
+      const rec = this.requireReconciliation(reconciliationId);
+      if (rec.status !== "open") throw new Error(`this reconciliation is already ${rec.status}`);
+      const open = this.items(reconciliationId).filter((i) => i.decision === "unresolved");
+      if (open.length > 0) {
+        throw new Error(`${open.length} medication(s) still undecided: ${open.map((i) => i.display).join(", ")}`);
+      }
       const now = new Date().toISOString();
-      this.db.sql
+      const done = this.db.sql
         .prepare(
           `UPDATE med_reconciliations SET status = 'completed', completed_by = ?, completed_at = ?
-            WHERE tenant_id = ? AND id = ?`
+            WHERE tenant_id = ? AND id = ? AND status = 'open'`
         )
         .run(by.actorId, now, this.db.tenantId, reconciliationId);
       // The decisions are applied to the list, which is what makes this a

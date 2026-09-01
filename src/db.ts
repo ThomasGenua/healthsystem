@@ -2029,6 +2029,14 @@ CREATE TABLE IF NOT EXISTS score_approvals (
 );
 CREATE INDEX IF NOT EXISTS idx_score_approvals_score
   ON score_approvals(tenant_id, score_id, recorded_at DESC);
+-- The chain stays linear, and the database is what keeps it that way: a
+-- transaction only binds writers sharing one process, and two decisions
+-- superseding the same one would leave a score with two current approvals and
+-- no way to say which of them governed a result that has already gone out.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_score_approvals_successor
+  ON score_approvals(tenant_id, score_id, supersedes) WHERE supersedes IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_score_approvals_root
+  ON score_approvals(tenant_id, score_id) WHERE supersedes IS NULL;
 
 
 -- Lookup index over the charts.
