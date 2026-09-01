@@ -7,6 +7,146 @@ Northstar is pre-1.0: minor versions may change interfaces. Database upgrades ar
 always forward-compatible and run automatically on open — see
 [Upgrading](docs/RUNBOOK.md#upgrading).
 
+## Unreleased
+
+**Added**
+
+- **An order placed here is no longer assumed to be with a laboratory.**
+  `OrderStore.place()` wrote `status = 'placed'` and recorded an event.
+  Nothing sent the requisition anywhere, because until an outbound ordering
+  interface exists there is nothing to send it to. The chart showed "placed",
+  the worklist showed it awaiting a result, and `awaitingResult()` would
+  eventually list it as overdue — which reads as a slow laboratory. The
+  laboratory had never heard of it.
+
+  This is the third silence, and the earliest: `orders.ts` opens on an order
+  never resulted and a result never read, and this one comes before both. It
+  is also worse than the dispense silence it resembles. A prescription with no
+  dispense record may still have been collected; the pharmacy may simply not
+  report. Here *we* are the sender, so the absence is not ambiguous and not
+  somebody else's — it is ours, and it is knowable.
+
+  Transmission is now its own fact. A site declares per category whether
+  orders leave and to whom, with a detail saying how or why not, so "we print
+  the requisition" is distinguishable from "the interface is stuck" — the two
+  call for opposite actions and rendered identically before. Each attempt to
+  hand an order over is appended, never updated, and **only an acknowledgement
+  from the far end means a laboratory holds the order.** Sent, rejected and
+  failed each say what they are instead: a rejection says the order is not
+  with them and needs correcting; a transport failure says to treat it as not
+  sent. The state rides on the order row rather than being a second call a
+  caller has to remember, because a guarantee that depends on every screen
+  remembering holds until one screen forgets.
+
+  `notWithFiller()` lists placed orders no laboratory has acknowledged. On a
+  site with no outbound interface that is every open order, which is the
+  correct and uncomfortable answer.
+
+  `GET /api/clinical/order-transmission`, `GET
+  /api/clinical/orders-not-with-filler`, `POST
+  /api/clinical/order-transmission-record`, and `GET`/`POST
+  /api/orders/routing` — the last kept out of `/api/clinical/` because it
+  serves site configuration rather than patient data. Hazards H-128 to H-131.
+
+  This is the honesty half; the message that does the telling is below.
+
+- **The outbound order message** (`src/orders/outbound.ts`). `buildOml()`
+  turns a placed order into an OML^O21 a laboratory's engine will accept, or
+  says exactly what stopped it and builds nothing.
+
+  The module is built around refusing, because the dangerous failure here is
+  not a rejected message. A blank patient identifier is rejected, and somebody
+  fixes it. A *plausible* one is accepted and matched, and the specimen is
+  drawn against somebody else's chart with nothing raising an error. So the
+  assigning authority must be declared on the profile and the patient must
+  carry an identifier under it; a birth date is required because it is what a
+  laboratory verifies against, and names are not unique in a community of four
+  hundred people; the timezone is declared rather than read from this machine,
+  since a server in one zone sending for a clinic in another is ordinary in the
+  north. A draft is refused — a draft is a clinician thinking, and sending it
+  books a collection for a test nobody ordered — and so is a cancelled order.
+  Every missing field is reported at once, because an integration analyst
+  commissioning an interface wants one list rather than five round trips.
+
+  Building and sending are separate, so a message can be produced and shown to
+  a laboratory's analyst during commissioning without anything reaching a wire.
+  That is exactly how the first conversation with Dynacare or LifeLabs goes.
+
+  Hazards H-132 to H-134.
+
+- **Orders are sent, and the acknowledgement is correlated** (`src/orders/send.ts`).
+  The piece that makes the rest of this move: build, hand to the transport,
+  read what came back, record it. Every step can fail in a way that must not
+  read as success, so each has its own outcome — a refused build records
+  nothing at all ("we tried and the line was down" and "we never had enough to
+  send" are different conversations), a throwing transport is `failed` which
+  reads as *not sent*, and a negative acknowledgement is `rejected`.
+
+  The attempt is written down **before** the send. A process dying between the
+  socket and the database would otherwise leave an order reading as never sent
+  while a laboratory holds it, and a clinician resending produces two
+  requisitions for one specimen.
+
+  `interpretAck()` checks MSA-2 before MSA-1. That is the field an
+  implementation skips: MSA-1 says *an* acknowledgement was positive, and only
+  MSA-2 says it was about **this** message. Acknowledgements arrive on
+  connections carrying other traffic and a slow far end answers a previous
+  message after this one went out — so a perfectly positive AA carrying
+  somebody else's control id is `failed`, never `acknowledged`. A code the
+  parser does not recognise is not assumed positive either, and a commit
+  accept says it is one, because holding a message is not accepting an order.
+  Hazards H-135 and H-137.
+
+- **The laboratory is told when an order is cancelled** (H-136). `cancel()`
+  set the order to cancelled here and nothing told anyone. A laboratory that
+  acknowledged it still held the requisition, so the specimen was still
+  collected, the test still run, and a result came back for a test the chart
+  said nobody wanted — against a patient who may have been told it was called
+  off.
+
+  That is the original problem mirrored. The first was the record claiming a
+  laboratory had something it did not; this is a laboratory having something
+  the record says it does not, and it is the more urgent of the two because it
+  ends with a needle.
+
+  Cancellation goes as ORC-1 `CA` naming the same placer order number, since a
+  cancellation naming a different requisition cancels nothing. Its
+  acknowledgement is tracked separately from the order's, because an order can
+  be acknowledged *and* its cancellation unsent — the dangerous combination,
+  and the one that reads as fine if you only ask once.
+  `cancelledButStillWithFiller()` lists every order cancelled here that no
+  laboratory has confirmed withdrawing. A cancellation is refused for an order
+  nobody cancelled, which would stop a test somebody is waiting for.
+
+**Fixed**
+
+- **Two HL7 fields were one position out** (H-133). The indication was landing
+  in OBR-14, Specimen Received Date/Time, and the ordering provider in OBR-17,
+  Order Callback Phone Number. Neither is a message that fails: a laboratory
+  parses it and files clinical information as a timestamp.
+
+  The cause was positional arrays, where a run of empty separators is
+  uncountable by eye and one too many shifts everything after it. Segments are
+  now built from explicit HL7 field numbers, so `{ 13: indication }` is OBR-13
+  and can be checked against a specification without counting. Found by
+  dumping the bytes of a built message rather than by rereading the array,
+  which had already been read twice.
+
+**Fixed**
+
+- **A superseded transmission attempt could override the one that superseded
+  it** (H-130). Attempts were ordered by timestamp with a tiebreak on a random
+  UUID, and a send with the acknowledgement answering it lands in the same
+  millisecond on a fast link — so the later attempt was whichever identifier
+  happened to sort last, and a rejected order reported as acknowledged about
+  half the time. That is the precise inversion the mechanism exists to
+  prevent. Ordering is now an autoincrementing sequence.
+
+  Caught as an intermittent failure in its own new tests: three runs gave 0, 0
+  and 1 failures. Diagnosed rather than re-run, and pinned by a test that
+  writes twenty attempts inside one millisecond and asserts the timestamps
+  really did collide, so it cannot pass by accident.
+
 ## 0.8.0 — 2026-08-27
 
 A release about what the record admits it does not know. 0.7.0 stopped the
