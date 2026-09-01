@@ -11,6 +11,25 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Properties that hold across every instrument, not just the thresholds
+  somebody wrote down.** A risk score is a sum of things that make a patient
+  worse, so finding one more of them cannot make the total smaller — a
+  constraint no individual boundary test states, and one an implementation can
+  violate while passing all of them. Adding any positive criterion, stepping
+  any graded criterion up, and moving any numeric criterion in its declared
+  direction of risk are all asserted never to lower a score, across all ten
+  instruments. Structural properties come with them: an additive score equals
+  the sum of the components it publishes, a score is a function of its input
+  alone, removing any one required input withholds the number entirely, and a
+  higher total never lands in a safer band. Where the shape genuinely bends it
+  is named rather than skipped: NEWS2 scores derangement in both directions,
+  so its respiratory rate, blood pressure, heart rate and temperature are
+  asserted to *be* U-shaped, and MELD-Na's components are asserted not to sum,
+  because they are the working of a logarithmic formula rather than addends.
+  These establish implementation behaviour only; the last test asserts the
+  assurance state is still unreviewed, with no clinical owner and no review
+  date. Hazard H-146. 1038 tests.
+
 - **Governed provenance for every clinical risk score.** A result now carries
   the exact instrument and Northstar implementation versions, original source,
   intended population, exclusions, required units, calculation time and a
