@@ -68,6 +68,43 @@ export type OmlResult =
     }
   | { built: false; missing: string[]; reason: string };
 
+/**
+ * A specimen that has actually been collected.
+ *
+ * Optional on an order, and the option is the point. Most orders are placed
+ * before anybody draws anything — the clinician orders now, phlebotomy happens
+ * later — and an order in that state has no specimen. Sending an SPM segment
+ * anyway asserts a collection that has not happened, which is the same class
+ * of lie as filling OBR-7 with the order time.
+ *
+ * When there *is* one, the collection time is not optional. A trough
+ * vancomycin drawn an hour after the dose is not a trough, a cortisol at four
+ * in the afternoon is not a morning cortisol, and neither the laboratory nor
+ * the chart can recover the difference from the tube. The value is
+ * interpreted against the time, so the time travels with it or nothing does.
+ */
+export interface SpecimenDetail {
+  /** SPM-4. What was collected: blood, urine, a swab. */
+  type: string;
+  /** Human-readable form of the type, where the code alone is not obvious. */
+  typeText?: string;
+  /**
+   * SPM-17. When it was drawn. Never defaulted to now or to the order time:
+   * both are wrong in the direction that makes a timed level look valid.
+   */
+  collectedAt: string;
+  /**
+   * SPM-2. The tube's own identifier.
+   *
+   * How the laboratory matches this tube to this requisition. Without it they
+   * match on name and date of birth, which is where mislabelling turns into a
+   * result on the wrong chart.
+   */
+  specimenId?: string;
+  /** SPM-8. Where it came from, when that changes the interpretation. */
+  sourceSite?: string;
+}
+
 export interface OmlContext {
   sendingApplication: string;
   sendingFacility: string;
@@ -94,6 +131,11 @@ export interface OmlContext {
    * question stops the order instead.
    */
   aoeAnswers?: Record<string, string>;
+  /**
+   * The specimen, if one has been collected. Absent means the order is a
+   * request to collect, which is what most orders are when they are sent.
+   */
+  specimen?: SpecimenDetail;
 }
 
 /** HL7 priority codes. `stat` is the one that must never be silently downgraded. */
@@ -239,6 +281,25 @@ function build(
   // invented, because the plausible default is the dangerous one: "fasting:
   // no" supplied by nobody reads exactly like "fasting: no" supplied by the
   // patient, and the reference interval turns on it.
+  // A specimen is optional; an incomplete one is not. Having asserted that
+  // something was collected, the message has to say what and when, or the
+  // laboratory receives a collection it cannot interpret and this end has
+  // claimed one it cannot describe.
+  if (ctx.specimen) {
+    if (!ctx.specimen.type?.trim()) missing.push("specimen.type");
+    const collected = ctx.specimen.collectedAt;
+    if (!collected?.trim()) {
+      missing.push("specimen.collectedAt");
+    } else if (!Number.isFinite(new Date(collected).getTime())) {
+      missing.push(`specimen.collectedAt (${collected} is not a time)`);
+    } else if (new Date(collected).getTime() > new Date(ctx.now ?? new Date().toISOString()).getTime()) {
+      // A collection in the future is a mistyped date, and the reason to
+      // refuse it rather than pass it on is what a wrong time does to a timed
+      // level: a trough stamped an hour late reads as a valid trough.
+      missing.push(`specimen.collectedAt (${collected} is in the future; nothing has been collected yet)`);
+    }
+  }
+
   const questions = profile.askAtOrderEntry?.[order.code] ?? [];
   const answered = new Map<string, string>();
   for (const q of questions) {
@@ -336,9 +397,23 @@ function build(
       })
     );
 
+  // No specimen, no segment. An order placed before anybody draws anything is
+  // a request to collect, and saying nothing is the accurate thing to say.
+  const spm = ctx.specimen
+    ? [
+        segment("SPM", {
+          1: "1",
+          ...(ctx.specimen.specimenId ? { 2: e(ctx.specimen.specimenId) } : {}),
+          4: `${e(ctx.specimen.type)}^${e(ctx.specimen.typeText ?? "")}`,
+          ...(ctx.specimen.sourceSite ? { 8: e(ctx.specimen.sourceSite) } : {}),
+          17: stamp(ctx.specimen.collectedAt, ctx.timezoneOffset),
+        }),
+      ]
+    : [];
+
   return {
     built: true,
-    message: [msh, pid, orc, obr, ...obx].join("\r") + "\r",
+    message: [msh, pid, orc, obr, ...spm, ...obx].join("\r") + "\r",
     controlId,
     placerOrderNumber: order.id,
     identifier: id,
