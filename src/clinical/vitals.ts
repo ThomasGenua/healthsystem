@@ -77,12 +77,17 @@ function parse(entry: ClinicalEntry): VitalView {
     : "heart-rate") as VitalKind;
   const qty = c.valueQuantity && typeof c.valueQuantity === "object" ? (c.valueQuantity as Record<string, unknown>) : {};
   const components = Array.isArray(c.component) ? (c.component as Array<Record<string, unknown>>) : [];
-  const byName = (name: string) => {
+  const quantityByName = (name: string) => {
     const hit = components.find((x) => {
       const cc = x.code && typeof x.code === "object" ? (x.code as Record<string, unknown>) : {};
       return cc.text === name;
     });
-    const q = hit?.valueQuantity && typeof hit.valueQuantity === "object" ? (hit.valueQuantity as Record<string, unknown>) : {};
+    return hit?.valueQuantity && typeof hit.valueQuantity === "object"
+      ? (hit.valueQuantity as Record<string, unknown>)
+      : {};
+  };
+  const byName = (name: string) => {
+    const q = quantityByName(name);
     return typeof q.value === "number" ? q.value : null;
   };
   return {
@@ -91,7 +96,12 @@ function parse(entry: ClinicalEntry): VitalView {
     encounterId: entry.encounter_id,
     kind,
     value: typeof qty.value === "number" ? qty.value : null,
-    unit: typeof qty.unit === "string" ? qty.unit : null,
+    // A component-valued observation — a blood pressure — has no top-level
+    // quantity, so its unit lives on the components. Reading only the former
+    // reported every blood pressure as carrying no unit at all, however
+    // carefully it had been recorded, and left the one vital that is always
+    // written with a unit invisible to anything checking scales.
+    unit: typeof qty.unit === "string" ? qty.unit : (quantityByName("systolic").unit as string | undefined) ?? null,
     systolic: byName("systolic"),
     diastolic: byName("diastolic"),
     takenAt: typeof c.effectiveDateTime === "string" ? c.effectiveDateTime : entry.effective_at ?? entry.recorded_at,

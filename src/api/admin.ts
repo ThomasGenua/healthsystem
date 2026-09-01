@@ -69,6 +69,7 @@ import type { AuthorityRow, PatientPermission } from "../patient/access.ts";
 import { DISPENSE_OUTCOMES, type DispenseOutcome } from "../meds/prescribe.ts";
 import { readFhirBundle, readFhirNdjson } from "../migrate/read-fhir.ts";
 import { score as computeScore, SCORE_IDS } from "../clinical/scores.ts";
+import { ingest, MEASURED_FIELDS, SCORE_MEASUREMENTS, type Measurement } from "../clinical/measurement.ts";
 import { news2FromChart, curb65FromChart } from "../clinical/score-from-chart.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
@@ -2807,6 +2808,46 @@ async function route(
       // still a clinical question about a patient, and it audits like one.
       const resource = "RiskAssessment";
       const produce = () => computeScore(body.score!, body.input ?? {});
+      return body.patient ? phiFor(body.patient, resource, produce) : phi(resource, produce);
+    }
+    // v2 takes measurements rather than bare numbers: the unit travels with
+    // the value instead of being spelled into the parameter name and restated
+    // as prose in the catalogue. v1 above is unchanged and stays supported —
+    // a caller already sending `ureaMmolL` is not broken by this.
+    if (path === "/api/clinical/score/v2" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        score?: string;
+        patient?: string;
+        measurements?: Record<string, Measurement>;
+        input?: Record<string, unknown>;
+      };
+      if (!body.score) return send(res, 400, { error: `score required; one of ${SCORE_IDS.join(", ")}` });
+
+      // The point of v2 is that a measured value states its unit. Letting one
+      // in through `input` would reinstate exactly the untyped path this
+      // endpoint exists to replace, so it is refused by name rather than
+      // quietly preferred or overwritten.
+      const smuggled = Object.keys(body.input ?? {}).filter((k) => MEASURED_FIELDS.has(k));
+      if (smuggled.length > 0) {
+        const named = smuggled
+          .map((f) => {
+            const as = Object.entries(SCORE_MEASUREMENTS).find(([, m]) => m.field === f);
+            return as ? `${f} (send as measurements.${as[0]})` : f;
+          })
+          .join(", ");
+        return send(res, 400, {
+          error:
+            `${named} carries a unit and must be sent under measurements, not input. ` +
+            "input is for criteria that have no unit: booleans and graded categories.",
+        });
+      }
+
+      const resource = "RiskAssessment";
+      const produce = () => {
+        const { input, ingestion } = ingest(body.measurements ?? {});
+        const result = computeScore(body.score!, { ...(body.input ?? {}), ...input });
+        return { ...result, ingestion };
+      };
       return body.patient ? phiFor(body.patient, resource, produce) : phi(resource, produce);
     }
     if (path === "/api/clinical/chart-score" && method === "POST") {

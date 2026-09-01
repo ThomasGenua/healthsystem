@@ -20,7 +20,7 @@ The design targets the interoperability posture Canadian jurisdictions are conve
 
 ## Status
 
-v0.8.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources; filter, split, mapping and validation pipeline; retrying ordered destinations with DLQ and replay; hash-chained lineage; FHIR R4 facade; terminology service; PS-CA / CA:FeX / CA:eReC conformance packs; rest-hook Subscriptions; satellite outage demo; admin UI) plus:
+v0.7.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources; filter, split, mapping and validation pipeline; retrying ordered destinations with DLQ and replay; hash-chained lineage; FHIR R4 facade; terminology service; PS-CA / CA:FeX / CA:eReC conformance packs; rest-hook Subscriptions; satellite outage demo; admin UI) plus:
 
 - **Authentication and authorisation.** API keys and OAuth 2.0 / SMART on FHIR bearer tokens, three system scopes plus a separate OAuth-only patient scope, one gate ahead of every route. On by default.
 - **Mutual TLS**, for node-to-node links, inbound and outbound.
@@ -75,8 +75,12 @@ v0.8.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **What the pharmacy did with the prescription.** A dispense is its own recorded fact — full, partial, or a pharmacy reporting it was never collected — because a medication the patient never picked up is not a medication they are taking, and a chart that cannot tell those apart is misleading in the direction that causes harm. Dispense reporting is declared per pharmacy and snapshotted at transmission, so an absent record reads as `unknown` rather than as an accusation against every pharmacy that simply does not send notifications. A dispense against a cancelled prescription is recorded and surfaced rather than refused. The prescriber's safety check travels with the script, findings and overrides included; a renewal request is an item in the unified worklist, closable only with evidence.
 - **A migration you can rehearse, and an extract reader that loses nothing.** `dryRun()` runs the whole load through the ordinary stores inside a transaction that is always rolled back — it *is* the loader, so it cannot approve what a real load would refuse, and nothing survives it. The FHIR Bundle and NDJSON reader skips nothing: a resource it cannot map comes back with its reason and the resource itself, one it can map but the stores refuse reaches the reject queue with its payload, and the declared count comes from the export's own `total` rather than from what happened to arrive.
 - **Value sets and concept maps from real releases.** FHIR ValueSet and ConceptMap resources plus SNOMED RF2 refsets and cross-maps, replacing hand-written pack JSON. A value set that cannot be fully resolved — a filter, an exclusion, a reference this store cannot follow — refuses to import at all, because one carrying the publisher's name and a smaller membership is worse than none.
+- **Risk scores that refuse an incomplete answer.** Ten instruments — CURB-65, CHA₂DS₂-VASc, HAS-BLED, Wells PE, HEART, MELD-Na, CIWA-Ar, Charlson, LACE, NEWS2 — where a missing input produces no number at all rather than a low one, because arithmetic that treats an undrawn urea as a normal one makes a patient read as safer for having been less investigated. Computed from the chart, every input carries a maximum age and a value past its window is not a value: a NEWS2 assembled from this morning's observations refuses rather than describing a patient who may since have deteriorated.
+- **A laboratory conformance harness**, run against a vendor's own sample messages before anybody trusts the interface. It names the findings an integration analyst would raise — no accession number so resends cannot be told apart, two identifiers in PID-3 with nothing saying which is the health number, timestamps with no zone — and states in every report what a clean run does not establish. It never says an interface conforms.
+- **Documents, procedures and care plans as chart facts rather than notes**, so their absence is visible and structured rather than a gap in prose.
+- **Enrolment attested by a named clerk** who records how they checked, rather than inferred from a token.
 
-847 tests. Backend first, then the interface that makes the backend's honesty visible.
+1025 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -87,13 +91,9 @@ Honest limits, so nobody discovers them in production:
 - **The shipped terminology pack is a labelled demo subset.** SNOMED CT CA, LOINC, pCLOCD, ICD-10-CA and CCI are licensed distributions; the loaders are here, the content is not.
 - **The database file is not encrypted.** `node:sqlite` cannot encrypt, so the control that fits a single-file store is an encrypted volume underneath it. Northstar does not assume one is there: it checks at boot and on `/api/health`, and says so loudly when it cannot find one. See [Encryption at rest](#encryption-at-rest).
 - **The conformance packs are not certified.** They encode the published profiles as data and pass the shipped fixtures, but no projectathon has scored them.
-- **Validated risk scores that refuse an incomplete answer.** Ten instruments — CURB-65, CHA₂DS₂-VASc, HAS-BLED, Wells PE, HEART, MELD-Na, CIWA-Ar, Charlson, LACE, NEWS2 — where a missing input produces no number at all rather than a low one, because arithmetic that treats an undrawn urea as a normal one makes a patient read as safer for having been less investigated. Computed from the chart, every input carries a maximum age and a value past its window is not a value: a NEWS2 assembled from this morning's observations refuses rather than describing a patient who may since have deteriorated.
-- **A laboratory conformance harness**, run against a vendor's own sample messages before anybody trusts the interface. It names the findings an integration analyst would raise — no accession number so resends cannot be told apart, two identifiers in PID-3 with nothing saying which is the health number, timestamps with no zone — and states in every report what a clean run does not establish. It never says an interface conforms.
-- **Documents, procedures and care plans as chart facts rather than notes**, so their absence is visible and structured rather than a gap in prose.
-- **Enrolment attested by a named clerk** who records how they checked, rather than inferred from a token.
-- **The clinician interface is thin, and most of the platform is API-only.** The admin UI now carries a chart, a worklist, break-glass and the privacy inbox, and there is a patient access page in English and French. Everything else described below — medications, orders, referrals, scheduling, registries, procedures, care plans, documents, enrolment — is a store and an HTTP API with tests and no screen. This is deliberate ordering, not an oversight, but "a clinician can run their day in this" is not a claim being made.
+- **The clinician interface is thin, and most of the platform is API-only.** The admin UI now carries a chart, a worklist, break-glass and the privacy inbox, and there is a patient access page in English and French. Everything else described below — medications, orders, referrals, scheduling, registries, procedures, care plans, documents, enrolment — is a store and an HTTP API with tests and no screen. This is deliberate ordering, not an oversight, but "a clinician can run their day in this" is not a claim being made. It has also not had independent clinical-usability, human-factors or accessibility validation, so "a clinician can safely use this in production today" is not a claim being made either.
 - **No certified patient portal.** `GET /me` is chrome: English/French copy, a skip link, landmarks, and a banner that says what this page is not. It does not enrol anyone. The JSON patient/proxy boundary is mounted at `/patient/*`; it is OAuth-only and checks a live, explicitly scoped authority grant on every chart. Binding a subject is clinic-attested enrolment — a named person writes how they checked — not identity-proofing and not ONE ID. Notices publish fact onto a configured channel; dispatching is not telling. There is no WCAG or AODA claim. A shell people can open is not a portal people can use.
-- **No clinical decision support content.** The medication safety mechanism is here — the check, the severities, the override with its record — and ships a deliberately small cross-reactivity set covering the classes with the clearest consensus. Drug interactions come from a licensed database through the `InteractionSource` seam. An interaction table that is 80% complete is one prescribers learn to trust, and the missing 20% is then invisible.
+- **No broad medication decision-support content.** The medication safety mechanism is here — the check, the severities, the override with its record — and ships a deliberately small cross-reactivity set covering the classes with the clearest consensus. Drug interactions come from a licensed database through the `InteractionSource` seam. An interaction table that is 80% complete is one prescribers learn to trust, and the missing 20% is then invisible. Ten deterministic published risk instruments are implemented separately; each response names its source, formula version, intended population, units and unreviewed assurance state. They are implementation-tested, not independently clinically validated.
 - **Nothing here uses machine learning.** Section 7 of the requirements asks for it; nothing in this repository does anything of the sort, and no output should be read as though it did.
 
 ## Requirements
@@ -136,7 +136,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 847 tests
+npm test          # 1025 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -651,6 +651,53 @@ A failing store does not take the chart down — six panels beat an error page �
 Allergy, immunization, vital-sign, procedure, care-plan and patient-document status are carried to the top of the summary rather than left inside their panels, and read from the stores rather than inferred from the panel's contents. Inferring them would undo the distinction those stores exist for: a clinician scanning a chart has to see "never asked", "never measured", "never recorded", "never planned" or "never received" without interpreting an empty box. A chart with no current primary or no coverage claim says so in `omissions` the same way.
 
 `worklist()` is the same idea across the day rather than across one patient. A clinician's work is not one queue — today's appointments, messages awaiting a reply, unowned messages, results, referrals, tasks, care plans past their review date, and each system reports its own as though it were the whole picture. The value of a single view is that nothing is owed to them somewhere they are not looking, which is only true if the view says what it could not reach. Today's list is that clinician's booked and attended appointments on the UTC day of `asOf`, not every empty slot in the diary. Overdue care plans are the service's, like stalled referrals: said plainly rather than filtered to nothing.
+
+### Governed risk scores
+
+`POST /api/clinical/score` computes ten deterministic published instruments;
+`POST /api/clinical/chart-score` can assemble NEWS2 and CURB-65 from the chart
+while refusing stale or unavailable inputs. A number without its definition is
+not reproducible evidence, so every complete **and incomplete** result carries:
+
+- the instrument and Northstar implementation versions;
+- the original publication or official steward source;
+- intended population, exclusions and required units;
+- a copy of the supplied inputs and the calculation time;
+- an assurance state that remains
+  `implementation-tested-not-independently-clinically-validated` until a named
+  clinical owner records a review.
+
+Units travel with the values rather than being spelled into parameter names.
+`POST /api/clinical/score/v2` takes `{ "value": 98.6, "unit": "[degF]" }`
+against UCUM, and resolves it onto the scale the instrument is written in at a
+single ingestion boundary — never inside a scorer, which sees canonical numbers
+and cannot tell that a conversion ran. Equivalent labels (`Cel`, `°C`, `degC`)
+are accepted exactly as sent, because they name one scale and there is nothing
+to compute. A genuine conversion is returned with the score so it can be
+checked. A mismatch that needs a fact about the substance rather than the units
+is refused instead of guessed: relating bilirubin in µmol/L to a mg/dL
+threshold needs that analyte's molar mass, and choosing one on a caller's
+behalf is the silent rescaling the contract exists to prevent. `POST
+/api/clinical/score` is unchanged and still supported.
+
+Inputs are checked against a domain before any arithmetic runs. A domain says
+what a measurement *can* be — a saturation is a percentage, a count of
+emergency visits is a whole number, a CIWA-Ar item is scored 0 to 7 — and is
+deliberately not one of the instrument's thresholds: it carries no clinical
+judgement, and a change to it can only reject input that was never scoreable.
+A value outside its domain refuses rather than joining the missing-input list,
+because "nobody measured this" and "what you sent cannot be a measurement" are
+different faults, and only the first is a clinician's to fix.
+
+Chart-derived responses additionally carry their clinical `asOf` time, every
+source record and its age, and the oldest observation on which the score rests.
+The catalogue is `src/clinical/score-definitions.ts`; source-linked vectors in
+`fixtures/clinical-scores/golden.json` are executable transcription checks, not
+a substitute for independent validation. MELD-Na identifies itself as the 2016
+OPTN formula and explicitly says it is not current MELD 3.0; NEWS2 says that
+only Scale 1 is implemented. A mathematically complete score can still be
+clinically inapplicable, which is why population and exclusions travel with the
+number instead of living only in this README.
 
 ### Patient messaging
 

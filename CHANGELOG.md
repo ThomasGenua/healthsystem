@@ -11,6 +11,62 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Governed provenance for every clinical risk score.** A result now carries
+  the exact instrument and Northstar implementation versions, original source,
+  intended population, exclusions, required units, calculation time and a
+  copy of the supplied inputs. The assurance state is deliberately machine
+  readable and unresolved: source-linked golden vectors exercise the
+  implementation, but no independent clinical reviewer or clinical owner has
+  signed it. Chart-derived scores also state their clinical `asOf` time.
+
+  The catalogue makes two easily hidden version choices explicit: MELD-Na is
+  the historical 2016 OPTN formula, not current MELD 3.0, and NEWS2 implements
+  Scale 1 only. `test/score-provenance.test.ts` requires one governed
+  definition and one source-linked vector per scorer and keeps those caveats
+  attached to the API result. Hazards H-139 through H-141.
+
+- **A measurement contract, so a score knows what scale its numbers are on.**
+  `POST /api/clinical/score/v2` takes a value together with its UCUM unit —
+  `{ "value": 98.6, "unit": "[degF]" }` — instead of a bare number whose unit
+  was spelled into the parameter name (`temperatureC`) and restated as prose
+  in the catalogue, with nothing comparing either to what the caller sent.
+  Equivalent labels are accepted unchanged: `Cel`, `°C` and `degC` are one
+  scale, and refusing `mmHg` where UCUM writes `mm[Hg]` would be pedantry with
+  a clinical cost. A real conversion — Fahrenheit to Celsius, hours to days,
+  µmol/L to mmol/L — happens once at the ingestion boundary, never inside a
+  scorer, and is returned with the score so the arithmetic can be checked
+  rather than trusted. A mismatch needing a fact about the substance rather
+  than the units is refused, not guessed: bilirubin in µmol/L against a mg/dL
+  threshold needs a molar mass, and BUN in mg/dL is not urea in mmol/L.
+  v1 is unchanged and still supported. The chart is the other ingestion
+  boundary and now has the same check: a vital recorded in a convertible unit
+  is converted and shows its working, one in a unit that cannot be read is
+  reported unavailable like a stale value, and one recorded before this
+  contract — carrying no unit at all — is used, with the evidence saying the
+  record stated no scale rather than implying one was checked. Hazards H-144
+  and H-145, and H-140's control is now enforced rather than declared.
+  1025 tests.
+
+- **A domain for every score input, distinct from the instrument's
+  thresholds.** A supplied value that no measurement could have produced —
+  a negative age or length of stay, a saturation outside 0-100, a CIWA-Ar
+  item of 3.5, `NaN` from a caller's own arithmetic — now refuses with a 400
+  naming the value and the domain, before any arithmetic and before the
+  missing-input check. It previously joined the missing-input list, which
+  reported a caller defect as a clinical data gap and sent somebody to
+  collect a measurement that was never absent. Absent inputs are unchanged:
+  `undefined` and `null` still refuse as missing, and a criterion stated
+  absent still scores zero. Domains are keyed by input name, so `ageYears`
+  cannot mean one thing in CURB-65 and another in HAS-BLED, and are
+  definitional rather than clinical — a percentage cannot exceed 100, a
+  count cannot be fractional, nothing is colder than absolute zero — so no
+  bound here can move a real patient between bands. Blood pressures, heart
+  and respiratory rates and laboratory concentrations are deliberately
+  unbounded above, because implausibility is a judgement about a patient
+  rather than a fact about a unit. Below, on and above probes now cover every
+  numeric criterion and band edge in all ten instruments. Hazards H-142 and
+  H-143. 962 tests.
+
 - **An order placed here is no longer assumed to be with a laboratory.**
   `OrderStore.place()` wrote `status = 'placed'` and recorded an event.
   Nothing sent the requisition anywhere, because until an outbound ordering
@@ -119,6 +175,19 @@ always forward-compatible and run automatically on open — see
   nobody cancelled, which would stop a test somebody is waiting for.
 
 **Fixed**
+
+- **A blood pressure reported no unit, however carefully it was recorded.**
+  `Vitals.parse` read the unit off the top-level `valueQuantity`, which a
+  component-valued observation does not have, so the one vital always written
+  with a unit was the one vital whose unit was invisible. It is now read from
+  the components.
+
+- **A versioned clinical route was exempt from the audit-row guarantee.** The
+  test that discovers routes by reading `admin.ts` matched
+  `[a-z/-]+`, so `/api/clinical/score/v2` did not match at all — and the
+  scanner went on reporting a healthy 139 routes while covering 139 of 140.
+  The character class now admits digits. This is the second time that class
+  has been too narrow; the first was the "/" that exempted nested paths.
 
 - **Two HL7 fields were one position out** (H-133). The indication was landing
   in OBR-14, Specimen Received Date/Time, and the ordering provider in OBR-17,
