@@ -249,6 +249,47 @@ always forward-compatible and run automatically on open — see
 
   Hazards H-146 and H-147.
 
+## Unreleased
+
+**Fixed**
+
+- **The worklist called an order nobody sent a laboratory being slow** (H-148).
+  "Orders awaiting a result" was built from orders past their expected date
+  without asking whether anybody had ever received them. On a site with no
+  outbound interface — which is every site until one is commissioned — an
+  order appeared there, went overdue, and read as a slow laboratory. The
+  clinician telephones a department that has never heard of it, is told there
+  is nothing, and has no reason to suspect the requisition never left. The
+  test stays undone while looking chased.
+
+  The transmission work made that knowable and then left it unsaid, which is
+  the worse half: the record knew, and the screen did not. The section now
+  holds only orders a laboratory plausibly has — acknowledged, or at a site
+  that has declared its requisitions travel on paper with the specimen — and
+  everything else appears under **"Orders no laboratory has"**. Different
+  headings because they need different actions: one is a telephone call, the
+  other is a send. It is drawn from `notWithFiller()` rather than from
+  `awaitingResult()`, so an unsent order appears when it is placed rather than
+  only once it is already late; an order nobody sent does not become worth
+  knowing about on the day it was due.
+
+- **The cancelled-orders list could not be read** (H-149). The store answered
+  "which orders did we cancel that a laboratory still holds" and nothing asked
+  it — no route, no worklist section, no screen. That is the most urgent list
+  in the ordering work, the one where the specimen is still due to be taken
+  from a patient who was told the test was called off, and it was reachable
+  only by a caller who already knew to look. Now an audited route
+  (`GET /api/clinical/orders-cancelled-still-with-filler`) and a named
+  worklist section.
+
+- **A chase list that would have become wallpaper** (H-150). `notWithFiller()`
+  listed orders at sites that had declared they do not transmit, forever. A
+  site that prints its requisitions has answered the question, so every open
+  order there sat on the list permanently and the genuinely unsent order in
+  among them would not have been seen. Declared non-transmitting sites are
+  excluded; undeclared ones are not, because nobody has said, and there every
+  order is a real question.
+
 ## 0.8.0 — 2026-08-27
 
 A release about what the record admits it does not know. 0.7.0 stopped the
