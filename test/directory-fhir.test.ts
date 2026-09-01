@@ -28,7 +28,7 @@ function region(): { db: Db; dir: Directory; fhir: FhirStore; cleanup: () => voi
     fhir: new FhirStore(db, undefined, dir),
     cleanup: () => {
       db.close();
-      rmSync(d, { recursive: true, force: true });
+      rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }

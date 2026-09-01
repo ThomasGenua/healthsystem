@@ -30,7 +30,7 @@ function chart(): { db: Db; rec: ClinicalRecord; cleanup: () => void } {
     rec: new ClinicalRecord(db),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -334,6 +334,6 @@ test("charts are confined to their tenant", () => {
     assert.throws(() => north.amend(theirs, { code: "X" }, { ...CLINICIAN, reason: "reaching" }), /no clinical record/);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

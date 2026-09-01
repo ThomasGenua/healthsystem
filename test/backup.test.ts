@@ -67,7 +67,7 @@ test("a snapshot of a live database is consistent and independently verifiable",
     assert.equal(engine.db.listMessages({ channelId: "backed-up" }).length, 6);
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -103,7 +103,7 @@ test("a copied file is not a backup, but a snapshot of the same database is", as
     );
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -124,7 +124,7 @@ test("verification rejects a corrupt snapshot rather than reporting success", as
     assert.throws(() => verifyBackup(result.path), /lineage broken/);
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -156,7 +156,7 @@ test("retention keeps the newest snapshots and removes the rest", async () => {
     assert.deepEqual(prune(backups, 10), []);
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -181,6 +181,6 @@ test("the backup endpoint writes, verifies and records a snapshot", async () => 
     else process.env.PORTAGE_BACKUP_DIR = previous;
     await api.close();
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

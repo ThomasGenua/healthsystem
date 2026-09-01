@@ -9,6 +9,38 @@ always forward-compatible and run automatically on open — see
 
 ## Unreleased
 
+**Fixed**
+
+- **A backup destination on Windows went somewhere else, quietly.** `fs:` and
+  `file://` destinations were parsed by slicing the scheme off and requiring a
+  leading `/`. `C:\backups` has no leading slash, so an absolute Windows path
+  was refused as relative; and `file:///C:/backups` sliced down to
+  `/C:/backups`, which is not a path — the backups landed in a directory named
+  `C:` at the root of the current drive. Both failures hit the one setting
+  whose whole job is to put backups somewhere other than the machine holding
+  the database. Parsing now goes through `fileURLToPath`, which knows the
+  drive-letter and percent-encoding rules, and absoluteness is checked with
+  the rules of the platform being targeted rather than of POSIX. Hazard H-148.
+
+- **An expired reading station answered 500 instead of 503.** The first
+  request past the serving budget destroys the cache, and `rmSync`'s `force`
+  suppresses a missing file but not a locked one: on Windows, deleting a
+  database another handle still holds throws EPERM, and the throw escaped into
+  the request. The station's deliberate refusal — with the remedy an operator
+  needs — became a generic fault. Refusing to serve is the guarantee and
+  destroying the file is the tidying that usually accompanies it, so a failed
+  purge is now reported rather than thrown, and the manifest is left unpurged
+  rather than claiming a destruction that did not happen. Hazard H-147.
+
+- **Platform-dependent logic is now testable from either platform.** CI runs
+  on Ubuntu only, so every Windows branch was unexecuted — which shows up as a
+  green build on a machine that never took the branch, and failures found on
+  somebody's laptop. Encryption-at-rest detection takes the platform as a
+  parameter, so its Linux path is exercised from any host instead of being
+  skipped into a "cannot check" branch. Temporary-directory cleanup across the
+  suite retries, which is inert on Linux and rides out the brief EPERM while a
+  Windows handle or virus scanner still holds a file.
+
 **Added**
 
 - **Properties that hold across every instrument, not just the thresholds

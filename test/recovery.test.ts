@@ -114,7 +114,7 @@ test("a delivery left in flight by a crash is requeued, not abandoned", async ()
     }
   } finally {
     await s.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -145,7 +145,7 @@ test("without recovery the channel would be wedged, so the reclaim is load-beari
     }
   } finally {
     await s.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -182,7 +182,7 @@ test("reclaim counts the interrupted attempt and says why", async () => {
     assert.equal(db.reclaimInflight(), 0);
     db.close();
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -221,6 +221,6 @@ test("a restart resumes a partly drained queue without losing or reordering", as
     }
   } finally {
     await s.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

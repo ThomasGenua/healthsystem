@@ -40,7 +40,7 @@ function clinic() {
     s: new Schedule(db),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -293,7 +293,7 @@ test("the schedule is confined to its tenant", () => {
     assert.equal(south.diary("dr-tetso", "2026-07-01T00:00:00Z", "2026-07-02T00:00:00Z")[0].slot.id, s2.id);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 

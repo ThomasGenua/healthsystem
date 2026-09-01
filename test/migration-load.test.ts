@@ -37,7 +37,7 @@ function site() {
     mig: new Migration(db, { clinical, meds }),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -524,7 +524,7 @@ test("migrations are confined to their tenant", () => {
     assert.equal(south.mig.load(southRun.id, allergyRecord("AL-1"), OPS).outcome, "loaded");
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 

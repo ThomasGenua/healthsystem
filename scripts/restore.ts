@@ -76,14 +76,14 @@ async function main(): Promise<void> {
   try {
     result = restore({ snapshot, target, force: flag("force") });
   } catch (err) {
-    if (scratch) rmSync(scratch, { recursive: true, force: true });
+    if (scratch) rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     if (err instanceof TargetInUse) {
       console.error(`refusing: ${err.message}`);
       process.exit(3);
     }
     throw err;
   }
-  if (scratch) rmSync(scratch, { recursive: true, force: true });
+  if (scratch) rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 
   if (result.displaced) console.log(`  displaced the existing database to ${result.displaced}`);
   if (result.clearedInheritedLock) {

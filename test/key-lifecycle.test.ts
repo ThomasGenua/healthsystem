@@ -30,7 +30,7 @@ function vault() {
     keys: new ApiKeyStore(db),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -221,7 +221,7 @@ test("key lifecycle is confined to its tenant", () => {
     assert.ok(north.verify(k.key), "which did not disturb it");
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 

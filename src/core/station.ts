@@ -375,7 +375,32 @@ export class ReadingStation {
       };
     }
 
-    for (const suffix of ["", "-wal", "-shm"]) rmSync(m.cachePath + suffix, { force: true });
+    // `force` swallows a missing file; it does not swallow a locked one. On
+    // Windows, deleting a database another handle still holds throws EPERM,
+    // and this throw used to escape into the request that triggered the
+    // purge — turning the deliberate 503 for an expired station into a 500,
+    // which reads as a broken server rather than a station past its budget.
+    //
+    // Refusing to serve is the guarantee; destroying the file is the tidying
+    // that usually accompanies it. So a failure here is reported, never
+    // thrown, and the manifest is left unpurged because saying the cache was
+    // destroyed when it is still on disk would be worse than saying nothing.
+    const failures: string[] = [];
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try {
+        rmSync(m.cachePath + suffix, { force: true, maxRetries: 3, retryDelay: 50 });
+      } catch (err) {
+        failures.push(`${m.cachePath}${suffix} (${(err as NodeJS.ErrnoException).code ?? "unknown"})`);
+      }
+    }
+    if (failures.length > 0) {
+      return {
+        purged: false,
+        detail:
+          `the station is past its budget and is not being served, but its cache could not be destroyed: ` +
+          `${failures.join(", ")}. Remove those files by hand; until then the snapshot is still on disk.`,
+      };
+    }
     const at = now.toISOString();
     this.db.sql
       .prepare("UPDATE station_manifest SET purged_at = ? WHERE tenant_id = ?")

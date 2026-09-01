@@ -27,7 +27,7 @@ function clinic() {
     team: new CareTeam(db),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -108,6 +108,6 @@ test("one custodian's care team is not another's", () => {
     assert.equal(south.primary(P), undefined);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

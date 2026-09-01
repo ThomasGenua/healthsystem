@@ -377,7 +377,7 @@ test(
       await api.close();
       await engine.stop();
       await new Promise<void>((r) => canary.close(() => r()));
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 
       // Best effort, and deliberately not an assertion. A Chromium profile
       // that will not delete is a temp directory on a CI runner; it says

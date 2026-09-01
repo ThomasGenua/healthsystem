@@ -131,7 +131,7 @@ test("a retention sweep ages out the message log and leaves the record alone", (
     assert.equal(rec.verifyChart(P).ok, true, "and the chart chain still verifies");
   } finally {
     db.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 

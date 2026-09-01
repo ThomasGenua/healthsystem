@@ -33,7 +33,7 @@ function clinic() {
     encounters: new Encounters(db),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -160,7 +160,7 @@ test("one custodian cannot read another's procedures", () => {
     assert.equal(south.historyStatus(P), "never-recorded");
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 

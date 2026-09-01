@@ -74,7 +74,7 @@ function clinic(opts: { dispatcher?: PharmacyDispatcher; controlledAuthority?: s
     }),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -372,7 +372,7 @@ test("prescriptions are confined to their tenant", () => {
     assert.throws(() => south.rx.acknowledge(rx.id, GP), Refusal);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -704,7 +704,7 @@ test("dispenses and renewals are confined to their custodian", () => {
     assert.equal(northRx.reportsDispenses("yk-pharmacy"), false, "a declaration is the custodian's own");
   } finally {
     db.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 

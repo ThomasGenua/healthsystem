@@ -44,7 +44,7 @@ import { buildAck, parseHl7 } from "../src/hl7/parser.ts";
 
 function dir(tag: string): { path: string; cleanup: () => void } {
   const path = mkdtempSync(join(tmpdir(), `northstar-rename-${tag}-`));
-  return { path, cleanup: () => rmSync(path, { recursive: true, force: true }) };
+  return { path, cleanup: () => rmSync(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
 
 /* ------------------------------------------------------------------ env --- */

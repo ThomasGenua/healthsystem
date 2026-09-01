@@ -58,7 +58,7 @@ async function boot(cfg: ChannelConfig) {
     port: engine.mllpPort("cs")!,
     close: async () => {
       await engine.stop();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }

@@ -24,7 +24,7 @@ function clinic() {
     coverage: new Coverage(db),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -84,6 +84,6 @@ test("one custodian's coverage is not another's", () => {
     assert.equal(south.current(P), undefined);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
