@@ -47,6 +47,8 @@ export const TENANT_SCOPED_TABLES = [
   "referral_events",
   "orders",
   "order_results",
+  "order_routing",
+  "order_transmissions",
   "order_events",
   "medication_statements",
   "allergies",
@@ -639,6 +641,69 @@ CREATE TABLE IF NOT EXISTS order_results (
   ack_due_by TEXT,
   created_at TEXT NOT NULL,
   PRIMARY KEY (tenant_id, id)
+);
+
+-- Whether orders of a given category actually leave this site, and to whom.
+--
+-- The third silence, and the earliest one. The orders table records that a
+-- clinician placed an order; nothing in it records that the order was sent. A
+-- site with no outbound ordering interface — which is every site until one is
+-- built and commissioned — marks orders 'placed', shows them on the chart as
+-- placed, and lists them as awaiting a result. The laboratory has never heard
+-- of them.
+--
+-- That is worse than the dispense silence it resembles. A prescription with no
+-- dispense record may still have been collected; the pharmacy simply may not
+-- report. Here *we* are the sender, so the absence is not ambiguous — it is
+-- ours, and it is knowable. Refusing to know it is the only way it stays
+-- invisible.
+--
+-- So a route is declared per category, and its absence is a fact with a name
+-- rather than an empty column: an order at a site that has declared no route
+-- is not "awaiting the lab", it is sitting here.
+CREATE TABLE IF NOT EXISTS order_routing (
+  tenant_id TEXT NOT NULL,
+  -- lab | imaging | procedure | referral | other
+  category TEXT NOT NULL,
+  -- 1 when an outbound interface exists and orders of this category go out on it.
+  transmits INTEGER NOT NULL,
+  -- Who receives them. Null when nothing is transmitted.
+  destination TEXT,
+  -- How, or why not. Read by an operator deciding whether this is expected.
+  detail TEXT NOT NULL,
+  declared_at TEXT NOT NULL,
+  declared_by TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, category)
+);
+
+-- Every attempt to hand an order to whoever performs it, appended never updated.
+--
+-- Append-only for the same reason results are: an acknowledgement belongs to
+-- the attempt it answered. A retry that overwrote the first attempt would let
+-- a rejection be replaced by a later success and leave no trace that the
+-- laboratory once refused this requisition, which is exactly the history
+-- somebody needs when a specimen arrives against an order the lab does not
+-- hold.
+CREATE TABLE IF NOT EXISTS order_transmissions (
+  -- Ordering is the whole safety property here, so it does not rest on a
+  -- timestamp. Two attempts in the same millisecond — a send and the
+  -- acknowledgement that answers it, which is the ordinary case on a fast
+  -- link — would otherwise fall back to a tiebreak on a random id, and the
+  -- superseding attempt would be whichever uuid happened to sort last. That
+  -- reports a rejected order as acknowledged about half the time.
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  order_id TEXT NOT NULL,
+  -- sent | acknowledged | rejected | failed
+  outcome TEXT NOT NULL,
+  destination TEXT NOT NULL,
+  -- MSH-10 of the message handed over, so an acknowledgement can be matched.
+  control_id TEXT,
+  detail TEXT NOT NULL,
+  at TEXT NOT NULL,
+  by TEXT NOT NULL,
+  UNIQUE (tenant_id, id)
 );
 
 -- Laboratory results whose patient could not be identified.
