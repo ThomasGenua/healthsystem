@@ -52,6 +52,7 @@ import { curb65, news2, type ScoreResult } from "./scores.ts";
 export interface ChartSource {
   input: string;
   value: number;
+  unit: string;
   takenAt: string;
   ageHours: number;
   recordId: string;
@@ -84,6 +85,19 @@ export interface ChartScoreDeps {
 
 const HOUR = 3_600_000;
 
+/** Equivalent labels only — never a scale conversion. */
+const UNIT_ALIASES: Readonly<Record<string, readonly string[]>> = {
+  "beats/min": ["beats/min", "/min"],
+  "breaths/min": ["breaths/min", "/min"],
+  mmHg: ["mmHg", "mm[Hg]"],
+  degC: ["degC", "Cel", "°C"],
+  "%": ["%"],
+};
+
+function hasExpectedUnit(actual: string | null, expected: string): actual is string {
+  return actual !== null && (UNIT_ALIASES[expected] ?? [expected]).includes(actual);
+}
+
 function ageHours(takenAt: string, asOf: string): number {
   return (new Date(asOf).getTime() - new Date(takenAt).getTime()) / HOUR;
 }
@@ -102,6 +116,7 @@ function pull(
   input: string,
   maxAgeHours: number,
   asOf: string,
+  expectedUnit: string,
   read: (v: VitalView) => number | null
 ): { source: ChartSource } | { unavailable: UnavailableInput } {
   const v = latest[kind];
@@ -109,6 +124,16 @@ function pull(
   const value = read(v);
   if (value === null) {
     return { unavailable: { input, reason: `the most recent ${kind} carries no usable value` } };
+  }
+  if (!hasExpectedUnit(v.unit, expectedUnit)) {
+    return {
+      unavailable: {
+        input,
+        reason:
+          `the most recent ${kind} is recorded in ${v.unit || "no unit"}; this instrument requires ${expectedUnit}. ` +
+          "No implicit conversion is made inside a clinical score",
+      },
+    };
   }
   const age = ageHours(v.takenAt, asOf);
   if (age > maxAgeHours) {
@@ -121,7 +146,7 @@ function pull(
       },
     };
   }
-  return { source: { input, value, takenAt: v.takenAt, ageHours: age, recordId: v.recordId } };
+  return { source: { input, value, unit: v.unit, takenAt: v.takenAt, ageHours: age, recordId: v.recordId } };
 }
 
 function assemble(
@@ -206,11 +231,11 @@ export function news2FromChart(
   const latest = deps.vitals.latest(patientId);
 
   const { values, used, unavailable } = assemble([
-    pull(latest, "respiratory-rate", "respiratoryRate", window, asOf, (v) => v.value),
-    pull(latest, "oxygen-saturation", "oxygenSaturation", window, asOf, (v) => v.value),
-    pull(latest, "blood-pressure", "systolicBp", window, asOf, (v) => v.systolic),
-    pull(latest, "heart-rate", "heartRate", window, asOf, (v) => v.value),
-    pull(latest, "temperature", "temperatureC", window, asOf, (v) => v.value),
+    pull(latest, "respiratory-rate", "respiratoryRate", window, asOf, "breaths/min", (v) => v.value),
+    pull(latest, "oxygen-saturation", "oxygenSaturation", window, asOf, "%", (v) => v.value),
+    pull(latest, "blood-pressure", "systolicBp", window, asOf, "mmHg", (v) => v.systolic),
+    pull(latest, "heart-rate", "heartRate", window, asOf, "beats/min", (v) => v.value),
+    pull(latest, "temperature", "temperatureC", window, asOf, "degC", (v) => v.value),
   ]);
 
   // Reported as unavailable rather than defaulted. Both defaults understate.
@@ -253,7 +278,7 @@ export function news2FromChart(
 export function curb65FromChart(
   deps: ChartScoreDeps,
   patientId: string,
-  supplied: { confusion?: boolean; ureaMmolL?: number } = {},
+  supplied: { confusion?: boolean; ureaMmolL?: number; units?: { ureaMmolL?: string } } = {},
   opts: { asOf?: string; maxAgeHours?: number } = {}
 ): ChartScore {
   const asOf = opts.asOf ?? new Date().toISOString();
@@ -261,9 +286,9 @@ export function curb65FromChart(
   const latest = deps.vitals.latest(patientId);
 
   const { values, used, unavailable } = assemble([
-    pull(latest, "respiratory-rate", "respiratoryRate", window, asOf, (v) => v.value),
-    pull(latest, "blood-pressure", "systolicBp", window, asOf, (v) => v.systolic),
-    pull(latest, "blood-pressure", "diastolicBp", window, asOf, (v) => v.diastolic),
+    pull(latest, "respiratory-rate", "respiratoryRate", window, asOf, "breaths/min", (v) => v.value),
+    pull(latest, "blood-pressure", "systolicBp", window, asOf, "mmHg", (v) => v.systolic),
+    pull(latest, "blood-pressure", "diastolicBp", window, asOf, "mmHg", (v) => v.diastolic),
   ]);
 
   const patient = deps.clinical.patientIndex.get(patientId);
@@ -294,6 +319,13 @@ export function curb65FromChart(
         "serum urea is not read from results here: the LOINC code and units a deployment receives are its own, " +
         "and guessing which result is the urea is how the wrong analyte reaches a disposition decision",
     });
+  } else if (supplied.units?.ureaMmolL !== "mmol/L") {
+    unavailable.push({
+      input: "ureaMmolL",
+      reason:
+        `supplied urea is labelled ${supplied.units?.ureaMmolL || "with no unit"}; CURB-65 requires mmol/L. ` +
+        "No implicit conversion is made inside a clinical score",
+    });
   }
 
   const result = curb65({
@@ -302,7 +334,9 @@ export function curb65FromChart(
     diastolicBp: values.diastolicBp,
     ...(age === undefined ? {} : { ageYears: age }),
     ...(supplied.confusion === undefined ? {} : { confusion: supplied.confusion }),
-    ...(supplied.ureaMmolL === undefined ? {} : { ureaMmolL: supplied.ureaMmolL }),
+    ...(supplied.ureaMmolL === undefined || supplied.units?.ureaMmolL !== "mmol/L"
+      ? {}
+      : { ureaMmolL: supplied.ureaMmolL }),
   });
   return finish(result, used, unavailable, asOf);
 }

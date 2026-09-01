@@ -103,6 +103,7 @@ export const TENANT_SCOPED_TABLES = [
   "privacy_deadlines",
   "assurance_findings",
   "assurance_exercises",
+  "score_approvals",
   "subprocessors",
 ] as const;
 
@@ -1817,6 +1818,30 @@ CREATE TABLE IF NOT EXISTS assurance_exercises (
   -- open | closed
   status TEXT NOT NULL DEFAULT 'open',
   created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- A deployment's permission to use one exact clinical-score implementation.
+-- Append-only: enabling, renewing or disabling supersedes a prior decision
+-- rather than rewriting the evidence under which an earlier result ran.
+CREATE TABLE IF NOT EXISTS score_approvals (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  score_id TEXT NOT NULL,
+  implementation_version TEXT NOT NULL,
+  -- enabled | disabled
+  status TEXT NOT NULL,
+  clinical_owner TEXT NOT NULL,
+  approved_population TEXT NOT NULL,
+  reviewed_at TEXT NOT NULL,
+  review_due TEXT NOT NULL,
+  licensing_accepted_by TEXT NOT NULL,
+  licensing_accepted_at TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  recorded_by TEXT NOT NULL,
+  recorded_by_kind TEXT NOT NULL,
+  recorded_at TEXT NOT NULL,
+  supersedes TEXT,
   PRIMARY KEY (tenant_id, id)
 );
 

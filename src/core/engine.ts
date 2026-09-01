@@ -49,6 +49,7 @@ import { ConsentDirectives } from "../patient/consent.ts";
 import { PatientMessaging } from "../patient/messaging.ts";
 import { PatientAccess } from "../patient/access.ts";
 import { PrivacyOffice } from "../privacy/office.ts";
+import { ScoreGovernance } from "../clinical/score-governance.ts";
 import { RetentionRunner, type RetentionPolicy } from "./retention.ts";
 import { buildAck, getHl7, parseHl7, serializeHl7 } from "../hl7/parser.ts";
 import { startMllpServer, type MllpServerHandle } from "../hl7/mllp.ts";
@@ -116,6 +117,8 @@ export interface TenantView {
   consent: ConsentDirectives;
   /** Queues, clocks, holds, incidents and the assurance catalogue. */
   privacy: PrivacyOffice;
+  /** Which exact risk-score implementations this deployment may use. */
+  scoreGovernance: ScoreGovernance;
   /** The assembled chart, over exactly the stores above. */
   workspace: Workspace;
   /** Visits, and what belongs to each one. */
@@ -376,6 +379,7 @@ export class Engine {
       migration: new Migration(db, { clinical, meds }),
       consent,
       privacy,
+      scoreGovernance: new ScoreGovernance(db),
       workspace: new Workspace({
         record: clinical,
         notes,

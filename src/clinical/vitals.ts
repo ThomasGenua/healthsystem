@@ -85,13 +85,21 @@ function parse(entry: ClinicalEntry): VitalView {
     const q = hit?.valueQuantity && typeof hit.valueQuantity === "object" ? (hit.valueQuantity as Record<string, unknown>) : {};
     return typeof q.value === "number" ? q.value : null;
   };
+  const componentUnit = (name: string) => {
+    const hit = components.find((x) => {
+      const cc = x.code && typeof x.code === "object" ? (x.code as Record<string, unknown>) : {};
+      return cc.text === name;
+    });
+    const q = hit?.valueQuantity && typeof hit.valueQuantity === "object" ? (hit.valueQuantity as Record<string, unknown>) : {};
+    return typeof q.unit === "string" ? q.unit : null;
+  };
   return {
     recordId: entry.record_id,
     patientId: entry.patient_id,
     encounterId: entry.encounter_id,
     kind,
     value: typeof qty.value === "number" ? qty.value : null,
-    unit: typeof qty.unit === "string" ? qty.unit : null,
+    unit: typeof qty.unit === "string" ? qty.unit : componentUnit("systolic"),
     systolic: byName("systolic"),
     diastolic: byName("diastolic"),
     takenAt: typeof c.effectiveDateTime === "string" ? c.effectiveDateTime : entry.effective_at ?? entry.recorded_at,

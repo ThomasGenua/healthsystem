@@ -89,7 +89,7 @@ Honest limits, so nobody discovers them in production:
 - **The conformance packs are not certified.** They encode the published profiles as data and pass the shipped fixtures, but no projectathon has scored them.
 - **The clinician console is not a validated clinical application.** It renders the chart, worklist, break-glass and privacy queues through the ordinary audited API, including the distinction between failed, truncated and withheld panels. It has not had independent clinical-usability, human-factors or accessibility validation, so "a clinician can safely use this in production today" is not a claim being made.
 - **No certified patient portal.** `GET /me` is chrome: English/French copy, a skip link, landmarks, and a banner that says what this page is not. The JSON patient/proxy boundary is mounted at `/patient/*`; it is OAuth-only and checks a live, explicitly scoped authority grant on every chart. There is no identity-proofing enrolment flow, notification delivery, or accessibility claim. A shell people can open is not a portal people can use.
-- **No broad medication decision-support content.** The medication safety mechanism is here — the check, severities and recorded override — but drug interactions still require a licensed database through `InteractionSource`. Ten deterministic published risk instruments are implemented separately; each response now names its source, formula version, intended population, units and unreviewed assurance state. They are implementation-tested, not independently clinically validated.
+- **No broad medication decision-support content.** The medication safety mechanism is here — the check, severities and recorded override — but drug interactions still require a licensed database through `InteractionSource`. Ten deterministic published risk instruments are implemented separately; each definition names its source, formula version, intended population, units and unreviewed product-assurance state. They are disabled until a deployment records a current, version-bound clinical approval. The implementations are tested, not independently clinically validated by this repository.
 - **Nothing here uses machine learning.** Section 7 of the requirements asks for it; nothing in this repository does anything of the sort, and no output should be read as though it did.
 
 ## Requirements
@@ -652,7 +652,17 @@ Allergy, immunization and vital-sign status are carried to the top of the summar
 
 `POST /api/clinical/score` computes ten deterministic published instruments;
 `POST /api/clinical/chart-score` can assemble NEWS2 and CURB-65 from the chart
-while refusing stale or unavailable inputs. A number without its definition is
+while refusing stale, unavailable or wrongly-unitised inputs. **Both endpoints
+are disabled by default.** A deployment enables one exact implementation only
+by recording a named clinical owner, approved local population, review and
+review-due dates, licensing acceptance and a written reason. The approval is
+tenant-scoped and append-only; expiry, an implementation-version change or an
+explicit disable closes the gate automatically.
+`GET /api/clinical/score-approvals` shows the current state;
+`POST /api/clinical/score-approval` and `POST /api/clinical/score-disable`
+change it.
+
+A number without its definition is
 not reproducible evidence, so every complete **and incomplete** result carries:
 
 - the instrument and Portage implementation versions;
@@ -660,8 +670,16 @@ not reproducible evidence, so every complete **and incomplete** result carries:
 - intended population, exclusions and required units;
 - a copy of the supplied inputs and the calculation time;
 - an assurance state that remains
-  `implementation-tested-not-independently-clinically-validated` until a named
-  clinical owner records a review.
+  `implementation-tested-not-independently-clinically-validated` for the
+  product itself.
+
+A successful API calculation additionally carries the exact deployment
+approval that authorised it, and that approval id, implementation version,
+clinical owner and review-due date are written onto the hash-chained access
+trail. Hand-supplied complete calculations must carry a `units` object matching
+the governed contract exactly. Chart-derived values use the units stored on
+their source observations; Portage performs no implicit conversion inside a
+clinical score.
 
 Chart-derived responses additionally carry their clinical `asOf` time, every
 source record and its age, and the oldest observation on which the score rests.

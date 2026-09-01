@@ -135,5 +135,7 @@ discussion, but they will not be treated as advisories:
 - **Medication decision support ships without a broad interaction source.**
   Deterministic published risk instruments are a separate catalogue and carry
   their formula version, population, exclusions, units and an explicit
-  not-independently-clinically-validated assurance state. Nothing in Portage
-  uses machine learning.
+  not-independently-clinically-validated product assurance state. They are
+  disabled until each deployment records a current, version-bound clinical
+  approval, and complete inputs with missing or mismatched units are refused.
+  Nothing in Portage uses machine learning.

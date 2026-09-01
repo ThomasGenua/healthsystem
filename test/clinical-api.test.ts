@@ -47,6 +47,19 @@ async function boot() {
   const base = `http://127.0.0.1:${api.port}`;
 
   const t = engine.forTenant("default");
+  for (const scoreId of ["curb-65", "news2", "has-bled"] as const) {
+    t.scoreGovernance.approve({
+      scoreId,
+      implementationVersion: "portage-1",
+      clinicalOwner: "Dr Jean Tetso",
+      approvedPopulation: "Synthetic test patients only",
+      reviewedAt: "2026-08-01T00:00:00.000Z",
+      reviewDue: "2099-08-01T00:00:00.000Z",
+      licensingAcceptedBy: "test-governance",
+      reason: "HTTP regression-test fixture",
+      by: { actorId: "test-governance", actorKind: "system" },
+    });
+  }
   t.clinical.record({
     entryType: "Patient",
     patientId: P,
@@ -149,6 +162,44 @@ test("the assembled chart is served, and the read is on the trail", async () => 
     assert.equal(rows[0].action, "R");
     assert.equal(rows[0].principal_id, s.adminId, "the credential that looked, not a label");
     assert.equal(rows[0].path, "/api/clinical/chart");
+  } finally {
+    await s.close();
+  }
+});
+
+test("clinical score use is approval-gated, unit-bound, and names its approval on the trail", async () => {
+  const s = await boot();
+  try {
+    const unapproved = await fetch(`${s.base}/api/clinical/score`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${s.admin}`, "content-type": "application/json" },
+      body: JSON.stringify({ score: "meld-na", patient: P, input: {} }),
+    });
+    assert.equal(unapproved.status, 409);
+    assert.match(await unapproved.text(), /no deployment approval recorded/);
+
+    const input = { confusion: false, ureaMmolL: 9, respiratoryRate: 32, systolicBp: 88, diastolicBp: 55, ageYears: 72 };
+    const units = { ureaMmolL: "mmol/L", respiratoryRate: "breaths/min", systolicBp: "mmHg", diastolicBp: "mmHg", ageYears: "completed years" };
+    const wrongUnit = await fetch(`${s.base}/api/clinical/score`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${s.admin}`, "content-type": "application/json" },
+      body: JSON.stringify({ score: "curb-65", patient: P, input, units: { ...units, ureaMmolL: "mg/dL" } }),
+    });
+    assert.equal(wrongUnit.status, 400);
+    assert.match(await wrongUnit.text(), /requires units\.ureaMmolL/);
+
+    const accepted = await fetch(`${s.base}/api/clinical/score`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${s.admin}`, "content-type": "application/json" },
+      body: JSON.stringify({ score: "curb-65", patient: P, input, units }),
+    });
+    assert.equal(accepted.status, 200);
+    const result = (await accepted.json()) as { complete: boolean; authorization: { approvalId: string; implementationVersion: string } };
+    assert.equal(result.complete, true);
+    assert.ok(result.authorization.approvalId);
+    assert.equal(result.authorization.implementationVersion, "portage-1");
+    assert.match(s.trail()[0].detail ?? "", new RegExp(`approval ${result.authorization.approvalId}`));
+    assert.match(s.trail()[0].detail ?? "", /implementation portage-1/);
   } finally {
     await s.close();
   }
@@ -645,6 +696,9 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/lab-held": "",
       "/api/clinical/lab-reconcile": "",
       "/api/clinical/lab-resolve": "POST",
+      "/api/clinical/score-approvals": "",
+      "/api/clinical/score-approval": "POST",
+      "/api/clinical/score-disable": "POST",
       "/api/clinical/score": "POST",
       "/api/clinical/chart-score": "POST",
       "/api/clinical/prescriptions": `?patient=${P}`,
@@ -810,6 +864,7 @@ test("every clinical route leaves an audit row, including ones added later", asy
         score: "curb-65",
         patient: P,
         input: { confusion: false, ureaMmolL: 9, respiratoryRate: 32, systolicBp: 88, diastolicBp: 55, ageYears: 72 },
+        units: { ureaMmolL: "mmol/L", respiratoryRate: "breaths/min", systolicBp: "mmHg", diastolicBp: "mmHg", ageYears: "completed years" },
       },
       "/api/clinical/chart-score": { score: "news2", patient: P, supplied: { onSupplementalOxygen: false, alert: true } },
       "/api/clinical/prescribe": { statement: statement.id, instructions: "One tablet twice daily with food" },
@@ -912,6 +967,20 @@ test("every clinical route leaves an audit row, including ones added later", asy
         request: requestToExtend.id,
         until: "2027-01-15T00:00:00.000Z",
         reason: "patient asked for more time to collect records",
+      },
+      "/api/clinical/score-approval": {
+        score: "curb-65",
+        implementationVersion: "portage-1",
+        clinicalOwner: "Dr Jean Tetso",
+        approvedPopulation: "Synthetic test patients only",
+        reviewedAt: "2026-08-01T00:00:00.000Z",
+        reviewDue: "2099-08-01T00:00:00.000Z",
+        licensingAcceptedBy: "test-governance",
+        reason: "exercise the approval endpoint",
+      },
+      "/api/clinical/score-disable": {
+        score: "has-bled",
+        reason: "exercise the fail-closed disable endpoint",
       },
       "/api/clinical/assurance-finding-close": {
         id: findingToClose.id,

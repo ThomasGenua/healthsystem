@@ -69,6 +69,7 @@ import type { AuthorityRow, PatientPermission } from "../patient/access.ts";
 import { DISPENSE_OUTCOMES, type DispenseOutcome } from "../meds/prescribe.ts";
 import { readFhirBundle, readFhirNdjson } from "../migrate/read-fhir.ts";
 import { score as computeScore, SCORE_IDS } from "../clinical/scores.ts";
+import { requireScoreUnits, type ScoreAuthorization } from "../clinical/score-governance.ts";
 import { news2FromChart, curb65FromChart } from "../clinical/score-from-chart.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
@@ -1474,7 +1475,8 @@ async function route(
       resourceType: string,
       produce: (withheldTypes: ReadonlySet<string>) => T,
       count?: (v: T) => number,
-      covers: readonly string[] = [resourceType]
+      covers: readonly string[] = [resourceType],
+      auditDetail?: (value: T) => string | undefined
     ): void => {
       const patient = subject;
       let withheldTypes: ReadonlySet<string> = new Set();
@@ -1519,7 +1521,11 @@ async function route(
         // where a privacy office finds out the directive did something. Only
         // the types, never the content: which sections were locked is the
         // narrowest thing that makes the row useful.
-        ...(withheldTypes.size ? { detail: `withheld by patient directive: ${[...withheldTypes].sort().join(", ")}` } : {}),
+        ...(withheldTypes.size
+          ? { detail: `withheld by patient directive: ${[...withheldTypes].sort().join(", ")}` }
+          : auditDetail
+            ? { detail: auditDetail(value) }
+            : {}),
       });
       return send(res, 200, value);
     };
@@ -1538,8 +1544,9 @@ async function route(
       resourceType: string,
       produce: (withheldTypes: ReadonlySet<string>) => T,
       count?: (v: T) => number,
-      covers: readonly string[] = [resourceType]
-    ): void => phiFor(patient, resourceType, produce, count, covers);
+      covers: readonly string[] = [resourceType],
+      auditDetail?: (value: T) => string | undefined
+    ): void => phiFor(patient, resourceType, produce, count, covers, auditDetail);
 
     /**
      * Privacy-office reads and writes. Audits, then sends, like `phi` — but
@@ -2577,15 +2584,66 @@ async function route(
         })
       );
     }
+    if (path === "/api/clinical/score-approvals" && method === "GET") {
+      return phiOffice("ClinicalScoreApproval", () => tenant.scoreGovernance.list(), (rows) => rows.length);
+    }
+    if (path === "/api/clinical/score-approval" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        score?: string;
+        implementationVersion?: string;
+        clinicalOwner?: string;
+        approvedPopulation?: string;
+        reviewedAt?: string;
+        reviewDue?: string;
+        licensingAcceptedBy?: string;
+        reason?: string;
+      };
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiOffice("ClinicalScoreApproval", () =>
+        tenant.scoreGovernance.approve({
+          scoreId: body.score ?? "",
+          implementationVersion: body.implementationVersion ?? "",
+          clinicalOwner: body.clinicalOwner ?? "",
+          approvedPopulation: body.approvedPopulation ?? "",
+          reviewedAt: body.reviewedAt ?? "",
+          reviewDue: body.reviewDue ?? "",
+          licensingAcceptedBy: body.licensingAcceptedBy ?? "",
+          reason: body.reason ?? "",
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+        })
+      );
+    }
+    if (path === "/api/clinical/score-disable" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { score?: string; reason?: string };
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiOffice("ClinicalScoreApproval", () =>
+        tenant.scoreGovernance.disable({
+          scoreId: body.score ?? "",
+          reason: body.reason ?? "",
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+        })
+      );
+    }
     if (path === "/api/clinical/score" && method === "POST") {
-      const body = JSON.parse(await readBody(req)) as { score?: string; patient?: string; input?: unknown };
+      const body = JSON.parse(await readBody(req)) as { score?: string; patient?: string; input?: unknown; units?: unknown };
       if (!body.score) return send(res, 400, { error: `score required; one of ${SCORE_IDS.join(", ")}` });
       // Computed over values the caller supplies rather than read from a
       // chart, so there is nothing to filter by directive here — but it is
       // still a clinical question about a patient, and it audits like one.
       const resource = "RiskAssessment";
-      const produce = () => computeScore(body.score!, body.input ?? {});
-      return body.patient ? phiFor(body.patient, resource, produce) : phi(resource, produce);
+      const produce = () => {
+        const authorization = tenant.scoreGovernance.requireEnabled(body.score!);
+        const result = computeScore(body.score!, body.input ?? {});
+        const units = result.complete ? requireScoreUnits(body.score!, body.units) : Object.freeze({});
+        return { ...result, authorization, units };
+      };
+      const detail = (value: { authorization: ScoreAuthorization }) =>
+        `score ${value.authorization.scoreId} implementation ${value.authorization.implementationVersion} ` +
+        `approval ${value.authorization.approvalId} owner ${value.authorization.clinicalOwner} ` +
+        `review due ${value.authorization.reviewDue}`;
+      return body.patient
+        ? phiFor(body.patient, resource, produce, undefined, [resource], detail)
+        : phi(resource, produce, undefined, [resource], detail);
     }
     if (path === "/api/clinical/chart-score" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as {
@@ -2601,10 +2659,23 @@ async function route(
       const deps = { vitals: tenant.vitals, clinical: tenant.clinical };
       const supplied = (body.supplied ?? {}) as never;
       const options = body.maxAgeHours === undefined ? {} : { maxAgeHours: body.maxAgeHours };
-      return phiFor(body.patient, "RiskAssessment", () =>
-        body.score === "news2"
-          ? news2FromChart(deps, body.patient!, supplied, options)
-          : curb65FromChart(deps, body.patient!, supplied, options)
+      return phiFor(
+        body.patient,
+        "RiskAssessment",
+        () => {
+          const authorization = tenant.scoreGovernance.requireEnabled(body.score!);
+          const chart =
+            body.score === "news2"
+              ? news2FromChart(deps, body.patient!, supplied, options)
+              : curb65FromChart(deps, body.patient!, supplied, options);
+          return { ...chart, authorization };
+        },
+        undefined,
+        ["RiskAssessment"],
+        (value) =>
+          `score ${value.authorization.scoreId} implementation ${value.authorization.implementationVersion} ` +
+          `approval ${value.authorization.approvalId} owner ${value.authorization.clinicalOwner} ` +
+          `review due ${value.authorization.reviewDue}`
       );
     }
     if (path === "/api/clinical/prescriptions" && method === "GET") {

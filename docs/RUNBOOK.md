@@ -24,6 +24,7 @@ The escape hatch is break-glass, which is loud and recorded — see
 - [Deploying](#deploying)
   - [What a node needs](#what-a-node-needs)
   - [First install](#first-install)
+  - [Approving a clinical score](#approving-a-clinical-score)
   - [Upgrading](#upgrading)
   - [Rolling back](#rolling-back)
 - [Daily and weekly](#daily-and-weekly)
@@ -102,6 +103,54 @@ Then, before any real feed is pointed at it:
 7. **Declare `expectMessageEverySec` on every channel you would notice the
    absence of.** Silence detection is off unless declared, and silence is the
    failure most likely to run for days unnoticed.
+
+Clinical scores remain disabled after these steps. That is healthy default
+state, not a degraded node. Enable only those reviewed for this deployment as
+described next.
+
+### Approving a clinical score
+
+First inspect all ten gates:
+
+```bash
+curl -sS -H "authorization: Bearer $ADMIN_KEY" \
+  http://localhost:8686/api/clinical/score-approvals
+```
+
+An independent clinical reviewer must settle the population, source version,
+units, licensing and local use before the operator records the decision. The
+request deliberately repeats the implementation version: approving “CURB-65”
+in the abstract must not silently approve different code after an upgrade.
+
+```bash
+curl -sS -X POST \
+  -H "authorization: Bearer $ADMIN_KEY" \
+  -H "content-type: application/json" \
+  http://localhost:8686/api/clinical/score-approval \
+  --data '{
+    "score": "curb-65",
+    "implementationVersion": "portage-1",
+    "clinicalOwner": "Dr Jane Example",
+    "approvedPopulation": "Adults presenting to Example Hospital with community-acquired pneumonia",
+    "reviewedAt": "2026-08-15T00:00:00Z",
+    "reviewDue": "2027-08-15T00:00:00Z",
+    "licensingAcceptedBy": "Example Hospital clinical governance board",
+    "reason": "Clinical governance minute CGB-2026-14"
+  }'
+```
+
+Never copy the example names or dates into a real approval. They are evidence,
+not configuration filler. The review-due date closes the gate automatically;
+an implementation-version change also closes it. To stop use immediately
+without deleting the decision history:
+
+```bash
+curl -sS -X POST \
+  -H "authorization: Bearer $ADMIN_KEY" \
+  -H "content-type: application/json" \
+  http://localhost:8686/api/clinical/score-disable \
+  --data '{"score":"curb-65","reason":"steward guidance changed; review required"}'
+```
 
 ### Upgrading
 

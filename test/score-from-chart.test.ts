@@ -52,7 +52,14 @@ function ward() {
         ["temperature", over.temperature ?? 36.8],
       ];
       for (const [kind, value] of set) {
-        vitals.record({ patientId: P, kind, takenAt, by: NURSE, value });
+        const units: Partial<Record<VitalKind, string>> = {
+          "respiratory-rate": "breaths/min",
+          "heart-rate": "/min",
+          "oxygen-saturation": "%",
+          temperature: "degC",
+        };
+        const unit = units[kind];
+        vitals.record({ patientId: P, kind, takenAt, by: NURSE, value, unit });
       }
       vitals.record({ patientId: P, kind: "blood-pressure", takenAt, by: NURSE, systolic: bp[0], diastolic: bp[1] });
     },
@@ -77,6 +84,27 @@ test("a fresh set of vitals scores, and shows every value it used", () => {
       assert.ok(u.ageHours >= 0 && u.ageHours < 1);
     }
     assert.ok(out.oldestAgeHours !== null && out.oldestAgeHours < 1);
+  } finally {
+    w.cleanup();
+  }
+});
+
+test("a fresh value in the wrong unit is unavailable, never converted implicitly", () => {
+  const w = ward();
+  try {
+    w.observe("2026-08-27T19:30:00.000Z");
+    w.vitals.record({
+      patientId: P,
+      kind: "temperature",
+      takenAt: "2026-08-27T19:59:00.000Z",
+      by: NURSE,
+      value: 98.6,
+      unit: "degF",
+    });
+    const out = news2FromChart(w.deps, P, { onSupplementalOxygen: false, alert: true }, { asOf: NOW });
+    assert.equal(out.result.complete, false);
+    assert.match(out.unavailable.find((u) => u.input === "temperatureC")!.reason, /requires degC/);
+    assert.match(out.unavailable.find((u) => u.input === "temperatureC")!.reason, /No implicit conversion/);
   } finally {
     w.cleanup();
   }
@@ -111,7 +139,7 @@ test("the freshness window is the instrument's clinical question, not one number
     const acute = news2FromChart(w.deps, P, { onSupplementalOxygen: false, alert: true }, eightHours);
     assert.equal(acute.result.complete, false, "eight hours is too old for an early warning score");
 
-    const disposition = curb65FromChart(w.deps, P, { confusion: true, ureaMmolL: 9 }, eightHours);
+    const disposition = curb65FromChart(w.deps, P, { confusion: true, ureaMmolL: 9, units: { ureaMmolL: "mmol/L" } }, eightHours);
     assert.equal(disposition.result.complete, true, "and within CURB-65's window");
     assert.equal(disposition.result.complete && disposition.result.score, 5);
     assert.equal(FRESHNESS_HOURS.news2 < FRESHNESS_HOURS["curb-65"], true);
@@ -125,7 +153,7 @@ test("only the stale inputs fall out; fresh ones are still used", () => {
   try {
     w.observe("2026-08-27T06:00:00.000Z");
     // One vital re-taken just now; the rest still this morning's.
-    w.vitals.record({ patientId: P, kind: "heart-rate", takenAt: "2026-08-27T19:45:00.000Z", by: NURSE, value: 104 });
+    w.vitals.record({ patientId: P, kind: "heart-rate", takenAt: "2026-08-27T19:45:00.000Z", by: NURSE, value: 104, unit: "beats/min" });
 
     const out = news2FromChart(w.deps, P, { onSupplementalOxygen: false, alert: true }, { asOf: NOW });
     assert.equal(out.result.complete, false, "the score still refuses — one fresh vital is not a set");
@@ -141,7 +169,7 @@ test("a vital nobody has ever recorded reads differently from one that is old", 
   // absence loses the more actionable half.
   const w = ward();
   try {
-    w.vitals.record({ patientId: P, kind: "heart-rate", takenAt: "2026-08-27T19:45:00.000Z", by: NURSE, value: 72 });
+    w.vitals.record({ patientId: P, kind: "heart-rate", takenAt: "2026-08-27T19:45:00.000Z", by: NURSE, value: 72, unit: "beats/min" });
     const out = news2FromChart(w.deps, P, { onSupplementalOxygen: false, alert: true }, { asOf: NOW });
     const never = out.unavailable.find((u) => u.input === "respiratoryRate");
     assert.ok(never);
@@ -190,13 +218,13 @@ test("age comes from the chart, floored, and its absence is reported", () => {
   const w = ward();
   try {
     w.observe("2026-08-27T19:30:00.000Z", { "respiratory-rate": 32 }, [88, 55]);
-    const out = curb65FromChart(w.deps, P, { confusion: false, ureaMmolL: 9 }, { asOf: NOW });
+    const out = curb65FromChart(w.deps, P, { confusion: false, ureaMmolL: 9, units: { ureaMmolL: "mmol/L" } }, { asOf: NOW });
     assert.equal(out.result.complete, true);
     // Born 1954-03-17, so 72 on 2026-08-27: confusion 0 + urea 1 + RR 1 + BP 1 + age 1.
     assert.equal(out.result.complete && out.result.score, 4);
     assert.equal(out.result.complete && out.result.components.age, 1);
 
-    const unknown = curb65FromChart(w.deps, "NT-NOBODY", { confusion: false, ureaMmolL: 9 }, { asOf: NOW });
+    const unknown = curb65FromChart(w.deps, "NT-NOBODY", { confusion: false, ureaMmolL: 9, units: { ureaMmolL: "mmol/L" } }, { asOf: NOW });
     assert.equal(unknown.result.complete, false);
     assert.ok(unknown.unavailable.some((u) => u.input === "ageYears" && /no patient record/.test(u.reason)));
   } finally {
@@ -226,7 +254,7 @@ test("the score is only as current as its stalest input", () => {
   const w = ward();
   try {
     w.observe("2026-08-27T17:00:00.000Z");
-    w.vitals.record({ patientId: P, kind: "heart-rate", takenAt: "2026-08-27T19:55:00.000Z", by: NURSE, value: 72 });
+    w.vitals.record({ patientId: P, kind: "heart-rate", takenAt: "2026-08-27T19:55:00.000Z", by: NURSE, value: 72, unit: "beats/min" });
     const out = news2FromChart(w.deps, P, { onSupplementalOxygen: false, alert: true }, { asOf: NOW });
     assert.equal(out.result.complete, true);
     assert.ok(out.oldestAgeHours !== null);

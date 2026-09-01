@@ -35,6 +35,22 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Fail-closed deployment approval for clinical scores.** The formula
+  catalogue is no longer merely a warning attached to a number. Every score is
+  disabled until its tenant records a named clinical owner, approved local
+  population, licensing acceptance, review and review-due dates, a written
+  reason, and the exact Portage implementation version reviewed. Approval,
+  renewal and disable are append-only decisions. Expiry, disable, or a formula
+  version change refuses calculation with HTTP 409.
+
+  Complete hand-supplied calculations now require the exact governed unit for
+  every measured input. Chart-derived scores compare the unit stored on every
+  source observation and treat a wrong or absent unit as unavailable; no
+  implicit clinical conversion is performed. Successful responses and the
+  hash-chained access trail name the approval id, implementation version,
+  clinical owner and review-due date. `test/score-governance.test.ts` and the
+  API/chart regression tests pin the gate. Hazards H-109 and H-111.
+
 - **Governed provenance for every clinical risk score.** A result now carries
   the exact instrument and Portage implementation versions, original source,
   intended population, exclusions, required units, calculation time and a
