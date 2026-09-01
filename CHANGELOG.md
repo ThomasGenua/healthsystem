@@ -11,6 +11,15 @@ always forward-compatible and run automatically on open — see
 
 **Fixed**
 
+- **A FHIR search could return the same resource on two pages, and skip
+  others.** Stored resources were ordered by `updated_at` alone, which has
+  second granularity — so a bulk load writes dozens of resources sharing one
+  timestamp, and SQLite specifies no order among rows equal under the ORDER
+  BY. Paging through such a run repeats some resources and omits others, with
+  no error and a correct-looking total: a client reading a patient's
+  observations gets a chart with holes in it. The ordering now carries a
+  tiebreak on id, so it is specified rather than incidental.
+
 - **A backup destination on Windows went somewhere else, quietly.** `fs:` and
   `file://` destinations were parsed by slicing the scheme off and requiring a
   leading `/`. `C:\backups` has no leading slash, so an absolute Windows path
@@ -96,6 +105,17 @@ always forward-compatible and run automatically on open — see
   that are already correctly constrained.
 
 **Added**
+
+- **FHIR search pagination.** `_count` (bounded to 100) and `_offset`, with
+  `Bundle.link` carrying self, next and previous, so a client can page without
+  constructing URLs itself.
+
+- **The capability statement claims an implementation guide only where the
+  conformance registry says that guide is in force.** `instantiates` is
+  generated from the active packages rather than written literally, so the
+  statement cannot name a guide the deployment never installed — the same
+  failure as a hand-written conformance page, in the artifact a partner reads
+  first.
 
 - **Properties that hold across every instrument, not just the thresholds
   somebody wrote down.** A risk score is a sum of things that make a patient

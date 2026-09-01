@@ -4482,19 +4482,42 @@ async function route(
     return send(res, 200, smart);
   }
   if (path === "/fhir/metadata" && method === "GET") {
-    return send(res, 200, fhir.capability(baseUrl(req), VERSION));
+    return send(res, 200, fhir.capability(baseUrl(req), VERSION, tenant.standards.active().map((p) => p.canonicalUrl)));
   }
 
   m = /^\/fhir\/([A-Z][A-Za-z]+)$/.exec(path);
   if (m && method === "GET") {
     const type = m[1];
     const identifier = url.searchParams.get("identifier") ?? undefined;
-    const result = fhir.search(type, { identifier, count: num(url.searchParams.get("_count")) });
+    const count = Math.min(Math.max(num(url.searchParams.get("_count")) ?? 20, 1), 100);
+    const offset = Math.max(num(url.searchParams.get("_offset")) ?? 0, 0);
+    const result = fhir.search(type, { identifier, count, offset });
     audit({ action: "R", resourceType: type, patient: identifier, count: result.total });
+
+    // Continuation links. A client that pages by re-issuing the search with a
+    // bigger offset needs the ordering to be stable, which is why the store
+    // orders on a tiebreak — without it a page boundary falling inside a run
+    // of identical timestamps repeats some resources and skips others.
+    const page = (at: number): string => {
+      const link = new URL(`${baseUrl(req)}/fhir/${type}`);
+      if (identifier) link.searchParams.set("identifier", identifier);
+      link.searchParams.set("_count", String(count));
+      link.searchParams.set("_offset", String(at));
+      return link.toString();
+    };
+    const links: Array<{ relation: string; url: string }> = [{ relation: "self", url: page(offset) }];
+    if (offset + result.resources.length < result.total) {
+      links.push({ relation: "next", url: page(offset + count) });
+    }
+    if (offset > 0) {
+      links.push({ relation: "previous", url: page(Math.max(offset - count, 0)) });
+    }
+
     return send(res, 200, {
       resourceType: "Bundle",
       type: "searchset",
       total: result.total,
+      link: links,
       entry: result.resources.map((r) => ({
         fullUrl: `${baseUrl(req)}/fhir/${type}/${String((r as { id?: unknown }).id ?? "")}`,
         resource: r,

@@ -108,8 +108,21 @@ to activate it in production. See `43` below.
   conformance.
 - **Target standard** — IPA `1.1.0` `[unverified]`;
   `http://hl7.org/fhir/uv/ipa/` `[unresolved]`. FHIR R4 `4.0.1`.
-- **Status** — `NOT_IMPLEMENTED`
-- **Evidence** — None yet.
+- **Status** — `SELF_TESTED` for pagination and for the capability
+  statement's guide claims; `NOT_IMPLEMENTED` for patient-compartment scoping
+  on the FHIR facade, `_include`/`_revinclude`, and Provenance in search
+  results.
+- **Evidence** — `test/fhir-pagination.test.ts`: every resource appears
+  exactly once across pages over a run of identical timestamps, a page is
+  stable when re-requested, `_count` is bounded, and one tenant's page never
+  contains another's; and the capability statement names a guide only once the
+  conformance registry holds it active.
+- **Known gap** — Compartment scoping needs a patient reference on
+  `fhir_resources`, which has none: it stores resource type, id and JSON. That
+  is a schema change with a backfill, and it has to be reconciled with the
+  existing `/patient/*` boundary, which today is where patient-scoped callers
+  are served and where authority grants are enforced. Deliberately not started
+  inside this slice.
 - **External validation required** — The official HL7 validator against the
   real IPA package, then a Connectathon track. Neither is possible here: the
   package cannot be fetched.

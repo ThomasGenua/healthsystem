@@ -200,20 +200,39 @@ export class FhirStore {
   }
 
   /** Search by identifier token ("system|value" or bare "value"). */
-  search(type: string, opts: { identifier?: string; count?: number } = {}): FhirSearchResult {
+  search(type: string, opts: { identifier?: string; count?: number; offset?: number } = {}): FhirSearchResult {
     const count = Math.min(Math.max(opts.count ?? 20, 1), 100);
-    const stored = this.searchStored(type, opts, count);
+    const offset = Math.max(Math.trunc(opts.offset ?? 0), 0);
+    const stored = this.searchStored(type, opts, count, offset);
     if (!this.directory || !isDirectoryType(type)) return stored;
-    const projected = directorySearch(this.directory, type, { identifier: opts.identifier, count });
+    // The directory projection has no offset of its own, so a page past the
+    // first is taken by over-fetching and slicing. Honest and bounded: count
+    // is capped at 100, so the widest fetch is offset + 100 rows.
+    const projected = directorySearch(this.directory, type, { identifier: opts.identifier, count: count + offset });
     const seen = new Set(projected.resources.map((r) => String((r as { id?: unknown }).id ?? "")));
     const extra = stored.resources.filter((r) => !seen.has(String((r as { id?: unknown }).id ?? "")));
     return {
       total: projected.total + extra.length,
-      resources: [...projected.resources, ...extra].slice(0, count),
+      resources: [...projected.resources.slice(offset), ...extra].slice(0, count),
     };
   }
 
-  private searchStored(type: string, opts: { identifier?: string; count?: number }, count: number): FhirSearchResult {
+  /**
+   * One page of stored resources.
+   *
+   * The ordering carries a tiebreak on id, and that is load-bearing rather
+   * than tidy. `updated_at` has second granularity, so a bulk load writes
+   * dozens of resources with identical timestamps; an unbroken tie orders
+   * arbitrarily, and SQLite is free to order it differently between two
+   * queries. Paging through that skips resources and repeats others, and a
+   * client reading a patient's observations would silently miss some.
+   */
+  private searchStored(
+    type: string,
+    opts: { identifier?: string; count?: number },
+    count: number,
+    offset: number
+  ): FhirSearchResult {
     if (opts.identifier) {
       const bar = opts.identifier.indexOf("|");
       const system = bar >= 0 ? opts.identifier.slice(0, bar) : null;
@@ -236,7 +255,7 @@ export class FhirStore {
           `SELECT DISTINCT r.json FROM fhir_resources r
            JOIN fhir_identifiers i
              ON i.tenant_id = r.tenant_id AND i.resource_type = r.resource_type AND i.id = r.id
-           WHERE i.tenant_id = ? AND ${where} ORDER BY r.updated_at DESC LIMIT ${count}`
+           WHERE i.tenant_id = ? AND ${where} ORDER BY r.updated_at DESC, r.id LIMIT ${count} OFFSET ${offset}`
         )
         .all(...(args as never[])) as Array<{ json: string }>;
       return { total, resources: rows.map((r) => JSON.parse(r.json) as Record<string, unknown>) };
@@ -249,7 +268,8 @@ export class FhirStore {
     ).n;
     const rows = this.db.sql
       .prepare(
-        `SELECT json FROM fhir_resources WHERE tenant_id = ? AND resource_type = ? ORDER BY updated_at DESC LIMIT ${count}`
+        `SELECT json FROM fhir_resources WHERE tenant_id = ? AND resource_type = ?
+           ORDER BY updated_at DESC, id LIMIT ${count} OFFSET ${offset}`
       )
       .all(this.db.tenantId, type) as Array<{ json: string }>;
     return { total, resources: rows.map((r) => JSON.parse(r.json) as Record<string, unknown>) };
@@ -272,10 +292,20 @@ export class FhirStore {
     return [...seen.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([type, count]) => ({ type, count }));
   }
 
-  capability(baseUrl: string, version: string): Record<string, unknown> {
+  /**
+   * What this server supports, and which guides it claims to follow.
+   *
+   * `instantiates` comes from the conformance registry rather than from a
+   * literal here, so the statement cannot claim an implementation guide the
+   * deployment has not actually put into force. A capability statement naming
+   * a guide nobody installed is the same failure as a conformance page
+   * written by hand: it is the artifact a partner reads and believes.
+   */
+  capability(baseUrl: string, version: string, instantiates: readonly string[] = []): Record<string, unknown> {
     return {
       resourceType: "CapabilityStatement",
       status: "active",
+      ...(instantiates.length > 0 ? { instantiates: [...instantiates] } : {}),
       date: new Date().toISOString(),
       kind: "instance",
       fhirVersion: "4.0.1",
