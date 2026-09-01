@@ -108,21 +108,29 @@ to activate it in production. See `43` below.
   conformance.
 - **Target standard** — IPA `1.1.0` `[unverified]`;
   `http://hl7.org/fhir/uv/ipa/` `[unresolved]`. FHIR R4 `4.0.1`.
-- **Status** — `SELF_TESTED` for pagination and for the capability
-  statement's guide claims; `NOT_IMPLEMENTED` for patient-compartment scoping
-  on the FHIR facade, `_include`/`_revinclude`, and Provenance in search
-  results.
+- **Status** — `SELF_TESTED` for pagination, patient-compartment scoping and
+  the capability statement's guide claims; `NOT_IMPLEMENTED` for
+  `_include`/`_revinclude`, Provenance in search results, and deleted
+  resources.
 - **Evidence** — `test/fhir-pagination.test.ts`: every resource appears
   exactly once across pages over a run of identical timestamps, a page is
   stable when re-requested, `_count` is bounded, and one tenant's page never
   contains another's; and the capability statement names a guide only once the
-  conformance registry holds it active.
-- **Known gap** — Compartment scoping needs a patient reference on
-  `fhir_resources`, which has none: it stores resource type, id and JSON. That
-  is a schema change with a backfill, and it has to be reconciled with the
-  existing `/patient/*` boundary, which today is where patient-scoped callers
-  are served and where authority grants are enforced. Deliberately not started
-  inside this slice.
+  conformance registry holds it active. `test/fhir-compartment.test.ts`: a
+  scoped search returns only that chart, a resource whose patient cannot be
+  determined is excluded rather than included, scoping composes with paging
+  without leaking across the boundary, one tenant's scoped search never
+  reaches another's, and a database written before the column gains it with
+  the references recovered from stored JSON.
+- **Known gap** — `_include`/`_revinclude`, Provenance in search results, and
+  deleted-resource semantics. Compartment scoping is done: the patient
+  reference is a column on `fhir_resources`, populated at write time and
+  backfilled on open, and a patient-scoped search excludes what it cannot
+  attribute rather than including it. The patient-facing surface remains
+  `/patient/*`, where authority grants are enforced per chart, so there is one
+  boundary rather than two — a deliberate choice recorded here because the
+  alternative, serving patient tokens from `/fhir/*`, would put the grant
+  check in two route families.
 - **External validation required** — The official HL7 validator against the
   real IPA package, then a Connectathon track. Neither is possible here: the
   package cannot be fetched.

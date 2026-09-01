@@ -362,6 +362,11 @@ export class Engine {
     // this records which published standards this deployment claims.
     const standards = new StandardsRegistry(db);
     const fhir = new FhirStore(db, this.validation, directory);
+    // Resources written before fhir_resources carried a patient reference have
+    // none, and a patient-scoped search excludes what it cannot attribute. So
+    // the recovery runs here rather than waiting for somebody to notice a
+    // chart looking emptier than it is.
+    fhir.backfillPatients();
     const subs = new SubscriptionManager(db, this.worker);
     fhir.onChange((result, resource) => {
       subs.notify(result, resource);

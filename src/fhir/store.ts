@@ -67,6 +67,36 @@ interface Identifier {
   value?: string;
 }
 
+/**
+ * The chart a resource is about, as a bare patient id.
+ *
+ * FHIR spells this several ways depending on the resource: most clinical
+ * resources use `subject`, some use `patient`, and a Patient is about itself.
+ * All three are read, because a resource whose patient cannot be found is
+ * excluded from a patient-scoped search — so failing to recognise a spelling
+ * hides records rather than leaking them, and the failure is silent either
+ * way unless the spellings are covered here.
+ *
+ * Returns undefined where no patient reference is present, which is a real
+ * answer: an Organization, a Practitioner or a ValueSet is about nobody.
+ */
+export function patientOf(resource: Record<string, unknown>): string | undefined {
+  if (resource.resourceType === "Patient") {
+    return typeof resource.id === "string" ? resource.id : undefined;
+  }
+  for (const field of ["subject", "patient"]) {
+    const ref = resource[field];
+    if (!ref || typeof ref !== "object") continue;
+    const reference = (ref as { reference?: unknown }).reference;
+    if (typeof reference !== "string") continue;
+    // "Patient/NT123456" or a bare id; anything pointing at another resource
+    // type is not a patient reference and is left alone.
+    const m = /^(?:Patient\/)?([A-Za-z0-9.-]{1,64})$/.exec(reference);
+    if (m && (reference.startsWith("Patient/") || !reference.includes("/"))) return m[1];
+  }
+  return undefined;
+}
+
 export class FhirStore {
   private db: Db;
   private listeners: Array<(result: FhirUpsertResult, resource: Record<string, unknown>) => void> = [];
@@ -127,13 +157,13 @@ export class FhirStore {
 
     this.db.sql
       .prepare(
-        `INSERT INTO fhir_resources (tenant_id, resource_type, id, version_id, json, hash, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        `INSERT INTO fhir_resources (tenant_id, resource_type, id, version_id, json, hash, patient_id, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
          ON CONFLICT(tenant_id, resource_type, id) DO UPDATE SET
            version_id = excluded.version_id, json = excluded.json,
-           hash = excluded.hash, updated_at = datetime('now')`
+           hash = excluded.hash, patient_id = excluded.patient_id, updated_at = datetime('now')`
       )
-      .run(this.db.tenantId, type, id, versionId, JSON.stringify(body), hash);
+      .run(this.db.tenantId, type, id, versionId, JSON.stringify(body), hash, patientOf(body) ?? null);
 
     this.db.sql
       .prepare("DELETE FROM fhir_identifiers WHERE tenant_id = ? AND resource_type = ? AND id = ?")
@@ -200,7 +230,36 @@ export class FhirStore {
   }
 
   /** Search by identifier token ("system|value" or bare "value"). */
-  search(type: string, opts: { identifier?: string; count?: number; offset?: number } = {}): FhirSearchResult {
+  /**
+   * Backfills patient_id for resources written before the column existed.
+   *
+   * Runs once per store and only over rows that have none, so an upgraded
+   * database gains the scoping without a separate migration step. Reading the
+   * JSON is the only way to recover it: the reference was never anywhere else.
+   */
+  backfillPatients(): number {
+    const rows = this.db.sql
+      .prepare("SELECT resource_type, id, json FROM fhir_resources WHERE tenant_id = ? AND patient_id IS NULL")
+      .all(this.db.tenantId) as Array<{ resource_type: string; id: string; json: string }>;
+    const set = this.db.sql.prepare(
+      "UPDATE fhir_resources SET patient_id = ? WHERE tenant_id = ? AND resource_type = ? AND id = ?"
+    );
+    let filled = 0;
+    this.db.transaction(() => {
+      for (const r of rows) {
+        const patient = patientOf(JSON.parse(r.json) as Record<string, unknown>);
+        if (!patient) continue;
+        set.run(patient, this.db.tenantId, r.resource_type, r.id);
+        filled++;
+      }
+    });
+    return filled;
+  }
+
+  search(
+    type: string,
+    opts: { identifier?: string; count?: number; offset?: number; patient?: string } = {}
+  ): FhirSearchResult {
     const count = Math.min(Math.max(opts.count ?? 20, 1), 100);
     const offset = Math.max(Math.trunc(opts.offset ?? 0), 0);
     const stored = this.searchStored(type, opts, count, offset);
@@ -229,7 +288,7 @@ export class FhirStore {
    */
   private searchStored(
     type: string,
-    opts: { identifier?: string; count?: number },
+    opts: { identifier?: string; count?: number; patient?: string },
     count: number,
     offset: number
   ): FhirSearchResult {
@@ -261,17 +320,27 @@ export class FhirStore {
       return { total, resources: rows.map((r) => JSON.parse(r.json) as Record<string, unknown>) };
     }
 
+    // A patient-scoped search matches on the column, so a row whose patient
+    // could not be determined is absent rather than included. Null is not a
+    // wildcard here.
+    // Only the optional patient clause is interpolated; the tenant stays in
+    // the statement text, so the scope is visible where the query is read
+    // rather than assembled out of sight. The identifier branch above takes
+    // the same care, and the structural test that enforces it caught this.
+    const scoped = opts.patient !== undefined;
+    const byPatient = scoped ? " AND patient_id = ?" : "";
+    const args = scoped ? [this.db.tenantId, type, opts.patient] : [this.db.tenantId, type];
     const total = (
       this.db.sql
-        .prepare("SELECT COUNT(*) AS n FROM fhir_resources WHERE tenant_id = ? AND resource_type = ?")
-        .get(this.db.tenantId, type) as { n: number }
+        .prepare(`SELECT COUNT(*) AS n FROM fhir_resources WHERE tenant_id = ? AND resource_type = ?${byPatient}`)
+        .get(...(args as never[])) as { n: number }
     ).n;
     const rows = this.db.sql
       .prepare(
-        `SELECT json FROM fhir_resources WHERE tenant_id = ? AND resource_type = ?
+        `SELECT json FROM fhir_resources WHERE tenant_id = ? AND resource_type = ?${byPatient}
            ORDER BY updated_at DESC, id LIMIT ${count} OFFSET ${offset}`
       )
-      .all(this.db.tenantId, type) as Array<{ json: string }>;
+      .all(...(args as never[])) as Array<{ json: string }>;
     return { total, resources: rows.map((r) => JSON.parse(r.json) as Record<string, unknown>) };
   }
 

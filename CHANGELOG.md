@@ -106,6 +106,30 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **A FHIR search can be scoped to one chart.** `fhir_resources` recorded a
+  resource's type, id and JSON and nothing about whose record it was, so the
+  only way to answer "everything about this person" was to read every row and
+  parse it. The patient reference is now lifted out at write time into a
+  column, with `?patient=` on the search and a matching index.
+
+  What its absence means is the load-bearing decision: a row whose patient
+  could not be determined is **excluded** from a patient-scoped search, never
+  included. Null is not a wildcard. If the extraction misses a reference
+  spelling the result is a record that fails to appear — visible and
+  conservative — rather than one appearing on the wrong chart. An unscoped
+  search is unchanged, so nothing an existing caller sees is narrowed, and the
+  unattributed resource is still readable there rather than silently gone.
+
+  Databases written before the column gain it on open and the references are
+  recovered from the stored JSON, which is the only place they ever were. The
+  backfill is idempotent and leaves a resource it cannot attribute alone
+  rather than guessing at one.
+
+  The patient-facing surface is deliberately not this: a patient or proxy is
+  still served by `/patient/*`, where an authority grant is checked per chart.
+  This scoping is for staff and system callers already authorised broadly, so
+  there is one boundary to get right rather than two.
+
 - **FHIR search pagination.** `_count` (bounded to 100) and `_offset`, with
   `Bundle.link` carrying self, next and previous, so a client can page without
   constructing URLs itself.

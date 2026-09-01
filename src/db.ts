@@ -262,6 +262,14 @@ CREATE TABLE IF NOT EXISTS fhir_resources (
   version_id INTEGER NOT NULL,
   json TEXT NOT NULL,
   hash TEXT NOT NULL,
+  -- The chart this resource is about, lifted out of the JSON so a search can
+  -- be scoped to one patient without reading every row.
+  --
+  -- Null has one meaning and it is not "any patient": it means no patient
+  -- reference could be found. A patient-scoped search therefore excludes it
+  -- rather than including it, because a resource nobody could attribute is
+  -- the last thing that should appear under somebody's name.
+  patient_id TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   -- Per tenant, deliberately. Two custodians can hold a patient with the same
   -- id without one overwriting the other, and a resource id is only ever
@@ -2412,6 +2420,7 @@ export interface DbOptions {
  * this column existed".
  */
 const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
+  { table: "fhir_resources", column: "patient_id", type: "TEXT" },
   { table: "prescriptions", column: "dispense_reporting", type: "INTEGER" },
   { table: "prescriptions", column: "safety_summary", type: "TEXT" },
   { table: "referrals", column: "to_service_id", type: "TEXT" },

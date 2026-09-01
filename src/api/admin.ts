@@ -4489,10 +4489,11 @@ async function route(
   if (m && method === "GET") {
     const type = m[1];
     const identifier = url.searchParams.get("identifier") ?? undefined;
+    const patient = url.searchParams.get("patient") ?? undefined;
     const count = Math.min(Math.max(num(url.searchParams.get("_count")) ?? 20, 1), 100);
     const offset = Math.max(num(url.searchParams.get("_offset")) ?? 0, 0);
-    const result = fhir.search(type, { identifier, count, offset });
-    audit({ action: "R", resourceType: type, patient: identifier, count: result.total });
+    const result = fhir.search(type, { identifier, count, offset, ...(patient ? { patient } : {}) });
+    audit({ action: "R", resourceType: type, patient: patient ?? identifier, count: result.total });
 
     // Continuation links. A client that pages by re-issuing the search with a
     // bigger offset needs the ordering to be stable, which is why the store
@@ -4501,6 +4502,7 @@ async function route(
     const page = (at: number): string => {
       const link = new URL(`${baseUrl(req)}/fhir/${type}`);
       if (identifier) link.searchParams.set("identifier", identifier);
+      if (patient) link.searchParams.set("patient", patient);
       link.searchParams.set("_count", String(count));
       link.searchParams.set("_offset", String(at));
       return link.toString();
