@@ -647,6 +647,7 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/orders": `?patient=${P}`,
       "/api/clinical/order-transmission": `?order=${forAck.id}`,
       "/api/clinical/orders-not-with-filler": "",
+      "/api/clinical/orders-cancelled-still-with-filler": "",
       "/api/clinical/order-transmission-record": "POST",
       "/api/clinical/referrals": "",
       "/api/clinical/tasks": "?owner=dr-tetso",

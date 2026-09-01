@@ -344,3 +344,31 @@ test("attempts keep their insertion order even when they land in the same millis
     s.cleanup();
   }
 });
+
+test("a site that prints its requisitions is not chased forever", () => {
+  // The difference between a list and wallpaper. A site that has declared it
+  // does not transmit has answered the question — the requisition travels on
+  // paper with the specimen — so there is nothing outstanding about those
+  // orders. Listing every one of them forever would make this list wrong so
+  // often that nobody would read it, which is the same failure the dispense
+  // declaration exists to avoid.
+  //
+  // An *undeclared* site is the opposite case, and stays on the list: nobody
+  // has said, so every order is a real question.
+  const s = site();
+  try {
+    s.orders.declareOrderRouting(
+      "lab",
+      { transmits: false, detail: "requisitions are printed and go with the specimen" },
+      CLERK
+    );
+    s.place();
+    assert.deepEqual(s.orders.notWithFiller(), [], "a declared paper process is not an outstanding question");
+
+    // Same order, same site, with the declaration withdrawn: back on the list.
+    s.orders.declareOrderRouting("lab", { transmits: true, destination: "Stanton", detail: "MLLP" }, CLERK);
+    assert.equal(s.orders.notWithFiller().length, 1, "a route that exists and has not carried it is a question");
+  } finally {
+    s.cleanup();
+  }
+});

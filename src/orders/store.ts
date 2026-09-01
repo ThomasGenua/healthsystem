@@ -970,8 +970,16 @@ export class OrderStore {
    * The list this whole mechanism exists to make possible. `awaitingResult`
    * answers "who is late?", which quietly assumes somebody was asked. This
    * answers the question underneath it — was anybody asked at all — and on a
-   * site with no outbound interface it returns every open order, which is the
+   * site that has declared nothing it returns every open order, which is the
    * correct and uncomfortable answer.
+   *
+   * A site that has declared it does *not* transmit is excluded, and that
+   * exclusion is the difference between a list and wallpaper. Such a site has
+   * answered the question: the requisition is printed and travels with the
+   * specimen, so there is nothing outstanding about it. Listing every order
+   * there forever would make this wrong so often that nobody would read it —
+   * the same failure the dispense declaration exists to avoid. An *undeclared*
+   * site is a different thing: nobody has said, so every order is a question.
    */
   notWithFiller(): Array<OrderRow & { transmission: TransmissionState }> {
     const open = this.db.sql
@@ -982,7 +990,7 @@ export class OrderStore {
       .all(this.db.tenantId) as unknown as OrderRow[];
     return open
       .map((o) => ({ ...o, transmission: this.transmissionState(o.id) }))
-      .filter((o) => o.transmission.state !== "acknowledged");
+      .filter((o) => o.transmission.state !== "acknowledged" && o.transmission.state !== "no-route");
   }
 
   /**

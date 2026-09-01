@@ -425,8 +425,17 @@ test("the worklist gathers what is owed across every kind of work", () => {
     assert.equal(list.unacknowledgedResults.items.length, 1);
     assert.equal(list.unacknowledgedResults.items[0].value, "7.1");
     assert.equal(list.stalledReferrals.items.length, 1);
-    assert.equal(list.ordersAwaitingResult.items.length, 1, "the x-ray is past due with nothing back");
-    assert.equal(list.ordersAwaitingResult.items[0].display, "Chest X-ray", "and the answered potassium is not here");
+    // The x-ray is past due with nothing back — but nothing was ever sent, and
+    // this site has declared no route, so it is not a slow laboratory. It
+    // belongs under the heading that says so, not under one that would have a
+    // clinician ring a department that has never heard of it.
+    assert.equal(list.ordersAwaitingResult.items.length, 0, "nobody is waiting on a laboratory here");
+    assert.equal(list.ordersNotWithLaboratory.items.length, 1, "it is sitting here, and says so");
+    assert.equal(
+      list.ordersNotWithLaboratory.items[0].display,
+      "Chest X-ray",
+      "and the answered potassium is on neither list"
+    );
     assert.equal(list.tasks.items.length, 1);
     assert.equal(list.incompleteReconciliations.items.length, 1);
     assert.equal(list.today.complete, true, "today's diary loaded even when it is empty");
@@ -562,5 +571,51 @@ test("the summary is confined to its tenant", () => {
   } finally {
     root.close();
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an order a laboratory acknowledged is awaited; one nobody sent is not", () => {
+  // The distinction the split exists for, on one worklist. Both orders are
+  // past due with nothing back. One is a laboratory being slow, which is a
+  // telephone call. The other never left the building, which is not.
+  const w = ward();
+  try {
+    populate(w);
+    w.orders.declareOrderRouting(
+      "lab",
+      { transmits: true, destination: "Stanton Laboratory", detail: "MLLP" },
+      GP
+    );
+    const sent = w.orders.create({
+      patientId: P,
+      category: "lab",
+      code: "2823-3",
+      display: "Potassium (repeat)",
+      indication: "Recheck",
+      by: GP,
+    });
+    w.orders.place(sent.id, { ...GP, responsibleId: "dr-tetso", expectedBy: "2020-01-01T00:00:00.000Z" });
+    w.orders.recordTransmission(
+      sent.id,
+      { outcome: "acknowledged", destination: "Stanton Laboratory", detail: "AA" },
+      GP
+    );
+
+    const list = w.ws.worklist("dr-tetso");
+    assert.deepEqual(
+      list.ordersAwaitingResult.items.map((o) => o.display),
+      ["Potassium (repeat)"],
+      "only the one somebody actually has"
+    );
+    assert.ok(
+      list.ordersNotWithLaboratory.items.some((o) => o.display === "Chest X-ray"),
+      "and the one that never left is under its own heading"
+    );
+    assert.ok(
+      !list.ordersNotWithLaboratory.items.some((o) => o.display === "Potassium (repeat)"),
+      "an acknowledged order is on one list, not both"
+    );
+  } finally {
+    w.cleanup();
   }
 });

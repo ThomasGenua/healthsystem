@@ -620,6 +620,8 @@ export class Workspace {
     unacknowledgedResults: Section<ResultRow>;
     stalledReferrals: Section<ReferralRow>;
     ordersAwaitingResult: Section<OrderRow>;
+    ordersNotWithLaboratory: Section<OrderRow>;
+    cancelledOrdersStillWithLaboratory: Section<OrderRow>;
     tasks: Section<TaskRow>;
     today: Section<{ slot: SlotRow; booking: BookingRow }>;
     awaitingMessages: Section<ThreadRow>;
@@ -642,8 +644,37 @@ export class Workspace {
     // Said plainly rather than filtered to nothing, which would be a quieter
     // kind of wrong.
     const stalledReferrals = section(referrals ? () => referrals.stalled(asOf) : undefined, limit);
+    // "Awaiting result" is a claim about a laboratory, and until the
+    // transmission work there was nothing behind it. An order placed at a site
+    // with no outbound interface appeared here, went overdue, and read as a
+    // slow laboratory — so the clinician chased a laboratory that had never
+    // heard of it. Only orders somebody plausibly holds belong under this
+    // heading: one they acknowledged, or one at a site that has declared its
+    // requisitions travel on paper with the specimen.
+    const withLaboratory = (o: OrderRow): boolean => {
+      if (!orders) return true;
+      const state = orders.transmissionState(o.id).state;
+      return state === "acknowledged" || state === "no-route";
+    };
     const ordersAwaitingResult = section(
-      orders ? () => orders.awaitingResult(asOf).filter((o) => o.responsible_id === clinicianId) : undefined,
+      orders
+        ? () => orders.awaitingResult(asOf).filter((o) => o.responsible_id === clinicianId && withLaboratory(o))
+        : undefined,
+      limit
+    );
+    // The rest, under their own heading, because they need a different action:
+    // these are not late, they are not sent. Drawn from notWithFiller rather
+    // than from awaitingResult so one appears as soon as it is placed instead
+    // of only once it is already overdue — an order nobody sent does not
+    // become worth knowing about on the day it was due.
+    const ordersNotWithLaboratory = section(
+      orders ? () => orders.notWithFiller().filter((o) => o.responsible_id === clinicianId) : undefined,
+      limit
+    );
+    // The mirror, and the one that ends with a needle: cancelled here, still
+    // held there, so the specimen is still due to be collected.
+    const cancelledOrdersStillWithLaboratory = section(
+      orders ? () => orders.cancelledButStillWithFiller().filter((o) => o.responsible_id === clinicianId) : undefined,
       limit
     );
     const taskSection = section(tasks ? () => tasks.inbox(clinicianId) : undefined, limit);
@@ -660,12 +691,16 @@ export class Workspace {
       ["Unacknowledged results", unacknowledgedResults],
       ["Stalled referrals", stalledReferrals],
       ["Orders awaiting a result", ordersAwaitingResult],
+      ["Orders no laboratory has", ordersNotWithLaboratory],
+      ["Cancelled orders a laboratory still holds", cancelledOrdersStillWithLaboratory],
       ["Tasks", taskSection],
       ["Incomplete reconciliations", incompleteReconciliations],
       ["Care plans past their review date", overdueCarePlans],
     ];
     return {
       today,
+      ordersNotWithLaboratory,
+      cancelledOrdersStillWithLaboratory,
       awaitingMessages,
       unassignedMessages,
       unacknowledgedResults,

@@ -1931,6 +1931,17 @@ async function route(
     // Placed orders no laboratory has acknowledged holding. On a site with no
     // outbound interface this is every open order, which is the correct
     // answer and the one nothing was saying before.
+    // Cancelled here, still held there. The more urgent of the two lists and,
+    // until now, the only one with no way to be read: the store answered the
+    // question and nothing asked it. A list nobody can reach is a list nobody
+    // reads, which is the failure the list exists to prevent.
+    if (path === "/api/clinical/orders-cancelled-still-with-filler" && method === "GET") {
+      return phi(
+        "ServiceRequest",
+        () => filterByDirective(["ServiceRequest"], tenant.orders.cancelledButStillWithFiller()),
+        (r) => r.rows.length
+      );
+    }
     if (path === "/api/clinical/orders-not-with-filler" && method === "GET") {
       return phi(
         "ServiceRequest",
