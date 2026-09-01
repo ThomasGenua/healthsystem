@@ -123,6 +123,18 @@ async function boot() {
   const note = t.notes.draft({ patientId: P, noteType: "SOAP", sections: { plan: "Repeat" }, author: GP_AUTHOR });
   t.notes.sign(note.record_id, GP_AUTHOR);
   t.directory.addPractitioner({ id: "dr-tetso", family: "Tetso", given: "Jean" });
+  // Every score is disabled until somebody approves it, so the score routes
+  // below serve nothing without this. Synthetic, and deliberately explicit:
+  // there is no fixture shortcut that enables a score without a named owner,
+  // a review date and a written reason, because there is no such path in the
+  // product either.
+  t.scoreGovernance.approve({
+    scoreId: "curb-65",
+    clinicalOwnerId: "dr-tetso",
+    reviewDue: "2027-01-01",
+    reason: "synthetic fixture approval for the API tests; not a clinical decision",
+    by: { id: "ops", kind: "apikey" },
+  });
   t.immunizations.record({
     patientId: P,
     vaccine: "MMR",
@@ -757,6 +769,11 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/lab-resolve": "POST",
       "/api/clinical/score": "POST",
       "/api/clinical/score/v2": "POST",
+      "/api/clinical/score-governance": "",
+      "/api/clinical/score-governance-history": "?score=curb-65",
+      "/api/clinical/score-governance-expiring": "?withinDays=30",
+      "/api/clinical/score-approve": "POST",
+      "/api/clinical/score-disable": "POST",
       "/api/clinical/chart-score": "POST",
       "/api/clinical/prescriptions": `?patient=${P}`,
       "/api/clinical/prescription-chase": "",
@@ -992,6 +1009,18 @@ test("every clinical route leaves an audit row, including ones added later", asy
         input: { confusion: false },
       },
       "/api/clinical/chart-score": { score: "news2", patient: P, supplied: { onSupplementalOxygen: false, alert: true } },
+      // A different score from the fixture's, so approving here cannot make
+      // the score routes above pass for the wrong reason.
+      "/api/clinical/score-approve": {
+        score: "wells-pe",
+        clinicalOwner: "dr-tetso",
+        reviewDue: "2027-06-30",
+        reason: "synthetic approval recorded by the route test",
+      },
+      "/api/clinical/score-disable": {
+        score: "has-bled",
+        reason: "synthetic withdrawal recorded by the route test",
+      },
       "/api/clinical/prescribe": { statement: statement.id, instructions: "One tablet twice daily with food" },
       "/api/clinical/prescription-transmit": { prescription: rxToTransmit, pharmacy: "yk-pharmacy" },
       "/api/clinical/prescription-handout": { prescription: rxToHandOut, reason: "printed for the patient" },

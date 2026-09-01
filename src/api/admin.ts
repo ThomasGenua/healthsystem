@@ -70,6 +70,7 @@ import { DISPENSE_OUTCOMES, type DispenseOutcome } from "../meds/prescribe.ts";
 import { readFhirBundle, readFhirNdjson } from "../migrate/read-fhir.ts";
 import { score as computeScore, SCORE_IDS } from "../clinical/scores.ts";
 import { ingest, MEASURED_FIELDS, SCORE_MEASUREMENTS, type Measurement } from "../clinical/measurement.ts";
+import type { ScoreId } from "../clinical/score-definitions.ts";
 import { news2FromChart, curb65FromChart } from "../clinical/score-from-chart.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
@@ -2908,6 +2909,84 @@ async function route(
         })
       );
     }
+    // Read-first: the panel shows every score and its state, and the two
+    // actions each need a written reason. There is deliberately no route that
+    // enables more than one score, because "enable all" is the request nobody
+    // should be able to satisfy in a single click.
+    if (path === "/api/clinical/score-governance" && method === "GET") {
+      const within = Number(url.searchParams.get("expiringWithinDays") ?? 30);
+      return phiOffice("RiskAssessment", () => ({
+        scores: tenant.scoreGovernance.all({
+          ...(Number.isInteger(within) && within >= 0 ? { expiringWithinDays: within } : {}),
+        }),
+        note:
+          "Every score is disabled until somebody accountable approves it here. Approval is a local decision about " +
+          "this site and is not clinical validation of the instrument.",
+      }));
+    }
+    if (path === "/api/clinical/score-governance-history" && method === "GET") {
+      const id = url.searchParams.get("score");
+      if (!id) return send(res, 400, { error: `score required; one of ${SCORE_IDS.join(", ")}` });
+      if (!(SCORE_IDS as readonly string[]).includes(id)) return send(res, 400, { error: `unknown score ${id}` });
+      return phiOffice("RiskAssessment", () => ({ score: id, history: tenant.scoreGovernance.history(id as ScoreId) }));
+    }
+    if (path === "/api/clinical/score-governance-expiring" && method === "GET") {
+      const within = Number(url.searchParams.get("withinDays") ?? 30);
+      if (!Number.isInteger(within) || within < 0) {
+        return send(res, 400, { error: "withinDays must be a whole number of days" });
+      }
+      return phiOffice("RiskAssessment", () => ({ withinDays: within, scores: tenant.scoreGovernance.expiring(within) }));
+    }
+    if (path === "/api/clinical/score-approve" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        score?: string;
+        clinicalOwner?: string;
+        reviewDue?: string;
+        reason?: string;
+      };
+      if (!body.score) return send(res, 400, { error: `score required; one of ${SCORE_IDS.join(", ")}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      const kind = auth.ok ? auth.principal.kind : "unknown";
+      const row = tenant.scoreGovernance.approve({
+        scoreId: body.score as ScoreId,
+        clinicalOwnerId: body.clinicalOwner ?? "",
+        reviewDue: body.reviewDue ?? "",
+        reason: body.reason ?? "",
+        by: { id: who, kind },
+      });
+      audit({
+        action: "U",
+        outcome: 0,
+        resourceType: "RiskAssessment",
+        // Names the decision, never a patient or an input: an approval is a
+        // statement about an instrument, and nothing about anybody's chart.
+        detail:
+          `score ${row.scoreId} approved: implementation ${row.implementationVersion}, approval ${row.id}, ` +
+          `supersedes ${row.supersedes ?? "none"}, clinical owner ${row.clinicalOwnerId}, ` +
+          `review due ${row.reviewDue}, recorded by ${row.recordedBy.id}`,
+      });
+      return send(res, 200, row);
+    }
+    if (path === "/api/clinical/score-disable" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { score?: string; reason?: string };
+      if (!body.score) return send(res, 400, { error: `score required; one of ${SCORE_IDS.join(", ")}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      const kind = auth.ok ? auth.principal.kind : "unknown";
+      const row = tenant.scoreGovernance.disable({
+        scoreId: body.score as ScoreId,
+        reason: body.reason ?? "",
+        by: { id: who, kind },
+      });
+      audit({
+        action: "U",
+        outcome: 0,
+        resourceType: "RiskAssessment",
+        detail:
+          `score ${row.scoreId} disabled: implementation ${row.implementationVersion}, approval ${row.id}, ` +
+          `supersedes ${row.supersedes ?? "none"}, recorded by ${row.recordedBy.id}`,
+      });
+      return send(res, 200, row);
+    }
     if (path === "/api/clinical/score" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as { score?: string; patient?: string; input?: unknown };
       if (!body.score) return send(res, 400, { error: `score required; one of ${SCORE_IDS.join(", ")}` });
@@ -2915,7 +2994,14 @@ async function route(
       // chart, so there is nothing to filter by directive here — but it is
       // still a clinical question about a patient, and it audits like one.
       const resource = "RiskAssessment";
-      const produce = () => computeScore(body.score!, body.input ?? {});
+      const produce = () => {
+        // Arithmetic is not permission. A score nobody accountable has
+        // approved for this site does not compute here, and the empty
+        // approvals table is the safe default rather than an unconfigured
+        // one.
+        tenant.scoreGovernance.require(body.score as ScoreId);
+        return computeScore(body.score!, body.input ?? {});
+      };
       return body.patient ? phiFor(body.patient, resource, produce) : phi(resource, produce);
     }
     // v2 takes measurements rather than bare numbers: the unit travels with
@@ -2952,9 +3038,22 @@ async function route(
 
       const resource = "RiskAssessment";
       const produce = () => {
+        const governance = tenant.scoreGovernance.require(body.score as ScoreId);
         const { input, ingestion } = ingest(body.measurements ?? {});
         const result = computeScore(body.score!, { ...(body.input ?? {}), ...input });
-        return { ...result, ingestion };
+        // The approval in force travels with the number, so a consumer holding
+        // a stored result can tell what it was allowed under.
+        return {
+          ...result,
+          ingestion,
+          governance: {
+            status: governance.status,
+            approvalId: governance.approval?.id ?? null,
+            approvedVersion: governance.approval?.implementationVersion ?? null,
+            reviewDue: governance.approval?.reviewDue ?? null,
+            clinicalOwner: governance.approval?.clinicalOwnerDisplay ?? null,
+          },
+        };
       };
       return body.patient ? phiFor(body.patient, resource, produce) : phi(resource, produce);
     }

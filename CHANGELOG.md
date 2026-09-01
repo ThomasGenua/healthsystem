@@ -9,6 +9,39 @@ always forward-compatible and run automatically on open — see
 
 ## Unreleased
 
+**Added**
+
+- **Every clinical score is disabled until somebody accountable approves it
+  here.** Correct arithmetic is not permission to act on the number: an
+  instrument derived in one population, implemented from a paper and never
+  looked at by anybody at this site is a calculator, and a calculator wired
+  into a chart returning a band and an interpretation is indistinguishable at
+  the point of care from a decision somebody stands behind. `score_approvals`
+  records that decision, and its absence is the default — the empty table is
+  the safe state, not an unconfigured one.
+
+  Nothing can be invented. The review date is supplied and never computed from
+  an interval, because a date the system picked is not a commitment anybody
+  made. The clinical owner must resolve to a practitioner the tenant's own
+  directory holds and has not retired. A reason of at least twelve characters
+  is required to approve or to disable — the same bar as breaking the glass.
+  The operator who records the decision is a separate column from the
+  clinician who owns it, because they are usually different people and a
+  record that conflates them can answer neither question afterwards.
+
+  An approval stops being one in four ways, each disabling the score and none
+  of them self-clearing: it passes its review date, the implementation version
+  it was granted for stops matching the arithmetic the build runs, its owner
+  is retired, or somebody withdraws it. `ScoreGovernance.expiring(withinDays,
+  asOf)` reports what is due and what is already past; reading it renews
+  nothing. The table is append-only, so a withdrawal supersedes an approval
+  without erasing it and "who allowed this, and what did they know" survives
+  the reversal. Approvals are tenant-scoped, so one site's decision cannot
+  enable another's score. `POST /api/clinical/score` and `/score/v2` refuse
+  with 403 unless a decision in force permits use, and there is deliberately
+  no route that enables more than one score at a time. Hazard H-149.
+  1061 tests.
+
 **Fixed**
 
 - **A backup destination on Windows went somewhere else, quietly.** `fs:` and
