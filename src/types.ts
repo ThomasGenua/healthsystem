@@ -232,6 +232,33 @@ export interface MllpDestinationConfig {
   skipOnDead?: boolean;
 }
 
+/**
+ * Carry a laboratory order out, and bring the acknowledgement back to it.
+ *
+ * The same MLLP transport as `mllp`, with the order's own semantics attached:
+ * the acknowledgement is correlated by MSA-2 before it is believed, the
+ * outcome is recorded against the order it answers, and a refusal is permanent
+ * rather than retried — resending an identical requisition a laboratory has
+ * already rejected gets an identical rejection, and records a fresh refusal on
+ * the chart each time round the loop.
+ *
+ * Which order a delivery belongs to travels in the message's metadata rather
+ * than in this configuration: one destination carries every order bound for
+ * that laboratory.
+ */
+export interface LabOrderDestinationConfig {
+  id?: string;
+  type: "lab-order";
+  host: string;
+  port: number;
+  timeoutMs?: number;
+  maxAttempts?: number;
+  backoffBaseMs?: number;
+  backoffCapMs?: number;
+  ordered?: boolean;
+  skipOnDead?: boolean;
+}
+
 /** Deliver into the local FHIR facade store, served back at GET /fhir/:type. */
 export interface FhirStoreDestinationConfig {
   id?: string;
@@ -317,6 +344,7 @@ export interface LabResultDestinationConfig {
 export type DestinationConfig =
   | HttpDestinationConfig
   | MllpDestinationConfig
+  | LabOrderDestinationConfig
   | FhirStoreDestinationConfig
   | ClinicalDestinationConfig
   | LabResultDestinationConfig;

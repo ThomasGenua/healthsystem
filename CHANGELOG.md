@@ -421,6 +421,34 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Placed orders go out on their own** (`src/orders/dispatch.ts`, the
+  `lab-order` destination). A sweep finds orders nobody has sent, builds each,
+  and puts it on **the ordinary delivery queue** — the same one carrying every
+  other outbound message, with its retries, its ordering and its dead-letter
+  queue. A second queue beside that one would be a second thing to monitor and
+  a second set of failures nobody had seen before.
+
+  The acknowledgement comes back to the order it answers: the destination
+  correlates it by MSA-2 before believing it, records the outcome, and treats a
+  refusal as permanent so a requisition the laboratory has already rejected is
+  not resent — each retry would write a fresh rejection onto the chart.
+
+  **The enqueue and the record of that handover commit in one transaction.**
+  Two writes would leave a window where a crash puts an order on the queue that
+  still reads as never sent, and the next sweep enqueues it again. That is not
+  a duplicate message; it is two requisitions for one specimen — two
+  collections booked, or a patient drawn twice, or a result reported against an
+  order the clinician cannot find.
+
+  Only orders that have gone nowhere at all are swept. Rejected and failed are
+  answers somebody has to read, not conditions to retry silently. An order that
+  cannot be built is reported with its missing fields and left where it is
+  visible, rather than queued to dead-letter; the sweep runs again, so one that
+  could not be built this morning goes out this afternoon once the answer is
+  recorded, with no intervention.
+
+  Hazards H-164 to H-166.
+
 - **A message the far end refused is no longer retried** (H-156,
   `PermanentFailure`). Every delivery failure was treated as transient, so a
   message rejected with an HTTP 4xx, or answered `AE`/`AR` by a receiving
