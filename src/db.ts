@@ -110,6 +110,7 @@ export const TENANT_SCOPED_TABLES = [
   "subprocessors",
   "score_approvals",
   "conformance_packages",
+  "provenance",
 ] as const;
 
 /**
@@ -2092,6 +2093,57 @@ CREATE TABLE IF NOT EXISTS conformance_packages (
   -- allow two entries disagreeing about its checksum.
   UNIQUE (tenant_id, package_id, version)
 );
+
+-- Where a resource came from, which is a different question from who looked
+-- at it.
+--
+-- audit_events answers the second: a hash-chained record of access and system
+-- activity, and it is the wrong shape for the first. An audit row says a
+-- clinician read a chart at a time. It does not say that this observation was
+-- produced by mapping version 3 of the laboratory feed from message 8812, or
+-- that this medication list entry came from a migration rather than from a
+-- prescriber. Treating the two as interchangeable loses whichever question
+-- was not being asked when the row was written.
+--
+-- So this table is lineage, and it is deliberately not chained: a provenance
+-- record is a statement about one write, and the sequence that matters is the
+-- resource's own version history, which it points at.
+CREATE TABLE IF NOT EXISTS provenance (
+  tenant_id TEXT NOT NULL DEFAULT 'default',
+  id TEXT NOT NULL,
+  -- What was produced.
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  target_version INTEGER NOT NULL,
+  -- create | update | transform | import | reconcile | compute
+  activity TEXT NOT NULL CHECK (
+    activity IN ('create', 'update', 'transform', 'import', 'reconcile', 'compute')
+  ),
+  -- Who or what did it. Null where nothing stated an actor: that is recorded
+  -- as unattributed rather than filled in with whoever happened to be nearby,
+  -- because a lineage naming the wrong author is worse than one admitting it
+  -- does not know.
+  agent_id TEXT,
+  agent_kind TEXT,
+  organization_id TEXT,
+  -- What it was made from: a message off the wire, another resource, or
+  -- nothing stated.
+  source_kind TEXT CHECK (source_kind IS NULL OR source_kind IN ('message', 'resource', 'file')),
+  source_id TEXT,
+  -- The mapping or rule that did the work, and its version. A transformation
+  -- whose version is not recorded cannot be re-run against the same input to
+  -- see what it would produce now.
+  transformation TEXT,
+  transformation_version TEXT,
+  rule_id TEXT,
+  rule_version TEXT,
+  occurred_at TEXT,
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_provenance_target
+  ON provenance(tenant_id, target_type, target_id, target_version DESC);
+
 -- At most one active version of a package per tenant. Two versions of one
 -- implementation guide active at once is not a configuration, it is a
 -- question nobody can answer about which rules applied to a given resource.

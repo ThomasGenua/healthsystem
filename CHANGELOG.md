@@ -106,6 +106,34 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **FHIR Provenance, kept distinct from the audit trail.** `audit_events` is
+  hash-chained and answers who reached a record and whether they were allowed
+  to. It is the wrong shape for the question asked after something goes wrong
+  about the data rather than the people: where did this value come from. An
+  audit row can say a laboratory feed wrote something at 04:12; it cannot say
+  this potassium was produced by mapping version 3 from message 8812, or that
+  this entry arrived in a migration rather than from a prescriber.
+
+  Every persisted FHIR write now records lineage — the target and the version
+  it produced, the activity, the actor and organization where one was stated,
+  the source message or resource, and the transformation or clinical rule with
+  its version. `GET /fhir/Provenance?target=Type/id` returns it as FHIR
+  resources, and the lineage survives the resource being overwritten, so a
+  superseded value's origin is still reconstructable after a correction.
+  `forSource` answers the other direction: everything one bad feed produced.
+
+  Two decisions worth naming. A write nothing described is recorded as
+  **unattributed** rather than attributed to whoever was nearby — a lineage
+  naming the wrong author is worse than one admitting it does not know,
+  because the first is believed. And a redelivery of identical content records
+  **nothing further**, so a replayed message does not make one result look
+  like two reports of the same value.
+
+  Provenance is deliberately not hash-chained. The audit trail is chained
+  because its claim is that nothing was removed from it; provenance makes no
+  such claim, and chaining it would imply a completeness guarantee that a
+  write path recording none would quietly break.
+
 - **A FHIR search can be scoped to one chart.** `fhir_resources` recorded a
   resource's type, id and JSON and nothing about whose record it was, so the
   only way to answer "everything about this person" was to read every row and

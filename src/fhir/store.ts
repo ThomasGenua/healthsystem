@@ -8,6 +8,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import type { Db } from "../db.ts";
+import { ProvenanceStore, type ProvenanceInput } from "./provenance.ts";
 import { validateResource, type ConformanceRegistry } from "../conformance/validator.ts";
 import type { TerminologyStore } from "../terminology/store.ts";
 import type { ConformanceIssue } from "../types.ts";
@@ -35,6 +36,15 @@ export interface FacadeValidation {
   pack?: string;
   mode?: "reject" | "annotate";
 }
+
+/**
+ * Where this write came from, for the lineage record.
+ *
+ * Optional because most existing callers cannot say: a write with no context
+ * is recorded as unattributed rather than refused, which keeps the lineage
+ * honest without making every caller supply something it does not know.
+ */
+export type WriteContext = Pick<ProvenanceInput, "agent" | "source" | "transformation" | "rule" | "occurredAt">;
 
 /**
  * What the store needs to validate. Supplied by the Engine, which owns the
@@ -98,12 +108,15 @@ export function patientOf(resource: Record<string, unknown>): string | undefined
 }
 
 export class FhirStore {
+  /** Lineage for everything this store writes. See fhir/provenance.ts. */
+  readonly provenance: ProvenanceStore;
   private db: Db;
   private listeners: Array<(result: FhirUpsertResult, resource: Record<string, unknown>) => void> = [];
   private validation?: ValidationContext;
   private directory?: Directory;
 
   constructor(db: Db, validation?: ValidationContext, directory?: Directory) {
+    this.provenance = new ProvenanceStore(db);
     this.db = db;
     this.validation = validation;
     this.directory = directory;
@@ -114,7 +127,7 @@ export class FhirStore {
     this.listeners.push(fn);
   }
 
-  upsert(resource: Record<string, unknown>, validate?: FacadeValidation): FhirUpsertResult {
+  upsert(resource: Record<string, unknown>, validate?: FacadeValidation, context?: WriteContext): FhirUpsertResult {
     const type = resource.resourceType;
     if (typeof type !== "string" || !/^[A-Z][A-Za-z]{1,63}$/.test(type)) {
       throw new Error("FHIR resource requires a valid resourceType");
@@ -183,6 +196,20 @@ export class FhirStore {
       changed: true,
       ...(issues.length ? { issues } : {}),
     };
+    // Lineage for the write that just happened. Recorded for every persisted
+    // change, including one nothing described: an unattributed record is a
+    // fact about the gap, and leaving no record at all would make the gap
+    // indistinguishable from a resource nobody has touched.
+    this.provenance.record({
+      target: { type, id, version: versionId },
+      activity: context?.transformation ? "transform" : existing ? "update" : "create",
+      ...(context?.agent ? { agent: context.agent } : {}),
+      ...(context?.source ? { source: context.source } : {}),
+      ...(context?.transformation ? { transformation: context.transformation } : {}),
+      ...(context?.rule ? { rule: context.rule } : {}),
+      ...(context?.occurredAt ? { occurredAt: context.occurredAt } : {}),
+    });
+
     // Listeners (today: rest-hook subscription notification) only ever see
     // resources that passed validation and actually persisted.
     for (const fn of this.listeners) fn(result, body);

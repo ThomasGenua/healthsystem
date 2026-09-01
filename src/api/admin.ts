@@ -4485,6 +4485,31 @@ async function route(
     return send(res, 200, fhir.capability(baseUrl(req), VERSION, tenant.standards.active().map((p) => p.canonicalUrl)));
   }
 
+  // Lineage for one resource. Distinct from /fhir/AuditEvent, which answers
+  // who reached the record rather than where the record came from.
+  m = /^\/fhir\/Provenance$/.exec(path);
+  if (m && method === "GET") {
+    const target = url.searchParams.get("target");
+    if (!target || !target.includes("/")) {
+      return send(res, 400, {
+        resourceType: "OperationOutcome",
+        issue: [{ severity: "error", code: "required", diagnostics: "target is required, as Type/id" }],
+      });
+    }
+    const [targetType, targetId] = target.split("/", 2);
+    const rows = fhir.provenance.forTarget(targetType, targetId);
+    audit({ action: "R", resourceType: "Provenance", resourceId: target, count: rows.length });
+    return send(res, 200, {
+      resourceType: "Bundle",
+      type: "searchset",
+      total: rows.length,
+      entry: rows.map((r) => ({
+        fullUrl: `${baseUrl(req)}/fhir/Provenance/${r.id}`,
+        resource: fhir.provenance.toFhir(r, baseUrl(req) + "/fhir"),
+      })),
+    });
+  }
+
   m = /^\/fhir\/([A-Z][A-Za-z]+)$/.exec(path);
   if (m && method === "GET") {
     const type = m[1];

@@ -161,13 +161,24 @@ to activate it in production. See `43` below.
   FHIR terms.
 - **Target standard** — FHIR R4 `4.0.1` `Provenance`;
   `http://hl7.org/fhir/R4/provenance.html` `[unresolved]`.
-- **Status** — `NOT_IMPLEMENTED`
-- **Evidence** — None yet.
+- **Status** — `SELF_TESTED` for FHIR writes; `NOT_IMPLEMENTED` for clinical
+  stores that do not go through the FHIR facade (medications, orders,
+  referrals, reconciliation), which record `source_message_id` but no
+  `Provenance`.
+- **Evidence** — `test/provenance.test.ts`: a create and an update each leave
+  a step; the lineage survives the resource being overwritten; a redelivery of
+  identical content records nothing further; a write nothing described is
+  recorded as unattributed rather than attributed; one message's whole output
+  is traceable from the message; a computed result names its rule and version;
+  the store is not chained and holds no audit rows; and one tenant's lineage is
+  invisible to another.
 - **External validation required** — Profile validation against the R4
-  package.
-- **Risk and rollback** — Low to medium. Additive resources. `AuditEvent` and
-  `Provenance` answer different questions — who looked, versus where this came
-  from — and are not interchangeable; conflating them would leave both wrong.
+  package, which cannot be fetched from this environment.
+- **Risk and rollback** — Low to medium. Additive: a new table and a write on
+  a path that already existed. `AuditEvent` and `Provenance` answer different
+  questions — who looked, versus where this came from — and are not
+  interchangeable; conflating them would leave both wrong, so they are
+  separate stores and a test asserts they stay that way.
 
 ## 48. Topic-based clinical event subscriptions
 
