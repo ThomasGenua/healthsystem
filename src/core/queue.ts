@@ -52,6 +52,34 @@ function readPath(obj: unknown, path: string): string | undefined {
   return typeof cur === "string" || typeof cur === "number" ? String(cur) : undefined;
 }
 
+/**
+ * A failure that will fail identically however many times it is retried.
+ *
+ * The distinction the retry loop was missing. A malformed message rejected
+ * with HTTP 400, or a receiving application answering AR, does not become
+ * acceptable by being sent again: the same bytes get the same answer. Retrying
+ * it costs three things, and the third is the one that matters.
+ *
+ *   - It burns the attempt budget on a message that was never going to land.
+ *   - It delays the dead letter, which is the thing a human has to look at,
+ *     by the whole backoff schedule.
+ *   - **It blocks the ordered destination behind it.** `drainOrdered` stops at
+ *     a key whose head is waiting, so one permanently rejected message holds
+ *     up every message queued behind it for the full retry cycle — and those
+ *     are somebody's results arriving late because of a message that could
+ *     never be delivered at all.
+ *
+ * Transient failures — a refused connection, a timeout, an HTTP 5xx, a 429 —
+ * are the opposite and keep the existing behaviour: they are exactly what
+ * retries are for.
+ */
+export class PermanentFailure extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PermanentFailure";
+  }
+}
+
 export class DeliveryWorker {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
@@ -205,13 +233,17 @@ export class DeliveryWorker {
       const ack = await this.deliver(dest, d.payload, d.content_type, d.tenant_id, d.message_id);
       this.db.markDelivered(d.id, ack);
     } catch (err) {
+      const permanent = err instanceof PermanentFailure;
       const message = err instanceof Error ? err.message : String(err);
       const max = dest.maxAttempts ?? DEFAULTS.maxAttempts;
       const base = dest.backoffBaseMs ?? DEFAULTS.backoffBaseMs;
       const cap = dest.backoffCapMs ?? DEFAULTS.backoffCapMs;
-      const dead = attempts >= max;
+      const dead = permanent || attempts >= max;
       const delay = Math.min(base * 2 ** (attempts - 1), cap);
-      this.db.markFailed(d.id, message, Date.now() + delay, dead);
+      // Said in the dead letter, because a dead letter with one attempt on it
+      // otherwise reads as a retry loop that failed to run.
+      const detail = permanent ? `${message} (not retried: the same message would be refused again)` : message;
+      this.db.markFailed(d.id, detail, Date.now() + delay, dead);
     }
   }
 
@@ -311,7 +343,15 @@ export class DeliveryWorker {
           signal: controller.signal,
         });
         const body = await res.text();
-        if (!res.ok) throw new Error(`HTTP ${res.status}: ${body.slice(0, 300)}`);
+        if (!res.ok) {
+          const detail = `HTTP ${res.status}: ${body.slice(0, 300)}`;
+          // 4xx is a statement about this message, and sending it again will
+          // produce the same statement. The two exceptions are the ones that
+          // explicitly ask for a retry: 408 and 429.
+          throw res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429
+            ? new PermanentFailure(detail)
+            : new Error(detail);
+        }
         return body.slice(0, 4_000) || null;
       } finally {
         clearTimeout(timer);
@@ -320,7 +360,9 @@ export class DeliveryWorker {
 
     if (dest.type === "mllp") {
       const ack = await mllpSend(dest.host, dest.port, payload, dest.timeoutMs ?? DEFAULTS.timeoutMs);
-      if (/(^|\r)MSA\|(AE|AR)\|/.test(ack)) throw new Error(`Remote NAK: ${ack.slice(0, 300)}`);
+      // AE and AR are the receiving application refusing this message, not the
+      // link failing. Resending identical bytes gets an identical refusal.
+      if (/(^|\r)MSA\|(AE|AR)\|/.test(ack)) throw new PermanentFailure(`Remote NAK: ${ack.slice(0, 300)}`);
       return ack.slice(0, 4_000) || null;
     }
 

@@ -421,6 +421,26 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **A message the far end refused is no longer retried** (H-156,
+  `PermanentFailure`). Every delivery failure was treated as transient, so a
+  message rejected with an HTTP 4xx, or answered `AE`/`AR` by a receiving
+  application, went round the whole backoff schedule before dead-lettering.
+  The same bytes get the same answer, so none of those attempts could succeed.
+
+  The cost that matters is not the wasted attempts. **An ordered destination
+  stops at a blocked head**, so one permanently rejected message held up every
+  message queued behind it for the full retry cycle — results and
+  registrations arriving late because of a message that was never going to
+  land — and delayed the dead letter a human has to act on by the same amount.
+
+  A failure that would fail identically on a retry now dead-letters on the
+  first attempt, and the dead letter says it was not retried and why, since a
+  dead letter with one attempt on it otherwise reads as a retry loop that
+  failed to run. Transient failures keep the existing backoff: 5xx, timeouts,
+  refused connections, and the two 4xx statuses that explicitly ask to be
+  retried — 408 and 429. Reading a rate limit as permanent would discard a
+  message a retry would have delivered.
+
 - **The outbound order path is reachable** (`POST /api/clinical/order-send`,
   `POST /api/clinical/order-cancel-send`). Four merged changes built a message,
   a transmission model, an acknowledgement reading and a cancellation, and
