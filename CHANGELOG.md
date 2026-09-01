@@ -147,6 +147,39 @@ always forward-compatible and run automatically on open — see
   writes twenty attempts inside one millisecond and asserts the timestamps
   really did collide, so it cannot pass by accident.
 
+## Unreleased
+
+**Added**
+
+- **Ask-at-order-entry, and the answer that is never invented**
+  (`LabProfile.askAtOrderEntry`, `OmlContext.aoeAnswers`). A laboratory
+  requires certain questions answered before it will run certain tests —
+  fasting status, last menstrual period, a weight for a creatinine clearance.
+
+  It looks like paperwork and is not. A glucose reported against a fasting
+  reference interval when the patient had breakfast is a **wrong** result
+  rather than a missing one: the number is real, the interval is real, and the
+  pairing is false. Nothing in the specimen records whether anybody ate, so
+  neither the laboratory nor the chart can detect it afterwards.
+
+  That makes the accommodating implementation the dangerous one. Defaulting
+  "fasting: no" produces an order that sends cleanly and a result that files
+  cleanly, with the reference interval chosen by a program rather than by a
+  patient. So an unanswered required question stops the order, listed
+  alongside every other missing field, and whitespace is not an answer.
+
+  Questions are declared per test code on the laboratory's own profile rather
+  than inferred from the code: a potassium that demanded a fasting answer would
+  train people to answer without reading, which is how the answers that matter
+  stop being read. Only declared questions are sent, and an answer to a
+  question this laboratory did not ask is dropped rather than smuggled
+  through — an unasked observation invites an interpretation this end cannot
+  predict. Answers ride as OBX after the OBR they qualify, and an unanswered
+  optional question sends no segment at all, because an OBX with an empty
+  value asserts that somebody answered and said nothing.
+
+  Hazards H-139 and H-140.
+
 ## 0.8.0 — 2026-08-27
 
 A release about what the record admits it does not know. 0.7.0 stopped the
