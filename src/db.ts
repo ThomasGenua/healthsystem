@@ -685,6 +685,11 @@ CREATE TABLE IF NOT EXISTS order_routing (
 -- somebody needs when a specimen arrives against an order the lab does not
 -- hold.
 CREATE TABLE IF NOT EXISTS order_transmissions (
+  -- Whether this attempt carried the order or its cancellation. One table
+  -- because they are the same event with opposite meaning, and separating
+  -- them would let a site answer "is this order with them?" without noticing
+  -- that the cancellation never arrived.
+  kind TEXT NOT NULL DEFAULT 'order',
   -- Ordering is the whole safety property here, so it does not rest on a
   -- timestamp. Two attempts in the same millisecond — a send and the
   -- acknowledgement that answers it, which is the ordinary case on a fast
@@ -2329,6 +2334,9 @@ const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
   // is recorded rather than resolved by assuming UTC.
   { table: "order_results", column: "timezone_assumed", type: "INTEGER" },
   { table: "orders", column: "filler_order_number", type: "TEXT" },
+  // Whether a transmission carried the order or its cancellation. Defaulted to
+  // 'order' so rows written before cancellation existed keep their meaning.
+  { table: "order_transmissions", column: "kind", type: "TEXT NOT NULL DEFAULT 'order'" },
   // Tenancy. NOT NULL with a default, so existing rows land in the default
   // tenant rather than becoming unreachable, and a deployment that never
   // configures a second tenant is unaffected.
