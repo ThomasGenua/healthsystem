@@ -68,7 +68,7 @@ The escape hatch is break-glass, which is loud and recorded — see
 git clone https://github.com/ThomasGenua/healthsystem.git northstar
 cd northstar
 npm ci
-npm run typecheck && npm test    # 851 tests; do not deploy a node that fails one
+npm run typecheck && npm test    # 962 tests; do not deploy a node that fails one
 
 export NORTHSTAR_DATA=/var/lib/northstar
 export NORTHSTAR_PORT=8686

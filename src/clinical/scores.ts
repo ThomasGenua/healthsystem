@@ -35,6 +35,20 @@
  * three different things: the finding is present, the finding was looked for
  * and is absent, and nobody has said. Only the third refuses.
  *
+ * ## An impossible value is not a missing one either
+ *
+ * The same reasoning runs one step further. A saturation of 140%, an age of
+ * -3, a CIWA item of 3.5 and a length of stay of NaN are not measurements a
+ * clinician failed to record; they are values nobody could have measured.
+ * Folding them into `missing` would report a data-entry defect as a clinical
+ * gap, and tell a caller to go and find a number that was never absent.
+ *
+ * So a supplied value outside its domain refuses with a 400 and says which
+ * value and which domain, before any arithmetic and before the missing-input
+ * check — an impossible input is a fault in the caller, and it is a fault
+ * whatever else is also absent. What a domain is *not* is a clinical
+ * threshold: see `INPUT_DOMAINS`.
+ *
  * ## What this is not
  *
  * Decision support, not a decision. Every result carries the instrument's own
@@ -94,6 +108,119 @@ function evidence(id: ScoreId, input: object): ScoreEvidence {
 }
 
 /**
+ * What each measurement *can* be, as distinct from what it clinically means.
+ *
+ * A threshold decides how many points a real value earns. A domain decides
+ * whether the value is a measurement at all. The distinction matters because
+ * the two must never be confused: this table contains no clinical judgement
+ * and introduces no new threshold, and a change here can only ever reject
+ * input that was never scoreable, never move a real patient between bands.
+ *
+ * Every bound is therefore definitional rather than clinical. A percentage
+ * cannot exceed 100. A count of things that happened cannot be negative or
+ * fractional. Nothing in a patient is colder than absolute zero. Where a
+ * bound belongs to the instrument's own scale — CIWA-Ar's nine items are
+ * scored 0-7 and its orientation item 0-4 — the bound is the instrument's,
+ * and is cited to it rather than chosen here.
+ *
+ * Deliberately *not* bounded above: blood pressures, heart and respiratory
+ * rates, and laboratory concentrations. An implausible one is a clinical
+ * judgement about a patient, not a fact about the unit, and this file is the
+ * wrong place to decide how tachycardic a person is allowed to be.
+ *
+ * Keyed by input name and not by scorer, so an input appearing in four
+ * instruments cannot mean one thing in one of them and something else in
+ * another.
+ */
+interface Domain {
+  min?: number;
+  max?: number;
+  integer?: boolean;
+  /** Completes the sentence "<input> ...", in the refusal's own words. */
+  says: string;
+}
+
+const NON_NEGATIVE = (what: string): Domain => ({ min: 0, says: `is ${what}, which cannot be negative` });
+const COUNT = (what: string): Domain => ({ min: 0, integer: true, says: `is ${what}, which cannot be negative or fractional` });
+const CIWA_ITEM: Domain = { min: 0, max: 7, integer: true, says: "is a CIWA-Ar item scored 0 to 7 in whole points" };
+
+export const INPUT_DOMAINS: Readonly<Record<string, Domain>> = {
+  ageYears: NON_NEGATIVE("an age in completed years"),
+
+  // Vital signs. Bounded below because a negative rate or pressure is not a
+  // reading; unbounded above for the reason given in the note above.
+  respiratoryRate: NON_NEGATIVE("a rate in breaths per minute"),
+  heartRate: NON_NEGATIVE("a rate in beats per minute"),
+  systolicBp: NON_NEGATIVE("a pressure in mmHg"),
+  diastolicBp: NON_NEGATIVE("a pressure in mmHg"),
+  oxygenSaturation: { min: 0, max: 100, says: "is a percentage of haemoglobin saturated with oxygen, which cannot fall outside 0 to 100" },
+  temperatureC: { min: -273.15, says: "is a temperature in degrees Celsius, which cannot fall below absolute zero" },
+
+  // Laboratory values. A concentration or a ratio has no negative reading.
+  ureaMmolL: NON_NEGATIVE("a concentration in mmol/L"),
+  creatinineMgDl: NON_NEGATIVE("a concentration in mg/dL"),
+  bilirubinMgDl: NON_NEGATIVE("a concentration in mg/dL"),
+  sodiumMeqL: NON_NEGATIVE("a concentration in mEq/L"),
+  inr: NON_NEGATIVE("a ratio"),
+
+  // Counts and totals supplied to LACE.
+  lengthOfStayDays: NON_NEGATIVE("a length of stay in days"),
+  charlsonScore: COUNT("a Charlson point total"),
+  edVisitsPastSixMonths: COUNT("a count of emergency department visits"),
+
+  // CIWA-Ar's own scale, from the published instrument.
+  nauseaVomiting: CIWA_ITEM,
+  tremor: CIWA_ITEM,
+  paroxysmalSweats: CIWA_ITEM,
+  anxiety: CIWA_ITEM,
+  agitation: CIWA_ITEM,
+  tactileDisturbances: CIWA_ITEM,
+  auditoryDisturbances: CIWA_ITEM,
+  visualDisturbances: CIWA_ITEM,
+  headache: CIWA_ITEM,
+  orientation: { min: 0, max: 4, integer: true, says: "is the CIWA-Ar orientation item, scored 0 to 4 in whole points" },
+};
+
+/**
+ * Names a rejected value without echoing it back.
+ *
+ * Numbers are printed because `NaN` and `Infinity` are the whole diagnosis.
+ * Anything else is reported by type only: the caller already knows what they
+ * sent, and quoting arbitrary text into a message that reaches logs and
+ * operators buys nothing to justify carrying it there.
+ */
+function renderRejected(value: unknown): string {
+  if (typeof value === "number") return String(value);
+  if (value === null) return "null";
+  return `a ${typeof value}`;
+}
+
+/**
+ * Refuses a supplied value that no measurement could have produced.
+ *
+ * Runs on supplied values only. An absent input never reaches here, so
+ * enforcing a domain cannot turn a missing input into a rejected one.
+ */
+function checkDomain(name: string, value: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Refusal(
+      `${name} must be a finite number; got ${renderRejected(value)}. This is refused rather than ` +
+        "reported as a missing input, because a value nobody could have measured and a value nobody " +
+        "stated are different faults with different fixes.",
+      400,
+    );
+  }
+  const domain = INPUT_DOMAINS[name];
+  if (domain === undefined) return value;
+  const bad =
+    (domain.integer === true && !Number.isInteger(value)) ||
+    (domain.min !== undefined && value < domain.min) ||
+    (domain.max !== undefined && value > domain.max);
+  if (bad) throw new Refusal(`${name} ${domain.says}; got ${value}`, 400);
+  return value;
+}
+
+/**
  * Collects the inputs an instrument needs before any arithmetic happens.
  *
  * Deliberately not a validator that returns warnings: the caller cannot
@@ -112,13 +239,19 @@ class Inputs {
     return value;
   }
 
-  /** A measurement that must have a number. */
-  num(name: string, value: number | undefined): number {
-    if (value === undefined || !Number.isFinite(value)) {
+  /**
+   * A measurement that must have a number.
+   *
+   * Only absence is recorded as missing. A value that was supplied but is not
+   * a measurement refuses immediately rather than joining the missing list,
+   * which is what keeps "nobody said" and "that cannot be a reading" apart.
+   */
+  num(name: string, value: number | null | undefined): number {
+    if (value === undefined || value === null) {
       this.missing.push(name);
       return 0;
     }
-    return value;
+    return checkDomain(name, value);
   }
 
   /** A graded criterion whose value must be one of a fixed set. */
@@ -459,12 +592,10 @@ export function ciwaAr(input: CiwaInput): ScoreResult {
   const components: Record<string, number> = {};
   for (const item of CIWA_ITEMS) {
     const v = i.num(item, input[item]);
-    if (v < 0 || v > 7) throw new Refusal(`${item} is scored 0 to 7; got ${v}`, 400);
     components[item] = v;
   }
   const orientation = i.num("orientation", input.orientation);
   if (i.incomplete) return i.refuse("ciwa-ar", name, input);
-  if (orientation < 0 || orientation > 4) throw new Refusal(`orientation is scored 0 to 4; got ${orientation}`, 400);
   components.orientation = orientation;
 
   const score = Object.values(components).reduce((a, b) => a + b, 0);

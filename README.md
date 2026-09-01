@@ -76,7 +76,7 @@ v0.7.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A migration you can rehearse, and an extract reader that loses nothing.** `dryRun()` runs the whole load through the ordinary stores inside a transaction that is always rolled back — it *is* the loader, so it cannot approve what a real load would refuse, and nothing survives it. The FHIR Bundle and NDJSON reader skips nothing: a resource it cannot map comes back with its reason and the resource itself, one it can map but the stores refuse reaches the reject queue with its payload, and the declared count comes from the export's own `total` rather than from what happened to arrive.
 - **Value sets and concept maps from real releases.** FHIR ValueSet and ConceptMap resources plus SNOMED RF2 refsets and cross-maps, replacing hand-written pack JSON. A value set that cannot be fully resolved — a filter, an exclusion, a reference this store cannot follow — refuses to import at all, because one carrying the publisher's name and a smaller membership is worse than none.
 
-851 tests. Backend first, then the interface that makes the backend's honesty visible.
+962 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -132,7 +132,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 851 tests
+npm test          # 962 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -662,6 +662,15 @@ not reproducible evidence, so every complete **and incomplete** result carries:
 - an assurance state that remains
   `implementation-tested-not-independently-clinically-validated` until a named
   clinical owner records a review.
+
+Inputs are checked against a domain before any arithmetic runs. A domain says
+what a measurement *can* be — a saturation is a percentage, a count of
+emergency visits is a whole number, a CIWA-Ar item is scored 0 to 7 — and is
+deliberately not one of the instrument's thresholds: it carries no clinical
+judgement, and a change to it can only reject input that was never scoreable.
+A value outside its domain refuses rather than joining the missing-input list,
+because "nobody measured this" and "what you sent cannot be a measurement" are
+different faults, and only the first is a clinician's to fix.
 
 Chart-derived responses additionally carry their clinical `asOf` time, every
 source record and its age, and the oldest observation on which the score rests.

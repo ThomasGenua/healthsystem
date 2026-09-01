@@ -11,6 +11,26 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **A domain for every score input, distinct from the instrument's
+  thresholds.** A supplied value that no measurement could have produced —
+  a negative age or length of stay, a saturation outside 0-100, a CIWA-Ar
+  item of 3.5, `NaN` from a caller's own arithmetic — now refuses with a 400
+  naming the value and the domain, before any arithmetic and before the
+  missing-input check. It previously joined the missing-input list, which
+  reported a caller defect as a clinical data gap and sent somebody to
+  collect a measurement that was never absent. Absent inputs are unchanged:
+  `undefined` and `null` still refuse as missing, and a criterion stated
+  absent still scores zero. Domains are keyed by input name, so `ageYears`
+  cannot mean one thing in CURB-65 and another in HAS-BLED, and are
+  definitional rather than clinical — a percentage cannot exceed 100, a
+  count cannot be fractional, nothing is colder than absolute zero — so no
+  bound here can move a real patient between bands. Blood pressures, heart
+  and respiratory rates and laboratory concentrations are deliberately
+  unbounded above, because implausibility is a judgement about a patient
+  rather than a fact about a unit. Below, on and above probes now cover every
+  numeric criterion and band edge in all ten instruments. Hazards H-128 and
+  H-129. 962 tests.
+
 - **Patient-supplied documents as chart facts, not notes.** They write onto
   the existing append-only clinical record as `DocumentReference` with
   category `patient-supplied`, so the notes module will not read them as SOAP.
