@@ -7,7 +7,30 @@ Northstar is pre-1.0: minor versions may change interfaces. Database upgrades ar
 always forward-compatible and run automatically on open — see
 [Upgrading](docs/RUNBOOK.md#upgrading).
 
-## Unreleased
+## 0.8.0 — 2026-08-27
+
+A release about what the record admits it does not know. 0.7.0 stopped the
+system trusting a silence on the way out; this one stops it manufacturing
+confidence on the way in.
+
+Ten validated instruments now score risk, and refuse to when an input is
+missing — because the arithmetic that treats an undrawn urea as a normal one
+makes a patient read as safer for having been less investigated. Feeding those
+same instruments from the chart adds the second version of that failure, a
+value that is present but old, so every input carries a clock and a NEWS2 built
+from this morning's observations refuses rather than describing a patient who
+may since have deteriorated. A laboratory harness reads a vendor's own messages
+before anybody trusts the interface, and states in the report what a clean run
+does not establish. Documents, procedures and care plans stop being notes and
+become facts with structure, which is what makes their absence visible.
+Enrolment is attested by a named clerk who writes how they checked, rather than
+inferred from a token.
+
+And the product is now called Northstar — a rename carried out on the
+principle that it must not move anything a running site depends on. The
+database, the backups, the environment, the tenant claim, the metrics and the
+wire all still answer to their old names, because every one of those failures
+would have been silent.
 
 **Added**
 
@@ -47,100 +70,6 @@ always forward-compatible and run automatically on open — see
   was told. No channel is a visible failure, not a quiet skip. Not
   identity-proofing, not ONE ID, not a certified portal, not WCAG. Hazards
   H-114 to H-117. 826 tests.
-
-**Changed**
-
-- **Portage is now Northstar.** The product, the documentation, the admin UI
-  and the package name. Release notes below this entry keep the old name,
-  because that is what those versions shipped as.
-
-  **An existing site upgrades with no configuration changes at all.** That is
-  the part worth stating plainly, because almost nothing about a rename fails
-  loudly, and every one of these would have been silent:
-
-  - **The database.** SQLite creates what it cannot open. A build looking for
-    `northstar.db` in a directory holding `portage.db` does not error — it
-    makes an empty database, and the site comes up healthy with no patients in
-    it. An existing file now always wins over the preferred name, whichever
-    name it carries, and opening one under its old name is announced at boot.
-    Renaming it is an operator step taken with the engine stopped, documented
-    with the `-wal` and `-shm` sidecars that have to move with it.
-
-  - **Backups.** The snapshot listers matched a filename prefix. Changing it
-    would have made every existing snapshot invisible at once — nothing to
-    restore, and a reading-station check reporting no recent backup, for a site
-    whose snapshots were sitting right there. Both prefixes are matched on
-    every read path. Ordering moved off the filename at the same time: a plain
-    sort puts `northstar-` before `portage-`, which would have placed today's
-    snapshot at the oldest end of the list, handed a restore a two-month-old
-    database, and had retention delete the newest file it had.
-
-  - **Environment variables.** `PORTAGE_*` is read alongside `NORTHSTAR_*`, the
-    new name winning where both are set, so a unit file can migrate one line at
-    a time. Reading only the new names would not have thrown; the values would
-    have gone absent, and absent means TLS off, encryption unasserted,
-    authentication unconfigured, on a site that had configured all three.
-
-  - **Identity.** `portage_tenant`, `portage_organization` and
-    `portage_practitioner` are still accepted, and are not scheduled for
-    removal — the claim name lives in somebody's Keycloak realm, not in this
-    repository. An unread tenant claim arrives as an absence rather than an
-    error, and every downstream check would then decide tenancy on nothing.
-    That is the one failure here that ends with one site reading another's
-    charts. `portage/admin` likewise still grants admin, because the scope is
-    inside tokens already issued.
-
-  - **Metrics.** Every series is exposed under both `northstar_*` and
-    `portage_*`. A renamed metric does not break an alerting rule loudly — the
-    series stops existing, the rule evaluates against no data, and the alert
-    watching for a dead-letter backlog quietly never fires again.
-
-  - **The wire.** MSH-3 on outbound acknowledgements is still `PORTAGE`. It is
-    not branding: it is the receiving-application name each sending facility
-    typed into their own interface configuration, and changing it unilaterally
-    has their engine reject our acknowledgements — visible at their end as
-    messages never acknowledged, and not visible at ours at all. It moves when
-    a deployment sets `NORTHSTAR_HL7_APPLICATION`, having agreed the change
-    with the sites on the other end.
-
-  Two identifier namespaces also keep their spelling: the audit-export URN
-  `urn:portage:principal:*`, and the `https://portage.dev/fhir/NamingSystem/*`
-  systems the shipped mappings stamp onto resource identifiers. A namespace
-  identifier exists to be stable. Moving them would give resources created
-  either side of the rename different identifier systems, so the same
-  observation ingested twice would stop matching itself and file as two — and
-  audit exports from before and after would no longer be comparable. Both name
-  an identifier scheme, not the product.
-
-  Hazards H-108 to H-113, `docs/RUNBOOK.md` → "Upgrading a site installed as
-  Portage", and `test/rename-compat.test.ts`, whose regressions were checked
-  against the unfixed source.
-
-**Fixed
-
-- **The not-on-care-team flag never fired on real traffic** (H-106). The
-  privacy office's review joined `principal_id` and required
-  `principal_kind = "practitioner"` — but an HTTP audit row records the
-  *credential* on `principal_id`, with kind `apikey` or `oauth`, and the
-  clinician on `practitioner_id`. So every access through the API was skipped,
-  and the flag that exists to catch a clinician reading a chart they have no
-  part in never fired where it mattered. Worse than silent: the review
-  reported a clean period because it had examined nothing. It now joins
-  `practitioner_id`, the identity `AccessReview` already uses, and a
-  credential naming no practitioner is excluded because it cannot be on a
-  team.
-
-- **A disclosure could outlive the request it answered** (H-107).
-  `fulfillAccess` recorded the disclosure and completed the request as two
-  independent writes. A failure between them left the ledger saying the chart
-  had gone out while the queue said nobody had answered, and a retry recorded
-  a second disclosure for one release. Both writes now share one transaction.
-
-  Both fixes were found by a Cursor review that never reached `main`; the
-  branch had gone too stale to merge, so they are ported here with regression
-  tests verified to fail against the unfixed source.
-
-**Added**
 
 - **Risk scores computed from the chart, with a clock on every input**
   (`src/clinical/score-from-chart.ts`, `POST /api/clinical/chart-score`).
@@ -221,8 +150,115 @@ always forward-compatible and run automatically on open — see
   high score is a prompt to address modifiable risk, not a reason to withhold
   anticoagulation. Hazards H-100 through H-102.
 
-  This is decision support, not a decision, and Portage is not a certified
+  This is decision support, not a decision, and Northstar is not a certified
   medical device.
+
+**Changed**
+
+- **Portage is now Northstar.** The product, the documentation, the admin UI
+  and the package name. Release notes below this entry keep the old name,
+  because that is what those versions shipped as.
+
+  **An existing site upgrades with no configuration changes at all.** That is
+  the part worth stating plainly, because almost nothing about a rename fails
+  loudly, and every one of these would have been silent:
+
+  - **The database.** SQLite creates what it cannot open. A build looking for
+    `northstar.db` in a directory holding `portage.db` does not error — it
+    makes an empty database, and the site comes up healthy with no patients in
+    it. An existing file now always wins over the preferred name, whichever
+    name it carries, and opening one under its old name is announced at boot.
+    Renaming it is an operator step taken with the engine stopped, documented
+    with the `-wal` and `-shm` sidecars that have to move with it.
+
+  - **Backups.** The snapshot listers matched a filename prefix. Changing it
+    would have made every existing snapshot invisible at once — nothing to
+    restore, and a reading-station check reporting no recent backup, for a site
+    whose snapshots were sitting right there. Both prefixes are matched on
+    every read path. Ordering moved off the filename at the same time: a plain
+    sort puts `northstar-` before `portage-`, which would have placed today's
+    snapshot at the oldest end of the list, handed a restore a two-month-old
+    database, and had retention delete the newest file it had.
+
+  - **Environment variables.** `PORTAGE_*` is read alongside `NORTHSTAR_*`, the
+    new name winning where both are set, so a unit file can migrate one line at
+    a time. Reading only the new names would not have thrown; the values would
+    have gone absent, and absent means TLS off, encryption unasserted,
+    authentication unconfigured, on a site that had configured all three.
+
+  - **Identity.** `portage_tenant`, `portage_organization` and
+    `portage_practitioner` are still accepted, and are not scheduled for
+    removal — the claim name lives in somebody's Keycloak realm, not in this
+    repository. An unread tenant claim arrives as an absence rather than an
+    error, and every downstream check would then decide tenancy on nothing.
+    That is the one failure here that ends with one site reading another's
+    charts. `portage/admin` likewise still grants admin, because the scope is
+    inside tokens already issued.
+
+  - **Metrics.** Every series is exposed under both `northstar_*` and
+    `portage_*`. A renamed metric does not break an alerting rule loudly — the
+    series stops existing, the rule evaluates against no data, and the alert
+    watching for a dead-letter backlog quietly never fires again.
+
+  - **The wire.** MSH-3 on outbound acknowledgements is still `PORTAGE`. It is
+    not branding: it is the receiving-application name each sending facility
+    typed into their own interface configuration, and changing it unilaterally
+    has their engine reject our acknowledgements — visible at their end as
+    messages never acknowledged, and not visible at ours at all. It moves when
+    a deployment sets `NORTHSTAR_HL7_APPLICATION`, having agreed the change
+    with the sites on the other end.
+
+  Two identifier namespaces also keep their spelling: the audit-export URN
+  `urn:portage:principal:*`, and the `https://portage.dev/fhir/NamingSystem/*`
+  systems the shipped mappings stamp onto resource identifiers. A namespace
+  identifier exists to be stable. Moving them would give resources created
+  either side of the rename different identifier systems, so the same
+  observation ingested twice would stop matching itself and file as two — and
+  audit exports from before and after would no longer be comparable. Both name
+  an identifier scheme, not the product.
+
+  Hazards H-108 to H-113, `docs/RUNBOOK.md` → "Upgrading a site installed as
+  Portage", and `test/rename-compat.test.ts`, whose regressions were checked
+  against the unfixed source.
+
+**Fixed**
+
+- **The not-on-care-team flag never fired on real traffic** (H-106). The
+  privacy office's review joined `principal_id` and required
+  `principal_kind = "practitioner"` — but an HTTP audit row records the
+  *credential* on `principal_id`, with kind `apikey` or `oauth`, and the
+  clinician on `practitioner_id`. So every access through the API was skipped,
+  and the flag that exists to catch a clinician reading a chart they have no
+  part in never fired where it mattered. Worse than silent: the review
+  reported a clean period because it had examined nothing. It now joins
+  `practitioner_id`, the identity `AccessReview` already uses, and a
+  credential naming no practitioner is excluded because it cannot be on a
+  team.
+
+- **A disclosure could outlive the request it answered** (H-107).
+  `fulfillAccess` recorded the disclosure and completed the request as two
+  independent writes. A failure between them left the ledger saying the chart
+  had gone out while the queue said nobody had answered, and a retry recorded
+  a second disclosure for one release. Both writes now share one transaction.
+
+  Both fixes were found by a Cursor review that never reached `main`; the
+  branch had gone too stale to merge, so they are ported here with regression
+  tests verified to fail against the unfixed source.
+
+- **The README claimed the clinical platform had no user interface.** It has
+  had a chart, a worklist, break-glass and the privacy inbox for two releases,
+  and a patient access page in English and French. An understatement is still
+  an inaccuracy, and the Status section is load-bearing precisely because its
+  caveats are meant to be exact. It now says which parts have a screen and
+  which are API-only.
+
+- **Nothing checked that the reported capability version was the shipped one.**
+  Three files carry the version at a release and only `src/version.ts` is read
+  at runtime, so forgetting it failed no build and no test — it shipped a
+  CapabilityStatement telling every federation partner it was talking to the
+  previous release. `src/version.ts` and `package.json` are now pinned to each
+  other, and to what the statement actually reports, rather than to a literal
+  that would be a third place to forget.
 
 ## 0.7.0 — 2026-08-26
 

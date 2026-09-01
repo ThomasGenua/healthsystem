@@ -20,7 +20,7 @@ The design targets the interoperability posture Canadian jurisdictions are conve
 
 ## Status
 
-v0.7.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources; filter, split, mapping and validation pipeline; retrying ordered destinations with DLQ and replay; hash-chained lineage; FHIR R4 facade; terminology service; PS-CA / CA:FeX / CA:eReC conformance packs; rest-hook Subscriptions; satellite outage demo; admin UI) plus:
+v0.8.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources; filter, split, mapping and validation pipeline; retrying ordered destinations with DLQ and replay; hash-chained lineage; FHIR R4 facade; terminology service; PS-CA / CA:FeX / CA:eReC conformance packs; rest-hook Subscriptions; satellite outage demo; admin UI) plus:
 
 - **Authentication and authorisation.** API keys and OAuth 2.0 / SMART on FHIR bearer tokens, three system scopes plus a separate OAuth-only patient scope, one gate ahead of every route. On by default.
 - **Mutual TLS**, for node-to-node links, inbound and outbound.
@@ -76,7 +76,7 @@ v0.7.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A migration you can rehearse, and an extract reader that loses nothing.** `dryRun()` runs the whole load through the ordinary stores inside a transaction that is always rolled back — it *is* the loader, so it cannot approve what a real load would refuse, and nothing survives it. The FHIR Bundle and NDJSON reader skips nothing: a resource it cannot map comes back with its reason and the resource itself, one it can map but the stores refuse reaches the reject queue with its payload, and the declared count comes from the export's own `total` rather than from what happened to arrive.
 - **Value sets and concept maps from real releases.** FHIR ValueSet and ConceptMap resources plus SNOMED RF2 refsets and cross-maps, replacing hand-written pack JSON. A value set that cannot be fully resolved — a filter, an exclusion, a reference this store cannot follow — refuses to import at all, because one carrying the publisher's name and a smaller membership is worse than none.
 
-846 tests. Backend first, then the interface that makes the backend's honesty visible.
+847 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -87,7 +87,11 @@ Honest limits, so nobody discovers them in production:
 - **The shipped terminology pack is a labelled demo subset.** SNOMED CT CA, LOINC, pCLOCD, ICD-10-CA and CCI are licensed distributions; the loaders are here, the content is not.
 - **The database file is not encrypted.** `node:sqlite` cannot encrypt, so the control that fits a single-file store is an encrypted volume underneath it. Northstar does not assume one is there: it checks at boot and on `/api/health`, and says so loudly when it cannot find one. See [Encryption at rest](#encryption-at-rest).
 - **The conformance packs are not certified.** They encode the published profiles as data and pass the shipped fixtures, but no projectathon has scored them.
-- **The clinical platform has no user interface.** Every module described below — the chart, medications, orders, referrals, scheduling, registries — is a store and an HTTP API with tests. The admin UI covers interface operations only. This is deliberate ordering, not an oversight, but "a clinician can use this today" is not a claim being made.
+- **Validated risk scores that refuse an incomplete answer.** Ten instruments — CURB-65, CHA₂DS₂-VASc, HAS-BLED, Wells PE, HEART, MELD-Na, CIWA-Ar, Charlson, LACE, NEWS2 — where a missing input produces no number at all rather than a low one, because arithmetic that treats an undrawn urea as a normal one makes a patient read as safer for having been less investigated. Computed from the chart, every input carries a maximum age and a value past its window is not a value: a NEWS2 assembled from this morning's observations refuses rather than describing a patient who may since have deteriorated.
+- **A laboratory conformance harness**, run against a vendor's own sample messages before anybody trusts the interface. It names the findings an integration analyst would raise — no accession number so resends cannot be told apart, two identifiers in PID-3 with nothing saying which is the health number, timestamps with no zone — and states in every report what a clean run does not establish. It never says an interface conforms.
+- **Documents, procedures and care plans as chart facts rather than notes**, so their absence is visible and structured rather than a gap in prose.
+- **Enrolment attested by a named clerk** who records how they checked, rather than inferred from a token.
+- **The clinician interface is thin, and most of the platform is API-only.** The admin UI now carries a chart, a worklist, break-glass and the privacy inbox, and there is a patient access page in English and French. Everything else described below — medications, orders, referrals, scheduling, registries, procedures, care plans, documents, enrolment — is a store and an HTTP API with tests and no screen. This is deliberate ordering, not an oversight, but "a clinician can run their day in this" is not a claim being made.
 - **No certified patient portal.** `GET /me` is chrome: English/French copy, a skip link, landmarks, and a banner that says what this page is not. It does not enrol anyone. The JSON patient/proxy boundary is mounted at `/patient/*`; it is OAuth-only and checks a live, explicitly scoped authority grant on every chart. Binding a subject is clinic-attested enrolment — a named person writes how they checked — not identity-proofing and not ONE ID. Notices publish fact onto a configured channel; dispatching is not telling. There is no WCAG or AODA claim. A shell people can open is not a portal people can use.
 - **No clinical decision support content.** The medication safety mechanism is here — the check, the severities, the override with its record — and ships a deliberately small cross-reactivity set covering the classes with the clearest consensus. Drug interactions come from a licensed database through the `InteractionSource` seam. An interaction table that is 80% complete is one prescribers learn to trust, and the missing 20% is then invisible.
 - **Nothing here uses machine learning.** Section 7 of the requirements asks for it; nothing in this repository does anything of the sort, and no output should be read as though it did.
@@ -132,7 +136,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 846 tests
+npm test          # 847 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
