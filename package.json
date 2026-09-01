@@ -1,6 +1,6 @@
 {
   "name": "northstar",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Health integration engine for northern operating conditions. HL7 v2, FHIR R4, durable store-and-forward, ordered replay, hash-chained message lineage, authenticated API with mutual TLS.",
   "type": "module",
   "private": true,

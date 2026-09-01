@@ -5,4 +5,4 @@
  * from a directory that does not carry one, and so it is stated once rather
  * than repeated at each endpoint that reports it.
  */
-export const VERSION = "0.7.0";
+export const VERSION = "0.8.0";
