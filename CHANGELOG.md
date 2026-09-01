@@ -74,6 +74,50 @@ always forward-compatible and run automatically on open — see
 
   Hazards H-132 to H-134.
 
+- **Orders are sent, and the acknowledgement is correlated** (`src/orders/send.ts`).
+  The piece that makes the rest of this move: build, hand to the transport,
+  read what came back, record it. Every step can fail in a way that must not
+  read as success, so each has its own outcome — a refused build records
+  nothing at all ("we tried and the line was down" and "we never had enough to
+  send" are different conversations), a throwing transport is `failed` which
+  reads as *not sent*, and a negative acknowledgement is `rejected`.
+
+  The attempt is written down **before** the send. A process dying between the
+  socket and the database would otherwise leave an order reading as never sent
+  while a laboratory holds it, and a clinician resending produces two
+  requisitions for one specimen.
+
+  `interpretAck()` checks MSA-2 before MSA-1. That is the field an
+  implementation skips: MSA-1 says *an* acknowledgement was positive, and only
+  MSA-2 says it was about **this** message. Acknowledgements arrive on
+  connections carrying other traffic and a slow far end answers a previous
+  message after this one went out — so a perfectly positive AA carrying
+  somebody else's control id is `failed`, never `acknowledged`. A code the
+  parser does not recognise is not assumed positive either, and a commit
+  accept says it is one, because holding a message is not accepting an order.
+  Hazards H-135 and H-137.
+
+- **The laboratory is told when an order is cancelled** (H-136). `cancel()`
+  set the order to cancelled here and nothing told anyone. A laboratory that
+  acknowledged it still held the requisition, so the specimen was still
+  collected, the test still run, and a result came back for a test the chart
+  said nobody wanted — against a patient who may have been told it was called
+  off.
+
+  That is the original problem mirrored. The first was the record claiming a
+  laboratory had something it did not; this is a laboratory having something
+  the record says it does not, and it is the more urgent of the two because it
+  ends with a needle.
+
+  Cancellation goes as ORC-1 `CA` naming the same placer order number, since a
+  cancellation naming a different requisition cancels nothing. Its
+  acknowledgement is tracked separately from the order's, because an order can
+  be acknowledged *and* its cancellation unsent — the dangerous combination,
+  and the one that reads as fine if you only ask once.
+  `cancelledButStillWithFiller()` lists every order cancelled here that no
+  laboratory has confirmed withdrawing. A cancellation is refused for an order
+  nobody cancelled, which would stop a test somebody is waiting for.
+
 **Fixed**
 
 - **Two HL7 fields were one position out** (H-133). The indication was landing

@@ -85,8 +85,12 @@ export interface OrderRouting {
   declared_by: string;
 }
 
+/** Whether an attempt carried the order or its cancellation. */
+export type TransmissionKind = "order" | "cancel";
+
 export interface TransmissionRow {
   tenant_id: string;
+  kind: TransmissionKind;
   id: string;
   order_id: string;
   outcome: TransmissionOutcome;
@@ -840,7 +844,13 @@ export class OrderStore {
    */
   recordTransmission(
     orderId: string,
-    attempt: { outcome: TransmissionOutcome; destination: string; controlId?: string; detail: string },
+    attempt: {
+      outcome: TransmissionOutcome;
+      destination: string;
+      controlId?: string;
+      detail: string;
+      kind?: TransmissionKind;
+    },
     by: Actor
   ): TransmissionRow {
     this.require(orderId);
@@ -848,6 +858,7 @@ export class OrderStore {
     if (!attempt.detail.trim()) throw new Error("a transmission needs a detail");
     const row: TransmissionRow = {
       tenant_id: this.db.tenantId,
+      kind: attempt.kind ?? "order",
       id: randomUUID(),
       order_id: orderId,
       outcome: attempt.outcome,
@@ -860,11 +871,12 @@ export class OrderStore {
     this.db.sql
       .prepare(
         `INSERT INTO order_transmissions
-           (tenant_id, id, order_id, outcome, destination, control_id, detail, at, by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           (tenant_id, kind, id, order_id, outcome, destination, control_id, detail, at, by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         row.tenant_id,
+        row.kind,
         row.id,
         row.order_id,
         row.outcome,
@@ -877,11 +889,12 @@ export class OrderStore {
     return row;
   }
 
-  /** Every attempt to send this order, oldest first. */
-  transmissions(orderId: string): TransmissionRow[] {
-    return this.db.sql
+  /** Every attempt to send this order, oldest first. Both kinds unless one is named. */
+  transmissions(orderId: string, kind?: TransmissionKind): TransmissionRow[] {
+    const rows = this.db.sql
       .prepare(`SELECT * FROM order_transmissions WHERE tenant_id = ? AND order_id = ? ORDER BY seq`)
       .all(this.db.tenantId, orderId) as unknown as TransmissionRow[];
+    return kind ? rows.filter((r) => r.kind === kind) : rows;
   }
 
   /**
@@ -898,7 +911,7 @@ export class OrderStore {
    */
   transmissionState(orderId: string): TransmissionState {
     const order = this.require(orderId);
-    const attempts = this.transmissions(orderId);
+    const attempts = this.transmissions(orderId, "order");
     const last = attempts[attempts.length - 1];
     if (last) {
       const where = `${last.outcome} at ${last.at} to ${last.destination}`;
@@ -970,6 +983,81 @@ export class OrderStore {
     return open
       .map((o) => ({ ...o, transmission: this.transmissionState(o.id) }))
       .filter((o) => o.transmission.state !== "acknowledged");
+  }
+
+  /**
+   * Whether the laboratory has been told this order is cancelled.
+   *
+   * Separate from `transmissionState` because they answer opposite questions
+   * and a single state would let one hide the other: an order can be
+   * acknowledged *and* its cancellation unsent, which is the dangerous
+   * combination and the one that reads as fine if you only ask once.
+   */
+  cancellationState(orderId: string): TransmissionState {
+    const order = this.require(orderId);
+    if (order.status !== "cancelled") {
+      return { state: "no-route", detail: "this order is not cancelled, so there is nothing to withdraw" };
+    }
+    const attempts = this.transmissions(orderId, "cancel");
+    const last = attempts[attempts.length - 1];
+    if (!last) {
+      const held = this.transmissionState(orderId);
+      if (held.state !== "acknowledged") {
+        return {
+          state: "not-sent",
+          detail:
+            "no cancellation has been sent, and none is needed: no laboratory ever acknowledged the order.",
+        };
+      }
+      return {
+        state: "not-sent",
+        detail:
+          "this order was cancelled here and the laboratory that acknowledged it has not been told. " +
+          "They still hold the requisition, so the specimen is still due to be collected.",
+      };
+    }
+    const where = `${last.outcome} at ${last.at} to ${last.destination}`;
+    if (last.outcome === "acknowledged") {
+      return { state: "acknowledged", at: last.at, detail: `cancellation ${where}: ${last.detail}` };
+    }
+    if (last.outcome === "rejected") {
+      return {
+        state: "rejected",
+        at: last.at,
+        detail: `cancellation ${where}: ${last.detail}. They still hold the order.`,
+      };
+    }
+    if (last.outcome === "failed") {
+      return {
+        state: "failed",
+        at: last.at,
+        detail: `cancellation ${where}: ${last.detail}. Treat the order as still with them.`,
+      };
+    }
+    return {
+      state: "sent",
+      at: last.at,
+      detail: `cancellation ${where}: ${last.detail}. Nothing has confirmed they withdrew it.`,
+    };
+  }
+
+  /**
+   * Orders cancelled here that a laboratory still holds.
+   *
+   * The mirror of `notWithFiller`, and the more urgent list. There, the record
+   * claimed a laboratory had something it did not. Here a laboratory has
+   * something the record says it does not: the specimen is still collected,
+   * the test still run, and a result arrives for a test the chart says nobody
+   * wanted — against a patient who may have been told it was called off.
+   */
+  cancelledButStillWithFiller(): Array<OrderRow & { cancellation: TransmissionState }> {
+    const cancelled = this.db.sql
+      .prepare(`SELECT * FROM orders WHERE tenant_id = ? AND status = 'cancelled' ORDER BY updated_at`)
+      .all(this.db.tenantId) as unknown as OrderRow[];
+    return cancelled
+      .filter((o) => this.transmissionState(o.id).state === "acknowledged")
+      .map((o) => ({ ...o, cancellation: this.cancellationState(o.id) }))
+      .filter((o) => o.cancellation.state !== "acknowledged");
   }
 
   private require(orderId: string): OrderRow {

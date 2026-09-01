@@ -142,9 +142,50 @@ export function buildOml(
   ctx: OmlContext,
   profile: LabProfile
 ): OmlResult {
+  return build("NW", order, patient, ctx, profile);
+}
+
+/**
+ * The cancellation, and the silence it closes.
+ *
+ * `cancel()` sets the order to cancelled here. Until this message goes, a
+ * laboratory that acknowledged the order still holds it — so the specimen is
+ * still collected, the test still run, and a result still comes back for a
+ * test the record says nobody wanted. That is the original problem mirrored:
+ * the first was claiming a laboratory had something it did not, and this is a
+ * laboratory having something the record says it does not.
+ *
+ * ORC-1 CA, carrying the same placer order number, because a cancellation
+ * naming a different requisition cancels nothing.
+ */
+export function buildOrderCancel(
+  order: OrderRow,
+  patient: PatientSummary | undefined,
+  ctx: OmlContext,
+  profile: LabProfile
+): OmlResult {
+  if (order.status !== "cancelled") {
+    return {
+      built: false,
+      missing: ["order.status"],
+      reason:
+        `this order is ${order.status}, not cancelled. Sending a cancellation for an order nobody ` +
+        "cancelled would stop a test somebody is waiting for.",
+    };
+  }
+  return build("CA", order, patient, ctx, profile);
+}
+
+function build(
+  control: "NW" | "CA",
+  order: OrderRow,
+  patient: PatientSummary | undefined,
+  ctx: OmlContext,
+  profile: LabProfile
+): OmlResult {
   const missing: string[] = [];
 
-  if (order.status === "draft") {
+  if (control === "NW" && order.status === "draft") {
     return {
       built: false,
       missing: ["order.status"],
@@ -153,7 +194,7 @@ export function buildOml(
         "for a test nobody has ordered.",
     };
   }
-  if (order.status === "cancelled") {
+  if (control === "NW" && order.status === "cancelled") {
     return {
       built: false,
       missing: ["order.status"],
@@ -229,7 +270,7 @@ export function buildOml(
   // order is its own message, and reusing NW for one is how a laboratory ends
   // up holding two requisitions for one specimen.
   const orc = segment("ORC", {
-    1: "NW",
+    1: control,
     2: e(order.id),
     9: orderedAt,
     12: provider,
@@ -257,5 +298,91 @@ export function buildOml(
     controlId,
     placerOrderNumber: order.id,
     identifier: id,
+  };
+}
+
+/**
+ * What a laboratory's acknowledgement actually said.
+ *
+ * The field that matters is MSA-2, and it is the one an implementation skips.
+ * MSA-1 carries the code — AA, AE, AR — and reading it alone is enough to know
+ * *an* acknowledgement was positive. It is not enough to know it was an
+ * acknowledgement of **this** message.
+ *
+ * That distinction has teeth on a real interface. Acknowledgements arrive on a
+ * connection carrying other traffic, engines resend, and a slow far end can
+ * answer a previous message after this one went out. An AA matched to the
+ * wrong control id, recorded against this order, is the system asserting that
+ * a laboratory holds a requisition it has never seen — which is the exact
+ * failure the transmission work exists to prevent, reintroduced one layer up.
+ *
+ * So a mismatch is `failed`, never `acknowledged`. The laboratory may well
+ * have the order; that is not the same as knowing they do.
+ */
+export type AckVerdict =
+  | { outcome: "acknowledged"; code: string; detail: string }
+  | { outcome: "rejected"; code: string; detail: string }
+  | { outcome: "failed"; code: string | null; detail: string };
+
+/** MSA-1 codes that mean the far end has the message. */
+const ACCEPTED = new Set(["AA", "CA"]);
+/** MSA-1 codes that mean it was refused, and the order is not with them. */
+const REFUSED = new Set(["AE", "AR", "CE", "CR"]);
+
+export function interpretAck(ack: string, sentControlId: string): AckVerdict {
+  if (!ack || !ack.trim()) {
+    return {
+      outcome: "failed",
+      code: null,
+      detail: "nothing came back. Treat the order as not sent rather than as sent and waiting.",
+    };
+  }
+
+  const msa = ack
+    .split(/\r\n|\r|\n/)
+    .map((l) => l.trim())
+    .find((l) => l.startsWith("MSA"));
+  if (!msa) {
+    return {
+      outcome: "failed",
+      code: null,
+      detail: `the reply carried no MSA segment, so it acknowledged nothing: ${ack.slice(0, 120)}`,
+    };
+  }
+
+  const fields = msa.split("|");
+  const code = (fields[1] ?? "").trim().toUpperCase();
+  const echoed = (fields[2] ?? "").trim();
+  const text = (fields[3] ?? "").trim();
+
+  // Correlation before interpretation. A positive code for somebody else's
+  // message is not a positive answer about this one.
+  if (echoed !== sentControlId) {
+    return {
+      outcome: "failed",
+      code: code || null,
+      detail:
+        `the acknowledgement answered message ${echoed || "(none)"}, not ${sentControlId}. ` +
+        "It says nothing about this order, so this order is not known to have arrived.",
+    };
+  }
+
+  if (ACCEPTED.has(code)) {
+    const commit = code === "CA" ? " (commit accept: they hold the message)" : "";
+    return { outcome: "acknowledged", code, detail: `${code}${commit}${text ? `: ${text}` : ""}` };
+  }
+  if (REFUSED.has(code)) {
+    return {
+      outcome: "rejected",
+      code,
+      detail: `${code}${text ? `: ${text}` : ""}. The order is not with them; it needs correcting and resending.`,
+    };
+  }
+  return {
+    outcome: "failed",
+    code: code || null,
+    detail:
+      `unknown MSA-1 acknowledgement code ${code || "(empty)"}. Refusing to read it as acceptance: ` +
+      "a code this does not recognise is not a code it may assume is positive.",
   };
 }
