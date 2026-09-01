@@ -278,7 +278,13 @@ test("every clinical route leaves an audit row, including ones added later", asy
   // found too. It did not, once, and a route added as
   // /api/clinical/encounter/arrive would have been exempt from this whole
   // guarantee by virtue of its name.
-  const paths = [...new Set([...source.matchAll(/path === "(\/api\/clinical\/[a-z/-]+)"/g)].map((m) => m[1]))];
+  //
+  // It admits digits for the same reason. It did not, once, and
+  // /api/clinical/score/v2 — the versioned measurement contract, and every
+  // versioned route after it — was exempt on the strength of its "2". A
+  // scanner that silently matches nothing is worse than no scanner: this one
+  // reported a healthy count of routes the whole time.
+  const paths = [...new Set([...source.matchAll(/path === "(\/api\/clinical\/[a-z0-9/-]+)"/g)].map((m) => m[1]))];
   assert.ok(paths.length >= 16, `expected the clinical routes to be found by scanning, got ${paths.length}`);
 
   const s = await boot();
@@ -723,6 +729,7 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/lab-reconcile": "",
       "/api/clinical/lab-resolve": "POST",
       "/api/clinical/score": "POST",
+      "/api/clinical/score/v2": "POST",
       "/api/clinical/chart-score": "POST",
       "/api/clinical/prescriptions": `?patient=${P}`,
       "/api/clinical/prescription-chase": "",
@@ -940,6 +947,20 @@ test("every clinical route leaves an audit row, including ones added later", asy
         score: "curb-65",
         patient: P,
         input: { confusion: false, ureaMmolL: 9, respiratoryRate: 32, systolicBp: 88, diastolicBp: 55, ageYears: 72 },
+      },
+      // The same patient through the measurement contract: the units travel
+      // with the values instead of being spelled into the parameter names.
+      "/api/clinical/score/v2": {
+        score: "curb-65",
+        patient: P,
+        measurements: {
+          urea: { value: 9, unit: "mmol/L" },
+          respiratoryRate: { value: 32, unit: "/min" },
+          systolicBp: { value: 88, unit: "mm[Hg]" },
+          diastolicBp: { value: 55, unit: "mm[Hg]" },
+          age: { value: 72, unit: "a" },
+        },
+        input: { confusion: false },
       },
       "/api/clinical/chart-score": { score: "news2", patient: P, supplied: { onSupplementalOxygen: false, alert: true } },
       "/api/clinical/prescribe": { statement: statement.id, instructions: "One tablet twice daily with food" },

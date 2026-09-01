@@ -1,0 +1,72 @@
+[
+  {
+    "id": "curb-65",
+    "source": "https://pubmed.ncbi.nlm.nih.gov/12728155/",
+    "basis": "Each published CURB-65 threshold is crossed.",
+    "input": { "confusion": true, "ureaMmolL": 9, "respiratoryRate": 32, "systolicBp": 88, "diastolicBp": 55, "ageYears": 72 },
+    "expected": { "score": 5, "band": "severe" }
+  },
+  {
+    "id": "cha2ds2-vasc",
+    "source": "https://pubmed.ncbi.nlm.nih.gov/19762550/",
+    "basis": "CHF, hypertension, age 75 or older, diabetes, and prior stroke; age bands are mutually exclusive.",
+    "input": { "congestiveHeartFailure": true, "hypertension": true, "ageYears": 78, "diabetes": true, "strokeTiaThromboembolism": true, "vascularDisease": false, "sexFemale": false },
+    "expected": { "score": 7, "band": "high" }
+  },
+  {
+    "id": "has-bled",
+    "source": "https://pubmed.ncbi.nlm.nih.gov/20299623/",
+    "basis": "Six stated HAS-BLED risk criteria are present.",
+    "input": { "uncontrolledHypertension": true, "abnormalRenalFunction": true, "abnormalLiverFunction": false, "strokeHistory": true, "bleedingHistoryOrPredisposition": true, "labileInr": false, "ageYears": 80, "antiplateletOrNsaid": true, "alcoholExcess": false },
+    "expected": { "score": 6, "band": "high" }
+  },
+  {
+    "id": "wells-pe",
+    "source": "https://pubmed.ncbi.nlm.nih.gov/10744147/",
+    "basis": "DVT signs, PE as leading diagnosis, and tachycardia produce 3 + 3 + 1.5.",
+    "input": { "clinicalSignsOfDvt": true, "peIsLeadingDiagnosis": true, "heartRate": 110, "immobilisationOrSurgery": false, "previousPeOrDvt": false, "haemoptysis": false, "malignancy": false },
+    "expected": { "score": 7.5, "band": "high" }
+  },
+  {
+    "id": "heart",
+    "source": "https://pubmed.ncbi.nlm.nih.gov/18665203/",
+    "basis": "The highest grade in all five HEART dimensions produces ten points.",
+    "input": { "history": "highly-suspicious", "ecg": "significant-st-deviation", "ageYears": 70, "riskFactors": "three-or-more-or-atherosclerotic-disease", "troponin": "above-three-times-normal" },
+    "expected": { "score": 10, "band": "high" }
+  },
+  {
+    "id": "meld-na",
+    "source": "https://optn.transplant.hrsa.gov/media/1575/policynotice_20151101.pdf",
+    "basis": "Values below the laboratory floor and sodium above its cap produce the formula minimum.",
+    "input": { "creatinineMgDl": 0.8, "bilirubinMgDl": 0.9, "inr": 0.9, "sodiumMeqL": 140, "dialysisTwiceInPastWeek": false },
+    "expected": { "score": 6, "band": "low" }
+  },
+  {
+    "id": "ciwa-ar",
+    "source": "https://pubmed.ncbi.nlm.nih.gov/2597811/",
+    "basis": "A stated zero for every item is a complete assessment, not missing data.",
+    "input": { "nauseaVomiting": 0, "tremor": 0, "paroxysmalSweats": 0, "anxiety": 0, "agitation": 0, "tactileDisturbances": 0, "auditoryDisturbances": 0, "visualDisturbances": 0, "headache": 0, "orientation": 0 },
+    "expected": { "score": 0, "band": "minimal" }
+  },
+  {
+    "id": "charlson",
+    "source": "https://pubmed.ncbi.nlm.nih.gov/3558716/",
+    "basis": "All nineteen conditions explicitly absent and age 40 produce zero.",
+    "input": { "myocardialInfarction": false, "congestiveHeartFailure": false, "peripheralVascularDisease": false, "cerebrovascularDisease": false, "dementia": false, "chronicPulmonaryDisease": false, "connectiveTissueDisease": false, "pepticUlcerDisease": false, "mildLiverDisease": false, "diabetesWithoutComplications": false, "hemiplegia": false, "moderateOrSevereRenalDisease": false, "diabetesWithEndOrganDamage": false, "tumourWithinFiveYears": false, "leukaemia": false, "lymphoma": false, "moderateOrSevereLiverDisease": false, "metastaticSolidTumour": false, "aids": false, "ageYears": 40 },
+    "expected": { "score": 0, "band": "none" }
+  },
+  {
+    "id": "lace",
+    "source": "https://pubmed.ncbi.nlm.nih.gov/20194559/",
+    "basis": "Maximum published bands for length of stay, acuity, Charlson score, and ED use produce nineteen.",
+    "input": { "lengthOfStayDays": 15, "acuteEmergentAdmission": true, "charlsonScore": 4, "edVisitsPastSixMonths": 5 },
+    "expected": { "score": 19, "band": "high" }
+  },
+  {
+    "id": "news2",
+    "source": "https://www.rcp.ac.uk/resources/national-early-warning-score-news-2/",
+    "basis": "Normal Scale 1 observations on room air produce zero.",
+    "input": { "respiratoryRate": 16, "oxygenSaturation": 98, "onSupplementalOxygen": false, "systolicBp": 118, "heartRate": 72, "alert": true, "temperatureC": 36.8 },
+    "expected": { "score": 0, "band": "none" }
+  }
+]

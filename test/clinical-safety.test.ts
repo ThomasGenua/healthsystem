@@ -38,3 +38,44 @@ test("every hazard-log citation points at a test that still exists", () => {
   }
   assert.deepEqual(missing, [], missing.join("\n"));
 });
+
+test("every hazard has its own identifier", () => {
+  // A hazard id is how a control, a test and a review minute refer to one
+  // hazard rather than another. Two rows sharing an id breaks that: a control
+  // traced to "H-108" is traced to whichever of them the reader happens to
+  // find first, and the safety case stops being able to say which hazard is
+  // mitigated.
+  //
+  // It happens the ordinary way — two branches numbering from the same last
+  // row and both merging — so it is not a mistake anybody makes by being
+  // careless. Nothing here was checking for it, and a duplicate would have
+  // reached `main` looking exactly like a correct log.
+  const text = readFileSync(CASE, "utf8");
+  const ids = [...text.matchAll(/^\| (H-\d+) \|/gm)].map((m) => m[1]);
+  assert.ok(ids.length >= 100, `expected the log to carry many hazards, got ${ids.length}`);
+
+  const seen = new Set<string>();
+  const duplicated = new Set<string>();
+  for (const id of ids) {
+    if (seen.has(id)) duplicated.add(id);
+    seen.add(id);
+  }
+  assert.deepEqual(
+    [...duplicated].sort(),
+    [],
+    "two hazards share an identifier; renumber the later branch rather than merging both"
+  );
+});
+
+test("the hazard numbering has no gaps", () => {
+  // A gap is a hazard that was raised and then removed, which is a decision
+  // somebody should have to make deliberately. Left unnoticed it also reads as
+  // a numbering that can be reused, which is how the duplicate above happens.
+  const text = readFileSync(CASE, "utf8");
+  const numbers = [...text.matchAll(/^\| H-(\d+) \|/gm)].map((m) => Number(m[1])).sort((a, b) => a - b);
+  const gaps: string[] = [];
+  for (let i = 1; i < numbers.length; i++) {
+    if (numbers[i] !== numbers[i - 1] + 1) gaps.push(`H-${numbers[i - 1]} -> H-${numbers[i]}`);
+  }
+  assert.deepEqual(gaps, [], "the hazard log skips a number");
+});
