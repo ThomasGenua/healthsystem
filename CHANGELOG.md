@@ -251,6 +251,36 @@ always forward-compatible and run automatically on open — see
 
 ## Unreleased
 
+**Added**
+
+- **The specimen travels with the order, when there is one** (`SpecimenDetail`,
+  SPM on the outbound message). Type, collection time, tube identifier and
+  source site.
+
+  The design decision is the absence. Most orders are placed before anybody
+  draws anything — the clinician orders now, phlebotomy happens later — so an
+  order at that moment has no specimen, and **no specimen means no segment**.
+  The accommodating implementation invents one, filling the collection time
+  with the order time or with now because it makes the message look complete.
+
+  That invention is dangerous in a specific way: a timed test is defined by
+  when it was drawn. A vancomycin trough drawn an hour after the dose is not a
+  trough; a cortisol at four in the afternoon is not a morning cortisol. The
+  value is interpreted against the time, so a stamped-wrong time produces a
+  valid-looking result for a test that was never performed as ordered, and
+  nothing downstream can recover the difference from the tube.
+
+  So a collection time is never defaulted; a specimen asserted without a type
+  or a time refuses the message; a time that is not a time refuses it; and a
+  time later than the moment of sending refuses it, because that is a typing
+  error and forwarding it makes it the time the result is read against. A time
+  *earlier* than the order is accepted — drawing first and entering the order
+  afterwards is ordinary practice. Optional fields stay absent rather than
+  empty: a tube with no barcode is real, and an empty field asserting "no
+  source site" is a different claim from not saying.
+
+  Hazards H-151 and H-152.
+
 **Fixed**
 
 - **The worklist called an order nobody sent a laboratory being slow** (H-148).
