@@ -45,6 +45,7 @@
  * hand-supplied until that exists.
  */
 import type { ClinicalRecord } from "./record.ts";
+import { readRecorded } from "./measurement.ts";
 import type { VitalKind, Vitals, VitalView } from "./vitals.ts";
 import { curb65, news2, type ScoreResult } from "./scores.ts";
 
@@ -55,6 +56,14 @@ export interface ChartSource {
   takenAt: string;
   ageHours: number;
   recordId: string;
+  /**
+   * The unit the chart recorded, or null where it recorded none. Null is not
+   * a claim that the value was in the right unit — it is the honest statement
+   * that the record does not say, which a reader should be able to see.
+   */
+  recordedUnit: string | null;
+  /** Set only where the reading was converted onto the instrument's scale. */
+  conversion?: { from: string; to: string; rule: string };
 }
 
 export interface UnavailableInput {
@@ -121,7 +130,22 @@ function pull(
       },
     };
   }
-  return { source: { input, value, takenAt: v.takenAt, ageHours: age, recordId: v.recordId } };
+  // The unit is resolved here, at the edge, and never inside the scorer: a
+  // reading on a scale the instrument is not written in is as unusable as a
+  // stale one, and is reported the same way rather than being scored.
+  const reading = readRecorded(input, value, v.unit);
+  if (!reading.usable) return { unavailable: { input, reason: reading.reason } };
+  return {
+    source: {
+      input,
+      value: reading.value,
+      takenAt: v.takenAt,
+      ageHours: age,
+      recordId: v.recordId,
+      recordedUnit: reading.recordedUnit,
+      ...(reading.conversion ? { conversion: reading.conversion } : {}),
+    },
+  };
 }
 
 function assemble(

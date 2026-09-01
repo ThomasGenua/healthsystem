@@ -11,6 +11,43 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **A measurement contract, so a score knows what scale its numbers are on.**
+  `POST /api/clinical/score/v2` takes a value together with its UCUM unit —
+  `{ "value": 98.6, "unit": "[degF]" }` — instead of a bare number whose unit
+  was spelled into the parameter name (`temperatureC`) and restated as prose
+  in the catalogue, with nothing comparing either to what the caller sent.
+  Equivalent labels are accepted unchanged: `Cel`, `°C` and `degC` are one
+  scale, and refusing `mmHg` where UCUM writes `mm[Hg]` would be pedantry with
+  a clinical cost. A real conversion — Fahrenheit to Celsius, hours to days,
+  µmol/L to mmol/L — happens once at the ingestion boundary, never inside a
+  scorer, and is returned with the score so the arithmetic can be checked
+  rather than trusted. A mismatch needing a fact about the substance rather
+  than the units is refused, not guessed: bilirubin in µmol/L against a mg/dL
+  threshold needs a molar mass, and BUN in mg/dL is not urea in mmol/L.
+  v1 is unchanged and still supported. The chart is the other ingestion
+  boundary and now has the same check: a vital recorded in a convertible unit
+  is converted and shows its working, one in a unit that cannot be read is
+  reported unavailable like a stale value, and one recorded before this
+  contract — carrying no unit at all — is used, with the evidence saying the
+  record stated no scale rather than implying one was checked. Hazards H-130
+  and H-131, and H-109's control is now enforced rather than declared.
+  980 tests.
+
+**Fixed**
+
+- **A blood pressure reported no unit, however carefully it was recorded.**
+  `Vitals.parse` read the unit off the top-level `valueQuantity`, which a
+  component-valued observation does not have, so the one vital always written
+  with a unit was the one vital whose unit was invisible. It is now read from
+  the components.
+
+- **A versioned clinical route was exempt from the audit-row guarantee.** The
+  test that discovers routes by reading `admin.ts` matched
+  `[a-z/-]+`, so `/api/clinical/score/v2` did not match at all — and the
+  scanner went on reporting a healthy 139 routes while covering 139 of 140.
+  The character class now admits digits. This is the second time that class
+  has been too narrow; the first was the "/" that exempted nested paths.
+
 - **A domain for every score input, distinct from the instrument's
   thresholds.** A supplied value that no measurement could have produced —
   a negative age or length of stay, a saturation outside 0-100, a CIWA-Ar
