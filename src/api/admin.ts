@@ -4465,6 +4465,22 @@ async function route(
     });
   }
 
+  // SMART App Launch discovery. Northstar is a resource server: it validates
+  // tokens, it does not issue them, so this advertises the site's own
+  // authorization server and the capabilities this end actually enforces.
+  // Nothing is listed here that is not implemented — a discovery document
+  // claiming a capability the server does not have is how a client ends up
+  // trusting a check that never runs.
+  if (path === "/.well-known/smart-configuration" && method === "GET") {
+    const smart = gate.smartConfiguration();
+    if (!smart) {
+      return send(res, 404, {
+        error: "this deployment is not configured for OAuth, so it has no SMART configuration to publish",
+      });
+    }
+    res.setHeader("cache-control", "public, max-age=300");
+    return send(res, 200, smart);
+  }
   if (path === "/fhir/metadata" && method === "GET") {
     return send(res, 200, fhir.capability(baseUrl(req), VERSION));
   }

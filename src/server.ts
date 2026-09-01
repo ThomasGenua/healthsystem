@@ -85,9 +85,22 @@ function buildAuthGate(engine: Engine): AuthGate {
   if (modes.has("oauth")) {
     const issuer = readEnv("OIDC_ISSUER");
     if (!issuer) throw new Error("NORTHSTAR_AUTH_MODE includes oauth but NORTHSTAR_OIDC_ISSUER is not set");
+    // Refusing to boot is the point. This was optional, and an unset audience
+    // meant every token the issuer had ever signed was accepted — so the
+    // deployments that never set it were the ones running without the check.
+    // A site that cannot start is a site somebody fixes; one that starts and
+    // accepts another application's tokens is not.
+    const audience = readEnv("OIDC_AUDIENCE");
+    if (!audience) {
+      throw new Error(
+        "NORTHSTAR_AUTH_MODE includes oauth but NORTHSTAR_OIDC_AUDIENCE is not set. Without it every token " +
+          "this issuer has signed is accepted, including tokens minted for other applications in the same " +
+          "directory. Set it to the identifier this deployment is registered under at the issuer."
+      );
+    }
     gate.jwt = new JwtVerifier({
       issuer,
-      audience: readEnv("OIDC_AUDIENCE"),
+      audience,
       jwksUri: readEnv("OIDC_JWKS"),
     });
     console.log(`oauth enabled: issuer ${issuer}`);

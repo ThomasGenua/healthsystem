@@ -82,13 +82,24 @@ to activate it in production. See `43` below.
   `http://hl7.org/fhir/smart-app-launch/` `[unresolved]`. PKCE S256 per
   RFC 7636 `[unverified]`; `private_key_jwt` per RFC 7523 `[unverified]`;
   DPoP per RFC 9449 `[unverified]`.
-- **Status** — `NOT_IMPLEMENTED`
-- **Evidence** — None yet.
-- **External validation required** — SMART conformance suite run by a party
-  that is not this project. Nothing here can establish it.
-- **Risk and rollback** — Medium. Touches authentication. Every new flow ships
-  behind a default-off flag with the existing paths untouched, so rollback is
-  clearing the flag.
+- **Status** — `SELF_TESTED` for token validation and discovery;
+  `NOT_IMPLEMENTED` for `private_key_jwt`, DPoP/mTLS sender-constraining, and
+  mandatory launch-context binding.
+- **Evidence** — `test/smart-oauth.test.ts`: audience enforcement including
+  a token minted for another application at the same issuer; key rotation with
+  and without overlap; unknown `kid` without letting a caller hammer the
+  provider; issuer outage failing closed rather than serving on a stale cache;
+  `alg: none` and algorithm confusion; tampered payloads; issuer mismatch;
+  expiry and not-before within the configured skew; scope narrowing, with
+  `patient/` kept a separate trust boundary; and a refusal that echoes no part
+  of the token.
+- **External validation required** — A SMART conformance suite run by a party
+  that is not this project. Nothing here can establish it, and the status
+  above must not move on the strength of these tests.
+- **Risk and rollback** — Requiring the audience is a breaking change made
+  deliberately: a site that previously ran without one will not boot until
+  `NORTHSTAR_OIDC_AUDIENCE` is set. Rollback is setting the variable, not
+  reverting the check. Discovery is additive and read-only.
 
 ## 45. International Patient Access vertical slice
 

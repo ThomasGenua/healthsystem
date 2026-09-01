@@ -9,7 +9,39 @@ always forward-compatible and run automatically on open — see
 
 ## Unreleased
 
+**Security**
+
+- **`NORTHSTAR_OIDC_AUDIENCE` is now required when OAuth is enabled, and a
+  site without it will not boot.** It was optional, and an absent audience
+  skipped the check entirely: every token the configured issuer had ever
+  signed was accepted, including tokens minted for a different application in
+  the same directory. An identity provider serves many resource servers, so a
+  token for the expenses system, signed by the same Entra or Keycloak tenant,
+  was a valid Northstar token — and the deployments that never set the
+  variable were exactly the ones running without the check.
+
+  **Breaking, deliberately.** A site that cannot start is a site somebody
+  fixes; one that starts and honours another application's tokens is not. Set
+  `NORTHSTAR_OIDC_AUDIENCE` to the identifier this deployment is registered
+  under at the issuer. A token carrying no `aud` claim at all is now refused
+  for the same reason as one naming somebody else. Hazard H-152.
+
 **Added**
+
+- **`.well-known/smart-configuration`**, generated from what this deployment
+  is configured with. Northstar is a resource server — it validates tokens and
+  does not issue them — so the document advertises the site's own
+  authorization server, and lists only capabilities this end actually
+  enforces. A discovery document claiming a capability the server does not
+  have is how a client comes to trust a check that never runs.
+
+- **SMART launch context is surfaced and type-checked.** `patient`,
+  `encounter` and `fhirUser` are read from the token and exposed on the
+  verified result, with a structured value dropped rather than carried around
+  as though it were an identifier. It is not yet required: a patient token is
+  bound to a chart here through an explicit authority grant, which is the
+  stronger control, and demanding a launch claim as well would refuse tokens
+  that are already correctly constrained.
 
 - **A registry for every standard this deployment claims to conform to.**
   The conformance packs under `conformance/` are hand-written and say nothing
