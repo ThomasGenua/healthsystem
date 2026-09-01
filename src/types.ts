@@ -1,4 +1,4 @@
-/** Portage core types. */
+/** Northstar core types. */
 
 export type ContentType = "x-application/hl7-v2+er7" | "application/fhir+json" | "application/json" | "text/plain";
 
@@ -36,7 +36,7 @@ export interface FhirSourceConfig {
 
 /**
  * Poll a directory for dropped files. The practical northern pattern: the OS
- * terminates SFTP (openssh) into a landing directory, Portage picks files up,
+ * terminates SFTP (openssh) into a landing directory, Northstar picks files up,
  * ingests each as one message, and archives or deletes the original.
  */
 export interface FiledropSourceConfig {

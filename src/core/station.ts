@@ -48,6 +48,7 @@ import { restore } from "./restore.ts";
 import { verifyBackup } from "./backup.ts";
 import { encryptionAtRest } from "./atrest.ts";
 import { Refusal } from "./refusal.ts";
+import { BACKUP_STAMP_RE, readEnv } from "./naming.ts";
 
 /** How long a station may serve from one fill, before it refuses and purges. */
 export const DEFAULT_BUDGET_HOURS = 72;
@@ -79,7 +80,7 @@ export type StationState =
 /**
  * When the data in a snapshot was true.
  *
- * `takeBackup` names files `portage-<ISO with : and . replaced by ->.db`, so
+ * `takeBackup` names files `northstar-<ISO with : and . replaced by ->.db`, so
  * the stamp is recoverable from the name. A file that does not carry one falls
  * back to its modification time — later than the truth by however long the
  * copy took, which errs toward reporting the chart as *fresher* than it is.
@@ -88,7 +89,7 @@ export type StationState =
  */
 export function snapshotTakenAt(path: string): { takenAt: string; fromName: boolean } {
   const name = basename(path);
-  const m = /^portage-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})\.db$/.exec(name);
+  const m = BACKUP_STAMP_RE.exec(name);
   if (m) {
     const iso = `${m[1]}T${m[2]}:${m[3]}:${m[4]}Z`;
     const parsed = Date.parse(iso);
@@ -104,7 +105,7 @@ export interface FillOptions {
   cachePath: string;
   /** Identifies this station on every audit row it writes. */
   stationId: string;
-  /** Overrides PORTAGE_STATION_BUDGET_HOURS and the 72-hour default. */
+  /** Overrides NORTHSTAR_STATION_BUDGET_HOURS and the 72-hour default. */
   budgetHours?: number;
   /** Skip the at-rest check. For tests and for an operator who has asserted it. */
   allowUnencrypted?: boolean;
@@ -131,12 +132,12 @@ export interface FillResult {
  */
 export function resolveBudgetHours(explicit: number | undefined, env: NodeJS.ProcessEnv): number {
   if (explicit !== undefined) return explicit;
-  const raw = env.PORTAGE_STATION_BUDGET_HOURS;
+  const raw = readEnv("STATION_BUDGET_HOURS", env);
   if (raw === undefined || raw === "") return DEFAULT_BUDGET_HOURS;
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new Refusal(
-      `PORTAGE_STATION_BUDGET_HOURS is set to "${raw}", which is not a positive number of hours; ` +
+      `NORTHSTAR_STATION_BUDGET_HOURS is set to "${raw}", which is not a positive number of hours; ` +
         "refusing to fill rather than quietly serving under the default budget",
       400
     );

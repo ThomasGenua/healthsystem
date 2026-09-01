@@ -53,7 +53,7 @@ async function fakeIdp(): Promise<{
       const header = b64({ alg: "RS256", kid: "patient-key", typ: "JWT" });
       const payload = b64({
         iss: issuer,
-        aud: "portage-patient",
+        aud: "northstar-patient",
         sub: subject,
         scope,
         exp: Math.floor(Date.now() / 1000) + 300,
@@ -157,7 +157,7 @@ async function boot() {
     .run(inDays(-1), "default", "expired-parent");
 
   const gate = new AuthGate({
-    jwt: new JwtVerifier({ issuer: idp.issuer, audience: "portage-patient" }),
+    jwt: new JwtVerifier({ issuer: idp.issuer, audience: "northstar-patient" }),
   });
   const api = await startApi(engine, 0, "127.0.0.1", { auth: gate });
   const base = `http://127.0.0.1:${api.port}`;
@@ -285,11 +285,22 @@ test("the patient summary is patient-safe, not the clinician workspace", async (
       ownerId: "dr-tetso",
       by: GP,
     });
+    s.tenant.documents.receive({
+      patientId: P,
+      title: "Cardiology letter",
+      source: "patient-brought",
+      receivedAt: "2026-08-20T10:00:00Z",
+      contentType: "text/plain",
+      data: "SECRET-LETTER-BODY-SHOULD-NOT-APPEAR",
+      by: { authorId: "registration", authorKind: "practitioner" },
+    });
     const res = await s.request("patient-marie", `/patient/summary?patient=${P}`);
     assert.equal(res.status, 200);
     const body = JSON.stringify(await res.json());
     assert.ok(body.includes("Beaulieu"));
     assert.ok(body.includes("Metformin"));
+    assert.ok(body.includes("Cardiology letter"));
+    assert.ok(!body.includes("SECRET-LETTER-BODY-SHOULD-NOT-APPEAR"), "a patient summary lists metadata, not the file");
     assert.ok(!body.includes("Adenocarcinoma"), "held and unacknowledged result values are not in the summary");
     assert.ok(!body.includes("INTERNAL:"), "internal tasks are not a patient chart section");
   } finally {

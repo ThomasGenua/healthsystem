@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Portage — patient access</title>
+<title>Northstar — patient access</title>
 <link rel="icon" href="data:,">
 <style>
 :root{--bg:#f4f1ea;--panel:#fff;--line:#d7d0c4;--text:#1f1b16;--dim:#5c564c;--acc:#1d4f8c;--warn:#8a5a12;font-size:18px}
@@ -28,7 +28,7 @@ footer{max-width:42rem;margin:0 auto;padding:12px 20px 28px;color:var(--dim);fon
 <body>
 <a class="skip" href="#main">Skip to main content / Aller au contenu principal</a>
 <header>
-  <h1>Portage</h1>
+  <h1>Northstar</h1>
   <span class="sub" data-en="Patient access shell" data-fr="Espace d’accès patient">Patient access shell</span>
   <div class="lang">
     <label for="lang">Language / Langue</label>
@@ -41,7 +41,7 @@ footer{max-width:42rem;margin:0 auto;padding:12px 20px 28px;color:var(--dim);fon
 <main id="main" tabindex="-1">
   <div class="banner" role="status">
     <h2 data-en="This is not a certified patient portal" data-fr="Ceci n’est pas un portail patient certifié">This is not a certified patient portal</h2>
-    <p data-en="There is no identity-proofing, no notification that a result or message reached you, and no WCAG or AODA claim. A chart is reached only through the signed /patient API with a live grant." data-fr="Il n’y a ni preuve d’identité, ni avis qu’un résultat ou un message vous a atteint, ni revendication WCAG ou AODA. Le dossier n’est accessible que par l’API signée /patient avec une autorisation en vigueur.">There is no identity-proofing, no notification that a result or message reached you, and no WCAG or AODA claim. A chart is reached only through the signed /patient API with a live grant.</p>
+    <p data-en="There is no identity-proofing, no ONE ID, and no WCAG or AODA claim. This page does not enrol anyone. A named clerk at the clinic writes how they checked identity before a grant is issued. Dispatching a notice is not the same as knowing you were told. A chart is reached only through the signed /patient API with a live grant." data-fr="Il n’y a ni preuve d’identité, ni ONE ID, ni revendication WCAG ou AODA. Cette page n’inscrit personne. Un commis nommé à la clinique décrit par écrit comment il a vérifié l’identité avant qu’une autorisation soit délivrée. Expédier un avis n’est pas savoir que vous en avez été informé. Le dossier n’est accessible que par l’API signée /patient avec une autorisation en vigueur.">There is no identity-proofing, no ONE ID, and no WCAG or AODA claim. This page does not enrol anyone. A named clerk at the clinic writes how they checked identity before a grant is issued. Dispatching a notice is not the same as knowing you were told. A chart is reached only through the signed /patient API with a live grant.</p>
   </div>
   <p data-en="To see your record you sign in with the identity your clinic issued, then call the patient API. This page is chrome: language, landmarks, and the limits stated above." data-fr="Pour voir votre dossier, vous vous connectez avec l’identité délivrée par la clinique, puis vous appelez l’API patient. Cette page n’est que l’enveloppe : la langue, les points de repère, et les limites ci-dessus.">To see your record you sign in with the identity your clinic issued, then call the patient API. This page is chrome: language, landmarks, and the limits stated above.</p>
   <p id="status" aria-live="polite"></p>
@@ -52,19 +52,19 @@ footer{max-width:42rem;margin:0 auto;padding:12px 20px 28px;color:var(--dim);fon
 <script>
 const copy={
   en:{
-    title:"Portage — patient access",
+    title:"Northstar — patient access",
     sub:"Patient access shell",
     heading:"This is not a certified patient portal",
-    banner:"There is no identity-proofing, no notification that a result or message reached you, and no WCAG or AODA claim. A chart is reached only through the signed /patient API with a live grant.",
+    banner:"There is no identity-proofing, no ONE ID, and no WCAG or AODA claim. This page does not enrol anyone. A named clerk at the clinic writes how they checked identity before a grant is issued. Dispatching a notice is not the same as knowing you were told. A chart is reached only through the signed /patient API with a live grant.",
     body:"To see your record you sign in with the identity your clinic issued, then call the patient API. This page is chrome: language, landmarks, and the limits stated above.",
     live:"Language set to English.",
     foot:"Chart access is /patient/* with OAuth. This shell does not load a chart."
   },
   fr:{
-    title:"Portage — accès patient",
+    title:"Northstar — accès patient",
     sub:"Espace d’accès patient",
     heading:"Ceci n’est pas un portail patient certifié",
-    banner:"Il n’y a ni preuve d’identité, ni avis qu’un résultat ou un message vous a atteint, ni revendication WCAG ou AODA. Le dossier n’est accessible que par l’API signée /patient avec une autorisation en vigueur.",
+    banner:"Il n’y a ni preuve d’identité, ni ONE ID, ni revendication WCAG ou AODA. Cette page n’inscrit personne. Un commis nommé à la clinique décrit par écrit comment il a vérifié l’identité avant qu’une autorisation soit délivrée. Expédier un avis n’est pas savoir que vous en avez été informé. Le dossier n’est accessible que par l’API signée /patient avec une autorisation en vigueur.",
     body:"Pour voir votre dossier, vous vous connectez avec l’identité délivrée par la clinique, puis vous appelez l’API patient. Cette page n’est que l’enveloppe : la langue, les points de repère, et les limites ci-dessus.",
     live:"Langue réglée sur le français.",
     foot:"L’accès au dossier passe par /patient/* avec OAuth. Cette page ne charge pas de dossier."

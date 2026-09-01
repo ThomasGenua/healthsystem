@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Portage</title>
+<title>Northstar</title>
 <link rel="icon" href="data:,">
 <style>
 :root{--bg:#0e1116;--panel:#161b22;--line:#2b3240;--text:#d7dde6;--dim:#8b95a5;--acc:#4ea1ff;--ok:#3fb950;--warn:#d29922;--bad:#f85149;font-size:15px}
@@ -88,7 +88,7 @@ svg text{fill:var(--dim);font-size:10px}
 </style>
 </head>
 <body>
-<header><h1>PORTAGE</h1><span class="sub">health integration engine</span>
+<header><h1>NORTHSTAR</h1><span class="sub">health integration engine</span>
   <span class="sub" style="margin-left:auto">api key</span>
   <input id="apikey" type="password" placeholder="ptg_… (blank if auth is off)" title="Stored in this browser only and sent with every request">
 </header>
@@ -104,8 +104,19 @@ const $=(s,el=document)=>el.querySelector(s);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 // The key lives in this browser and is attached to every request. Nothing is
 // sent anywhere else, and the server never returns a stored key.
-const KEY="portage.apikey";
-const apiKey=()=>localStorage.getItem(KEY)||"";
+// Browser storage keys moved with the rename, so each read falls back to the
+// pre-rename key and writes the value forward. Renaming them outright would
+// not fail — it would silently log every clinician out, drop the stored API
+// key, and lose the chart they had open, on the first load after an upgrade.
+const store=(s,k)=>{
+  const cur=s.getItem("northstar."+k);
+  if(cur!==null)return cur;
+  const old=s.getItem("portage."+k);
+  if(old!==null){try{s.setItem("northstar."+k,old);s.removeItem("portage."+k);}catch{}}
+  return old;
+};
+const KEY="northstar.apikey";
+const apiKey=()=>store(localStorage,"apikey")||"";
 const j=async(url,opts={})=>{
   // `allow403` is for the caller that renders a 403 itself. A 403 is two
   // different sentences — "this key lacks the scope" and "a patient
@@ -203,7 +214,7 @@ const body=e=>{try{return JSON.parse(e.content)}catch{return{}}};
 const due=(label,v)=>v?`<span class="none">${esc(label)} ${when(v)}</span>`:"";
 
 async function chartTab(m){
-  const q=sessionStorage.getItem("portage.patient")||"";
+  const q=store(sessionStorage,"patient")||"";
   m.innerHTML=`<div class="bar">
     <input id="pt" placeholder="patient identifier, e.g. NT123456" style="width:260px" value="${esc(q)}">
     <button class="act" onclick="loadChart()">open chart</button>
@@ -228,13 +239,13 @@ window.findPatient=async()=>{
   }catch(e){out.innerHTML=`<p class="err">${esc(e.message||e)}</p>`}
 };
 
-window.openChart=id=>{sessionStorage.setItem("portage.patient",id);$("#pt").value=id;loadChart()};
+window.openChart=id=>{sessionStorage.setItem("northstar.patient",id);$("#pt").value=id;loadChart()};
 
 window.loadChart=async()=>{
   const id=$("#pt").value.trim();
   const out=$("#chart");
   if(!id){out.innerHTML="";return}
-  sessionStorage.setItem("portage.patient",id);
+  sessionStorage.setItem("northstar.patient",id);
   out.innerHTML=`<p class="none">loading…</p>`;
   let c;
   try{
@@ -270,7 +281,10 @@ window.loadChart=async()=>{
     <div class="cards"><div class="card"><div class="n">${esc(p.family||"—")}, ${esc(p.given||"")}</div><div class="l">${esc(c.patientId)}${p.birthDate?" · born "+esc(p.birthDate):""}${p.preferredLanguage?" · "+esc(p.preferredLanguage):""}${p.phone?" · "+esc(p.phone):""}</div></div>
       <div class="card"><div class="n">${statusTag}</div><div class="l">allergy status</div></div>
       <div class="card"><div class="n">${c.immunizationStatus==="never-asked"?tag("never asked","bad"):tag(esc(String(c.immunizationStatus||"")),"ok")}</div><div class="l">immunization history</div></div>
-      <div class="card"><div class="n">${c.vitalStatus==="never-measured"?tag("never measured","bad"):tag(esc(String(c.vitalStatus||"")),"ok")}</div><div class="l">vital signs</div></div></div>
+      <div class="card"><div class="n">${c.vitalStatus==="never-measured"?tag("never measured","bad"):tag(esc(String(c.vitalStatus||"")),"ok")}</div><div class="l">vital signs</div></div>
+      <div class="card"><div class="n">${c.procedureStatus==="never-recorded"?tag("never recorded","bad"):tag(esc(String(c.procedureStatus||"")),"ok")}</div><div class="l">procedures</div></div>
+      <div class="card"><div class="n">${c.carePlanStatus==="never-planned"?tag("never planned","bad"):tag(esc(String(c.carePlanStatus||"")),"ok")}</div><div class="l">care plans</div></div>
+      <div class="card"><div class="n">${c.documentStatus==="never-received"?tag("never received","bad"):tag(esc(String(c.documentStatus||"")),"ok")}</div><div class="l">patient documents</div></div></div>
     ${c.stale?`<div class="banner bad"><b>This chart is a cache, as of ${esc(String(c.stale.ageHours))} hours ago.</b>
       <p>${esc(c.stale.note)} Ask the patient again before acting on an empty panel — especially the allergy list.</p></div>`:""}
     ${c.linked?`<div class="banner"><b>Assembled across linked charts: ${c.linked.members.map(m=>esc(m)).join(", ")}.</b>
@@ -285,6 +299,9 @@ window.loadChart=async()=>{
         ${panel("Problems",c.problems,x=>{const b=body(x);return `<li>${esc((b.code&&(b.code.text||(b.code.coding&&b.code.coding[0]&&b.code.coding[0].display)))||b.resourceType||x.entry_type)}${b.clinicalStatus?" "+tag(esc(String(b.clinicalStatus.text||b.clinicalStatus)),"dim"):""}</li>`})}
         ${panel("Immunizations",c.immunizations,x=>`<li>${esc(x.vaccine)} ${stTag(x.status)} <span class="none">${esc(x.occurrenceAt||"")}</span></li>`)}
         ${panel("Vitals",c.vitals,x=>`<li>${esc(x.kind)} ${x.kind==="blood-pressure"?`<b>${esc(String(x.systolic))}/${esc(String(x.diastolic))}</b>`:`<b>${esc(String(x.value))}</b>`} <span class="none">${esc(x.unit||"")} ${when(x.takenAt)}</span></li>`)}
+        ${panel("Procedures",c.procedures,x=>`<li>${esc(x.display)} ${stTag(x.status)} <span class="none">${esc(x.performedAt||"")} ${esc(x.reason||"")}</span></li>`)}
+        ${panel("Care plans",c.carePlans,x=>`<li>${esc(x.title)} ${stTag(x.status)} <span class="none">review ${esc(x.reviewBy||"")} ${esc((x.goals&&x.goals[0])||"")}</span></li>`)}
+        ${panel("Patient-supplied documents",c.documents,x=>`<li>${esc(x.title)} ${stTag(x.source)} <span class="none">${esc(x.contentType||"")} ${esc(x.receivedAt||"")}${x.hasContent?" · on file":" · recorded, not scanned"}</span></li>`)}
         ${panel("Care team",c.careTeam,x=>`<li>${esc(x.role)} — ${esc(x.practitioner_id)}${x.active_to?" "+tag("ended","dim"):""}</li>`)}
         ${panel("Coverage",c.coverage,x=>`<li>${esc(x.plan)} ${stTag(x.eligibility)} <span class="none">${esc(x.identifier_value||"")}</span></li>`)}
         ${panel("Open messages",c.openThreads,x=>`<li>${esc(x.subject)} ${stTag(x.status)} <span class="none">${esc(x.owner_id||"unowned")}</span></li>`)}
@@ -312,7 +329,7 @@ window.declareGlass=async(patient)=>{
 };
 
 async function worklistTab(m){
-  const who=localStorage.getItem("portage.clinician")||"";
+  const who=store(localStorage,"clinician")||"";
   m.innerHTML=`<div class="bar"><input id="cl" placeholder="clinician id, e.g. dr-tetso" style="width:220px" value="${esc(who)}">
     <button class="act" onclick="loadWorklist()">open worklist</button></div><div id="wl"></div>`;
   if(who)await loadWorklist();
@@ -322,7 +339,7 @@ window.loadWorklist=async()=>{
   const who=$("#cl").value.trim();
   const out=$("#wl");
   if(!who){out.innerHTML="";return}
-  localStorage.setItem("portage.clinician",who);
+  localStorage.setItem("northstar.clinician",who);
   try{
     const {data:w}=await j("/api/clinical/worklist?clinician="+encodeURIComponent(who));
     const {data:res}=await j("/api/clinical/results");
@@ -351,6 +368,9 @@ window.loadWorklist=async()=>{
       ${panel("Referrals that have gone quiet",w.stalledReferrals,r=>`<li>${esc(r.to_service)} for
         <a href="#" onclick="openChart('${esc(r.patient_id)}');go('Chart');return false">${esc(r.patient_id)}</a>
         ${stTag(r.status)} ${due("due",r.expected_by)}</li>`)}
+      ${panel("Care plans past their review date",w.overdueCarePlans,x=>`<li>${esc(x.title)} for
+        <a href="#" onclick="openChart('${esc(x.patientId)}');go('Chart');return false">${esc(x.patientId)}</a>
+        ${stTag(x.status)} ${due("review by",x.reviewBy)}</li>`)}
       ${panel("Orders with no result back",w.ordersAwaitingResult,o=>`<li>${esc(o.display)} for
         <a href="#" onclick="openChart('${esc(o.patient_id)}');go('Chart');return false">${esc(o.patient_id)}</a>
         ${due("expected",o.expected_by)}</li>`)}
@@ -426,7 +446,11 @@ window.reviewed=async(id)=>{
 async function privacyTab(m){
   m.innerHTML=`<p class="none">loading…</p>`;
   try{
-    const {data}=await j("/api/clinical/privacy-inbox");
+    const [{data},{data:enrol},{data:notices}]=await Promise.all([
+      j("/api/clinical/privacy-inbox"),
+      j("/api/clinical/enrolments?status=pending"),
+      j("/api/clinical/patient-notices"),
+    ]);
     const list=(rows,empty,render)=>rows&&rows.length?`<ul>${rows.map(render).join("")}</ul>`:`<p class="none">${esc(empty)}</p>`;
     const glass=data.unreviewedBreakGlass||[];
     const access=data.pendingAccess||[];
@@ -434,15 +458,27 @@ async function privacyTab(m){
     const holds=data.activeHolds||[];
     const incidents=data.openIncidents||[];
     const findings=data.openFindings||[];
+    const pendingEnrol=Array.isArray(enrol)?enrol:[];
+    const noticeRows=Array.isArray(notices)?notices:[];
+    const failedNotices=noticeRows.filter(n=>n.status==="failed");
+    const untoldNotices=noticeRows.filter(n=>!n.told_at);
     m.innerHTML=`
       <div class="banner"><b>Privacy office.</b>
-        <p>Queues, clocks and holds. A chain nobody reads proves only that nobody tampered with a log nobody reads. After-hours uses UTC clinic hours, not local time.</p></div>
+        <p>Queues, clocks and holds. A pending enrolment is not authority. Dispatching a notice is not the patient being told. After-hours uses UTC clinic hours, not local time.</p></div>
       <div class="panel ${glass.length?"warn":""}"><h3>Unreviewed break-glass ${tag(String(glass.length),glass.length?"warn":"ok")}</h3>
         ${list(glass,"nothing waiting for review",o=>`<li><a href="#" onclick="openChart('${esc(o.patient_id)}');go('Chart');return false">${esc(o.patient_id)}</a>
           ${esc(o.subject_id)} — ${esc(o.reason)}</li>`)}</div>
       <div class="panel ${access.length?"warn":""}"><h3>Access and correction requests ${tag(String(access.length),access.length?"warn":"ok")}</h3>
         ${list(access,"no pending requests",r=>`<li>${esc(r.kind)} for ${esc(r.patientId)} due ${esc(r.dueAt)}
           ${r.overdue?tag("overdue","bad"):""}${r.completedWithoutDisclosure?tag("completed without disclosure","warn"):""}</li>`)}</div>
+      <div class="panel ${pendingEnrol.length?"warn":""}"><h3>Pending enrolments ${tag(String(pendingEnrol.length),pendingEnrol.length?"warn":"ok")}</h3>
+        <p class="why">A named clerk still has to write how they checked. Until then the subject cannot read the chart.</p>
+        ${list(pendingEnrol,"no pending enrolments",e=>`<li><a href="#" onclick="openChart('${esc(e.patient_id)}');go('Chart');return false">${esc(e.patient_id)}</a>
+          ${esc(e.subject_id)} ${esc(e.relationship)} — requested by ${esc(e.requested_by)}</li>`)}</div>
+      <div class="panel ${failedNotices.length||untoldNotices.length?"warn":""}"><h3>Patient notices ${tag(String(untoldNotices.length),untoldNotices.length?"warn":"ok")}</h3>
+        <p class="why">Dispatching hands the fact to a channel. Recording that the patient was told is a separate act.</p>
+        ${list(failedNotices,"no undelivered notices",n=>`<li>${esc(n.kind)} for ${esc(n.patient_id)} — ${esc(n.summary)} ${tag("undelivered","bad")} ${esc(n.error||"")}</li>`)}
+        ${list(untoldNotices.filter(n=>n.status!=="failed"),"no dispatched notices still untold",n=>`<li>${esc(n.kind)} for ${esc(n.patient_id)} — ${esc(n.summary)} ${tag(n.status,"warn")}</li>`)}</div>
       <div class="panel ${reviews.length?"warn":""}"><h3>Open reviews ${tag(String(reviews.length),reviews.length?"warn":"ok")}</h3>
         ${list(reviews,"no open reviews",r=>`<li>${esc(r.id)} — ${(r.flags||[]).length} flag(s) ${stTag(r.status)}</li>`)}</div>
       <div class="panel ${holds.length?"warn":""}"><h3>Active legal holds ${tag(String(holds.length),holds.length?"warn":"ok")}</h3>
@@ -593,10 +629,10 @@ const SOURCES={
   mllp:[["port","number","6661"],["host","text","0.0.0.0"]],
   http:[["path","text","channel id if blank"]],
   fhir:[["resourceTypes","text","Patient,Observation (blank = all)"]],
-  filedrop:[["dir","text","/var/spool/portage"],["pattern","text","\\\\.hl7$"],["archiveDir","text","optional"],["pollMs","number","2000"],["cron","text","optional, e.g. */5 * * * *"]],
+  filedrop:[["dir","text","/var/spool/northstar"],["pattern","text","\\\\.hl7$"],["archiveDir","text","optional"],["pollMs","number","2000"],["cron","text","optional, e.g. */5 * * * *"]],
   dbpoll:[["dbPath","text","/var/lib/lab/results.db"],["query","text","SELECT * FROM r WHERE id > ? ORDER BY id"],["cursorColumn","text","id"],["pollMs","number","2000"],["cron","text","optional"]],
   sqlpoll:[["driver","text","postgres | mysql"],["dsn","text","postgres://user:pw@host:5432/db"],["query","text","SELECT * FROM r WHERE id > ? ORDER BY id"],["cursorColumn","text","id"],["initialCursor","text","0"],["pollMs","number","2000"],["cron","text","optional"]],
-  sftp:[["host","text","sftp.example.org"],["port","number","22"],["username","text","portage"],["password","text",""],["privateKeyPath","text","/etc/portage/id_ed25519"],["dir","text","/outbound"],["pattern","text","\\\\.hl7$"],["archiveDir","text","optional"],["pollMs","number","5000"],["cron","text","optional"]],
+  sftp:[["host","text","sftp.example.org"],["port","number","22"],["username","text","northstar"],["password","text",""],["privateKeyPath","text","/etc/northstar/id_ed25519"],["dir","text","/outbound"],["pattern","text","\\\\.hl7$"],["archiveDir","text","optional"],["pollMs","number","5000"],["cron","text","optional"]],
 };
 const STEPS={
   "filter.hl7Type":[["allow","text","ADT^A01,ADT^A04"]],

@@ -21,8 +21,8 @@ import { startApi } from "../src/api/admin.ts";
 import { AuthGate } from "../src/auth/gate.ts";
 
 async function boot() {
-  const dir = mkdtempSync(join(tmpdir(), "portage-tapi-"));
-  const engine = new Engine({ dbPath: join(dir, "portage.db"), tickMs: 100_000 });
+  const dir = mkdtempSync(join(tmpdir(), "northstar-tapi-"));
+  const engine = new Engine({ dbPath: join(dir, "northstar.db"), tickMs: 100_000 });
   await engine.start();
   engine.db.createTenant("north", "Northern Health");
   engine.db.createTenant("south", "Southern Health");

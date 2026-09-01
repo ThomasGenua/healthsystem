@@ -47,8 +47,8 @@ async function siteWithHistory(): Promise<{
   slotId: string;
   cleanup: () => void;
 }> {
-  const dir = mkdtempSync(join(tmpdir(), "portage-restore-"));
-  const dbPath = join(dir, "data", "portage.db");
+  const dir = mkdtempSync(join(tmpdir(), "northstar-restore-"));
+  const dbPath = join(dir, "data", "northstar.db");
   const db = new Db(dbPath);
 
   db.upsertChannel("adt", "admissions", true, "{}");
@@ -103,7 +103,7 @@ test("a restored database is usable, not merely openable", async () => {
   // sidecars — and it is enough to have caught both defects below.
   const site = await siteWithHistory();
   try {
-    const target = join(site.dir, "restored", "portage.db");
+    const target = join(site.dir, "restored", "northstar.db");
     const result = restore({ snapshot: site.snapshot, target });
 
     assert.equal(result.verified.messages, 5, "the traffic came back");
@@ -145,7 +145,7 @@ test("the scheduler's uniqueness guarantee survives a restore", async () => {
   // operator would ever think to check.
   const site = await siteWithHistory();
   try {
-    const target = join(site.dir, "restored", "portage.db");
+    const target = join(site.dir, "restored", "northstar.db");
     restore({ snapshot: site.snapshot, target });
 
     const db = new Db(target);
@@ -205,7 +205,7 @@ test("a restored snapshot does not arrive owned by the machine it came from", as
     }
 
     // What the restore procedure leaves behind.
-    const target = join(site.dir, "restored", "portage.db");
+    const target = join(site.dir, "restored", "northstar.db");
     const result = restore({ snapshot: site.snapshot, target });
     assert.ok(result.clearedInheritedLock, "and the restore says it cleared it, rather than doing it quietly");
 
@@ -236,7 +236,7 @@ test("a snapshot from an older version restores, and is migrated before it is co
   // `no such table: channels`, so the verified restore path refused a backup
   // that was perfectly good. The check reporting a problem with the data when
   // the problem is with the check, on the day somebody is restoring.
-  const dir = mkdtempSync(join(tmpdir(), "portage-restore-old-"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-restore-old-"));
   try {
     const legacy = join(dir, "portage-2026-01-01T00-00-00.db");
     const old = new DatabaseSync(legacy);
@@ -246,7 +246,7 @@ test("a snapshot from an older version restores, and is migrated before it is co
     rmSync(legacy + "-wal", { force: true });
     rmSync(legacy + "-shm", { force: true });
 
-    const target = join(dir, "data", "portage.db");
+    const target = join(dir, "data", "northstar.db");
     const result = restore({ snapshot: legacy, target });
     assert.equal(result.migratedFromOlderSchema, true, "and it says so, rather than migrating silently");
 
@@ -284,9 +284,9 @@ test("a snapshot that cannot come up is refused before anything is displaced", (
   // The ordering that makes this survivable. A bad snapshot must leave the
   // site exactly where it was, rather than with nothing — an operator who
   // restores into a hole has lost the database *and* the way back.
-  const dir = mkdtempSync(join(tmpdir(), "portage-restore-bad-"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-restore-bad-"));
   try {
-    const target = join(dir, "data", "portage.db");
+    const target = join(dir, "data", "northstar.db");
     const live = new Db(target);
     live.upsertChannel("adt", "admissions", true, "{}");
     live.insertMessage("adt", "mllp", "text/plain", "the one thing we still have");
@@ -346,7 +346,7 @@ test("the newest snapshot in a directory is the one a restore reaches for", asyn
     db.close();
 
     const newest = latestSnapshot(dir);
-    assert.ok(newest?.endsWith("portage-2027-01-01T00-00-00.db"), `picked ${newest}`);
+    assert.ok(newest?.endsWith("northstar-2027-01-01T00-00-00.db"), `picked ${newest}`);
     assert.equal(latestSnapshot(join(site.dir, "no-such-dir")), undefined);
   } finally {
     site.cleanup();

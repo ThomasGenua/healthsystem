@@ -1,4 +1,4 @@
-# Portage runbook
+# Northstar runbook
 
 For the person holding the pager. Deployment steps first, then the failures
 worth having written down before they happen.
@@ -9,7 +9,7 @@ mistake — please fix it here. The hazards those mechanisms exist to prevent,
 with severity and the test that pins each one, live in
 [CLINICAL-SAFETY.md](CLINICAL-SAFETY.md).
 
-**Portage carries personal health information. Two rules apply to every
+**Northstar carries personal health information. Two rules apply to every
 paragraph below:** never paste a message body, a chart entry or a patient
 identifier into a ticket, a chat channel or a search engine; and never work
 around a refusal by disabling the thing that refused. A consent check, a
@@ -25,6 +25,7 @@ The escape hatch is break-glass, which is loud and recorded — see
   - [What a node needs](#what-a-node-needs)
   - [First install](#first-install)
   - [Upgrading](#upgrading)
+  - [Upgrading a site installed as Portage](#upgrading-a-site-installed-as-portage)
   - [Rolling back](#rolling-back)
 - [Daily and weekly](#daily-and-weekly)
 - [Incidents](#incidents)
@@ -51,9 +52,9 @@ The escape hatch is break-glass, which is loud and recorded — see
 
 - **Node 22.18 or later.** 24.x is the production target: `node:sqlite` is no
   longer flagged experimental there, and 22.x prints a warning on every boot.
-- **A local filesystem for `PORTAGE_DATA`.** Not NFS, not SMB, not a network
+- **A local filesystem for `NORTHSTAR_DATA`.** Not NFS, not SMB, not a network
   block device with write caching you cannot reason about. SQLite's durability
-  guarantee is only as good as the filesystem's `fsync`, and Portage's
+  guarantee is only as good as the filesystem's `fsync`, and Northstar's
   acknowledgement means *durably queued* — a lie at this layer makes it a lie
   all the way up.
 - **Disk**: roughly 4 KB per message stored, plus backups. Size for the
@@ -64,36 +65,36 @@ The escape hatch is break-glass, which is loud and recorded — see
 ### First install
 
 ```bash
-git clone https://github.com/ThomasGenua/healthsystem.git portage
-cd portage
+git clone https://github.com/ThomasGenua/healthsystem.git northstar
+cd northstar
 npm ci
-npm run typecheck && npm test    # complete suite; do not deploy a node that fails one
+npm run typecheck && npm test    # 851 tests; do not deploy a node that fails one
 
-export PORTAGE_DATA=/var/lib/portage
-export PORTAGE_PORT=8686
+export NORTHSTAR_DATA=/var/lib/northstar
+export NORTHSTAR_PORT=8686
 node src/server.ts
 ```
 
 Then, before any real feed is pointed at it:
 
-1. **Set `PORTAGE_AUTH_MODE`.** It defaults to `apikey`. `off` exists for
+1. **Set `NORTHSTAR_AUTH_MODE`.** It defaults to `apikey`. `off` exists for
    development and must never reach a machine that can see a real feed.
    The patient boundary additionally requires `oauth` and a configured OIDC
    issuer; API keys and authentication-off mode can never act as patients.
 2. **Issue an admin key** and store it in whatever your site uses for secrets,
    not in a shell history. See [API keys](../README.md#api-keys).
-3. **Turn on TLS** (`PORTAGE_TLS_CERT` / `_KEY`), and mutual TLS if the
-   destinations support it (`PORTAGE_TLS_CLIENT_CA`).
-4. **Set `PORTAGE_BACKUP_DIR`** to something on a different physical device
-   than `PORTAGE_DATA`, and **set `PORTAGE_BACKUP_REMOTE`** to a destination
+3. **Turn on TLS** (`NORTHSTAR_TLS_CERT` / `_KEY`), and mutual TLS if the
+   destinations support it (`NORTHSTAR_TLS_CLIENT_CA`).
+4. **Set `NORTHSTAR_BACKUP_DIR`** to something on a different physical device
+   than `NORTHSTAR_DATA`, and **set `NORTHSTAR_BACKUP_REMOTE`** to a destination
    that is not this machine (`s3://bucket/prefix` or `sftp://user@host/path`)
-   with `PORTAGE_BACKUP_KEY_FILE` pointing at a 32-byte key that lives
+   with `NORTHSTAR_BACKUP_KEY_FILE` pointing at a 32-byte key that lives
    somewhere this host dying does not take with it. A backup on the disk
    that failed is not a backup; a key that only this machine can read
-   unlocks nothing after it dies. `npm run backup -- --init-key /etc/portage/backup.key`
+   unlocks nothing after it dies. `npm run backup -- --init-key /etc/northstar/backup.key`
    writes one; store a copy off-box before the first real feed.
-5. **Decide retention deliberately.** `PORTAGE_REDACT_AFTER_DAYS` and
-   `PORTAGE_PURGE_AFTER_DAYS` are unset by default and affect the *message
+5. **Decide retention deliberately.** `NORTHSTAR_REDACT_AFTER_DAYS` and
+   `NORTHSTAR_PURGE_AFTER_DAYS` are unset by default and affect the *message
    log only* — never the chart, medications, allergies, orders, results or
    referrals. An active legal hold on the tenant skips the whole sweep:
    messages are not patient-keyed. See [What retention does not touch](../README.md#what-retention-does-not-touch).
@@ -115,14 +116,14 @@ v0.3.0 file and exercises the whole platform against the result.
 curl -sS -X POST -H "authorization: Bearer $ADMIN_KEY" http://localhost:8686/api/backup
 
 # 2. Stop the engine. SIGTERM; it drains.
-systemctl stop portage
+systemctl stop northstar
 
 # 3. Update, and re-run the suite against the new code on this machine.
 git fetch --tags && git checkout v0.7.0
 npm ci && npm run typecheck && npm test
 
 # 4. Start. Watch the log: the migration announces each table it rebuilds.
-systemctl start portage
+systemctl start northstar
 curl -sS http://localhost:8686/api/health
 ```
 
@@ -133,16 +134,68 @@ audit chain). An upgrade that produced tables without their constraints
 is worse than one that failed to open — the site runs, and double-books — so
 the verification step is the point of the exercise, not paperwork.
 
+### Upgrading a site installed as Portage
+
+Northstar was called Portage. Nothing about that rename requires you to change
+anything: **an existing site upgrades with no configuration changes at all.**
+This section is what you may optionally tidy afterwards, and the two things you
+must not do casually.
+
+Everything below keeps working, indefinitely, and is read alongside the new
+spelling:
+
+| Still works | Current spelling | Where it lives |
+|---|---|---|
+| `PORTAGE_*` environment variables | `NORTHSTAR_*` | your unit file or `.env` |
+| `data/portage.db` | `data/northstar.db` | the data directory |
+| `portage-<stamp>.db` snapshots | `northstar-<stamp>.db` | the backup directory |
+| `portage_*` Prometheus series | `northstar_*` | scrape config, dashboards, alert rules |
+| `portage/admin` scope | `northstar/admin` | issued tokens, IdP config |
+| `portage_tenant`, `portage_organization`, `portage_practitioner` claims | `northstar_*` | your identity provider |
+
+Where both spellings are set, the `NORTHSTAR_*` one wins, so you can move one
+variable at a time. The engine lists the legacy variables still in play once at
+boot; that line is informational, not a deprecation warning.
+
+**Do not rename the database file while the engine is running.** If you want it
+under the new name, stop the engine first and move all three files together —
+the database, its `-wal`, and its `-shm`. A `-wal` left behind belongs to a
+database that is no longer there, and applying it to another one is how a
+restore produces a chart that never existed:
+
+```bash
+systemctl stop northstar
+cd /var/lib/northstar
+for ext in "" -wal -shm; do [ -e "portage.db$ext" ] && mv "portage.db$ext" "northstar.db$ext"; done
+systemctl start northstar
+```
+
+If you leave it alone, the engine finds it and says so at boot. An existing
+file always wins over the preferred name — the alternative is SQLite creating
+an empty `northstar.db` beside your real one and the site coming up healthy
+with no patients in it.
+
+**Do not change what goes out on the wire without agreeing it first.** MSH-3 on
+outbound acknowledgements is still `PORTAGE`, because it is the receiving
+application name each sending facility has configured at *their* end. Change it
+unilaterally and their engine rejects your acknowledgements — visible to them
+as messages that were never acknowledged, and not visible to you at all. When
+every partner has scheduled the change, set `NORTHSTAR_HL7_APPLICATION`.
+
+Metrics are exposed under both prefixes, so existing dashboards and alert rules
+keep working untouched. Move them when convenient; a renamed metric does not
+break a rule loudly, it just evaluates against a series that no longer exists.
+
 ### Rolling back
 
-Portage's migrations move forward only. **A database opened by a newer version
+Northstar's migrations move forward only. **A database opened by a newer version
 may not be readable by an older one**, so rolling back the code is not enough:
 
 ```bash
-systemctl stop portage
+systemctl stop northstar
 git checkout v0.4.0 && npm ci
-# restore the pre-upgrade backup over PORTAGE_DATA — see Restoring, below
-systemctl start portage
+# restore the pre-upgrade backup over NORTHSTAR_DATA — see Restoring, below
+systemctl start northstar
 ```
 
 Messages that arrived after the backup was taken are lost from the log by this,
@@ -157,7 +210,7 @@ call for help.
 | When | What | How |
 | --- | --- | --- |
 | Continuously | `degraded`, dead letters, silent channels | alert on `/metrics` |
-| Daily | A backup exists, is recent, verified, and has left the machine | `remoteBackup` on `/api/health`; `portage_backup_remote_ok` on `/metrics` |
+| Daily | A backup exists, is recent, verified, and has left the machine | `remoteBackup` on `/api/health`; `northstar_backup_remote_ok` on `/metrics` |
 | Daily | Break-glass queues are being drained | `GET /api/clinical/break-glass` |
 | Weekly | Chain verification across all channels | `GET /api/chain/verify`, `GET /api/audit/verify` |
 | Weekly | Unacknowledged results and open referrals past their deadline | `GET /api/clinical/results`, `/referrals` |
@@ -192,7 +245,7 @@ snapshots are the only ones you have. Then go to the matching section below.
 
 ### A channel is stalled
 
-Work is arriving and not leaving. The destination is the suspect, not Portage.
+Work is arriving and not leaving. The destination is the suspect, not Northstar.
 
 ```bash
 curl -sS -H "authorization: Bearer $ADMIN_KEY" \
@@ -238,14 +291,14 @@ same failure and tells you nothing new. Fix the cause, then replay.
 
 ### The disk is full
 
-Portage refuses writes rather than half-writing them, and recovers on its own
+Northstar refuses writes rather than half-writing them, and recovers on its own
 once space is freed — this is exercised by `npm run diskfulltest` and nightly
 in CI. So the engine is not the problem; the disk is.
 
-1. Free space. Old backups in `PORTAGE_BACKUP_DIR` are usually the largest
-   thing that is safe to delete, and `PORTAGE_BACKUP_KEEP` governs how many are
+1. Free space. Old backups in `NORTHSTAR_BACKUP_DIR` are usually the largest
+   thing that is safe to delete, and `NORTHSTAR_BACKUP_KEEP` governs how many are
    retained.
-2. **Do not delete anything inside `PORTAGE_DATA`.** Not the WAL, not the
+2. **Do not delete anything inside `NORTHSTAR_DATA`.** Not the WAL, not the
    journal, not "the big one".
 3. Confirm recovery: `/api/health` should return to `ok` without a restart.
 
@@ -261,7 +314,7 @@ answer.
 - **`no such column: …`** — a migration did not run, which should be
   impossible on a supported path. Do not hand-edit the schema. Take a copy of
   the file, roll back to the previous version, and report it.
-- **Port in use** — something else is on `PORTAGE_PORT`.
+- **Port in use** — something else is on `NORTHSTAR_PORT`.
 
 ### The engine crashed
 
@@ -284,7 +337,7 @@ Then check `GET /api/chain/verify` and move on.
 
 This is serious and is **not** a thing to fix by re-verifying until it passes.
 The chain exists to detect exactly two situations: a database that has been
-edited outside Portage, and one whose history has been truncated.
+edited outside Northstar, and one whose history has been truncated.
 
 1. Do not restart the engine. Do not run retention. Do not take a new backup
    over the old one.
@@ -326,7 +379,7 @@ Two things are worth knowing before you reach for break-glass:
   chart is blank" is describing something else; check `/api/health` first.
 - **A `withhold-from-organization` directive withholds from a credential that
   carries no organization.** Credentials carry one now — set at issue
-  time for API keys, from the `organization` (or `portage_organization`) claim
+  time for API keys, from the `organization` (or `northstar_organization`) claim
   for OAuth — and a directive naming one clinic no longer withholds from the
   rest of the territory. A caller whose credential names no organization cannot
   show it is outside the withheld one and is still refused, which fails closed
@@ -375,9 +428,9 @@ that.
 
 ### Sent is not told
 
-`notice_dispatched_at` says Portage handed the notice to the delivery
+`notice_dispatched_at` says Northstar handed the notice to the delivery
 machinery. It does not say the patient received it, and a portal message that
-bounced is neither. Telling them still finishes on a channel Portage does not
+bounced is neither. Telling them still finishes on a channel Northstar does not
 own — a letter, a call, a conversation — so record it once it has happened:
 
 ```bash
@@ -412,7 +465,7 @@ curl -sS -H "authorization: Bearer $ADMIN_KEY" \
 
 If patient data was served to it, that is a privacy incident and follows your
 jurisdiction's breach process, not this document. If the credential is a
-vulnerability in Portage rather than a leaked secret, see [SECURITY.md](../SECURITY.md).
+vulnerability in Northstar rather than a leaked secret, see [SECURITY.md](../SECURITY.md).
 
 ### Restoring from backup
 
@@ -420,21 +473,21 @@ If the disk that held the database is still there and you are rolling back
 an upgrade or undoing a bad write, the local snapshot is enough:
 
 ```bash
-systemctl stop portage                         # nothing may hold the file
-npm run restore -- --from /var/lib/portage/backups
-systemctl start portage
+systemctl stop northstar                         # nothing may hold the file
+npm run restore -- --from /var/lib/northstar/backups
+systemctl start northstar
 curl -sS http://localhost:8686/api/health
 ```
 
 If the disk, the machine or the building is gone, the local directory is
-gone with it. Fetch the off-machine copy — this needs `PORTAGE_BACKUP_KEY_FILE`
+gone with it. Fetch the off-machine copy — this needs `NORTHSTAR_BACKUP_KEY_FILE`
 to be present on the replacement host, which is why that file must not have
 lived only on the dead one:
 
 ```bash
 npm run restore -- --from remote
 # or a specific name, with or without the .enc suffix
-npm run restore -- --from remote --snapshot portage-2026-08-19T14-00-00.db
+npm run restore -- --from remote --snapshot northstar-2026-08-19T14-00-00.db
 ```
 
 `npm run restore -- --snapshot <file>` picks a specific local file. The
@@ -473,13 +526,13 @@ not from when you type the command.
 | What failed | What you still have | RPO |
 | --- | --- | --- |
 | Process crash, bad upgrade | The local snapshot | time since the last local snapshot |
-| The disk, the machine, the building | The last verified replica at `PORTAGE_BACKUP_REMOTE` | time since the last *successful* replication |
+| The disk, the machine, the building | The last verified replica at `NORTHSTAR_BACKUP_REMOTE` | time since the last *successful* replication |
 | The disk, and no remote was configured | Nothing | everything |
 
 A daily snapshot means a 24-hour RPO for a crash. The same cadence against a
 dead disk is only real if the last replica left the machine and
-`portage_backup_remote_ok` is 1. Alert on that gauge going to 0, and on
-`portage_backup_remote_age_seconds` growing past your cadence. A snapshot of
+`northstar_backup_remote_ok` is 1. Alert on that gauge going to 0, and on
+`northstar_backup_remote_age_seconds` growing past your cadence. A snapshot of
 a 96 MB database costs about 2.5 seconds against a live engine, so if 24
 hours of loss is not acceptable at your site, run it hourly — the cost is
 not the reason to hold back.
@@ -498,10 +551,10 @@ Escalate immediately, before further diagnosis, for any of:
 - patient data served to the wrong tenant, or to a credential that should not
   have seen it
 - a backup that will not restore
-- any suspicion that the database file has been modified outside Portage
+- any suspicion that the database file has been modified outside Northstar
 
 For these, preserving the current state matters more than restoring service.
 Copy the database file and the backups somewhere read-only **first**.
 
-A suspected vulnerability in Portage itself goes through private disclosure —
+A suspected vulnerability in Northstar itself goes through private disclosure —
 see [SECURITY.md](../SECURITY.md) — not a public issue.

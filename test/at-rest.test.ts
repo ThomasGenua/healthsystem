@@ -53,9 +53,9 @@ test("a directory that cannot be resolved is unknown, never encrypted", () => {
 });
 
 test("a real directory resolves to a mount and reports one way or the other", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-atrest-"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-atrest-"));
   try {
-    writeFileSync(join(dir, "portage.db"), "x");
+    writeFileSync(join(dir, "northstar.db"), "x");
     const r = encryptionAtRest(dir, {} as NodeJS.ProcessEnv);
 
     if (process.platform !== "linux") {
@@ -81,13 +81,13 @@ test("an unencrypted finding says what is at stake and how to correct it", () =>
   // A warning that says "not encrypted" and stops there gets read as noise.
   // This one has to be actionable in the two cases that occur: the volume
   // genuinely is not encrypted, or it is and this cannot see it.
-  const dir = mkdtempSync(join(tmpdir(), "portage-atrest-msg-"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-atrest-msg-"));
   try {
     const r = encryptionAtRest(dir, {} as NodeJS.ProcessEnv);
     if (r.state !== "not-encrypted") return; // an encrypted or non-Linux runner
 
     assert.match(r.detail, /charts, allergies, results and the audit trail in plain text/);
-    assert.match(r.detail, /PORTAGE_ENCRYPTED_AT_REST=yes/, "the escape hatch is in the message that needs it");
+    assert.match(r.detail, /NORTHSTAR_ENCRYPTED_AT_REST=yes/, "the escape hatch is in the message that needs it");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -112,11 +112,11 @@ test("the longest matching mount wins, not the first", () => {
   // teaches an operator to ignore the warning.
   const mounts = [
     { device: "/dev/vda1", point: "/", fsType: "ext4" },
-    { device: "/dev/mapper/portage-data", point: "/var/lib/portage", fsType: "ext4" },
+    { device: "/dev/mapper/northstar-data", point: "/var/lib/portage", fsType: "ext4" },
     { device: "/dev/vdb1", point: "/var", fsType: "ext4" },
   ];
 
-  assert.equal(mountFor("/var/lib/portage/data", mounts)?.device, "/dev/mapper/portage-data");
+  assert.equal(mountFor("/var/lib/portage/data", mounts)?.device, "/dev/mapper/northstar-data");
   assert.equal(mountFor("/var/log", mounts)?.device, "/dev/vdb1");
   assert.equal(mountFor("/home/user", mounts)?.device, "/dev/vda1");
 
@@ -142,7 +142,7 @@ test("a mount table with no entry covering the path is unknown, not encrypted", 
 
   // And the same through the real entry point, since that is where the
   // decision is turned into a report somebody acts on.
-  const dir = mkdtempSync(join(tmpdir(), "portage-atrest-nomount-"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-atrest-nomount-"));
   try {
     if (process.platform !== "linux") return;
     const r = encryptionAtRest(dir, {} as NodeJS.ProcessEnv, [
@@ -157,7 +157,7 @@ test("a mount table with no entry covering the path is unknown, not encrypted", 
 });
 
 test("an encrypted volume under the data directory is recognised through the real entry point", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-atrest-luks-"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-atrest-luks-"));
   try {
     if (process.platform !== "linux") return;
     const r = encryptionAtRest(dir, {} as NodeJS.ProcessEnv, [
@@ -182,7 +182,7 @@ test("mount lines are parsed the way the kernel writes them", () => {
 });
 
 test("what counts as an encrypted block device", () => {
-  assert.ok(looksEncrypted("/dev/mapper/portage-data", "ext4"));
+  assert.ok(looksEncrypted("/dev/mapper/northstar-data", "ext4"));
   assert.ok(looksEncrypted("/dev/dm-0", "ext4"));
   assert.ok(looksEncrypted("/dev/disk/by-id/dm-name-luks-abc", "ext4"));
   assert.ok(!looksEncrypted("/dev/vda1", "ext4"));

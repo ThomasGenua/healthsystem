@@ -54,7 +54,7 @@ const CHANNEL: ChannelConfig = {
 };
 
 async function liveEngine(dir: string, messages = 3): Promise<Engine> {
-  const engine = new Engine({ dbPath: join(dir, "portage.db"), tickMs: 15 });
+  const engine = new Engine({ dbPath: join(dir, "northstar.db"), tickMs: 15 });
   engine.registerMapping(MAPPING);
   await engine.start();
   await engine.addChannel(CHANNEL);
@@ -64,7 +64,7 @@ async function liveEngine(dir: string, messages = 3): Promise<Engine> {
 }
 
 function temp(): string {
-  return mkdtempSync(join(tmpdir(), "portage-remote-"));
+  return mkdtempSync(join(tmpdir(), "northstar-remote-"));
 }
 
 function keyFile(dir: string): string {
@@ -288,7 +288,7 @@ test("remote retention is independent of local keep, and a refused delete is not
     assert.equal(readdirSync(backups).filter((f) => f.endsWith(".db")).length, 3);
     // Remote keep was 2, so the oldest replica is gone.
     const names = [...store.files.keys()].sort();
-    assert.deepEqual(names, ["portage-2026-01-02T00-00-00.db.enc", "portage-2026-01-03T00-00-00.db.enc"]);
+    assert.deepEqual(names, ["northstar-2026-01-02T00-00-00.db.enc", "northstar-2026-01-03T00-00-00.db.enc"]);
 
     store.denyDelete = true;
     const snap = await takeBackup(engine.db, { dir: backups, stamp: "2026-01-04T00-00-00" });
@@ -348,7 +348,7 @@ test("the SFTP destination puts and gets bytes, not utf8 text", async () => {
 test("a remote without a key is refused, not uploaded in the clear", () => {
   assert.throws(
     () => RemoteBackup.fromEnv({ PORTAGE_BACKUP_REMOTE: "fs:/tmp/offsite" }),
-    /PORTAGE_BACKUP_KEY_FILE/
+    /NORTHSTAR_BACKUP_KEY_FILE/
   );
 });
 
@@ -358,7 +358,7 @@ test("unconfigured is a posture: warned, not degraded", () => {
   assert.equal(status.configured, false);
   assert.equal(status.ok, false);
   assert.equal(remote.isDegraded(), false);
-  assert.match(remoteBackupWarning(status) ?? "", /PORTAGE_BACKUP_REMOTE/);
+  assert.match(remoteBackupWarning(status) ?? "", /NORTHSTAR_BACKUP_REMOTE/);
   assert.equal(remoteAgeSec(status), -1);
 });
 
@@ -398,7 +398,7 @@ test("last success survives a restart via the sidecar, so health does not forget
 
     const second = RemoteBackup.fromEnv(env);
     assert.equal(second.status().ok, true, "a new process still knows the last replica verified");
-    assert.equal(second.status().lastName, "portage-2026-08-22T00-00-00.db.enc");
+    assert.equal(second.status().lastName, "northstar-2026-08-22T00-00-00.db.enc");
     assert.ok((remoteAgeSec(second.status()) as number) >= 0);
   } finally {
     await engine.stop();
@@ -527,7 +527,7 @@ test("a restore from the remote copy is the same database, and does not need the
     assert.equal(existsSync(snap.path), false);
 
     const fetched = await remote.fetch(join(dir, "pulled.db"));
-    const target = join(dir, "recovered", "portage.db");
+    const target = join(dir, "recovered", "northstar.db");
     const result = restore({ snapshot: fetched.path, target });
     assert.equal(result.verified.messages, 4);
 

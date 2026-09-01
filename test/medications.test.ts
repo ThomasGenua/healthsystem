@@ -28,8 +28,8 @@ function clinic(interactions: InteractionSource | null = null): {
   meds: MedicationStore;
   cleanup: () => void;
 } {
-  const dir = mkdtempSync(join(tmpdir(), "portage-meds-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-meds-"));
+  const db = new Db(join(dir, "northstar.db"));
   return {
     db,
     meds: new MedicationStore(db, interactions),
@@ -383,8 +383,8 @@ test("findings are ordered by how bad they are, not by how they were found", () 
 });
 
 test("medications and allergies are confined to their tenant", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-meds-iso-"));
-  const root = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-meds-iso-"));
+  const root = new Db(join(dir, "northstar.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");

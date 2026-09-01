@@ -1,15 +1,15 @@
 /**
- * Restores a Portage database from a verified snapshot.
+ * Restores a Northstar database from a verified snapshot.
  *
- *   node scripts/restore.ts --snapshot backups/portage-2026-08-19T14-00-00.db
+ *   node scripts/restore.ts --snapshot backups/northstar-2026-08-19T14-00-00.db
  *   node scripts/restore.ts --from backups            # newest snapshot there
  *   node scripts/restore.ts --from remote             # newest off-machine copy
- *   node scripts/restore.ts --from remote --snapshot portage-2026-08-19T14-00-00.db
- *   node scripts/restore.ts --from backups --target /var/lib/portage/portage.db
+ *   node scripts/restore.ts --from remote --snapshot northstar-2026-08-19T14-00-00.db
+ *   node scripts/restore.ts --from backups --target /var/lib/northstar/northstar.db
  *
  * `--from remote` fetches, decrypts and verifies before anything is displaced,
  * so recovery does not begin with a manual download at 03:00. The key in
- * PORTAGE_BACKUP_KEY_FILE has to be present; a copy nobody can decrypt is not
+ * NORTHSTAR_BACKUP_KEY_FILE has to be present; a copy nobody can decrypt is not
  * a backup.
  *
  * Stop the engine first. This refuses to run against a database something
@@ -38,20 +38,20 @@ function isRemoteFrom(from: string | undefined): boolean {
 }
 
 async function main(): Promise<void> {
-  const target = arg("target") ?? join(process.cwd(), "data", "portage.db");
+  const target = arg("target") ?? join(process.cwd(), "data", "northstar.db");
   const from = arg("from");
   let snapshot = arg("snapshot");
   let scratch: string | undefined;
 
   if (isRemoteFrom(from)) {
     const env = { ...process.env };
-    if (from && from !== "remote") env.PORTAGE_BACKUP_REMOTE = from;
+    if (from && from !== "remote") env.NORTHSTAR_BACKUP_REMOTE = from;
     const remote = RemoteBackup.fromEnv(env);
     if (!remote.configured) {
-      console.error("PORTAGE_BACKUP_REMOTE is not set; nothing to fetch from");
+      console.error("NORTHSTAR_BACKUP_REMOTE (or PORTAGE_BACKUP_REMOTE) is not set; nothing to fetch from");
       process.exit(2);
     }
-    scratch = mkdtempSync(join(tmpdir(), "portage-restore-remote-"));
+    scratch = mkdtempSync(join(tmpdir(), "northstar-restore-remote-"));
     const dest = join(scratch, "snapshot.db");
     // --snapshot on a remote fetch is a name at the destination, not a path.
     const name = snapshot && !snapshot.includes("/") ? snapshot : snapshot?.split(/[/\\]/).pop();
@@ -64,8 +64,8 @@ async function main(): Promise<void> {
 
   if (!snapshot) {
     console.error("usage: node scripts/restore.ts --snapshot <file> | --from <backup dir|remote>");
-    console.error("       [--target data/portage.db] [--force]");
-    if (from && !isRemoteFrom(from)) console.error(`\nno portage-*.db snapshots found in ${from}`);
+    console.error("       [--target data/northstar.db] [--force]");
+    if (from && !isRemoteFrom(from)) console.error(`\nno northstar-*.db snapshots found in ${from}`);
     process.exit(2);
   }
 

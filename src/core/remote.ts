@@ -25,7 +25,7 @@
  *
  * Encryption is required. A remote that holds plaintext PHI is a second
  * copy of the chart on a disk this process cannot see. The key lives in
- * `PORTAGE_BACKUP_KEY_FILE` and must survive the host; a key that only this
+ * `NORTHSTAR_BACKUP_KEY_FILE` and must survive the host; a key that only this
  * machine can read unlocks nothing after it dies. See `backup-crypto.ts`.
  *
  * Immutability is the destination's job, not ours. A backup an attacker
@@ -56,6 +56,7 @@ import { decryptSnapshot, encryptSnapshot, loadBackupKey } from "./backup-crypto
 import { verifyBackup, type BackupResult } from "./backup.ts";
 import { mountFor, parseMounts } from "./atrest.ts";
 import { s3Delete, s3Get, s3List, s3Put, type S3Config } from "./remote-s3.ts";
+import { REMOTE_SNAPSHOT_RE, sortSnapshots, readEnv } from "./naming.ts";
 
 export type RemoteKind = "s3" | "sftp" | "fs";
 
@@ -121,7 +122,7 @@ export interface RemoteBackupDeps {
   mounts?: Parameters<typeof mountFor>[1];
 }
 
-const SNAPSHOT_NAME = /^portage-.*\.db(\.enc)?$/;
+const SNAPSHOT_NAME = REMOTE_SNAPSHOT_RE;
 
 function sha256(buf: Buffer): Buffer {
   return createHash("sha256").update(buf).digest();
@@ -133,13 +134,13 @@ function sameBytes(a: Buffer, b: Buffer): boolean {
 }
 
 export function remoteSnapshotName(localPath: string): string {
-  const base = localPath.split(/[/\\]/).pop() ?? "portage.db";
+  const base = localPath.split(/[/\\]/).pop() ?? "northstar.db";
   return base.endsWith(".enc") ? base : `${base}.enc`;
 }
 
-/** Newest remote snapshot name, by filename, which sorts chronologically. */
+/** Newest remote snapshot name, ordered by the stamp their names carry. */
 export function latestRemoteName(names: string[]): string | undefined {
-  const snaps = names.filter((n) => SNAPSHOT_NAME.test(n)).sort();
+  const snaps = sortSnapshots(names.filter((n) => SNAPSHOT_NAME.test(n)));
   return snaps.at(-1);
 }
 
@@ -340,35 +341,35 @@ export function parseRemoteUri(uri: string): RemoteUri {
     return { kind: "fs", dir };
   }
   throw new RemoteConfigError(
-    `PORTAGE_BACKUP_REMOTE must be s3://, sftp://, fs: or file:// (got ${uri.split(":")[0] ?? uri})`
+    `NORTHSTAR_BACKUP_REMOTE must be s3://, sftp://, fs: or file:// (got ${uri.split(":")[0] ?? uri})`
   );
 }
 
 function storeFromUri(uri: RemoteUri, env: NodeJS.ProcessEnv, deps: RemoteBackupDeps): RemoteStore {
   if (uri.kind === "fs") return fsStore(uri.dir);
   if (uri.kind === "s3") {
-    const accessKey = env.PORTAGE_BACKUP_S3_ACCESS_KEY ?? env.AWS_ACCESS_KEY_ID;
-    const secretKey = env.PORTAGE_BACKUP_S3_SECRET_KEY ?? env.AWS_SECRET_ACCESS_KEY;
+    const accessKey = readEnv("BACKUP_S3_ACCESS_KEY", env) ?? env.AWS_ACCESS_KEY_ID;
+    const secretKey = readEnv("BACKUP_S3_SECRET_KEY", env) ?? env.AWS_SECRET_ACCESS_KEY;
     if (!accessKey || !secretKey) {
       throw new RemoteConfigError(
-        "s3:// destination needs PORTAGE_BACKUP_S3_ACCESS_KEY and PORTAGE_BACKUP_S3_SECRET_KEY (or AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY)"
+        "s3:// destination needs NORTHSTAR_BACKUP_S3_ACCESS_KEY and NORTHSTAR_BACKUP_S3_SECRET_KEY (or AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY)"
       );
     }
     return s3Store({
       bucket: uri.bucket,
       prefix: uri.prefix,
-      region: env.PORTAGE_BACKUP_S3_REGION ?? env.AWS_REGION ?? "us-east-1",
+      region: readEnv("BACKUP_S3_REGION", env) ?? env.AWS_REGION ?? "us-east-1",
       accessKey,
       secretKey,
-      endpoint: env.PORTAGE_BACKUP_S3_ENDPOINT,
+      endpoint: readEnv("BACKUP_S3_ENDPOINT", env),
       fetch: deps.s3?.fetch,
       now: deps.s3?.now,
     });
   }
-  const password = env.PORTAGE_BACKUP_SFTP_PASSWORD;
-  const keyPath = env.PORTAGE_BACKUP_SFTP_KEY;
+  const password = readEnv("BACKUP_SFTP_PASSWORD", env);
+  const keyPath = readEnv("BACKUP_SFTP_KEY", env);
   if (!password && !keyPath) {
-    throw new RemoteConfigError("sftp:// destination needs PORTAGE_BACKUP_SFTP_PASSWORD or PORTAGE_BACKUP_SFTP_KEY");
+    throw new RemoteConfigError("sftp:// destination needs NORTHSTAR_BACKUP_SFTP_PASSWORD or NORTHSTAR_BACKUP_SFTP_KEY");
   }
   let privateKey: Buffer | undefined;
   if (keyPath) privateKey = readFileSync(keyPath);
@@ -380,7 +381,7 @@ function storeFromUri(uri: RemoteUri, env: NodeJS.ProcessEnv, deps: RemoteBackup
       username: uri.username,
       password,
       privateKey,
-      passphrase: env.PORTAGE_BACKUP_SFTP_PASSPHRASE,
+      passphrase: readEnv("BACKUP_SFTP_PASSPHRASE", env),
       dir: uri.dir,
     },
     connect
@@ -390,7 +391,7 @@ function storeFromUri(uri: RemoteUri, env: NodeJS.ProcessEnv, deps: RemoteBackup
 function parseKeep(raw: string | undefined): number | undefined {
   if (raw === undefined || raw === "") return undefined;
   const n = Number(raw);
-  if (!Number.isInteger(n) || n < 1) throw new RemoteConfigError(`PORTAGE_BACKUP_REMOTE_KEEP must be a positive integer, got: ${raw}`);
+  if (!Number.isInteger(n) || n < 1) throw new RemoteConfigError(`NORTHSTAR_BACKUP_REMOTE_KEEP must be a positive integer, got: ${raw}`);
   return n;
 }
 
@@ -414,14 +415,14 @@ function unconfiguredStatus(): RemoteBackupStatus {
     configured: false,
     ok: false,
     detail:
-      "no PORTAGE_BACKUP_REMOTE; a snapshot that never leaves this machine does not survive the failures that need a restore",
+      "no NORTHSTAR_BACKUP_REMOTE; a snapshot that never leaves this machine does not survive the failures that need a restore",
   };
 }
 
 export function remoteBackupWarning(status: RemoteBackupStatus): string | undefined {
   if (!status.configured) {
     return (
-      "no off-machine backup destination is configured (PORTAGE_BACKUP_REMOTE). " +
+      "no off-machine backup destination is configured (NORTHSTAR_BACKUP_REMOTE). " +
       "Local snapshots survive a process crash and a bad upgrade; they do not survive " +
       "the disk dying, the machine being stolen, or the building flooding. The stated " +
       "RPO is only real for failures that spare the backup directory."
@@ -429,7 +430,7 @@ export function remoteBackupWarning(status: RemoteBackupStatus): string | undefi
   }
   if (status.keyOnSameVolume) {
     return (
-      "PORTAGE_BACKUP_KEY_FILE is on the same volume as the database. " +
+      "NORTHSTAR_BACKUP_KEY_FILE is on the same volume as the database. " +
       "A key that dies with the machine cannot unlock the copy that was meant to outlive it."
     );
   }
@@ -501,7 +502,7 @@ export async function replicateSnapshot(
   }
 
   const decrypted = decryptSnapshot(readBack, key);
-  const scratchDir = mkdtempSync(join(tmpdir(), "portage-remote-verify-"));
+  const scratchDir = mkdtempSync(join(tmpdir(), "northstar-remote-verify-"));
   const scratch = join(scratchDir, "candidate.db");
   let verified: BackupResult["verified"];
   try {
@@ -545,7 +546,7 @@ export async function fetchSnapshot(
 ): Promise<{ path: string; name: string; verified: BackupResult["verified"] }> {
   const available = (await store.list()).map((o) => o.name);
   const chosen = resolveRemoteName(name, available);
-  if (!chosen) throw new Error(`no portage-*.db snapshots at ${store.location}`);
+  if (!chosen) throw new Error(`no northstar-*.db snapshots at ${store.location}`);
   if (name && !available.includes(chosen)) {
     throw new Error(`no snapshot ${name} at ${store.location}`);
   }
@@ -588,23 +589,23 @@ export class RemoteBackup {
   }
 
   /**
-   * Builds from the environment. Missing `PORTAGE_BACKUP_REMOTE` is a
+   * Builds from the environment. Missing `NORTHSTAR_BACKUP_REMOTE` is a
    * posture, not an error — the operator has chosen local-only snapshots,
    * and health will say so. A remote that is half-configured (URI without a
    * key, s3:// without credentials) throws: fail closed rather than upload
    * plaintext or pretend to send.
    */
   static fromEnv(env: NodeJS.ProcessEnv = process.env, deps: RemoteBackupDeps = {}): RemoteBackup {
-    const backupDir = env.PORTAGE_BACKUP_DIR ?? join(process.cwd(), "backups");
+    const backupDir = readEnv("BACKUP_DIR", env) ?? join(process.cwd(), "backups");
     const sidecar = join(backupDir, ".remote-status.json");
     const persisted = readSidecar(sidecar) ?? {};
-    const uriRaw = env.PORTAGE_BACKUP_REMOTE;
+    const uriRaw = readEnv("BACKUP_REMOTE", env);
     if (!uriRaw) return new RemoteBackup(undefined, sidecar, false, persisted);
 
-    const keyPath = env.PORTAGE_BACKUP_KEY_FILE;
+    const keyPath = readEnv("BACKUP_KEY_FILE", env);
     if (!keyPath) {
       throw new RemoteConfigError(
-        "PORTAGE_BACKUP_REMOTE is set but PORTAGE_BACKUP_KEY_FILE is not. " +
+        "NORTHSTAR_BACKUP_REMOTE is set but NORTHSTAR_BACKUP_KEY_FILE is not. " +
           "A remote copy of the database is the clinical record on someone else's disk; " +
           "it is encrypted here, and the key has to live somewhere that survives this machine."
       );
@@ -612,8 +613,8 @@ export class RemoteBackup {
     const key = loadBackupKey(keyPath);
     const uri = parseRemoteUri(uriRaw);
     const store = storeFromUri(uri, env, deps);
-    const keep = parseKeep(env.PORTAGE_BACKUP_REMOTE_KEEP);
-    const dataDir = env.PORTAGE_DATA;
+    const keep = parseKeep(readEnv("BACKUP_REMOTE_KEEP", env));
+    const dataDir = readEnv("DATA", env);
     const sameVolume = keySharesVolume(keyPath, dataDir, deps.mounts);
     return new RemoteBackup(
       { store, key, keyPath, keep, kind: store.kind, location: store.location },
@@ -659,7 +660,7 @@ export class RemoteBackup {
 
   async replicate(localPath: string): Promise<ReplicateResult> {
     if (!this.parsed) {
-      throw new RemoteConfigError("no PORTAGE_BACKUP_REMOTE; nothing to replicate to");
+      throw new RemoteConfigError("no NORTHSTAR_BACKUP_REMOTE; nothing to replicate to");
     }
     const attempted = this.nowIso();
     try {
@@ -697,7 +698,7 @@ export class RemoteBackup {
 
   async fetch(dest: string, name?: string): Promise<{ path: string; name: string; verified: BackupResult["verified"] }> {
     if (!this.parsed) {
-      throw new RemoteConfigError("no PORTAGE_BACKUP_REMOTE; nothing to fetch from");
+      throw new RemoteConfigError("no NORTHSTAR_BACKUP_REMOTE; nothing to fetch from");
     }
     return fetchSnapshot(this.parsed.store, this.parsed.key, dest, name);
   }

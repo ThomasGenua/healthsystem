@@ -1,4 +1,4 @@
-# Portage
+# Northstar
 
 A health integration engine built for northern operating conditions. HL7 v2 in and out over MLLP, FHIR R4 over HTTP, declarative transformation, durable store-and-forward with ordered replay, and hash-chained message lineage. No build step: Node runs the TypeScript directly and persistence is node:sqlite.
 
@@ -58,13 +58,14 @@ v0.7.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A lockbox that can cover part of a chart**, where the locked panel says a directive withheld it rather than rendering as "none" — so a patient can withhold one section without taking the rest of their chart away from the clinician treating them.
 - **A restore that has actually been rehearsed**, to somewhere the database has never been, with a measured RTO — because a verified snapshot only proves the bytes hashed correctly when they were written.
 - **A snapshot that leaves the machine**, encrypted, put, read back and walked again, so the stated RPO is not only for failures that spare the backup directory.
-- **A chart that can say whether anyone asked about immunizations or took a vital**, and that names a primary provider and a coverage claim without overwriting the last ones. Blood pressure is two numbers; a second current MRP is refused; today's appointments sit on the worklist. This is still not a provincial EMR — see [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
+- **A chart that can say whether anyone asked about immunizations, took a vital, recorded a procedure, wrote a care plan or received a document the patient supplied**, and that names a primary provider and a coverage claim without overwriting the last ones. Blood pressure is two numbers; a completed procedure needs a date; a care plan needs a goal and a review date; a letter the patient brought in is not a SOAP note; a second current MRP is refused; today's appointments and overdue care plans sit on the worklist. This is still not a provincial EMR — see [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
 - **Durable patient–clinic messaging.** A question is a thread that cannot be deleted. Closing it needs a reason. Awaiting the clinic and belonging to nobody are lists. This is not a portal and not a claim that anything was delivered.
+- **Clinic-attested enrolment, and notices that are fact rather than the chart.** A named clerk writes how they checked identity (twelve characters, same bar as breaking glass) before an OAuth subject is bound. A pending row is not a grant. Completing an access request queues a notice onto the same channel as break-glass; dispatching it is not recording that the patient was told. Not identity-proofing, not ONE ID, not a certified portal.
 - **An OAuth-only patient/proxy API.** A patient-context SMART token cannot read the general FHIR facade; every chart is authorized again through an active grant with explicit scope, purpose and expiry. Held results, appointments, messages, access history, delegates and requests are patient-safe views, not the clinician Workspace.
 - **Migration that cannot report success over a gap.** Completeness is declared and checked, not inferred from the absence of errors; rejects keep their payloads; a trial rolls back by retraction and a cutover with clinical activity refuses to.
 - **A laboratory result bridge that closes the order loop**, not just a mapping onto the facade: a resend writes nothing, a correction supersedes and arrives unacknowledged, a stale preliminary is ignored, and a result whose patient cannot be identified is held for a person rather than filed against a guess. No vendor interface is claimed — see [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
 - **A privacy office a privacy officer can actually run.** Reviews cannot close with unaddressed flags. A legal hold skips the message-log retention sweep. An incident cannot close without saying whether patients were told. Access clocks queue; they do not hard-stop. Completing an access request without a disclosure is flagged, not blocked. The assurance catalogue cannot close a finding by forgetting the residual risk. `BACKUP-02` stays partial.
-- **A patient HTML shell at `GET /me`.** Language, landmarks, an honest banner. Not a certified portal: no identity-proofing, no notification that a result reached the patient, no WCAG claim. Chart access is `/patient/*` plus OAuth.
+- **A patient HTML shell at `GET /me`.** Language, landmarks, an honest banner. Not a certified portal: no identity-proofing, no ONE ID, no WCAG claim, and this page does not enrol anyone. Clinic attestation is a named clerk writing how they checked. Chart access is `/patient/*` plus OAuth.
 - **An access review of the trail.** `GET /api/audit/review?patient=` joins who looked to whether anything clinical linked them, with flags a person can dismiss with a reason. Complementary to the operational office: this one reads the trail; that one runs the queues.
 - **Travelling clinics and a waitlist whose ordering is stated policy.** A visit is planned, repeated, moved and cancelled as one thing. Cancelling it puts every booked patient on a waitlist: priority, then waited-longest, then most-bumped. An offer resolves as accepted, declined or unreachable.
 - **Channel configuration as a ledger.** Every change is a version with who, when and why. Export and import go through the same store; a dry run writes nothing; every message records which configuration processed it.
@@ -75,21 +76,20 @@ v0.7.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **A migration you can rehearse, and an extract reader that loses nothing.** `dryRun()` runs the whole load through the ordinary stores inside a transaction that is always rolled back — it *is* the loader, so it cannot approve what a real load would refuse, and nothing survives it. The FHIR Bundle and NDJSON reader skips nothing: a resource it cannot map comes back with its reason and the resource itself, one it can map but the stores refuse reaches the reject queue with its payload, and the declared count comes from the export's own `total` rather than from what happened to arrive.
 - **Value sets and concept maps from real releases.** FHIR ValueSet and ConceptMap resources plus SNOMED RF2 refsets and cross-maps, replacing hand-written pack JSON. A value set that cannot be fully resolved — a filter, an exclusion, a reference this store cannot follow — refuses to import at all, because one carrying the publisher's name and a smaller membership is worse than none.
 
-The complete suite passes on both supported Node lines. Backend first, then the
-interface that makes the backend's honesty visible.
+851 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
 Honest limits, so nobody discovers them in production:
 
-- **MLLP sources are unauthenticated.** The protocol has no authentication to hook into. Those ports are a network-layer concern — put them behind a VPN, a private APN, or mutual TLS at the transport, not behind Portage. Being unauthenticated does not mean being fragile: frames are size-capped (16 MB, `maxFrameBytes` per channel) so a sender that never terminates one cannot exhaust memory, and malformed input is answered per message rather than taking the listener down.
+- **MLLP sources are unauthenticated.** The protocol has no authentication to hook into. Those ports are a network-layer concern — put them behind a VPN, a private APN, or mutual TLS at the transport, not behind Northstar. Being unauthenticated does not mean being fragile: frames are size-capped (16 MB, `maxFrameBytes` per channel) so a sender that never terminates one cannot exhaust memory, and malformed input is answered per message rather than taking the listener down.
 - **`node:sqlite` is still flagged experimental on Node 22.** Durability rests on it, so run Node 24+ in production, where it is stable. The engine warns at boot when it is running below 24; the supported floor stays at 22.18 so an upgrade breaks nobody. CI covers both.
 - **The shipped terminology pack is a labelled demo subset.** SNOMED CT CA, LOINC, pCLOCD, ICD-10-CA and CCI are licensed distributions; the loaders are here, the content is not.
-- **The database file is not encrypted.** `node:sqlite` cannot encrypt, so the control that fits a single-file store is an encrypted volume underneath it. Portage does not assume one is there: it checks at boot and on `/api/health`, and says so loudly when it cannot find one. See [Encryption at rest](#encryption-at-rest).
+- **The database file is not encrypted.** `node:sqlite` cannot encrypt, so the control that fits a single-file store is an encrypted volume underneath it. Northstar does not assume one is there: it checks at boot and on `/api/health`, and says so loudly when it cannot find one. See [Encryption at rest](#encryption-at-rest).
 - **The conformance packs are not certified.** They encode the published profiles as data and pass the shipped fixtures, but no projectathon has scored them.
 - **The clinician console is not a validated clinical application.** It renders the chart, worklist, break-glass and privacy queues through the ordinary audited API, including the distinction between failed, truncated and withheld panels. It has not had independent clinical-usability, human-factors or accessibility validation, so "a clinician can safely use this in production today" is not a claim being made.
-- **No certified patient portal.** `GET /me` is chrome: English/French copy, a skip link, landmarks, and a banner that says what this page is not. The JSON patient/proxy boundary is mounted at `/patient/*`; it is OAuth-only and checks a live, explicitly scoped authority grant on every chart. There is no identity-proofing enrolment flow, notification delivery, or accessibility claim. A shell people can open is not a portal people can use.
-- **No broad medication decision-support content.** The medication safety mechanism is here — the check, severities and recorded override — but drug interactions still require a licensed database through `InteractionSource`. Ten deterministic published risk instruments are implemented separately; each response now names its source, formula version, intended population, units and unreviewed assurance state. They are implementation-tested, not independently clinically validated.
+- **No certified patient portal.** `GET /me` is chrome: English/French copy, a skip link, landmarks, and a banner that says what this page is not. It does not enrol anyone. The JSON patient/proxy boundary is mounted at `/patient/*`; it is OAuth-only and checks a live, explicitly scoped authority grant on every chart. Binding a subject is clinic-attested enrolment — a named person writes how they checked — not identity-proofing and not ONE ID. Notices publish fact onto a configured channel; dispatching is not telling. There is no WCAG or AODA claim. A shell people can open is not a portal people can use.
+- **No broad medication decision-support content.** The medication safety mechanism is here — the check, the severities, the override with its record — and ships a deliberately small cross-reactivity set covering the classes with the clearest consensus. Drug interactions come from a licensed database through the `InteractionSource` seam. An interaction table that is 80% complete is one prescribers learn to trust, and the missing 20% is then invisible. Ten deterministic published risk instruments are implemented separately; each response names its source, formula version, intended population, units and unreviewed assurance state. They are implementation-tested, not independently clinically validated.
 - **Nothing here uses machine learning.** Section 7 of the requirements asks for it; nothing in this repository does anything of the sort, and no output should be read as though it did.
 
 ## Requirements
@@ -104,7 +104,7 @@ Optional, and only if you use the source that needs it: `pg` for a Postgres poll
 npm start
 ```
 
-Boots the engine on port 8686 (override with `PORTAGE_PORT`), creates `./data/portage.db`, registers every mapping in `./mappings`, loads terminology packs from `./terminology` and conformance packs from `./conformance`, and seeds any channel in `./channels` that does not already exist in the database. Four channels ship: ADT to Patient on MLLP 6661, lab ORU to Observation on 6662 (split per OBX), ADT diagnoses to Condition on 6663 (split per DG1), and pharmacy RDE to MedicationRequest on 6664. All four deliver in strict order into the local FHIR facade, so a fresh boot is immediately queryable. The admin UI is at `http://localhost:8686/`.
+Boots the engine on port 8686 (override with `NORTHSTAR_PORT`), creates `./data/northstar.db`, registers every mapping in `./mappings`, loads terminology packs from `./terminology` and conformance packs from `./conformance`, and seeds any channel in `./channels` that does not already exist in the database. Four channels ship: ADT to Patient on MLLP 6661, lab ORU to Observation on 6662 (split per OBX), ADT diagnoses to Condition on 6663 (split per DG1), and pharmacy RDE to MedicationRequest on 6664. All four deliver in strict order into the local FHIR facade, so a fresh boot is immediately queryable. The admin UI is at `http://localhost:8686/`.
 
 **The API is authenticated by default.** With no key configured, one is minted at boot and printed once:
 
@@ -132,14 +132,14 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # the complete unit and integration suite
+npm test          # 851 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
 
 ## Security
 
-Two credential schemes, either or both, chosen with `PORTAGE_AUTH_MODE`:
+Two credential schemes, either or both, chosen with `NORTHSTAR_AUTH_MODE`:
 
 | value | meaning |
 |---|---|
@@ -179,22 +179,22 @@ curl -X DELETE localhost:8686/api/keys/:id -H "Authorization: Bearer $KEY"
 ### OAuth 2.0 and SMART on FHIR
 
 ```bash
-PORTAGE_AUTH_MODE=oauth \
-PORTAGE_OIDC_ISSUER=https://login.microsoftonline.com/<tenant>/v2.0 \
-PORTAGE_OIDC_AUDIENCE=api://portage \
+NORTHSTAR_AUTH_MODE=oauth \
+NORTHSTAR_OIDC_ISSUER=https://login.microsoftonline.com/<tenant>/v2.0 \
+NORTHSTAR_OIDC_AUDIENCE=api://northstar \
 npm start
 ```
 
-The JWKS is discovered from the issuer (`PORTAGE_OIDC_JWKS` overrides) and cached. Signature, issuer, audience and expiry are all checked; the permitted algorithms are a fixed table keyed off the token header, so `alg: none` is refused before any key material is touched. Works against any OIDC provider — Entra ID, Keycloak, Auth0 — nothing here is provider-specific.
+The JWKS is discovered from the issuer (`NORTHSTAR_OIDC_JWKS` overrides) and cached. Signature, issuer, audience and expiry are all checked; the permitted algorithms are a fixed table keyed off the token header, so `alg: none` is refused before any key material is touched. Works against any OIDC provider — Entra ID, Keycloak, Auth0 — nothing here is provider-specific.
 
-SMART scopes are translated rather than requiring Portage-specific scope names in your identity provider. Both v1 (`.read`, `.write`, `.*`) and v2 (`.rs`, `.cud`, `.cruds`) verb syntax are understood:
+SMART scopes are translated rather than requiring Northstar-specific scope names in your identity provider. Both v1 (`.read`, `.write`, `.*`) and v2 (`.rs`, `.cud`, `.cruds`) verb syntax are understood:
 
 | token scope | grants |
 |---|---|
 | `system/Patient.read`, `system/Observation.rs` | `read` |
 | `system/Patient.write`, `system/Patient.cud` | `write` |
 | `system/*.*` | `read` + `write` |
-| `portage/admin` | `admin` |
+| `northstar/admin` | `admin` |
 
 ### Mutual TLS
 
@@ -203,23 +203,23 @@ For links between nodes there is no browser, no user and no consent flow — jus
 ```bash
 ./scripts/gen-dev-certs.sh                 # self-signed CA, server and client certs, for development
 
-PORTAGE_TLS_CERT=certs/server.crt \
-PORTAGE_TLS_KEY=certs/server.key \
-PORTAGE_TLS_CLIENT_CA=certs/ca.crt \
+NORTHSTAR_TLS_CERT=certs/server.crt \
+NORTHSTAR_TLS_KEY=certs/server.key \
+NORTHSTAR_TLS_CLIENT_CA=certs/ca.crt \
 npm start
 
 curl --cacert certs/ca.crt --cert certs/client.crt --key certs/client.key \
      https://localhost:8686/api/health
 ```
 
-Setting `PORTAGE_TLS_CLIENT_CA` turns on `requestCert` and `rejectUnauthorized`, so an untrusted caller is refused during the handshake and never reaches the router. That is transport-level proof of *which host* is calling; the scope check above is application-level proof of *what it may do*. Both apply. Half-configured TLS throws at startup rather than quietly serving plaintext.
+Setting `NORTHSTAR_TLS_CLIENT_CA` turns on `requestCert` and `rejectUnauthorized`, so an untrusted caller is refused during the handshake and never reaches the router. That is transport-level proof of *which host* is calling; the scope check above is application-level proof of *what it may do*. Both apply. Half-configured TLS throws at startup rather than quietly serving plaintext.
 
 Outbound destinations can present a client certificate too, which routes that delivery through `node:https` since `fetch` cannot carry one:
 
 ```json
 { "type": "http", "url": "https://meridian.gov.nt.ca/fhir/Patient",
-  "tls": { "certPath": "/etc/portage/client.crt", "keyPath": "/etc/portage/client.key",
-           "caPath": "/etc/portage/ca.crt" } }
+  "tls": { "certPath": "/etc/northstar/client.crt", "keyPath": "/etc/northstar/client.key",
+           "caPath": "/etc/northstar/ca.crt" } }
 ```
 
 ### Rate limiting
@@ -234,33 +234,33 @@ A token bucket, so a real client's burst is admitted and a sustained flood is no
 
 | variable | default | meaning |
 |---|---|---|
-| `PORTAGE_RATE_AUTHENTICATED` | 1200/min | sustained rate for a credentialed caller |
-| `PORTAGE_RATE_ANONYMOUS` | 120/min | sustained rate per source address |
-| `PORTAGE_RATE_LIMIT=off` | — | disable entirely; warns at boot |
+| `NORTHSTAR_RATE_AUTHENTICATED` | 1200/min | sustained rate for a credentialed caller |
+| `NORTHSTAR_RATE_ANONYMOUS` | 120/min | sustained rate per source address |
+| `NORTHSTAR_RATE_LIMIT=off` | — | disable entirely; warns at boot |
 
-A refusal returns `429` with `Retry-After`. Counters are in memory, matching the single-writer design: a Portage node is one process, and sharing limits across nodes would need shared state.
+A refusal returns `429` with `Retry-After`. Counters are in memory, matching the single-writer design: a Northstar node is one process, and sharing limits across nodes would need shared state.
 
 ### Environment
 
 | variable | default | meaning |
 |---|---|---|
-| `PORTAGE_PORT` | 8686 | API port |
-| `PORTAGE_DATA` | `./data` | database directory |
-| `PORTAGE_CHANNELS` / `_MAPPINGS` / `_TERMINOLOGY` / `_CONFORMANCE` / `_FIXTURES` | `./<name>` | boot-time load directories |
-| `PORTAGE_AUTH_MODE` | `apikey` | `apikey`, `oauth`, `apikey+oauth`, `off` |
-| `PORTAGE_OIDC_ISSUER` / `_AUDIENCE` / `_JWKS` | — | OAuth 2.0 configuration |
-| `PORTAGE_TLS_CERT` / `_KEY` | — | serve over TLS |
-| `PORTAGE_TLS_CLIENT_CA` | — | require a client certificate signed by this CA |
-| `PORTAGE_VALIDATE_PACK` / `_MODE` | — | conformance pack enforced on every facade write |
-| `PORTAGE_REDACT_AFTER_DAYS` | — | replace stored payloads older than this with a tombstone |
-| `PORTAGE_PURGE_AFTER_DAYS` | — | delete messages older than this outright |
-| `PORTAGE_RATE_AUTHENTICATED` / `_ANONYMOUS` / `PORTAGE_RATE_LIMIT` | 1200 / 120 / on | request rate limits |
-| `PORTAGE_BACKUP_DIR` / `_KEEP` | `./backups` / 7 | where POST /api/backup writes locally, and how many to keep |
-| `PORTAGE_BACKUP_REMOTE` | — | off-machine destination: `s3://bucket/prefix`, `sftp://user@host/path`, or `fs:/absolute/path` |
-| `PORTAGE_BACKUP_KEY_FILE` | — | 32-byte key (raw or 64 hex chars) that encrypts every remote copy. Must survive this machine. |
-| `PORTAGE_BACKUP_REMOTE_KEEP` | — | how many remote snapshots to keep; independent of local `_KEEP`. Unset means do not prune. |
-| `PORTAGE_BACKUP_S3_ENDPOINT` / `_REGION` / `_ACCESS_KEY` / `_SECRET_KEY` | — | S3-compatible API. HTTPS required except on loopback. Falls back to `AWS_*`. |
-| `PORTAGE_BACKUP_SFTP_PASSWORD` / `_KEY` / `_PASSPHRASE` | — | SFTP credentials when the destination is `sftp://` |
+| `NORTHSTAR_PORT` | 8686 | API port |
+| `NORTHSTAR_DATA` | `./data` | database directory |
+| `NORTHSTAR_CHANNELS` / `_MAPPINGS` / `_TERMINOLOGY` / `_CONFORMANCE` / `_FIXTURES` | `./<name>` | boot-time load directories |
+| `NORTHSTAR_AUTH_MODE` | `apikey` | `apikey`, `oauth`, `apikey+oauth`, `off` |
+| `NORTHSTAR_OIDC_ISSUER` / `_AUDIENCE` / `_JWKS` | — | OAuth 2.0 configuration |
+| `NORTHSTAR_TLS_CERT` / `_KEY` | — | serve over TLS |
+| `NORTHSTAR_TLS_CLIENT_CA` | — | require a client certificate signed by this CA |
+| `NORTHSTAR_VALIDATE_PACK` / `_MODE` | — | conformance pack enforced on every facade write |
+| `NORTHSTAR_REDACT_AFTER_DAYS` | — | replace stored payloads older than this with a tombstone |
+| `NORTHSTAR_PURGE_AFTER_DAYS` | — | delete messages older than this outright |
+| `NORTHSTAR_RATE_AUTHENTICATED` / `_ANONYMOUS` / `NORTHSTAR_RATE_LIMIT` | 1200 / 120 / on | request rate limits |
+| `NORTHSTAR_BACKUP_DIR` / `_KEEP` | `./backups` / 7 | where POST /api/backup writes locally, and how many to keep |
+| `NORTHSTAR_BACKUP_REMOTE` | — | off-machine destination: `s3://bucket/prefix`, `sftp://user@host/path`, or `fs:/absolute/path` |
+| `NORTHSTAR_BACKUP_KEY_FILE` | — | 32-byte key (raw or 64 hex chars) that encrypts every remote copy. Must survive this machine. |
+| `NORTHSTAR_BACKUP_REMOTE_KEEP` | — | how many remote snapshots to keep; independent of local `_KEEP`. Unset means do not prune. |
+| `NORTHSTAR_BACKUP_S3_ENDPOINT` / `_REGION` / `_ACCESS_KEY` / `_SECRET_KEY` | — | S3-compatible API. HTTPS required except on loopback. Falls back to `AWS_*`. |
+| `NORTHSTAR_BACKUP_SFTP_PASSWORD` / `_KEY` / `_PASSPHRASE` | — | SFTP credentials when the destination is `sftp://` |
 
 ## Encryption at rest
 
@@ -268,14 +268,14 @@ A refusal returns `429` with `Retry-After`. Counters are in memory, matching the
 
 That decision is defensible. What is not defensible is the usual consequence of it: *encryption at rest* becomes a line in a procurement document and an assumption in a diagram, nothing checks, and then the test environment is promoted, or the volume is recreated during an incident, or the data directory moves to a mount nobody thought about — and the system carries on exactly as before, with every chart, allergy, result and audit row in the clear.
 
-So Portage refuses to be quiet about it. At boot:
+So Northstar refuses to be quiet about it. At boot:
 
 ```
-WARNING: /var/lib/portage is on /dev/vda1, which does not appear to be encrypted.
+WARNING: /var/lib/northstar is on /dev/vda1, which does not appear to be encrypted.
 The database holds charts, allergies, results and the audit trail in plain text;
 an encrypted volume is the control that fits a single-file store. If the volume is
 encrypted somewhere this cannot see — a hypervisor or a cloud volume — set
-PORTAGE_ENCRYPTED_AT_REST=yes to record that.
+NORTHSTAR_ENCRYPTED_AT_REST=yes to record that.
 ```
 
 and on `/api/health` as `atRest`, so a monitor can alert on it.
@@ -287,7 +287,7 @@ Four states, and the distinctions are the point:
 | `encrypted` | the data directory resolves to a device-mapper volume |
 | `not-encrypted` | it resolves to a plain block device |
 | `unknown` | the check could not answer — not Linux, no mount found, or a path that would not resolve |
-| `asserted` | an operator set `PORTAGE_ENCRYPTED_AT_REST=yes` |
+| `asserted` | an operator set `NORTHSTAR_ENCRYPTED_AT_REST=yes` |
 
 `unknown` is never folded into either answer, and an assertion is recorded as an assertion rather than as a finding — a LUKS volume presented by a hypervisor and an encrypted EBS volume both look like plain block devices from inside, so an operator has to be able to say so, and what they said must stay distinguishable from something this verified.
 
@@ -307,7 +307,7 @@ A key **never used at all** is dormant from the day it was issued, and is report
 
 ## Audit trail
 
-Canadian health privacy law — PHIPA in Ontario, HIA in Alberta, the Health Information Act in the territories — obliges a custodian to know who looked at whose record. Portage holds patient data in the facade and raw HL7 in the message log, so it answers that question.
+Canadian health privacy law — PHIPA in Ontario, HIA in Alberta, the Health Information Act in the territories — obliges a custodian to know who looked at whose record. Northstar holds patient data in the facade and raw HL7 in the message log, so it answers that question.
 
 ```bash
 curl "localhost:8686/api/audit?patient=NT123456" -H "Authorization: Bearer $KEY"   # who read this record
@@ -334,7 +334,7 @@ curl "localhost:8686/fhir/AuditEvent"            -H "Authorization: Bearer $KEY"
 The message log keeps every raw HL7 message it has ever received. Left alone that is both a disk problem and a liability: holding a patient's admission message for eight years because nothing deletes it is not a feature. Retention is off by default and configured in days.
 
 ```bash
-PORTAGE_REDACT_AFTER_DAYS=30 PORTAGE_PURGE_AFTER_DAYS=365 npm start
+NORTHSTAR_REDACT_AFTER_DAYS=30 NORTHSTAR_PURGE_AFTER_DAYS=365 npm start
 
 curl localhost:8686/api/retention      -H "Authorization: Bearer $KEY"   # policy, and what it would touch
 curl -X POST localhost:8686/api/retention/run -H "Authorization: Bearer $KEY"
@@ -395,7 +395,7 @@ A purge is not mistaken for either. It removes a prefix and never the tip, and a
 
 - Accidental loss is caught. A partial restore, a truncated backup, a botched purge, a half-copied file — these are far more common than malice and every one of them shows up.
 - Removal now takes more than a `DELETE`. It takes knowing the design.
-- The evidence is already off the box. `/metrics` exports `portage_audit_events_total` and `portage_chain_length` as **counters**, so a chain that loses rows reads as a counter reset in whatever is scraping — which is the one record of the chain's history the engine does not control.
+- The evidence is already off the box. `/metrics` exports `northstar_audit_events_total` and `northstar_chain_length` as **counters**, so a chain that loses rows reads as a counter reset in whatever is scraping — which is the one record of the chain's history the engine does not control.
 
 That last one is the control that survives an adversary with database access, and it is the reason to point a monitoring system at this rather than to trust `ok: true`. Alert on the reset.
 
@@ -472,11 +472,11 @@ Every criterion given must match — a search that widened as the clinician supp
 
 The index also carries preferred language and telecom, recovered from the Patient resource the same way the name is. A rebuild still reproduces them, so they are not a second source of truth.
 
-### Immunizations, vitals, care team and coverage
+### Immunizations, vitals, procedures, care plans, patient-supplied documents, care team and coverage
 
-Four things a primary-care chart has to be able to say, and that used to live only as untyped entries or as a string on a note.
+Things a primary-care chart has to be able to say, and that used to live only as untyped entries or as a string on a note.
 
-**Immunizations and vitals write onto the clinical log.** They are not a second table. A given dose needs a vaccine and a date; a refusal needs a reason; blood pressure needs both numbers. A laboratory Observation is not a vital — mixing them would make a potassium look like a pulse. History is three-valued, the same way allergies are: `never-asked` and `never-measured` are findings, not empty panels.
+**Immunizations, vitals, procedures, care plans and patient-supplied documents write onto the clinical log.** They are not a second table. A given dose needs a vaccine and a date; a refusal needs a reason; blood pressure needs both numbers; a completed procedure needs the date it was performed; a not-done procedure needs a reason; a care plan needs a goal and a review date. A laboratory Observation is not a vital — mixing them would make a potassium look like a pulse. A specialist letter the patient brought in is not a SOAP note — mixing those would make an unsigned "note" nobody attested. Completing or revoking a care plan is an amendment. History is three-valued, the same way allergies are: `never-asked`, `never-measured`, `never-recorded`, `never-planned` and `never-received` are findings, not empty panels. An active care plan past its review date is work, not a status. The bytes of a document are optional: a clerk can record that paper arrived without pretending it was scanned. HTML, SVG and executables are refused; a payload over 256 KiB is refused. Lists never carry the payload. This is not a portal, not a virus scanner, and not a WCAG PDF.
 
 **Care team and coverage are their own tables**, because a relationship and an eligibility claim are not generic chart entries. At most one *current* primary: two people who both believe they are most responsible is how a result goes to neither inbox. Retiring a membership sets an end date; the visits they attended stay theirs. A coverage change is a new row that supersedes the last one, so "were they covered when this visit happened" stays answerable. `unknown` is a recorded eligibility, not a missing field.
 
@@ -616,7 +616,7 @@ A prescription was recorded carefully and then went nowhere. The clinician wrote
 
 **Transmitting twice is a double dispense.** A pharmacy that receives the same prescription twice may dispense it twice, and for an opioid that is a serious adverse event with no error attached anywhere. A second transmission is refused. The only retry is `replaceFailed()`, which writes a new prescription naming the one it replaces — so a pharmacy receiving both can tell they are one decision, and a reviewer can see a retry rather than two prescriptions of unknown relationship.
 
-**Sent is not received.** Portage does not know how to talk to a pharmacy network and does not pretend to: the transmission becomes a message on a channel the deployment configures, carried by the same ordered, retried, dead-lettered machinery as everything else. Until an acknowledgement is recorded the prescription is outstanding, and `awaitingAcknowledgement()` is what stops "we sent it" being the end of the story. With no channel configured, `transmit()` **refuses** rather than recording one as sent.
+**Sent is not received.** Northstar does not know how to talk to a pharmacy network and does not pretend to: the transmission becomes a message on a channel the deployment configures, carried by the same ordered, retried, dead-lettered machinery as everything else. Until an acknowledgement is recorded the prescription is outstanding, and `awaitingAcknowledgement()` is what stops "we sent it" being the end of the story. With no channel configured, `transmit()` **refuses** rather than recording one as sent.
 
 **A controlled substance is not an ordinary prescription.** Electronic prescribing of narcotics is separately regulated. It is refused unless the deployment declares the authority it holds — a licence or programme name, not a boolean — and the declaration goes on the prescription where an audit can read it.
 
@@ -626,7 +626,7 @@ A prescription is written against a **medication statement** rather than restati
 
 ### What is deliberately not here
 
-The mechanism is here; the clinical content is not. A drug interaction table that is 80% complete is one a prescriber learns to trust, and the missing 20% is then invisible — worse than the gap it was meant to close. Portage ships a deliberately small cross-reactivity set covering the classes with the clearest consensus, and takes a licensed interaction database through the `InteractionSource` seam for anything more. Same posture as the terminology loaders: build the seam, do not fake the content.
+The mechanism is here; the clinical content is not. A drug interaction table that is 80% complete is one a prescriber learns to trust, and the missing 20% is then invisible — worse than the gap it was meant to close. Northstar ships a deliberately small cross-reactivity set covering the classes with the clearest consensus, and takes a licensed interaction database through the `InteractionSource` seam for anything more. Same posture as the terminology loaders: build the seam, do not fake the content.
 
 ## The clinician workspace
 
@@ -644,9 +644,9 @@ Every section therefore carries its own completeness, and the summary carries `c
 
 A failing store does not take the chart down — six panels beat an error page — but the panel it leaves behind never passes for "none". `complete === false` is the flag a renderer must surface, not a detail it may ignore.
 
-Allergy, immunization and vital-sign status are carried to the top of the summary rather than left inside their panels, and read from the stores rather than inferred from the panel's contents. Inferring them would undo the distinction those stores exist for: a clinician scanning a chart has to see "never asked" or "never measured" without interpreting an empty box. A chart with no current primary or no coverage claim says so in `omissions` the same way.
+Allergy, immunization, vital-sign, procedure, care-plan and patient-document status are carried to the top of the summary rather than left inside their panels, and read from the stores rather than inferred from the panel's contents. Inferring them would undo the distinction those stores exist for: a clinician scanning a chart has to see "never asked", "never measured", "never recorded", "never planned" or "never received" without interpreting an empty box. A chart with no current primary or no coverage claim says so in `omissions` the same way.
 
-`worklist()` is the same idea across the day rather than across one patient. A clinician's work is not one queue — today's appointments, messages awaiting a reply, unowned messages, results, referrals, tasks, and each system reports its own as though it were the whole picture. The value of a single view is that nothing is owed to them somewhere they are not looking, which is only true if the view says what it could not reach. Today's list is that clinician's booked and attended appointments on the UTC day of `asOf`, not every empty slot in the diary.
+`worklist()` is the same idea across the day rather than across one patient. A clinician's work is not one queue — today's appointments, messages awaiting a reply, unowned messages, results, referrals, tasks, care plans past their review date, and each system reports its own as though it were the whole picture. The value of a single view is that nothing is owed to them somewhere they are not looking, which is only true if the view says what it could not reach. Today's list is that clinician's booked and attended appointments on the UTC day of `asOf`, not every empty slot in the diary. Overdue care plans are the service's, like stalled referrals: said plainly rather than filtered to nothing.
 
 ### Governed risk scores
 
@@ -655,7 +655,7 @@ Allergy, immunization and vital-sign status are carried to the top of the summar
 while refusing stale or unavailable inputs. A number without its definition is
 not reproducible evidence, so every complete **and incomplete** result carries:
 
-- the instrument and Portage implementation versions;
+- the instrument and Northstar implementation versions;
 - the original publication or official steward source;
 - intended population, exclusions and required units;
 - a copy of the supplied inputs and the calculation time;
@@ -679,7 +679,7 @@ Section 11 asks for secure messaging; section 8 asks that clinically important w
 
 So a thread is append-only. Status follows the last speaker — a patient or proxy writing is `awaiting-clinic`, a practitioner or clerk writing is `awaiting-patient`. Closing needs a reason, and closing while the patient is still waiting needs to say what was done instead of a written reply. If the patient has a current primary, an incoming question is assigned to them; if not, it sits on `unassigned()` rather than vanishing.
 
-This is the record of the conversation. It is not a patient portal, not email, and not a claim that a notification reached a phone. Portage still does not know how to reach a patient. A future portal would write through this store.
+This is the record of the conversation. It is not a patient portal, not email, and not a claim that a notification reached a phone. Northstar still does not know how to reach a patient. A future portal would write through this store.
 
 The module owns no data and keeps no second copy of anything. It assembles from the stores that already exist, declares what it assembled, and is honest about the rest.
 
@@ -717,7 +717,7 @@ The same parties are served on the FHIR facade as `Practitioner`, `PractitionerR
 
 ## The clinical API, and audit by construction
 
-Everything above — the chart, the patient index, medications, allergies, immunizations, vitals, care team, coverage, orders, results, referrals, tasks, notes, message threads and the assembled summary — is served under `/api/clinical/*`, behind the `admin` scope and inside the caller's tenant like the rest of the API.
+Everything above — the chart, the patient index, medications, allergies, immunizations, vitals, procedures, care plans, patient-supplied documents, care team, coverage, orders, results, referrals, tasks, notes, message threads and the assembled summary — is served under `/api/clinical/*`, behind the `admin` scope and inside the caller's tenant like the rest of the API.
 
 Exposing it is the moment the audit requirement in §18 starts to bite. Until now the clinical stores were libraries: nothing reached them over a network, so nothing went unrecorded. A route is a way in, and **an audit guarantee that depends on each new route remembering to call `audit()` is one that holds until somebody forgets** — and the forgetting is invisible, because the route works, the data is served, and nothing anywhere says the trail is short.
 
@@ -793,7 +793,7 @@ A chart that is short says so at the top, above the panels: *"This is not the wh
 
 **Break-glass.** The two queues, and the controls that discharge them. A lockbox nobody can find out was opened is a lockbox with no lock.
 
-**Privacy.** The queues a privacy officer actually runs: unreviewed break-glass, overdue access requests, open reviews, active holds, incidents and assurance findings. Opening a review of the last 24 hours is a button; closing one with flags still open is not. After-hours uses UTC clinic hours, not local time.
+**Privacy.** The queues a privacy officer actually runs: unreviewed break-glass, overdue access requests, pending enrolments, undelivered and untold patient notices, open reviews, active holds, incidents and assurance findings. Opening a review of the last 24 hours is a button; closing one with flags still open is not. After-hours uses UTC clinic hours, not local time.
 
 Hostile content in this console runs in the browser session of the person holding an admin key, so `test/ui-xss.test.ts` drives the operational tabs in a real Chromium against genuinely hostile input — a patient's name from an ADT feed, and the free text a clerk types into a referral, a task or a break-glass reason — and asserts both that nothing executed and that the payloads actually reached the DOM. The Privacy tab is driven too; its honesty check is the inbox tests, because an empty queue would pass an XSS check having rendered nothing.
 
@@ -806,8 +806,9 @@ every request. A patient scope cannot read `/fhir/*`; an admin scope does not
 imply patient; an API key cannot be issued patient scope.
 
 `GET /me` is a static English/French shell with landmarks and an honest banner.
-It loads no chart. There is still no identity-proofing enrolment, notification
-delivery, or accessibility claim.
+It loads no chart and does not enrol anyone. Clinic attestation is a named
+clerk writing a method; it is not identity-proofing. Notices publish fact onto
+a channel; dispatching is not telling. There is still no WCAG or AODA claim.
 
 ## The privacy office
 
@@ -877,6 +878,23 @@ So authority is time-bounded by construction:
 
 The expired grant row stays. Who was entitled when is not something to delete — it simply stops being authority.
 
+### Clinic-attested enrolment
+
+Until a named person writes how they checked, an OAuth subject is not on the
+chart. `POST /api/clinical/authority-self` and `authority-proxy` require a
+`method` of at least twelve characters — "in person" is not a method — and
+go through `PatientEnrolment`. A pending row is not a grant. `GET /me` does
+not enrol anyone; there is no `/patient/enrol`, because naming a chart from
+the internet is H-52. Proxy enrolments still need an expiry, a purpose and
+explicit permissions. This is not identity-proofing and not ONE ID.
+
+Completing an access request queues a patient notice whose payload is the
+fact (kind, reference, a summary) and never a result value. The notice is
+published onto the same configured channel as break-glass. Dispatching it is
+not recording that the patient was told; a missing channel is a visible
+failure. The Privacy tab lists pending enrolments and undelivered or untold
+notices.
+
 ### The patient/proxy API
 
 `GET /patient/authorities` is the starting point: the charts this OAuth subject
@@ -885,8 +903,10 @@ grant. Every other route takes one of those patient ids and checks it again;
 accepting a patient id is not accepting its authority.
 
 - `/patient/summary` — demographics, allergy status, medication lists,
-  immunizations, latest vitals, current care team and coverage. It is not the
-  clinician Workspace: no internal tasks and no unacknowledged result values.
+  immunizations, latest vitals, procedures, active care plans, patient-supplied
+  document metadata (never the bytes), current care team and coverage. It is
+  not the clinician Workspace: no internal tasks and no unacknowledged result
+  values.
 - `/patient/results` — only `PatientAccess.resultsFor()`, so a held result is
   visible while its value is not.
 - `/patient/appointments` — bookings joined to their time and service.
@@ -909,8 +929,8 @@ without both trails.
 `GET /me` is public on purpose, the way `GET /` is: it is chrome, not a record.
 An unauthenticated GET is not audited as a reach for a patient. The page says,
 in English and in French, that it is not a certified portal — no
-identity-proofing, no notification that a result or message reached the
-patient, no WCAG or AODA claim. Chart access is `/patient/*` with a live grant.
+identity-proofing, no ONE ID, no WCAG or AODA claim — and that this page does
+not enrol anyone. Chart access is `/patient/*` with a live grant.
 
 ### Release timing
 
@@ -1097,7 +1117,7 @@ Three things this changed that were not obvious:
 
 A key is issued by a custodian and carries that custodian on the stored row. The gate resolves it there and nowhere else — a caller who could name their own tenant on the request would be naming their own authorisation — and every store a route touches comes from that tenant's view of the engine. Scope says what a caller may do; the tenant says whose records they may do it to, so an `admin` key in one organization cannot revoke a key, read a message or replay a delivery in another.
 
-An OIDC token carries its tenant in a `tenant` (or `portage_tenant`) claim the identity provider controls. Without one the caller lands in the default tenant rather than in whichever one they would have preferred.
+An OIDC token carries its tenant in a `tenant` (or `northstar_tenant`) claim the identity provider controls. Without one the caller lands in the default tenant rather than in whichever one they would have preferred.
 
 **Suspension takes effect immediately.** `setTenantStatus(id, "suspended")` stops that custodian's credentials at the gate, before scopes are consulted, and touches nobody else — suspending an organization whose keys keep working until the next restart is not suspending it.
 
@@ -1119,19 +1139,19 @@ A chain that spans the upgrade still verifies. Rows written before the digest co
 
 Tenancy needs more than added columns. `fhir_resources`, `fhir_identifiers` and `channel_state` had primary keys that were unique across the whole database, and `ALTER TABLE` cannot change a primary key — so those three are rebuilt (create, copy, drop, rename, in one transaction). Without it, the first time a second custodian stored `Patient/p1` it would overwrite the first custodian's patient of that id, which is a silent cross-tenant write and exactly what tenancy exists to prevent. Indexes are applied after the migration rather than with the tables, because an index naming a column the migration is about to add cannot be created before it exists.
 
-One thing to do by hand, once, on a database that ran a version before this one: `sqlite3 data/portage.db 'VACUUM;'`. Freed pages are zeroed from now on, but pages freed under the old build may still hold legible content, and only a rebuild clears those.
+One thing to do by hand, once, on a database that ran a version before this one: `sqlite3 data/northstar.db 'VACUUM;'`. Freed pages are zeroed from now on, but pages freed under the old build may still hold legible content, and only a rebuild clears those.
 
 ## Backup
 
 Losing this database is the worst thing that can happen to a node. It holds the queue that has not drained, the lineage proving what flowed, the audit trail proving who read it, and the facade a consumer is reading from — a community site with a week of backlog waiting out an outage has a week of unsent clinical messages in one file.
 
-**Copying that file is not a backup.** The engine runs SQLite in WAL mode, so committed data lives in `portage.db-wal` until a checkpoint folds it in. `cp portage.db` on a running engine yields a stale or torn snapshot that looks fine until the day it is needed — in testing, the copy could not even be opened.
+**Copying that file is not a backup.** The engine runs SQLite in WAL mode, so committed data lives in `northstar.db-wal` until a checkpoint folds it in. `cp northstar.db` on a running engine yields a stale or torn snapshot that looks fine until the day it is needed — in testing, the copy could not even be opened.
 
 ```bash
-npm run backup -- --init-key /etc/portage/backup.key   # once; store a copy off this machine
-npm run backup                                    # -> backups/portage-<stamp>.db
+npm run backup -- --init-key /etc/northstar/backup.key   # once; store a copy off this machine
+npm run backup                                    # -> backups/northstar-<stamp>.db
 npm run backup -- --out /mnt/usb --keep 7
-npm run backup -- --verify backups/portage-2026-08-07T15-22-33.db
+npm run backup -- --verify backups/northstar-2026-08-07T15-22-33.db
 
 curl -X POST localhost:8686/api/backup -H "Authorization: Bearer $KEY"
 ```
@@ -1153,7 +1173,7 @@ Each snapshot is exactly one file — the `-wal` and `-shm` sidecars left by ver
 
 A local snapshot survives a process crash and a bad upgrade. It does not survive the disk dying, the machine being stolen, the building flooding, or ransomware encrypting the volume the snapshots sit on. Those are the failures that need a restore, and every snapshot `takeBackup` writes is still on the same disk as the database it came from.
 
-`PORTAGE_BACKUP_REMOTE` is a destination that is not this machine, configured rather than hard-coded:
+`NORTHSTAR_BACKUP_REMOTE` is a destination that is not this machine, configured rather than hard-coded:
 
 | | |
 |---|---|
@@ -1161,16 +1181,16 @@ A local snapshot survives a process crash and a bad upgrade. It does not survive
 | `sftp://user@host/path` | Reuses the existing SFTP client. |
 | `fs:/absolute/path` | A directory treated as elsewhere — tests, CI, and a mount that really is another machine. |
 
-The snapshot is encrypted here (AES-256-GCM) before it is handed over, put, **read back**, decrypted, and walked again. An upload that returned 200 is not a copy. A failed replica is visible on `/api/health` (`remoteBackup`) and `/metrics` (`portage_backup_remote_ok`, `_age_seconds`) and marks the node degraded — silent failure here is the same hazard as a chart section rendering "none" when it failed to load. The local snapshot is still written; 500 means the half that survives the machine did not.
+The snapshot is encrypted here (AES-256-GCM) before it is handed over, put, **read back**, decrypted, and walked again. An upload that returned 200 is not a copy. A failed replica is visible on `/api/health` (`remoteBackup`) and `/metrics` (`northstar_backup_remote_ok`, `_age_seconds`) and marks the node degraded — silent failure here is the same hazard as a chart section rendering "none" when it failed to load. The local snapshot is still written; 500 means the half that survives the machine did not.
 
-**The key has to outlive the host.** `PORTAGE_BACKUP_KEY_FILE` is 32 bytes, hex or raw. It must live somewhere this machine dying does not take with it: a secrets manager on another system, a USB in a drawer two buildings over, a printed hex string in an envelope. A key that only this machine can read unlocks nothing after the flood, and a remote copy nobody can decrypt is not a backup. Restoring begins with producing that key, not with finding the object. If the key file appears to share a volume with the database, boot says so.
+**The key has to outlive the host.** `NORTHSTAR_BACKUP_KEY_FILE` is 32 bytes, hex or raw. It must live somewhere this machine dying does not take with it: a secrets manager on another system, a USB in a drawer two buildings over, a printed hex string in an envelope. A key that only this machine can read unlocks nothing after the flood, and a remote copy nobody can decrypt is not a backup. Restoring begins with producing that key, not with finding the object. If the key file appears to share a volume with the database, boot says so.
 
-**Immutability is the destination's job.** A backup an attacker holding production credentials can delete is a backup that does not survive the attack most likely to need it. Object-lock, or write-only credentials (put + get + list, no delete), are the usual answers and both have operational costs. When delete is refused, prune reports that and does not fail the backup — remote retention is then the destination's policy, which is what making the objects undeletable chose. `PORTAGE_BACKUP_REMOTE_KEEP` is independent of local `_KEEP` and is unset by default, so a destination that can delete is not pruned unless somebody said so.
+**Immutability is the destination's job.** A backup an attacker holding production credentials can delete is a backup that does not survive the attack most likely to need it. Object-lock, or write-only credentials (put + get + list, no delete), are the usual answers and both have operational costs. When delete is refused, prune reports that and does not fail the backup — remote retention is then the destination's policy, which is what making the objects undeletable chose. `NORTHSTAR_BACKUP_REMOTE_KEEP` is independent of local `_KEEP` and is unset by default, so a destination that can delete is not pruned unless somebody said so.
 
 Unconfigured is a posture, like an unencrypted volume: reported on health and at boot, not degraded. Configured-and-failed is an incident.
 
 ```
-WARNING: no off-machine backup destination is configured (PORTAGE_BACKUP_REMOTE).
+WARNING: no off-machine backup destination is configured (NORTHSTAR_BACKUP_REMOTE).
 Local snapshots survive a process crash and a bad upgrade; they do not survive
 the disk dying, the machine being stolen, or the building flooding. The stated
 RPO is only real for failures that spare the backup directory.
@@ -1181,12 +1201,12 @@ RPO is only real for failures that spare the backup directory.
 With the engine stopped:
 
 ```bash
-systemctl stop portage
+systemctl stop northstar
 npm run restore -- --from backups              # newest local snapshot
 npm run restore -- --from remote               # newest off-machine copy; fetches and decrypts
-npm run restore -- --from remote --snapshot portage-2026-08-19T14-00-00.db
-npm run restore -- --snapshot backups/portage-2026-08-19T14-00-00.db
-systemctl start portage
+npm run restore -- --from remote --snapshot northstar-2026-08-19T14-00-00.db
+npm run restore -- --snapshot backups/northstar-2026-08-19T14-00-00.db
+systemctl start northstar
 ```
 
 This used to be a documented sequence of `mv`, `rm` and `cp`, and the `rm` was the step people skip — a stale `-wal` left beside the restored file points SQLite at a write-ahead log belonging to the database you just replaced. A procedure that depends on nobody skipping a step at 03:00 is not a procedure, so it is code now.
@@ -1210,17 +1230,17 @@ Single runs on one machine, so read them as an order of magnitude rather than a 
 
 | What failed | What you still have | RPO |
 |---|---|---|
-| Process crash, bad upgrade, a restore you decide was the wrong call | The local snapshot in `PORTAGE_BACKUP_DIR` | time since the last local snapshot |
-| The disk, the machine, the building, ransomware on that volume | The last *verified replica* at `PORTAGE_BACKUP_REMOTE` | time since the last successful replication |
+| Process crash, bad upgrade, a restore you decide was the wrong call | The local snapshot in `NORTHSTAR_BACKUP_DIR` | time since the last local snapshot |
+| The disk, the machine, the building, ransomware on that volume | The last *verified replica* at `NORTHSTAR_BACKUP_REMOTE` | time since the last successful replication |
 | The disk, and no remote was configured | Nothing | everything |
 
-A node snapshotting every 24 hours loses up to 24 hours of the message log — and the clinical record, which is in the same file — to a process crash. The same cadence against a dead disk is only real if the last replica left the machine. Shorten the cadence to shorten it — a snapshot of a 96 MB database cost 2.5 seconds against a live engine, so hourly is affordable at that size. Replication is one more pass over the file plus the network; budget for that, and alert on `portage_backup_remote_ok` going to 0.
+A node snapshotting every 24 hours loses up to 24 hours of the message log — and the clinical record, which is in the same file — to a process crash. The same cadence against a dead disk is only real if the last replica left the machine. Shorten the cadence to shorten it — a snapshot of a 96 MB database cost 2.5 seconds against a live engine, so hourly is affordable at that size. Replication is one more pass over the file plus the network; budget for that, and alert on `northstar_backup_remote_ok` going to 0.
 
 **The RTO is a floor, not a promise.** It is restore plus boot. It excludes noticing the outage, deciding to restore, and finding the snapshot, which on a real night are most of the elapsed time.
 
 **What the rehearsal does not prove.** It takes the encrypt / put / read-back / decrypt / restore path, against a destination that is a directory on the same runner. That is the code an operator walks when the disk is gone. It is not a second machine, a different filesystem, or a live object store — saying "rehearsed off-box" would be the overclaim this exercise exists to refuse. The S3 and SFTP transports are tested against fakes. Running it on Node 22 and 24 covers the part that bites in practice: two different `node:sqlite` builds opening the same file.
 
-`PORTAGE_BACKUP_DIR`, `PORTAGE_BACKUP_KEEP`, `PORTAGE_BACKUP_REMOTE` and `PORTAGE_BACKUP_KEY_FILE` configure the API endpoint.
+`NORTHSTAR_BACKUP_DIR`, `NORTHSTAR_BACKUP_KEEP`, `NORTHSTAR_BACKUP_REMOTE` and `NORTHSTAR_BACKUP_KEY_FILE` configure the API endpoint.
 
 ## Monitoring
 
@@ -1246,10 +1266,10 @@ A node snapshotting every 24 hours loses up to 24 hours of the message log — a
 `GET /metrics` serves the same in Prometheus text format:
 
 ```
-portage_deliveries{state="delivered"} 3
-portage_dead_letters 0
-portage_oldest_queued_age_seconds 0
-portage_channel_oldest_queued_age_seconds{channel="oru-to-fhir-observation"} 412
+northstar_deliveries{state="delivered"} 3
+northstar_dead_letters 0
+northstar_oldest_queued_age_seconds 0
+northstar_channel_oldest_queued_age_seconds{channel="oru-to-fhir-observation"} 412
 ```
 
 Both are public alongside liveness — a scrape happens before any credential is configured, and neither carries patient data: counters, ages and channel ids only. Neither writes to the audit trail, or a 15-second scrape would bury the disclosures the trail exists to surface.
@@ -1264,7 +1284,7 @@ A backlog is loud — it grows, it ages, it eventually dead-letters. Silence is 
 { "id": "adt", "name": "admissions", "expectMessageEverySec": 3600, "source": { "…": "…" } }
 ```
 
-A channel that declares a cadence and exceeds it appears in `signals.silentChannels`, makes `/api/health` report `degraded`, and exports `portage_channel_silent{channel="adt"} 1`. `portage_channel_last_message_age_seconds` carries the age itself, so an alert is a threshold on a number rather than a special case.
+A channel that declares a cadence and exceeds it appears in `signals.silentChannels`, makes `/api/health` report `degraded`, and exports `northstar_channel_silent{channel="adt"} 1`. `northstar_channel_last_message_age_seconds` carries the age itself, so an alert is a threshold on a number rather than a special case.
 
 Off unless declared, deliberately. No threshold fits both a nursing station admitting four patients a day and a regional lab pushing results every few minutes, and an alert that fires constantly is one nobody reads — which is worse than the gap it was meant to close. A channel that has *never* received anything is reported too: never having started is as much an outage as having stopped, and it is the one an operator hits the day they stand a feed up.
 
@@ -1299,8 +1319,8 @@ Three things the acknowledgement contract depends on, each tested rather than as
 **A failed write is never acknowledged AA.** If the store cannot accept a message, the sender is told AE, or gets no answer. The dangerous outcome is a positive acknowledgement for a message that was never stored: the sender believes it is safe, drops it, and it is gone.
 
 ```bash
-sudo mount -t tmpfs -o size=1M tmpfs /mnt/portage-tiny
-npm run diskfulltest -- --dir /mnt/portage-tiny
+sudo mount -t tmpfs -o size=1M tmpfs /mnt/northstar-tiny
+npm run diskfulltest -- --dir /mnt/northstar-tiny
 ```
 
 Against a genuinely full filesystem: ten messages, ten AEs, no false AA, and only the messages that were acknowledged are stored. **The feed resumes on its own once space is freed** — no restart needed. A full disk is not hypothetical here: the message log grows with every message, and a community site is not somewhere anyone notices a disk filling up. See [Retention](#retention).
@@ -1326,7 +1346,7 @@ A restart also requeues any delivery left in flight. Without that, one orphaned 
 That reclaim assumes nothing else is running, and the engine now enforces it rather than assuming it. A second engine started against the same database file refuses, naming the process that holds it:
 
 ```
-another Portage instance owns this database (pid 4744 on ykpcc-01, last seen 1s ago).
+another Northstar instance owns this database (pid 4744 on ykpcc-01, last seen 1s ago).
 Two engines on one database duplicate messages.
 ```
 
@@ -1393,6 +1413,8 @@ src/
   schedule/clinics.ts      travelling-clinic visits and the waitlist
   population/registry.ts   cohorts, care gaps, quality measures with honest denominators
   patient/access.ts        patient and proxy authority, result release timing
+  patient/enrolment.ts     clinic-attested binding of an OAuth subject; pending is not a grant
+  patient/notice.ts        break-glass and patient notices; dispatching is not telling
   patient/consent.ts       consent directives and break-glass
   privacy/office.ts        reviews, holds, incidents, clocks, assurance catalogue
   workspace/summary.ts     the assembled chart, declaring what it left out
@@ -1568,10 +1590,10 @@ curl "localhost:8686/fhir/Observation?identifier=FL9001-NT123456-1-718-7"
 
 ## Satellite demo
 
-`npm run demo` stands up the whole story in one process: a Meridian endpoint simulator playing the territorial EHR, a satellite link simulator with latency, jitter and a hard outage, and a Portage channel carrying community ADT through the link.
+`npm run demo` stands up the whole story in one process: a Meridian endpoint simulator playing the territorial EHR, a satellite link simulator with latency, jitter and a hard outage, and a Northstar channel carrying community ADT through the link.
 
 ```
-[community EMR feed] --MLLP--> Portage --HTTP over satlink--> Meridian (territorial EHR)
+[community EMR feed] --MLLP--> Northstar --HTTP over satlink--> Meridian (territorial EHR)
 ```
 
 Phase A sends admissions across a healthy link. Phase B cuts the link and keeps sending: every message is still acknowledged AA, because an AA certifies durable queueing rather than remote delivery, and the queue grows. Phase C restores the link and the backlog drains in strict arrival order with zero loss and zero duplicates, then the hash chain is verified. Tune it with `--messages-before`, `--messages-during`, `--outage-ms`, `--latency-ms`, `--jitter-ms`, `--packet-loss-pct`, `--bandwidth-kbps`. The same scenario runs compressed inside the test suite in `test/demo.test.ts`, and `demo/satlink.ts` and `demo/meridian-sim.ts` both run standalone for manual testing against a live instance.
@@ -1638,7 +1660,7 @@ The endpoint an operator configures is trusted, the same way a channel's HTTP de
 
 ## Connectors
 
-`filedrop` polls a landing directory, ingests each file as one message in filename order, then archives or deletes it. This remains the simplest SFTP pattern for northern sites: openssh terminates the transfer into the directory and Portage takes it from there, so there is no bespoke protocol code to certify. `sftp` does the same against a remote server when there is no local landing directory to watch — archive or delete happens only after the message is durably stored, so a crash mid-poll re-reads the file rather than losing it.
+`filedrop` polls a landing directory, ingests each file as one message in filename order, then archives or deletes it. This remains the simplest SFTP pattern for northern sites: openssh terminates the transfer into the directory and Northstar takes it from there, so there is no bespoke protocol code to certify. `sftp` does the same against a remote server when there is no local landing directory to watch — archive or delete happens only after the message is durably stored, so a crash mid-poll re-reads the file rather than losing it.
 
 `dbpoll` polls a SQLite database with a cursor bound into the query (`SELECT * FROM results WHERE id > ? ORDER BY id`); `sqlpoll` does the same against Postgres or MySQL. Both persist the cursor in the engine database, so a restart resumes exactly where it stopped. Queries always use `?` for the placeholder — the Postgres adapter rewrites it to `$1` — so the same channel JSON reads the same way whichever database is behind it.
 
@@ -1659,7 +1681,7 @@ All of these are engine sources, so everything downstream — pipeline, lineage,
 
 `GET /` serves a single-file, no-build UI over the public API: a dashboard with live counts, history charts, an access audit view, channels with hash-chain verification, a channel designer, a mapping editor with live fixtures, a message browser with per-step lineage, the delivery queue with dead-letter replay and discard, a FHIR facade browser, subscription management, terminology lookups, a conformance validator, and a **Privacy** tab over the office queues. It is deliberately thin; anything it does, curl does.
 
-`GET /me` is a separate file: English/French chrome, a skip link, landmarks, and a banner that says this is not a certified portal. It does not load a chart.
+`GET /me` is a separate file: English/French chrome, a skip link, landmarks, and a banner that says this is not a certified portal and that the page does not enrol anyone. It does not load a chart.
 
 Paste an API key into the box in the header and it is attached to every request; it is held in browser local storage and sent nowhere else.
 
@@ -1686,7 +1708,7 @@ npm run terminology:import -- --format csv --in icd10ca.csv \
   --system icd10ca --code-column Code --display-column Description
 ```
 
-`--system` accepts a URI or one of the shorthands `snomed`, `loinc`, `icd10ca`, `pclocd`, `cci`. `--db` chooses the database (default `./data/portage.db`) and `--out` additionally writes a pack JSON file.
+`--system` accepts a URI or one of the shorthands `snomed`, `loinc`, `icd10ca`, `pclocd`, `cci`. `--db` chooses the database (default `./data/northstar.db`) and `--out` additionally writes a pack JSON file.
 
 Everything streams and loads in batches, because a SNOMED snapshot runs to millions of rows. Concepts upsert on (system, code), so re-running a release is safe. RF2 emits only active concepts, uses the fully specified name as the display, and trims its trailing semantic tag — "Asthma (disorder)" becomes "Asthma".
 
@@ -1700,7 +1722,7 @@ unaddressed puts the risk on whoever deploys it.
 
 Copyright 2026 Thomas Genua.
 
-Portage carries no clinical content and no licensed terminology. SNOMED CT,
+Northstar carries no clinical content and no licensed terminology. SNOMED CT,
 LOINC, pCLOCD and ICD-10-CA are licensed separately by their owners; the
 loaders in `scripts/` read releases you are already entitled to and ship none
 of them. See [Loading a licensed terminology release](#loading-a-licensed-terminology-release).
@@ -1735,7 +1757,7 @@ a scope-narrowed directive withholds its section rather than the chart around it
 - [#21 A clinical safety case and hazard log](https://github.com/ThomasGenua/healthsystem/issues/21) is done: [docs/CLINICAL-SAFETY.md](docs/CLINICAL-SAFETY.md) is the form a safety officer can open, and `test/clinical-safety.test.ts` fails if a cited test is gone. It is not signed by an independent clinician, and it says so (R-01).
 - [#22 An external penetration test](https://github.com/ThomasGenua/healthsystem/issues/22) — the adversarial tests here share their author's model of what an attack looks like. The interesting findings are outside it.
 
-**Make the consent enforcement precise.** Done. [#17](https://github.com/ThomasGenua/healthsystem/issues/17): credentials carry an organization, so a directive against one clinic no longer withholds from the territory. [#18](https://github.com/ThomasGenua/healthsystem/issues/18): a break-glass notice is dispatched through the delivery machinery rather than left on a queue for somebody to remember, and what could not be sent says so. What remains is honest and small — *sent* is still not *told*, and recording that the patient was actually told is a deliberate human act, because the last step happens on a channel Portage does not own.
+**Make the consent enforcement precise.** Done. [#17](https://github.com/ThomasGenua/healthsystem/issues/17): credentials carry an organization, so a directive against one clinic no longer withholds from the territory. [#18](https://github.com/ThomasGenua/healthsystem/issues/18): a break-glass notice is dispatched through the delivery machinery rather than left on a queue for somebody to remember, and what could not be sent says so. What remains is honest and small — *sent* is still not *told*, and recording that the patient was actually told is a deliberate human act, because the last step happens on a channel Northstar does not own.
 
 **Model what the system talks about.** Done. [#32](https://github.com/ThomasGenua/healthsystem/issues/32) and [#33](https://github.com/ThomasGenua/healthsystem/issues/33): a visit owns what happened inside it, and a practitioner, organization, location or service is a party that the FHIR facade serves as `Practitioner`, `PractitionerRole`, `Organization`, `Location` and `HealthcareService`. [#34](https://github.com/ThomasGenua/healthsystem/issues/34): two charts a person has decided are one person link reversibly — on evidence that is kept, never inferred, never merged. The chart assembles across the link with every row still attributed to the chart it was written on, says on its face that it is assembled, takes the worst member's answer for every status, and withholds when any member's directive says to. Unlinking restores the prior view exactly, with the reason kept.
 
@@ -1744,7 +1766,7 @@ a scope-narrowed directive withholds its section rather than the chart around it
 [#35](https://github.com/ThomasGenua/healthsystem/issues/35) is done in two complementary pieces. A privacy officer can open a review of the last 24 hours, address flags with a written reason, place a legal hold that skips the retention sweep, record a disclosure when fulfilling an access request, and close an incident only after saying whether patients were told. The assurance catalogue cannot close a finding by forgetting it. Separately, `GET /api/audit/review?patient=` answers who looked, whether anything clinical linked them to the patient, and what to look at first — with each flag saying why it fired, dismissible with a reason that is kept, and the chain's verification attached to the report. Credentials carry a practitioner to make that join possible. It is not a SIEM, not a PIA product, and after-hours is UTC.
 
 - [#23 Validate the conformance packs against the published Projectathon scripts](https://github.com/ThomasGenua/healthsystem/issues/23) — the packs validate against this project's reading of the specifications, which is not the same as conforming to them.
-- [#24 The patient-facing surface, and its separate identity boundary](https://github.com/ThomasGenua/healthsystem/issues/24) — the backend boundary is done, and `GET /me` is chrome with English/French copy and landmarks. What remains is identity-proofing enrolment, notification delivery and accessibility validation. Do not call `/me` a portal.
+- [#24 The patient-facing surface, and its separate identity boundary](https://github.com/ThomasGenua/healthsystem/issues/24) — the backend boundary is done, clinic-attested enrolment binds a subject after a named clerk writes how they checked, and notices publish fact onto a channel (dispatching is not telling). `GET /me` is chrome and does not enrol anyone. What remains is identity-proofing / ONE ID, delivery to a phone or inbox the patient owns, and accessibility validation. Do not call `/me` a portal.
 [#40](https://github.com/ThomasGenua/healthsystem/issues/40) is done: a prescription has a transmission lifecycle, a second transmission is refused because a pharmacy may dispense twice, and each way one is lost — never sent, sent and unacknowledged, failed, cancelled without telling the pharmacy — is a chase list. No pharmacy network has received a message.
 
 **Built for where it actually runs.**

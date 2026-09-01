@@ -58,6 +58,8 @@ export const TENANT_SCOPED_TABLES = [
   "patient_access_log",
   "patient_requests",
   "patient_request_events",
+  "patient_enrolments",
+  "patient_notices",
   "schedule_slots",
   "schedule_bookings",
   "schedule_events",
@@ -520,7 +522,7 @@ CREATE TABLE IF NOT EXISTS referrals (
   to_service TEXT NOT NULL,
   -- The directory service this names, when it names one. Three-valued on
   -- purpose: an id means a known service, to_external = 1 means a deliberate
-  -- referral out to somewhere Portage does not hold, and both NULL means
+  -- referral out to somewhere Northstar does not hold, and both NULL means
   -- nobody said which — an unverified free-text target, and a different thing
   -- from a declared external one.
   to_service_id TEXT,
@@ -986,6 +988,64 @@ CREATE TABLE IF NOT EXISTS patient_authority (
   granted_by TEXT NOT NULL,
   granted_at TEXT NOT NULL,
   reason TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Clinic-attested enrolment: binding an OAuth subject to a chart.
+--
+-- This is not identity-proofing and not ONE ID. A named person at the clinic
+-- writes, in their own words, how they checked that the person in front of
+-- them is the patient (or proxy) on the chart. The grant that follows is the
+-- same patient_authority row the boundary already uses. A pending row is not
+-- authority. GET /me does not enrol anyone.
+CREATE TABLE IF NOT EXISTS patient_enrolments (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  -- self | parent-guardian | substitute-decision-maker | representative
+  relationship TEXT NOT NULL,
+  -- pending | attested | declined
+  status TEXT NOT NULL,
+  requested_at TEXT NOT NULL,
+  requested_by TEXT NOT NULL,
+  requested_kind TEXT NOT NULL,
+  -- Written method of verification. Required to attest; null while pending.
+  method TEXT,
+  attested_at TEXT,
+  attested_by TEXT,
+  declined_at TEXT,
+  declined_by TEXT,
+  decline_reason TEXT,
+  authority_id TEXT,
+  purpose TEXT,
+  permissions TEXT,
+  expires_at TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- A notice the patient is owed, published onto a channel the deployment
+-- already uses to reach people. Northstar does not know phone numbers or
+-- inboxes and will not invent them. Dispatching is handing the fact to the
+-- delivery machinery; recording that the patient was told is a separate act.
+-- Kinds: enrolment-attested | result-released | request-completed.
+CREATE TABLE IF NOT EXISTS patient_notices (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  about_id TEXT,
+  -- The fact, never a result value or a chart excerpt.
+  summary TEXT NOT NULL,
+  -- queued | dispatched | failed | told
+  status TEXT NOT NULL,
+  dispatched_at TEXT,
+  message_id TEXT,
+  error TEXT,
+  told_at TEXT,
+  told_by TEXT,
   created_at TEXT NOT NULL,
   PRIMARY KEY (tenant_id, id)
 );
@@ -2030,6 +2090,12 @@ CREATE INDEX IF NOT EXISTS idx_authority_patient ON patient_authority(tenant_id,
 CREATE INDEX IF NOT EXISTS idx_release_patient ON result_release(tenant_id, patient_id, state);
 CREATE INDEX IF NOT EXISTS idx_patient_access ON patient_access_log(tenant_id, patient_id, seq);
 CREATE INDEX IF NOT EXISTS idx_patient_requests ON patient_requests(tenant_id, patient_id, submitted_at);
+CREATE INDEX IF NOT EXISTS idx_enrolments_status ON patient_enrolments(tenant_id, status, requested_at);
+CREATE INDEX IF NOT EXISTS idx_enrolments_patient ON patient_enrolments(tenant_id, patient_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_enrolment_pending
+  ON patient_enrolments(tenant_id, patient_id, subject_id) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_patient_notices_status ON patient_notices(tenant_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_patient_notices_patient ON patient_notices(tenant_id, patient_id);
 -- The deduplication lookup. Every inbound result does it, so it is the one
 -- query on this table that has to stay fast as results accumulate.
 CREATE INDEX IF NOT EXISTS idx_results_key ON order_results(tenant_id, result_key);

@@ -99,7 +99,7 @@ function list(json: string | null): string[] {
  * What a referral is addressed to, three-valued on purpose.
  *
  * `known` is a service in the directory. `external` is a deliberate referral
- * out to somewhere Portage does not hold — ordinary, and stated rather than
+ * out to somewhere Northstar does not hold — ordinary, and stated rather than
  * inferred. `unverified` is free text nobody checked, which is the state every
  * referral written before the directory existed is in.
  *
@@ -155,7 +155,7 @@ export class ReferralStore {
      */
     toServiceId?: string;
     /**
-     * Declares that this goes somewhere Portage does not hold.
+     * Declares that this goes somewhere Northstar does not hold.
      *
      * A referral out to a southern hospital is ordinary and must not be
      * refused for being unknown. What it must not be is *indistinguishable*

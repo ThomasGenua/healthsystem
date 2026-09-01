@@ -49,8 +49,8 @@ function channel(charset?: string): ChannelConfig {
 }
 
 async function boot(cfg: ChannelConfig) {
-  const dir = mkdtempSync(join(tmpdir(), "portage-charset-"));
-  const engine = new Engine({ dbPath: join(dir, "portage.db"), tickMs: 25 });
+  const dir = mkdtempSync(join(tmpdir(), "northstar-charset-"));
+  const engine = new Engine({ dbPath: join(dir, "northstar.db"), tickMs: 25 });
   await engine.start();
   await engine.addChannel(cfg);
   return {

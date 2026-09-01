@@ -34,6 +34,9 @@ import type { TaskStore, TaskRow } from "../work/tasks.ts";
 import type { ClinicalNotes, NoteContent } from "../clinical/notes.ts";
 import type { Immunizations, ImmunizationView, ImmunizationHistory } from "../clinical/immunizations.ts";
 import type { Vitals, VitalView, VitalHistory } from "../clinical/vitals.ts";
+import type { Procedures, ProcedureView, ProcedureHistory } from "../clinical/procedures.ts";
+import type { CarePlans, CarePlanView, CarePlanHistory } from "../clinical/careplans.ts";
+import type { PatientDocuments, PatientDocumentView, DocumentHistory } from "../clinical/documents.ts";
 import type { CareTeam, CareTeamRow } from "../clinical/careteam.ts";
 import type { Coverage, CoverageRow } from "../clinical/coverage.ts";
 import type { Schedule, SlotRow, BookingRow } from "../schedule/store.ts";
@@ -89,11 +92,17 @@ export interface ChartSummary {
   allergyStatus: AllergyStatus | "unavailable";
   immunizationStatus: ImmunizationHistory | "unavailable";
   vitalStatus: VitalHistory | "unavailable";
+  procedureStatus: ProcedureHistory | "unavailable";
+  carePlanStatus: CarePlanHistory | "unavailable";
+  documentStatus: DocumentHistory | "unavailable";
 
   allergies: Section<AllergyRow>;
   medications: Section<MedRow>;
   immunizations: Section<ImmunizationView>;
   vitals: Section<VitalView>;
+  procedures: Section<ProcedureView>;
+  carePlans: Section<CarePlanView>;
+  documents: Section<PatientDocumentView>;
   careTeam: Section<CareTeamRow>;
   coverage: Section<CoverageRow>;
   /** Reported and not yet read by anybody, worst first. */
@@ -182,6 +191,9 @@ export interface WorkspaceSources {
   tasks?: TaskStore;
   immunizations?: Immunizations;
   vitals?: Vitals;
+  procedures?: Procedures;
+  carePlans?: CarePlans;
+  documents?: PatientDocuments;
   careTeam?: CareTeam;
   coverage?: Coverage;
   schedule?: Schedule;
@@ -239,13 +251,17 @@ export function describe(name: string, s: Section<unknown>): string | null {
  * whole chart. Listed rather than derived because the mapping is a clinical
  * judgement, not a naming convention: a patient who locks `ServiceRequest` has
  * locked both their orders and their referrals, and somebody should have to
- * decide that on purpose.
+ * decide that on purpose. Locking `DocumentReference` likewise withholds both
+ * clinic notes and patient-supplied documents.
  */
 export const SECTION_TYPES = {
   allergies: "AllergyIntolerance",
   medications: "MedicationStatement",
   immunizations: "Immunization",
   vitals: "Observation",
+  procedures: "Procedure",
+  carePlans: "CarePlan",
+  documents: "DocumentReference",
   careTeam: "CareTeam",
   coverage: "Coverage",
   unacknowledgedResults: "Observation",
@@ -275,6 +291,7 @@ export const WORKLIST_TYPES: readonly string[] = [
   "MedicationStatement",
   "Appointment",
   "Communication",
+  "CarePlan",
 ];
 
 /**
@@ -305,7 +322,7 @@ export class Workspace {
    * seen everything.
    */
   chart(patientId: string, opts: SummaryOptions = {}): ChartSummary {
-    const { record, notes, meds, orders, referrals, tasks, immunizations, vitals, careTeam, coverage, messaging } =
+    const { record, notes, meds, orders, referrals, tasks, immunizations, vitals, procedures, carePlans, documents, careTeam, coverage, messaging } =
       this.sources;
     const limit = opts.limit ?? 50;
     const noteLimit = opts.noteLimit ?? 10;
@@ -348,6 +365,9 @@ export class Workspace {
     const problems = sect("problems", record ? across((id) => record.chart(id, { entryType: "Condition" })) : undefined, limit);
     const immunizationSection = sect("immunizations", immunizations ? across((id) => immunizations.forPatient(id)) : undefined, limit);
     const vitalSection = sect("vitals", vitals ? across((id) => vitals.forPatient(id)) : undefined, limit);
+    const procedureSection = sect("procedures", procedures ? across((id) => procedures.forPatient(id)) : undefined, limit);
+    const carePlanSection = sect("carePlans", carePlans ? across((id) => carePlans.forPatient(id)) : undefined, limit);
+    const documentSection = sect("documents", documents ? across((id) => documents.forPatient(id)) : undefined, limit);
     const careTeamSection = sect("careTeam", careTeam ? across((id) => careTeam.forPatient(id, { includeRetired: true })) : undefined, limit);
     const coverageSection = sect("coverage", coverage ? across((id) => coverage.history(id)) : undefined, limit);
     const openThreads = sect("openThreads", messaging ? across((id) => messaging.forPatient(id)) : undefined, limit);
@@ -407,6 +427,33 @@ export class Workspace {
       );
     }
 
+    let procedureStatus: ProcedureHistory | "unavailable" = "unavailable";
+    if (procedures && !hidden.has(SECTION_TYPES.procedures)) {
+      procedureStatus = worstOf<ProcedureHistory | "unavailable">(
+        ["never-recorded", "unavailable", "documented"],
+        "unavailable",
+        (id) => procedures.historyStatus(id)
+      );
+    }
+
+    let carePlanStatus: CarePlanHistory | "unavailable" = "unavailable";
+    if (carePlans && !hidden.has(SECTION_TYPES.carePlans)) {
+      carePlanStatus = worstOf<CarePlanHistory | "unavailable">(
+        ["never-planned", "unavailable", "documented"],
+        "unavailable",
+        (id) => carePlans.historyStatus(id)
+      );
+    }
+
+    let documentStatus: DocumentHistory | "unavailable" = "unavailable";
+    if (documents && !hidden.has(SECTION_TYPES.documents)) {
+      documentStatus = worstOf<DocumentHistory | "unavailable">(
+        ["never-received", "unavailable", "documented"],
+        "unavailable",
+        (id) => documents.historyStatus(id)
+      );
+    }
+
     let patient: PatientSummary | undefined;
     try {
       patient = record?.patientIndex.get(patientId);
@@ -419,6 +466,9 @@ export class Workspace {
       ["Medications", medications],
       ["Immunizations", immunizationSection],
       ["Vitals", vitalSection],
+      ["Procedures", procedureSection],
+      ["Care plans", carePlanSection],
+      ["Patient-supplied documents", documentSection],
       ["Care team", careTeamSection],
       ["Coverage", coverageSection],
       ["Unacknowledged results", unacknowledgedResults],
@@ -448,6 +498,21 @@ export class Workspace {
     } else if (vitalStatus === "unavailable" && !hidden.has(SECTION_TYPES.vitals)) {
       omissions.push("Vitals: vital-sign history could not be determined");
     }
+    if (procedureStatus === "never-recorded") {
+      omissions.push("Procedures: no procedure has ever been recorded for this patient");
+    } else if (procedureStatus === "unavailable" && !hidden.has(SECTION_TYPES.procedures)) {
+      omissions.push("Procedures: procedure history could not be determined");
+    }
+    if (carePlanStatus === "never-planned") {
+      omissions.push("Care plans: no care plan has ever been recorded for this patient");
+    } else if (carePlanStatus === "unavailable" && !hidden.has(SECTION_TYPES.carePlans)) {
+      omissions.push("Care plans: care-plan history could not be determined");
+    }
+    if (documentStatus === "never-received") {
+      omissions.push("Patient-supplied documents: no document the patient supplied has ever been recorded");
+    } else if (documentStatus === "unavailable" && !hidden.has(SECTION_TYPES.documents)) {
+      omissions.push("Patient-supplied documents: document history could not be determined");
+    }
     if (careTeam && careTeamSection.complete && !hidden.has(SECTION_TYPES.careTeam)) {
       const currentPrimary = careTeamSection.items.find((r) => r.role === "primary" && !r.active_to);
       if (!currentPrimary) omissions.push("Care team: no current primary provider is assigned");
@@ -462,7 +527,7 @@ export class Workspace {
     // — a failure or a lockbox is still that, cached or not — and the
     // chart-level block plus the omissions line carry the age for all of
     // them. This runs after the per-section omissions so the list gains one
-    // line about the whole chart rather than thirteen copies of it.
+    // line about the whole chart rather than a copy per panel.
     let stale: { asOf: string; ageHours: number; note: string } | undefined;
     if (opts.asOf !== undefined) {
       const asOfMs = Date.parse(opts.asOf);
@@ -504,10 +569,16 @@ export class Workspace {
       allergyStatus,
       immunizationStatus,
       vitalStatus,
+      procedureStatus,
+      carePlanStatus,
+      documentStatus,
       allergies,
       medications,
       immunizations: immunizationSection,
       vitals: vitalSection,
+      procedures: procedureSection,
+      carePlans: carePlanSection,
+      documents: documentSection,
       careTeam: careTeamSection,
       coverage: coverageSection,
       unacknowledgedResults,
@@ -525,7 +596,10 @@ export class Workspace {
         sections.every(([, s]) => s.complete) &&
         (allergyStatus !== "unavailable" || hidden.has(SECTION_TYPES.allergies)) &&
         (immunizationStatus !== "unavailable" || hidden.has(SECTION_TYPES.immunizations)) &&
-        (vitalStatus !== "unavailable" || hidden.has(SECTION_TYPES.vitals)),
+        (vitalStatus !== "unavailable" || hidden.has(SECTION_TYPES.vitals)) &&
+        (procedureStatus !== "unavailable" || hidden.has(SECTION_TYPES.procedures)) &&
+        (carePlanStatus !== "unavailable" || hidden.has(SECTION_TYPES.carePlans)) &&
+        (documentStatus !== "unavailable" || hidden.has(SECTION_TYPES.documents)),
       omissions,
     };
   }
@@ -551,10 +625,11 @@ export class Workspace {
     awaitingMessages: Section<ThreadRow>;
     unassignedMessages: Section<ThreadRow>;
     incompleteReconciliations: Section<{ id: string; patient_id: string; transition: string; started_at: string }>;
+    overdueCarePlans: Section<CarePlanView>;
     complete: boolean;
     omissions: string[];
   } {
-    const { orders, referrals, tasks, meds, schedule, messaging } = this.sources;
+    const { orders, referrals, tasks, meds, schedule, messaging, carePlans } = this.sources;
     const limit = opts.limit ?? 50;
     const asOf = opts.asOf ?? new Date().toISOString();
 
@@ -562,9 +637,10 @@ export class Workspace {
       orders ? () => orders.unacknowledged({ responsibleId: clinicianId }) : undefined,
       limit
     );
-    // Referrals and reconciliations are not owned per clinician in the model,
-    // so these are the service's, not this person's. Said plainly rather than
-    // filtered to nothing, which would be a quieter kind of wrong.
+    // Referrals, reconciliations and overdue care plans are not owned per
+    // clinician in the model, so these are the service's, not this person's.
+    // Said plainly rather than filtered to nothing, which would be a quieter
+    // kind of wrong.
     const stalledReferrals = section(referrals ? () => referrals.stalled(asOf) : undefined, limit);
     const ordersAwaitingResult = section(
       orders ? () => orders.awaitingResult(asOf).filter((o) => o.responsible_id === clinicianId) : undefined,
@@ -575,6 +651,7 @@ export class Workspace {
     const today = section(schedule ? () => schedule.today(clinicianId, asOf) : undefined, limit);
     const awaitingMessages = section(messaging ? () => messaging.inbox(clinicianId) : undefined, limit);
     const unassignedMessages = section(messaging ? () => messaging.unassigned() : undefined, limit);
+    const overdueCarePlans = section(carePlans ? () => carePlans.overdue(asOf) : undefined, limit);
 
     const named: Array<[string, Section<unknown>]> = [
       ["Today's appointments", today],
@@ -585,6 +662,7 @@ export class Workspace {
       ["Orders awaiting a result", ordersAwaitingResult],
       ["Tasks", taskSection],
       ["Incomplete reconciliations", incompleteReconciliations],
+      ["Care plans past their review date", overdueCarePlans],
     ];
     return {
       today,
@@ -595,6 +673,7 @@ export class Workspace {
       ordersAwaitingResult,
       tasks: taskSection,
       incompleteReconciliations,
+      overdueCarePlans,
       complete: named.every(([, s]) => s.complete),
       omissions: named.map(([n, s]) => describe(n, s)).filter((x): x is string => x !== null),
     };

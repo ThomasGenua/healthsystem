@@ -45,8 +45,8 @@ const brokenPharmacy: PharmacyDispatcher = {
 };
 
 function clinic(opts: { dispatcher?: PharmacyDispatcher; controlledAuthority?: string; noTasks?: boolean } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "portage-rx-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-rx-"));
+  const db = new Db(join(dir, "northstar.db"));
   const meds = new MedicationStore(db, { check: () => [] });
   new Directory(db).addOrganization({ id: "yk-pharmacy", name: "Yellowknife Pharmacy" });
   const statement = meds.record({
@@ -337,8 +337,8 @@ test("cancelling a prescription that never left does not owe the pharmacy anythi
 });
 
 test("prescriptions are confined to their tenant", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-rx-iso-"));
-  const root = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-rx-iso-"));
+  const root = new Db(join(dir, "northstar.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");
@@ -671,8 +671,8 @@ test("a prescription written without a check being handed in still carries one",
 });
 
 test("dispenses and renewals are confined to their custodian", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-rx-tenant-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-rx-tenant-"));
+  const db = new Db(join(dir, "northstar.db"));
   try {
     db.createTenant("north", "Northern Health", "Northern Regional Custodian");
     const northDb = db.forTenant("north");

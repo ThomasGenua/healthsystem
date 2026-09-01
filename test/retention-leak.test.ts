@@ -64,8 +64,8 @@ test("no identifier survives a redaction sweep anywhere in the database", async 
   await new Promise<void>((r) => sink.listen(0, "127.0.0.1", () => r()));
   const port = (sink.address() as { port: number }).port;
 
-  const dir = mkdtempSync(join(tmpdir(), "portage-leak-"));
-  const engine = new Engine({ dbPath: join(dir, "portage.db"), tickMs: 25 });
+  const dir = mkdtempSync(join(tmpdir(), "northstar-leak-"));
+  const engine = new Engine({ dbPath: join(dir, "northstar.db"), tickMs: 25 });
   await engine.start();
   try {
     engine.registerMapping(
@@ -133,8 +133,8 @@ test("a remote's reply is redacted too, on success and on rejection", async () =
   await new Promise<void>((r) => remote.listen(0, "127.0.0.1", () => r()));
   const port = (remote.address() as { port: number }).port;
 
-  const dir = mkdtempSync(join(tmpdir(), "portage-reply-"));
-  const engine = new Engine({ dbPath: join(dir, "portage.db"), tickMs: 25 });
+  const dir = mkdtempSync(join(tmpdir(), "northstar-reply-"));
+  const engine = new Engine({ dbPath: join(dir, "northstar.db"), tickMs: 25 });
   await engine.start();
   try {
     const dest = (maxAttempts: number) => ({
@@ -188,8 +188,8 @@ test("a dead-lettered delivery is not exempt from retention", async () => {
   // delivery waits in the queue indefinitely for an operator, so the DLQ is
   // the longest-lived copy in the system — and enumerating the settled states
   // as "delivered and discarded" leaves it there forever.
-  const dir = mkdtempSync(join(tmpdir(), "portage-dlq-"));
-  const engine = new Engine({ dbPath: join(dir, "portage.db"), tickMs: 25 });
+  const dir = mkdtempSync(join(tmpdir(), "northstar-dlq-"));
+  const engine = new Engine({ dbPath: join(dir, "northstar.db"), tickMs: 25 });
   await engine.start();
   try {
     await engine.addChannel({
@@ -216,8 +216,8 @@ test("a dead-lettered delivery is not exempt from retention", async () => {
 test("an in-flight delivery keeps its payload, because it still has to be sent", () => {
   // The converse. Redaction must not empty a delivery that has not gone out,
   // or the sweep silently destroys a message the sender was told was safe.
-  const dir = mkdtempSync(join(tmpdir(), "portage-queued-"));
-  const engine = new Engine({ dbPath: join(dir, "portage.db"), tickMs: 100_000 });
+  const dir = mkdtempSync(join(tmpdir(), "northstar-queued-"));
+  const engine = new Engine({ dbPath: join(dir, "northstar.db"), tickMs: 100_000 });
   try {
     engine.db.upsertChannel("q", "q", true, "{}");
     const msg = engine.db.insertMessage("q", "test", "text/plain", "Beaulieu");

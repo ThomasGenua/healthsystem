@@ -22,6 +22,9 @@ import { ClinicalRecord } from "../clinical/record.ts";
 import { ClinicalNotes } from "../clinical/notes.ts";
 import { Immunizations } from "../clinical/immunizations.ts";
 import { Vitals } from "../clinical/vitals.ts";
+import { Procedures } from "../clinical/procedures.ts";
+import { CarePlans } from "../clinical/careplans.ts";
+import { PatientDocuments } from "../clinical/documents.ts";
 import { CareTeam } from "../clinical/careteam.ts";
 import { Coverage } from "../clinical/coverage.ts";
 import { MedicationStore } from "../meds/store.ts";
@@ -37,7 +40,7 @@ import { VisitView } from "../workspace/visit.ts";
 import { Encounters } from "../clinical/encounters.ts";
 import { Directory } from "../directory/store.ts";
 import { ingestFhir } from "../directory/fhir.ts";
-import { ChannelNoticeDispatcher } from "../patient/notice.ts";
+import { ChannelNoticeDispatcher, PatientNotices } from "../patient/notice.ts";
 import { AccessReview } from "../audit/review.ts";
 import { Clinics } from "../schedule/clinics.ts";
 import { ChannelVersions } from "./channel-versions.ts";
@@ -48,6 +51,7 @@ import { Migration } from "../migrate/run.ts";
 import { ConsentDirectives } from "../patient/consent.ts";
 import { PatientMessaging } from "../patient/messaging.ts";
 import { PatientAccess } from "../patient/access.ts";
+import { PatientEnrolment } from "../patient/enrolment.ts";
 import { PrivacyOffice } from "../privacy/office.ts";
 import { RetentionRunner, type RetentionPolicy } from "./retention.ts";
 import { buildAck, getHl7, parseHl7, serializeHl7 } from "../hl7/parser.ts";
@@ -97,6 +101,9 @@ export interface TenantView {
   notes: ClinicalNotes;
   immunizations: Immunizations;
   vitals: Vitals;
+  procedures: Procedures;
+  carePlans: CarePlans;
+  documents: PatientDocuments;
   careTeam: CareTeam;
   coverage: Coverage;
   meds: MedicationStore;
@@ -110,6 +117,10 @@ export interface TenantView {
   schedule: Schedule;
   messaging: PatientMessaging;
   patientAccess: PatientAccess;
+  /** Clinic-attested binding of an OAuth subject to a chart. Not identity-proofing. */
+  enrolment: PatientEnrolment;
+  /** Notices a patient is owed, published onto a channel. Dispatching is not telling. */
+  notices: PatientNotices;
   registry: Registry;
   /** Bulk loads from an incumbent system, and whether they were complete. */
   migration: Migration;
@@ -165,7 +176,7 @@ export interface EngineOptions {
    * to the deployment's destinations by the same ordered, retried, dead-lettered
    * machinery as any other clinical message.
    *
-   * Deliberately a channel id rather than an address: Portage holds nothing to
+   * Deliberately a channel id rather than an address: Northstar holds nothing to
    * reach a patient by, and inventing one for a disclosure notice would send
    * somebody's private business to a stranger.
    */
@@ -308,6 +319,9 @@ export class Engine {
     const notes = new ClinicalNotes(clinical);
     const immunizations = new Immunizations(clinical);
     const vitals = new Vitals(clinical);
+    const procedures = new Procedures(clinical);
+    const carePlans = new CarePlans(clinical);
+    const documents = new PatientDocuments(clinical);
     const careTeam = new CareTeam(db);
     const coverage = new Coverage(db);
     const schedule = new Schedule(db);
@@ -330,6 +344,8 @@ export class Engine {
     const labIntake = new LabIntake(db, orders, clinical.patientIndex);
     const referrals = new ReferralStore(db);
     const patientAccess = new PatientAccess(db, orders, tasks);
+    const notices = new PatientNotices(db, this.noticeChannel);
+    const enrolment = new PatientEnrolment(db, patientAccess, notices);
     const encounters = new Encounters(db);
     // Built here rather than inline in the view because the key store needs it
     // too: issuing a credential for an organization nobody has registered is a
@@ -361,6 +377,9 @@ export class Engine {
       notes,
       immunizations,
       vitals,
+      procedures,
+      carePlans,
+      documents,
       careTeam,
       coverage,
       meds,
@@ -372,6 +391,8 @@ export class Engine {
       schedule,
       messaging,
       patientAccess,
+      enrolment,
+      notices,
       registry: new Registry(db),
       migration: new Migration(db, { clinical, meds }),
       consent,
@@ -385,6 +406,9 @@ export class Engine {
         tasks,
         immunizations,
         vitals,
+        procedures,
+        carePlans,
+        documents,
         careTeam,
         coverage,
         schedule,
@@ -435,7 +459,7 @@ export class Engine {
     if (!lock.acquired) {
       const held = lock.heldBy!;
       throw new Error(
-        `another Portage instance owns this database (pid ${held.pid} on ${held.host}, ` +
+        `another Northstar instance owns this database (pid ${held.pid} on ${held.host}, ` +
           `last seen ${Math.round(held.ageMs / 1000)}s ago). Two engines on one database duplicate messages. ` +
           `If that process is gone, wait for its claim to expire and start again.`
       );
