@@ -83,6 +83,17 @@ export interface OmlContext {
   /** Overridable so a message is reproducible under test. */
   controlId?: string;
   now?: string;
+  /**
+   * Answers to this laboratory's ask-at-order-entry questions, keyed by the
+   * question's code.
+   *
+   * Supplied rather than defaulted, and the distinction is the point. A
+   * glucose reported against a fasting interval when the patient had
+   * breakfast is a *wrong* result, not a missing one, and neither the
+   * laboratory nor the chart can tell afterwards. An unanswered required
+   * question stops the order instead.
+   */
+  aoeAnswers?: Record<string, string>;
 }
 
 /** HL7 priority codes. `stat` is the one that must never be silently downgraded. */
@@ -122,8 +133,9 @@ function e(value: string): string {
  * Numbers here are HL7 field numbers, so `{ 13: indication }` is OBR-13 and
  * can be checked against a specification without counting anything.
  */
-function segment(name: string, fields: Record<number, string>): string {
-  const max = Math.max(...Object.keys(fields).map(Number));
+function segment(name: string, fields: Record<number, string | undefined>): string {
+  const present = Object.entries(fields).filter(([, v]) => v !== undefined);
+  const max = Math.max(...present.map(([k]) => Number(k)));
   const out = [name];
   for (let i = 1; i <= max; i++) out.push(fields[i] ?? "");
   return out.join(D.field);
@@ -222,6 +234,22 @@ function build(
   if (!ctx.orderingProvider?.id) missing.push("orderingProvider.id");
   if (!ctx.orderingProvider?.family) missing.push("orderingProvider.family");
 
+  // Ask-at-order-entry. Only the questions this laboratory declares for this
+  // test, and only the required ones stop the order — but an answer is never
+  // invented, because the plausible default is the dangerous one: "fasting:
+  // no" supplied by nobody reads exactly like "fasting: no" supplied by the
+  // patient, and the reference interval turns on it.
+  const questions = profile.askAtOrderEntry?.[order.code] ?? [];
+  const answered = new Map<string, string>();
+  for (const q of questions) {
+    const given = ctx.aoeAnswers?.[q.code];
+    if (given !== undefined && given.trim() !== "") {
+      answered.set(q.code, given.trim());
+    } else if (q.required) {
+      missing.push(`answer to "${q.text}" (${q.code})`);
+    }
+  }
+
   if (missing.length > 0) {
     return {
       built: false,
@@ -292,9 +320,25 @@ function build(
     16: provider,
   });
 
+  // Answers ride as OBX after the OBR they qualify, which is where a
+  // laboratory's engine reads them. Only answered questions are sent: an OBX
+  // with an empty value asserts that somebody answered and said nothing.
+  const obx = questions
+    .filter((q) => answered.has(q.code))
+    .map((q, i) =>
+      segment("OBX", {
+        1: String(i + 1),
+        2: "ST",
+        3: `${e(q.code)}^${e(q.text)}^${e(profile.defaultCodeSystem ?? "LN")}`,
+        5: e(answered.get(q.code)!),
+        ...(q.units ? { 6: e(q.units) } : {}),
+        11: "O",
+      })
+    );
+
   return {
     built: true,
-    message: [msh, pid, orc, obr].join("\r") + "\r",
+    message: [msh, pid, orc, obr, ...obx].join("\r") + "\r",
     controlId,
     placerOrderNumber: order.id,
     identifier: id,
