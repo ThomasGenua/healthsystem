@@ -218,7 +218,7 @@ async function main(): Promise<void> {
     failed = true;
     console.error(`\nFAILED: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
   process.exit(failed ? 1 : 0);
 }

@@ -36,6 +36,10 @@
  * retention is then the destination's policy, which is what the operator
  * chose by making the objects undeletable.
  */
+import { fileURLToPath } from "node:url";
+import { win32 as pathWin32, posix as pathPosix } from "node:path";
+const isAbsoluteWin32 = (p: string) => pathWin32.isAbsolute(p);
+const isAbsolutePosix = (p: string) => pathPosix.isAbsolute(p);
 import { createHash, timingSafeEqual } from "node:crypto";
 import {
   existsSync,
@@ -336,13 +340,50 @@ export function parseRemoteUri(uri: string): RemoteUri {
     return { kind: "sftp", username, host, port, dir };
   }
   if (uri.startsWith("fs:") || uri.startsWith("file://")) {
-    const dir = uri.startsWith("file://") ? uri.slice("file://".length) : uri.slice("fs:".length);
-    if (!dir.startsWith("/")) throw new RemoteConfigError("fs: and file:// destinations must be absolute paths");
-    return { kind: "fs", dir };
+    return { kind: "fs", dir: localBackupDir(uri) };
   }
   throw new RemoteConfigError(
     `NORTHSTAR_BACKUP_REMOTE must be s3://, sftp://, fs: or file:// (got ${uri.split(":")[0] ?? uri})`
   );
+}
+
+/**
+ * The directory an `fs:` or `file://` backup destination names.
+ *
+ * Slicing the scheme off and demanding a leading "/" is right on exactly one
+ * family of operating systems. `C:\\backups` is absolute and has no leading
+ * slash, so it was rejected as a relative path; and `file:///C:/backups`
+ * sliced down to `/C:/backups`, which is not a path at all — the backup
+ * destination silently became a directory named `C:` under the root of the
+ * current drive. Both failures land on the one configuration setting whose
+ * job is to put the backups somewhere else.
+ *
+ * `fileURLToPath` knows the URI rules, including the drive-letter case and
+ * percent-encoding, so it is used rather than re-derived here.
+ *
+ * `windows` is a parameter rather than a read of the host so that both
+ * behaviours are testable from either platform. Windows path handling that
+ * can only be tested on Windows is how this broke: nothing in CI runs there.
+ */
+export function localBackupDir(uri: string, windows = process.platform === "win32"): string {
+  const absolute = windows ? isAbsoluteWin32 : isAbsolutePosix;
+  if (uri.startsWith("file://")) {
+    let dir: string;
+    try {
+      dir = fileURLToPath(uri, { windows });
+    } catch (err) {
+      throw new RemoteConfigError(`${uri} is not a usable file:// URI: ${(err as Error).message}`);
+    }
+    if (!absolute(dir)) throw new RemoteConfigError(`file:// destinations must be absolute paths (got ${dir})`);
+    return dir;
+  }
+  const dir = uri.slice("fs:".length);
+  if (!absolute(dir)) {
+    throw new RemoteConfigError(
+      `fs: destinations must be absolute paths (got ${dir}); on Windows that means a drive letter, as in fs:C:\\backups`
+    );
+  }
+  return dir;
 }
 
 function storeFromUri(uri: RemoteUri, env: NodeJS.ProcessEnv, deps: RemoteBackupDeps): RemoteStore {

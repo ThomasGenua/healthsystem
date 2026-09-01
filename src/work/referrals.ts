@@ -23,6 +23,7 @@
  *   Closing requires an outcome. A referral closed with nothing recorded is
  *   indistinguishable, afterwards, from one abandoned.
  */
+import { refuse } from "../core/refusal.ts";
 import { randomUUID } from "node:crypto";
 import { an } from "../core/text.ts";
 import type { Db } from "../db.ts";
@@ -440,16 +441,27 @@ export class ReferralStore {
     by: Actor,
     extra: { expectedBy?: string; detail?: string; closing?: boolean }
   ): ReferralRow {
-    const from = this.require(referralId).status;
-    const now = new Date().toISOString();
-    this.db.sql
-      .prepare(
-        `UPDATE referrals SET status = ?, expected_by = ?, updated_at = ?, closed_at = ?
-          WHERE tenant_id = ? AND id = ?`
-      )
-      .run(to, extra.expectedBy ?? null, now, extra.closing ? now : null, this.db.tenantId, referralId);
-    this.event(referralId, to, by, { fromStatus: from, toStatus: to, ...(extra.detail ? { detail: extra.detail } : {}) });
-    return this.get(referralId)!;
+    return this.db.transaction(() => {
+      const from = this.require(referralId).status;
+      const now = new Date().toISOString();
+      // The move is conditional on the status it was decided from, so two
+      // transitions racing cannot both apply. Without this the later write
+      // won silently and the referral's own event log recorded two moves out
+      // of the same state — a history that cannot be true.
+      const moved = this.db.sql
+        .prepare(
+          `UPDATE referrals SET status = ?, expected_by = ?, updated_at = ?, closed_at = ?
+            WHERE tenant_id = ? AND id = ? AND status = ?`
+        )
+        .run(to, extra.expectedBy ?? null, now, extra.closing ? now : null, this.db.tenantId, referralId, from);
+      if (moved.changes === 0) {
+        refuse(`referral ${referralId} is no longer ${from}; it moved while this change was being made`, 409);
+      }
+      // Inside the transaction with the move, so a referral can never carry a
+      // status its own event log does not account for.
+      this.event(referralId, to, by, { fromStatus: from, toStatus: to, ...(extra.detail ? { detail: extra.detail } : {}) });
+      return this.get(referralId)!;
+    });
   }
 
   private event(

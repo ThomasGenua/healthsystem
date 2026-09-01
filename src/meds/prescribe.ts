@@ -498,14 +498,20 @@ export class Prescribing {
     if (row.status !== "transmitted") {
       refuse(`${an(row.status)} prescription cannot be acknowledged`);
     }
-    this.db.sql
-      .prepare(
-        `UPDATE prescriptions SET status = 'acknowledged', acknowledged_at = ?, acknowledged_by = ?
-          WHERE tenant_id = ? AND id = ?`
-      )
-      .run(new Date().toISOString(), by.actorId, this.db.tenantId, prescriptionId);
-    this.event(prescriptionId, "acknowledged", by, by.detail ?? null);
-    return this.get(prescriptionId)!;
+    return this.db.transaction(() => {
+      // Acknowledgements arrive on connections carrying other traffic, and two
+      // for one prescription is a real shape. Conditional on the transmitted
+      // state, so the second is refused rather than overwriting the first.
+      const acked = this.db.sql
+        .prepare(
+          `UPDATE prescriptions SET status = 'acknowledged', acknowledged_at = ?, acknowledged_by = ?
+            WHERE tenant_id = ? AND id = ? AND status = 'transmitted'`
+        )
+        .run(new Date().toISOString(), by.actorId, this.db.tenantId, prescriptionId);
+      if (acked.changes === 0) refuse(`prescription ${prescriptionId} is no longer awaiting a pharmacy`, 409);
+      this.event(prescriptionId, "acknowledged", by, by.detail ?? null);
+      return this.get(prescriptionId)!;
+    });
   }
 
   /** The pharmacy rejected it, or the transmission never arrived. */
@@ -515,11 +521,19 @@ export class Prescribing {
     if (row.status !== "transmitted") {
       refuse(`${an(row.status)} prescription is not awaiting a pharmacy`);
     }
-    this.db.sql
-      .prepare("UPDATE prescriptions SET status = 'failed', failure_reason = ? WHERE tenant_id = ? AND id = ?")
-      .run(by.reason.trim(), this.db.tenantId, prescriptionId);
-    this.event(prescriptionId, "failed", by, by.reason.trim());
-    return this.get(prescriptionId)!;
+    return this.db.transaction(() => {
+      const failed = this.db.sql
+        .prepare(
+          `UPDATE prescriptions SET status = 'failed', failure_reason = ?
+            WHERE tenant_id = ? AND id = ? AND status = 'transmitted'`
+        )
+        .run(by.reason.trim(), this.db.tenantId, prescriptionId);
+      // A failure racing an acknowledgement must not overwrite it: the
+      // pharmacy holding the script is the fact that matters.
+      if (failed.changes === 0) refuse(`prescription ${prescriptionId} is no longer awaiting a pharmacy`, 409);
+      this.event(prescriptionId, "failed", by, by.reason.trim());
+      return this.get(prescriptionId)!;
+    });
   }
 
   /**

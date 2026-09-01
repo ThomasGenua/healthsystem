@@ -35,7 +35,7 @@ function clinic(interactions: InteractionSource | null = null): {
     meds: new MedicationStore(db, interactions),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -410,6 +410,6 @@ test("medications and allergies are confined to their tenant", () => {
     assert.equal(c.clear, false);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

@@ -27,7 +27,7 @@ function chart(): { db: Db; rec: ClinicalRecord; cleanup: () => void } {
     rec: new ClinicalRecord(db),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -268,6 +268,6 @@ test("the index is confined to its tenant", () => {
     );
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

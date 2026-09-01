@@ -87,7 +87,7 @@ test("a redacted delivery is refused, and no tombstone reaches the remote", asyn
   } finally {
     await engine.stop();
     await s.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -125,7 +125,7 @@ test("an unredacted delivery still replays, so the refusal is narrow", async () 
   } finally {
     await engine.stop();
     await s.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -169,6 +169,6 @@ test("the admin API returns the reason rather than a generic conflict", async ()
   } finally {
     await api.close();
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

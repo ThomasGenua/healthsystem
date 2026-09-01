@@ -92,7 +92,7 @@ async function siteWithHistory(): Promise<{
     dbPath,
     snapshot: backup.path,
     slotId: slot.id,
-    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }),
   };
 }
 
@@ -276,7 +276,7 @@ test("a snapshot from an older version restores, and is migrated before it is co
       db.close();
     }
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -306,7 +306,7 @@ test("a snapshot that cannot come up is refused before anything is displaced", (
     }
     assert.equal(existsSync(`${target}.displaced`), false);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 

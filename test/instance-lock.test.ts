@@ -24,7 +24,7 @@ import type { ChannelConfig } from "../src/types.ts";
 
 function tempDb(): { dir: string; path: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "northstar-lock-"));
-  return { dir, path: join(dir, "northstar.db"), cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return { dir, path: join(dir, "northstar.db"), cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
 
 test("a second engine on the same database refuses to start", async () => {

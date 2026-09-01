@@ -73,7 +73,7 @@ test("a real directory resolves to a mount and reports one way or the other", ()
     // Whatever it found, only a positive finding stops the warning.
     assert.equal(shouldWarn(r), r.state !== "encrypted");
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -89,7 +89,7 @@ test("an unencrypted finding says what is at stake and how to correct it", () =>
     assert.match(r.detail, /charts, allergies, results and the audit trail in plain text/);
     assert.match(r.detail, /NORTHSTAR_ENCRYPTED_AT_REST=yes/, "the escape hatch is in the message that needs it");
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -152,7 +152,7 @@ test("a mount table with no entry covering the path is unknown, not encrypted", 
     assert.equal(shouldWarn(r), true);
     assert.match(r.detail, /no mount found covering/);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -168,7 +168,7 @@ test("an encrypted volume under the data directory is recognised through the rea
     assert.equal(r.device, "/dev/mapper/luks-portage");
     assert.equal(shouldWarn(r), false);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 

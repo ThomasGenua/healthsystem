@@ -15,7 +15,18 @@ import { scopesFromSmart, type Scope } from "./scopes.ts";
 
 export interface OidcConfig {
   issuer: string;
-  audience?: string;
+  /**
+   * Who this token was minted for. Required, and deliberately not optional.
+   *
+   * It used to be optional, and an absent audience skipped the check
+   * entirely: every token the issuer had signed was accepted, including ones
+   * minted for a different application in the same directory. An identity
+   * provider serves many resource servers, so a token for the expenses
+   * system, signed by the same Entra tenant, was a valid Northstar token —
+   * and the deployments most likely to leave it unset are the ones least
+   * likely to notice.
+   */
+  audience: string;
   /** Explicit JWKS URI. Discovered from the issuer when omitted. */
   jwksUri?: string;
   /** Tolerance for clock drift between Northstar and the identity provider. */
@@ -104,6 +115,10 @@ export interface VerifiedToken {
    * `portage_practitioner` where an issuer already uses that name. Absent for a token that acts as no one.
    */
   practitionerId?: string;
+  /** SMART launch context, where the issuer supplied it. */
+  launchPatient?: string;
+  launchEncounter?: string;
+  fhirUser?: string;
 }
 
 export class JwtVerifier {
@@ -115,8 +130,20 @@ export class JwtVerifier {
   private readonly config: OidcConfig;
 
   constructor(config: OidcConfig) {
+    if (!config.audience || !config.audience.trim()) {
+      throw new Error(
+        "an OIDC audience is required: without one, every token this issuer has signed is accepted, " +
+          "including tokens minted for other applications in the same directory. Set NORTHSTAR_OIDC_AUDIENCE " +
+          "to the identifier this deployment is registered under."
+      );
+    }
     this.config = config;
     this.jwksUri = config.jwksUri;
+  }
+
+  /** What this verifier was configured with, for the discovery document. */
+  get settings(): Readonly<OidcConfig> {
+    return this.config;
   }
 
   private get ttl(): number {
@@ -204,11 +231,13 @@ export class JwtVerifier {
     if (claims.iss !== this.config.issuer) throw new Error("issuer mismatch");
     if (typeof claims.exp === "number" && now > claims.exp + skew) throw new Error("token expired");
     if (typeof claims.nbf === "number" && now + skew < claims.nbf) throw new Error("token not yet valid");
-    if (this.config.audience !== undefined) {
-      const aud = claims.aud;
-      const ok = Array.isArray(aud) ? aud.includes(this.config.audience) : aud === this.config.audience;
-      if (!ok) throw new Error("audience mismatch");
-    }
+    // Unconditional. A token with no aud claim at all is refused for the same
+    // reason as one naming somebody else: nothing says it was meant for here.
+    const aud = claims.aud;
+    const audienceOk = Array.isArray(aud)
+      ? aud.includes(this.config.audience)
+      : aud === this.config.audience;
+    if (!audienceOk) throw new Error("audience mismatch");
 
     // The tenant claim the provider asserts. `tenant` is what most issuers
     // call it; the prefixed names are the escape hatch for one that already
@@ -229,6 +258,16 @@ export class JwtVerifier {
     // from it.
     const orgClaim = pickClaim(claims, "organization");
     const practClaim = pickClaim(claims, "practitioner");
+    // SMART launch context. Surfaced so a caller can see what the token was
+    // launched against, and type-checked so a structured value cannot be
+    // carried around as though it were an identifier. It is not yet a
+    // requirement: this deployment binds a patient token to a chart through an
+    // explicit authority grant, which is the stronger control, and demanding a
+    // launch claim as well would refuse tokens that are already correctly
+    // constrained. See docs/STATE_OF_THE_ART_ROADMAP.md item 44.
+    const launchPatient = typeof claims.patient === "string" ? claims.patient : undefined;
+    const launchEncounter = typeof claims.encounter === "string" ? claims.encounter : undefined;
+    const fhirUser = typeof claims.fhirUser === "string" ? claims.fhirUser : undefined;
     return {
       subject: typeof claims.sub === "string" ? claims.sub : "unknown",
       scopes: scopesFromSmart(rawScopes(claims)),
@@ -236,6 +275,9 @@ export class JwtVerifier {
       ...(typeof tenantClaim === "string" ? { tenantId: tenantClaim } : {}),
       ...(typeof orgClaim === "string" ? { organizationId: orgClaim } : {}),
       ...(typeof practClaim === "string" ? { practitionerId: practClaim } : {}),
+      ...(launchPatient ? { launchPatient } : {}),
+      ...(launchEncounter ? { launchEncounter } : {}),
+      ...(fhirUser ? { fhirUser } : {}),
     };
   }
 }

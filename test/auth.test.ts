@@ -241,7 +241,7 @@ test("oauth bearer tokens: discovery, signature, claims, and scope mapping", asy
     /token expired/
   );
   await assert.rejects(
-    () => new JwtVerifier({ issuer: "http://elsewhere.invalid", jwksUri: `${idp.issuer}/jwks` }).verify(good),
+    () => new JwtVerifier({ issuer: "http://elsewhere.invalid", audience: "portage", jwksUri: `${idp.issuer}/jwks` }).verify(good),
     /issuer mismatch/
   );
 

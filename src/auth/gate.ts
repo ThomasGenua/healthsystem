@@ -115,6 +115,33 @@ export class AuthGate {
     return Boolean(this.opts.keys || this.opts.jwt);
   }
 
+  /**
+   * The SMART App Launch discovery document, or undefined where OAuth is off.
+   *
+   * Northstar is a resource server: it validates tokens, it does not issue
+   * them. So this advertises the site's own authorization server, and lists
+   * only what this end actually enforces. A discovery document claiming a
+   * capability the server does not have is how a client comes to trust a
+   * check that never runs, so nothing is listed aspirationally.
+   */
+  smartConfiguration(): Record<string, unknown> | undefined {
+    const jwt = this.opts.jwt;
+    if (!jwt) return undefined;
+    const { issuer, jwksUri } = jwt.settings;
+    const base = issuer.replace(/\/+$/, "");
+    return {
+      issuer,
+      jwks_uri: jwksUri ?? `${base}/.well-known/jwks.json`,
+      authorization_endpoint: `${base}/authorize`,
+      token_endpoint: `${base}/token`,
+      grant_types_supported: ["authorization_code", "client_credentials"],
+      code_challenge_methods_supported: ["S256"],
+      token_endpoint_auth_methods_supported: ["private_key_jwt", "client_secret_post"],
+      scopes_supported: ["system/*.read", "system/*.write", "user/*.read", "patient/*.read"],
+      capabilities: ["client-confidential-asymmetric", "permission-v2", "permission-patient", "permission-user"],
+    };
+  }
+
   /** The WWW-Authenticate value to return with a 401. */
   get challenge(): string {
     return this.opts.jwt ? 'Bearer realm="northstar"' : 'Bearer realm="northstar", scheme="api-key"';

@@ -47,7 +47,7 @@ test("every commit is flushed to disk, so an AA survives power loss", () => {
     assert.equal(sync.synchronous, 2, "synchronous must be FULL (2), not NORMAL (1) or OFF (0)");
     db.close();
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -84,7 +84,7 @@ test("a failed write is answered with AE, never AA", async () => {
     } catch {
       /* expected: storage was pulled out from under it */
     }
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -118,7 +118,7 @@ test("only messages that were acknowledged are actually stored", async () => {
     assert.equal(engine.db.verifyChain("durable").ok, true);
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -143,7 +143,7 @@ test("a rejected message leaves the chain intact for the ones that follow", asyn
     assert.ok(chain.checked >= 2);
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -189,6 +189,6 @@ test("a nested transaction joins the outer one rather than starting a second", (
     assert.equal(db.listMessages({ channelId: "c" }).length, 3);
     db.close();
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

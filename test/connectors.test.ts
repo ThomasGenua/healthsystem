@@ -64,7 +64,7 @@ test("filedrop source ingests files in name order and archives them", async () =
 
   await engine.stop();
   await sink.close();
-  rmSync(dir, { recursive: true, force: true });
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 test("dbpoll source follows a cursor, persists it, and picks up new rows", async () => {
@@ -107,5 +107,5 @@ test("dbpoll source follows a cursor, persists it, and picks up new rows", async
   await engine.stop();
   scratch.close();
   await sink.close();
-  rmSync(dir, { recursive: true, force: true });
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });

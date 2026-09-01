@@ -29,7 +29,7 @@ function lab(): { db: Db; orders: OrderStore; cleanup: () => void } {
     orders: new OrderStore(db),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -399,6 +399,6 @@ test("orders and results are confined to their tenant", () => {
     assert.equal(north.unmatched().length, 0);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

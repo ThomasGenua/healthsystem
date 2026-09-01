@@ -167,7 +167,7 @@ async function main(): Promise<void> {
   );
 
   await new Promise<void>((r) => sink.close(() => r()));
-  rmSync(dir, { recursive: true, force: true });
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   process.exit(ok ? 0 : 1);
 }
 

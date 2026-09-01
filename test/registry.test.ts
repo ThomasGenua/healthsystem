@@ -57,7 +57,7 @@ function region() {
     reg: new Registry(db),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -408,6 +408,6 @@ test("registries are confined to their tenant", () => {
     assert.equal(north.reg.measure(DIABETES, HBA1C_CONTROL, NOW).numerator, 1);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

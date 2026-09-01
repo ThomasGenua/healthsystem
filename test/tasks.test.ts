@@ -26,7 +26,7 @@ function desk(): { db: Db; tasks: TaskStore; cleanup: () => void } {
     tasks: new TaskStore(db),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -297,6 +297,6 @@ test("inboxes are confined to their tenant", () => {
     assert.throws(() => south.complete(n.id, { ...DOCTOR, evidence: "reaching" }), /no task/);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

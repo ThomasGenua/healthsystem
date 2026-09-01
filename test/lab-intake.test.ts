@@ -60,7 +60,7 @@ function lab() {
     intake: new LabIntake(db, orders, record.patientIndex),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -635,6 +635,6 @@ test("one custodian's laboratory feed cannot reach another's charts", () => {
     assert.equal(north.intake.heldForIdentity().length, 0);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

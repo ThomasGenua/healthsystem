@@ -111,7 +111,7 @@ test("no identifier survives a redaction sweep anywhere in the database", async 
   } finally {
     await engine.stop();
     await new Promise<void>((r) => sink.close(() => r()));
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -179,7 +179,7 @@ test("a remote's reply is redacted too, on success and on rejection", async () =
   } finally {
     await engine.stop();
     await new Promise<void>((r) => remote.close(() => r()));
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -209,7 +209,7 @@ test("a dead-lettered delivery is not exempt from retention", async () => {
     assert.equal(engine.db.listDeliveries({ channelId: "dlq" })[0].payload, "[redacted]");
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -239,6 +239,6 @@ test("an in-flight delivery keeps its payload, because it still has to be sent",
     assert.equal(engine.db.listDeliveries({ channelId: "q" })[0].payload, "Beaulieu");
   } finally {
     engine.db.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

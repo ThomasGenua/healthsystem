@@ -237,7 +237,7 @@ function ward() {
     authorKind: "system",
     source: "test",
   });
-  return { db, vitals, deps: { vitals, clinical }, cleanup: () => { db.close(); rmSync(dir, { recursive: true, force: true }); } };
+  return { db, vitals, deps: { vitals, clinical }, cleanup: () => { db.close(); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } };
 }
 
 const NURSE = { authorId: "rn-tetso", authorKind: "practitioner" };
