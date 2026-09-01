@@ -48,9 +48,45 @@ always forward-compatible and run automatically on open — see
   /api/orders/routing` — the last kept out of `/api/clinical/` because it
   serves site configuration rather than patient data. Hazards H-128 to H-131.
 
-  This is the honesty half. Building the outbound OML itself is the next
-  piece; until it lands, every order correctly reads as not having gone
-  anywhere.
+  This is the honesty half; the message that does the telling is below.
+
+- **The outbound order message** (`src/orders/outbound.ts`). `buildOml()`
+  turns a placed order into an OML^O21 a laboratory's engine will accept, or
+  says exactly what stopped it and builds nothing.
+
+  The module is built around refusing, because the dangerous failure here is
+  not a rejected message. A blank patient identifier is rejected, and somebody
+  fixes it. A *plausible* one is accepted and matched, and the specimen is
+  drawn against somebody else's chart with nothing raising an error. So the
+  assigning authority must be declared on the profile and the patient must
+  carry an identifier under it; a birth date is required because it is what a
+  laboratory verifies against, and names are not unique in a community of four
+  hundred people; the timezone is declared rather than read from this machine,
+  since a server in one zone sending for a clinic in another is ordinary in the
+  north. A draft is refused — a draft is a clinician thinking, and sending it
+  books a collection for a test nobody ordered — and so is a cancelled order.
+  Every missing field is reported at once, because an integration analyst
+  commissioning an interface wants one list rather than five round trips.
+
+  Building and sending are separate, so a message can be produced and shown to
+  a laboratory's analyst during commissioning without anything reaching a wire.
+  That is exactly how the first conversation with Dynacare or LifeLabs goes.
+
+  Hazards H-132 to H-134.
+
+**Fixed**
+
+- **Two HL7 fields were one position out** (H-133). The indication was landing
+  in OBR-14, Specimen Received Date/Time, and the ordering provider in OBR-17,
+  Order Callback Phone Number. Neither is a message that fails: a laboratory
+  parses it and files clinical information as a timestamp.
+
+  The cause was positional arrays, where a run of empty separators is
+  uncountable by eye and one too many shifts everything after it. Segments are
+  now built from explicit HL7 field numbers, so `{ 13: indication }` is OBR-13
+  and can be checked against a specification without counting. Found by
+  dumping the bytes of a built message rather than by rereading the array,
+  which had already been read twice.
 
 **Fixed**
 
