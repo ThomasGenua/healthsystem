@@ -253,6 +253,35 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **The outbound order path is reachable** (`POST /api/clinical/order-send`,
+  `POST /api/clinical/order-cancel-send`). Four merged changes built a message,
+  a transmission model, an acknowledgement reading and a cancellation, and
+  nothing could call any of it: every order read as "not sent" and was,
+  correctly and permanently, because there was no way to send one.
+
+  The route declaration now carries what a send needs — endpoint, the four MSH
+  identities, the clinic's timezone offset and the laboratory profile — and
+  **all of it is checked when the declaration is made, not when somebody
+  presses send.** A route that promises to carry orders and cannot is a promise
+  the record makes on a site's behalf, and the moment it is discovered should
+  not be the moment a specimen is sitting in a fridge. A site that has declared
+  it does not transmit needs none of it and is not made to invent an endpoint.
+
+  **The connection is read from the declared route, never from the request.**
+  The caller names the order, and may supply ask-at-order-entry answers and
+  specimen detail; it may not name a destination. Anybody who could would be
+  able to direct a named patient's requisition, with their identifiers and
+  clinical indication, to a host of their choosing. A route naming a profile
+  that is not loaded refuses rather than falling back to a generic reading,
+  because a message built against a guess is the failure the profile exists to
+  prevent.
+
+  Sending is an access to the chart — the message is built from it — so it goes
+  through the same patient-directive check as any other read, and is audited
+  either way, with the acknowledgement outcome in the detail.
+
+  Hazards H-153 to H-155.
+
 - **The specimen travels with the order, when there is one** (`SpecimenDetail`,
   SPM on the outbound message). Type, collection time, tube identifier and
   source site.

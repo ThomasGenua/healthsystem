@@ -88,7 +88,16 @@ function site(reply: (sent: string) => string | Promise<string>) {
   });
   orders.declareOrderRouting(
     "lab",
-    { transmits: true, destination: "Stanton Laboratory", detail: "MLLP over the site VPN" },
+    { transmits: true, destination: "Stanton Laboratory", detail: "MLLP over the site VPN", connection: {
+        host: "lab.example",
+        port: 6661,
+        sendingApplication: "NORTHSTAR",
+        sendingFacility: "GNWT",
+        receivingApplication: "LABAPP",
+        receivingFacility: "STANTON",
+        timezoneOffset: "-06:00",
+        profileId: "stanton",
+      } },
     GP
   );
   const far = replying(reply);

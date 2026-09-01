@@ -669,6 +669,25 @@ CREATE TABLE IF NOT EXISTS order_routing (
   transmits INTEGER NOT NULL,
   -- Who receives them. Null when nothing is transmitted.
   destination TEXT,
+  -- Where and as whom. All of it is required before an order can actually be
+  -- sent, and all of it is checked when the declaration is made rather than
+  -- when a clinician presses send: a routing that says it transmits and
+  -- cannot is a promise the record makes on behalf of a site that has not
+  -- kept it, and the moment it is discovered should not be the moment a
+  -- specimen is waiting.
+  endpoint_host TEXT,
+  endpoint_port INTEGER,
+  -- MSH-3/4 and MSH-5/6. Named per route because a site that sends to two
+  -- laboratories is known to each of them by whatever they configured.
+  sending_application TEXT,
+  sending_facility TEXT,
+  receiving_application TEXT,
+  receiving_facility TEXT,
+  -- The clinic's offset, e.g. "-06:00". Never this machine's: a server in one
+  -- zone sending for a clinic in another is ordinary in the north.
+  timezone_offset TEXT,
+  -- Which laboratory profile the message is built against.
+  profile_id TEXT,
   -- How, or why not. Read by an operator deciding whether this is expected.
   detail TEXT NOT NULL,
   declared_at TEXT NOT NULL,
@@ -2337,6 +2356,16 @@ const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
   // Whether a transmission carried the order or its cancellation. Defaulted to
   // 'order' so rows written before cancellation existed keep their meaning.
   { table: "order_transmissions", column: "kind", type: "TEXT NOT NULL DEFAULT 'order'" },
+  // The connection an order actually goes out on. Nullable: a site that has
+  // declared it does not transmit has nothing to put here.
+  { table: "order_routing", column: "endpoint_host", type: "TEXT" },
+  { table: "order_routing", column: "endpoint_port", type: "INTEGER" },
+  { table: "order_routing", column: "sending_application", type: "TEXT" },
+  { table: "order_routing", column: "sending_facility", type: "TEXT" },
+  { table: "order_routing", column: "receiving_application", type: "TEXT" },
+  { table: "order_routing", column: "receiving_facility", type: "TEXT" },
+  { table: "order_routing", column: "timezone_offset", type: "TEXT" },
+  { table: "order_routing", column: "profile_id", type: "TEXT" },
   // Tenancy. NOT NULL with a default, so existing rows land in the default
   // tenant rather than becoming unreachable, and a deployment that never
   // configures a second tenant is unaffected.
