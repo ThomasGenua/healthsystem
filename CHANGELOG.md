@@ -7,6 +7,66 @@ Northstar is pre-1.0: minor versions may change interfaces. Database upgrades ar
 always forward-compatible and run automatically on open — see
 [Upgrading](docs/RUNBOOK.md#upgrading).
 
+## Unreleased
+
+**Added**
+
+- **An order placed here is no longer assumed to be with a laboratory.**
+  `OrderStore.place()` wrote `status = 'placed'` and recorded an event.
+  Nothing sent the requisition anywhere, because until an outbound ordering
+  interface exists there is nothing to send it to. The chart showed "placed",
+  the worklist showed it awaiting a result, and `awaitingResult()` would
+  eventually list it as overdue — which reads as a slow laboratory. The
+  laboratory had never heard of it.
+
+  This is the third silence, and the earliest: `orders.ts` opens on an order
+  never resulted and a result never read, and this one comes before both. It
+  is also worse than the dispense silence it resembles. A prescription with no
+  dispense record may still have been collected; the pharmacy may simply not
+  report. Here *we* are the sender, so the absence is not ambiguous and not
+  somebody else's — it is ours, and it is knowable.
+
+  Transmission is now its own fact. A site declares per category whether
+  orders leave and to whom, with a detail saying how or why not, so "we print
+  the requisition" is distinguishable from "the interface is stuck" — the two
+  call for opposite actions and rendered identically before. Each attempt to
+  hand an order over is appended, never updated, and **only an acknowledgement
+  from the far end means a laboratory holds the order.** Sent, rejected and
+  failed each say what they are instead: a rejection says the order is not
+  with them and needs correcting; a transport failure says to treat it as not
+  sent. The state rides on the order row rather than being a second call a
+  caller has to remember, because a guarantee that depends on every screen
+  remembering holds until one screen forgets.
+
+  `notWithFiller()` lists placed orders no laboratory has acknowledged. On a
+  site with no outbound interface that is every open order, which is the
+  correct and uncomfortable answer.
+
+  `GET /api/clinical/order-transmission`, `GET
+  /api/clinical/orders-not-with-filler`, `POST
+  /api/clinical/order-transmission-record`, and `GET`/`POST
+  /api/orders/routing` — the last kept out of `/api/clinical/` because it
+  serves site configuration rather than patient data. Hazards H-128 to H-131.
+
+  This is the honesty half. Building the outbound OML itself is the next
+  piece; until it lands, every order correctly reads as not having gone
+  anywhere.
+
+**Fixed**
+
+- **A superseded transmission attempt could override the one that superseded
+  it** (H-130). Attempts were ordered by timestamp with a tiebreak on a random
+  UUID, and a send with the acknowledgement answering it lands in the same
+  millisecond on a fast link — so the later attempt was whichever identifier
+  happened to sort last, and a rejected order reported as acknowledged about
+  half the time. That is the precise inversion the mechanism exists to
+  prevent. Ordering is now an autoincrementing sequence.
+
+  Caught as an intermittent failure in its own new tests: three runs gave 0, 0
+  and 1 failures. Diagnosed rather than re-run, and pinned by a test that
+  writes twenty attempts inside one millisecond and asserts the timestamps
+  really did collide, so it cannot pass by accident.
+
 ## 0.8.0 — 2026-08-27
 
 A release about what the record admits it does not know. 0.7.0 stopped the
