@@ -15,6 +15,16 @@ import type { LabProfile } from "../orders/hl7.ts";
 import type { DeliveryRow, DestinationConfig, DestinationTlsConfig } from "../types.ts";
 import type { FhirStore } from "../fhir/store.ts";
 import { mllpSend } from "../hl7/mllp.ts";
+import { interpretAck } from "../orders/outbound.ts";
+import type { OrderStore } from "../orders/store.ts";
+
+/** What a lab-order delivery needs to know to report itself back to the order. */
+interface LabOrderMeta {
+  orderId?: string;
+  controlId?: string;
+  kind?: "order" | "cancel";
+  destination?: string;
+}
 
 const DEFAULTS = {
   maxAttempts: 8,
@@ -28,6 +38,7 @@ export type StoreResolver = (tenantId: string) => {
   fhir: FhirStore;
   clinical: ClinicalRecord;
   labIntake: LabIntake;
+  orders: OrderStore;
 };
 
 /** Laboratory dialects a `labresults` destination can name. */
@@ -356,6 +367,71 @@ export class DeliveryWorker {
       } finally {
         clearTimeout(timer);
       }
+    }
+
+    // A laboratory order, and the acknowledgement brought back to it.
+    //
+    // Which order this is travels in the message's metadata rather than in the
+    // payload: the payload is the requisition as the laboratory will read it,
+    // and adding our own identifiers to it would be sending them something we
+    // invented for our own bookkeeping.
+    if (dest.type === "lab-order") {
+      if (!this.stores) throw new Error("clinical stores not attached to this worker");
+      const message = this.db.getMessage(messageId);
+      const meta = message?.meta ? (JSON.parse(message.meta) as LabOrderMeta) : undefined;
+      if (!meta?.orderId || !meta.controlId) {
+        // Permanent: nothing about retrying finds an order id that was never
+        // written. Dead-lettering puts it in front of somebody instead.
+        throw new PermanentFailure(
+          `this delivery carries no order to record against (message ${messageId}); it cannot be attributed`
+        );
+      }
+      const orders = this.stores(tenantId).orders;
+      const kind = meta.kind === "cancel" ? "cancel" : "order";
+
+      let ack: string;
+      try {
+        ack = await mllpSend(dest.host, dest.port, payload, dest.timeoutMs ?? DEFAULTS.timeoutMs);
+      } catch (err) {
+        // The link failed. Recorded against the order as failed, which reads
+        // as *not sent* rather than sent-and-waiting, and rethrown so the
+        // queue retries it — a refused connection is exactly what retries are
+        // for, and the requisition may still be perfectly acceptable.
+        orders.recordTransmission(
+          meta.orderId,
+          {
+            kind,
+            outcome: "failed",
+            destination: meta.destination ?? `${dest.host}:${dest.port}`,
+            controlId: meta.controlId,
+            detail: (err as Error).message,
+          },
+          { actorId: "delivery-worker", actorKind: "system" }
+        );
+        throw err;
+      }
+
+      const verdict = interpretAck(ack, meta.controlId);
+      orders.recordTransmission(
+        meta.orderId,
+        {
+          kind,
+          outcome: verdict.outcome,
+          destination: meta.destination ?? `${dest.host}:${dest.port}`,
+          controlId: meta.controlId,
+          detail: verdict.detail,
+        },
+        { actorId: "delivery-worker", actorKind: "system" }
+      );
+
+      if (verdict.outcome === "acknowledged") return ack.slice(0, 4_000) || null;
+      // A refusal is permanent. The same requisition sent again is refused
+      // again, and each attempt would write another rejection onto the chart.
+      if (verdict.outcome === "rejected") throw new PermanentFailure(verdict.detail);
+      // Everything else — no acknowledgement, an acknowledgement for another
+      // message, a code this does not recognise — is a maybe, and a maybe is
+      // worth retrying.
+      throw new Error(verdict.detail);
     }
 
     if (dest.type === "mllp") {
