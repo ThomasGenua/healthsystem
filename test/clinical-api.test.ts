@@ -645,6 +645,9 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/allergies": `?patient=${P}`,
       "/api/clinical/results": "",
       "/api/clinical/orders": `?patient=${P}`,
+      "/api/clinical/order-transmission": `?order=${forAck.id}`,
+      "/api/clinical/orders-not-with-filler": "",
+      "/api/clinical/order-transmission-record": "POST",
       "/api/clinical/referrals": "",
       "/api/clinical/tasks": "?owner=dr-tetso",
       "/api/clinical/notes": `?patient=${P}`,
@@ -782,6 +785,12 @@ test("every clinical route leaves an audit row, including ones added later", asy
 
     /** The body each POST route needs to do real work. */
     const bodies: Record<string, unknown> = {
+      "/api/clinical/order-transmission-record": {
+        order: forAck.id,
+        outcome: "sent",
+        destination: "Stanton Laboratory",
+        detail: "handed to the outbound queue",
+      },
       "/api/clinical/safety-check": { patient: P, ingredient: "amoxicillin" },
       "/api/clinical/break-glass": {
         patient: P,

@@ -68,7 +68,7 @@ The escape hatch is break-glass, which is loud and recorded — see
 git clone https://github.com/ThomasGenua/healthsystem.git northstar
 cd northstar
 npm ci
-npm run typecheck && npm test    # 980 tests; do not deploy a node that fails one
+npm run typecheck && npm test    # 1025 tests; do not deploy a node that fails one
 
 export NORTHSTAR_DATA=/var/lib/northstar
 export NORTHSTAR_PORT=8686
@@ -119,7 +119,7 @@ curl -sS -X POST -H "authorization: Bearer $ADMIN_KEY" http://localhost:8686/api
 systemctl stop northstar
 
 # 3. Update, and re-run the suite against the new code on this machine.
-git fetch --tags && git checkout v0.7.0
+git fetch --tags && git checkout v0.8.0
 npm ci && npm run typecheck && npm test
 
 # 4. Start. Watch the log: the migration announces each table it rebuilds.

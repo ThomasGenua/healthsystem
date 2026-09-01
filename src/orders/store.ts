@@ -54,6 +54,53 @@ export type AbnormalFlag = "normal" | "low" | "high" | "critical-low" | "critica
 
 export type ResultStatus = "preliminary" | "final" | "corrected" | "cancelled";
 
+/** What actually happened to an order after somebody pressed place. */
+export type TransmissionOutcome = "sent" | "acknowledged" | "rejected" | "failed";
+
+/**
+ * Where an order has got to on its way out of this building.
+ *
+ * `acknowledged` is the only state in which a laboratory can be said to hold
+ * the order. Every other state is the order still being here, and each one
+ * says so differently because the actions differ: an undeclared route is an
+ * operator's problem, a route that exists but has not carried this order is a
+ * queue to look at, and a rejection is a requisition somebody has to correct
+ * and resend.
+ */
+export type TransmissionState =
+  | { state: "no-route"; detail: string }
+  | { state: "not-declared"; detail: string }
+  | { state: "not-sent"; detail: string }
+  | { state: "sent"; at: string; detail: string }
+  | { state: "acknowledged"; at: string; detail: string }
+  | { state: "rejected"; at: string; detail: string }
+  | { state: "failed"; at: string; detail: string };
+
+export interface OrderRouting {
+  category: OrderCategory;
+  transmits: boolean;
+  destination: string | null;
+  detail: string;
+  declared_at: string;
+  declared_by: string;
+}
+
+/** Whether an attempt carried the order or its cancellation. */
+export type TransmissionKind = "order" | "cancel";
+
+export interface TransmissionRow {
+  tenant_id: string;
+  kind: TransmissionKind;
+  id: string;
+  order_id: string;
+  outcome: TransmissionOutcome;
+  destination: string;
+  control_id: string | null;
+  detail: string;
+  at: string;
+  by: string;
+}
+
 /**
  * How long acknowledgement may wait, by how abnormal the value is.
  *
@@ -578,10 +625,20 @@ export class OrderStore {
       .all(this.db.tenantId, encounterId) as unknown as OrderRow[];
   }
 
-  forPatient(patientId: string): OrderRow[] {
-    return this.db.sql
+  /**
+   * A patient's orders, each carrying where it actually got to.
+   *
+   * The transmission state rides on the row rather than being a second call a
+   * caller has to know to make. A chart that renders `status` alone shows
+   * "placed" for an order no laboratory has ever seen, and every screen in
+   * this system would have had to remember to ask separately — which is the
+   * kind of guarantee that holds until one screen forgets.
+   */
+  forPatient(patientId: string): Array<OrderRow & { transmission: TransmissionState }> {
+    const rows = this.db.sql
       .prepare("SELECT * FROM orders WHERE tenant_id = ? AND patient_id = ? ORDER BY created_at DESC")
       .all(this.db.tenantId, patientId) as unknown as OrderRow[];
+    return rows.map((o) => ({ ...o, transmission: this.transmissionState(o.id) }));
   }
 
   history(orderId: string): OrderEvent[] {
@@ -722,6 +779,285 @@ export class OrderStore {
         extra.toStatus ?? null,
         extra.detail ?? null
       );
+  }
+
+  /**
+   * Declares whether orders of a category leave this site, and to whom.
+   *
+   * Required before `transmissionState` will say anything other than "nobody
+   * has said". The declaration is the site admitting what it does: a clinic
+   * that orders on paper says so, and its orders then read as sitting here on
+   * purpose rather than as a queue somebody forgot to drain.
+   *
+   * `transmits: false` needs a detail as much as `true` does — "faxed on the
+   * paper requisition" and "the interface is not commissioned yet" call for
+   * completely different actions from whoever reads it.
+   */
+  declareOrderRouting(
+    category: OrderCategory,
+    routing: { transmits: boolean; destination?: string; detail: string },
+    by: Actor
+  ): void {
+    if (!routing.detail.trim()) {
+      throw new Error("a routing declaration needs a detail saying how orders leave, or why they do not");
+    }
+    if (routing.transmits && !routing.destination?.trim()) {
+      throw new Error("a route that transmits needs a destination");
+    }
+    this.db.sql
+      .prepare(
+        `INSERT INTO order_routing (tenant_id, category, transmits, destination, detail, declared_at, declared_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(tenant_id, category) DO UPDATE SET
+           transmits = excluded.transmits, destination = excluded.destination, detail = excluded.detail,
+           declared_at = excluded.declared_at, declared_by = excluded.declared_by`
+      )
+      .run(
+        this.db.tenantId,
+        category,
+        routing.transmits ? 1 : 0,
+        routing.transmits ? routing.destination!.trim() : null,
+        routing.detail.trim(),
+        new Date().toISOString(),
+        by.actorId
+      );
+  }
+
+  /** How orders of this category leave, as declared. Undefined when nobody has said. */
+  orderRouting(category: OrderCategory): OrderRouting | undefined {
+    const row = this.db.sql
+      .prepare(`SELECT * FROM order_routing WHERE tenant_id = ? AND category = ?`)
+      .get(this.db.tenantId, category) as
+      | (Omit<OrderRouting, "transmits"> & { transmits: number })
+      | undefined;
+    return row ? { ...row, transmits: row.transmits === 1 } : undefined;
+  }
+
+  /**
+   * Records one attempt to hand an order over, and what came back.
+   *
+   * Appended, never updated, for the reason results are: an acknowledgement
+   * belongs to the attempt it answered. Overwriting would let a later success
+   * erase the fact that this laboratory once rejected this requisition, which
+   * is the history somebody needs when a specimen turns up against an order
+   * the lab does not hold.
+   */
+  recordTransmission(
+    orderId: string,
+    attempt: {
+      outcome: TransmissionOutcome;
+      destination: string;
+      controlId?: string;
+      detail: string;
+      kind?: TransmissionKind;
+    },
+    by: Actor
+  ): TransmissionRow {
+    this.require(orderId);
+    if (!attempt.destination.trim()) throw new Error("a transmission needs a destination");
+    if (!attempt.detail.trim()) throw new Error("a transmission needs a detail");
+    const row: TransmissionRow = {
+      tenant_id: this.db.tenantId,
+      kind: attempt.kind ?? "order",
+      id: randomUUID(),
+      order_id: orderId,
+      outcome: attempt.outcome,
+      destination: attempt.destination.trim(),
+      control_id: attempt.controlId ?? null,
+      detail: attempt.detail.trim(),
+      at: new Date().toISOString(),
+      by: by.actorId,
+    };
+    this.db.sql
+      .prepare(
+        `INSERT INTO order_transmissions
+           (tenant_id, kind, id, order_id, outcome, destination, control_id, detail, at, by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        row.tenant_id,
+        row.kind,
+        row.id,
+        row.order_id,
+        row.outcome,
+        row.destination,
+        row.control_id,
+        row.detail,
+        row.at,
+        row.by
+      );
+    return row;
+  }
+
+  /** Every attempt to send this order, oldest first. Both kinds unless one is named. */
+  transmissions(orderId: string, kind?: TransmissionKind): TransmissionRow[] {
+    const rows = this.db.sql
+      .prepare(`SELECT * FROM order_transmissions WHERE tenant_id = ? AND order_id = ? ORDER BY seq`)
+      .all(this.db.tenantId, orderId) as unknown as TransmissionRow[];
+    return kind ? rows.filter((r) => r.kind === kind) : rows;
+  }
+
+  /**
+   * Where an order has got to on its way out.
+   *
+   * Only `acknowledged` means a laboratory holds it. The rest are all the
+   * order still being here, and the point of distinguishing them is that a
+   * clinician reading "placed" has no way to tell which one they are looking
+   * at — every one of them renders identically on a chart today.
+   *
+   * A later attempt supersedes an earlier one, so a rejection followed by a
+   * corrected resend that was acknowledged reads as acknowledged. The
+   * rejection stays in `transmissions()`, because it happened.
+   */
+  transmissionState(orderId: string): TransmissionState {
+    const order = this.require(orderId);
+    const attempts = this.transmissions(orderId, "order");
+    const last = attempts[attempts.length - 1];
+    if (last) {
+      const where = `${last.outcome} at ${last.at} to ${last.destination}`;
+      if (last.outcome === "acknowledged") {
+        return { state: "acknowledged", at: last.at, detail: `${where}: ${last.detail}` };
+      }
+      if (last.outcome === "rejected") {
+        return {
+          state: "rejected",
+          at: last.at,
+          detail: `${where}: ${last.detail}. The order is not with them; it needs correcting and resending.`,
+        };
+      }
+      if (last.outcome === "failed") {
+        return {
+          state: "failed",
+          at: last.at,
+          detail: `${where}: ${last.detail}. Nothing acknowledged receipt, so treat it as not sent.`,
+        };
+      }
+      return {
+        state: "sent",
+        at: last.at,
+        detail: `${where}: ${last.detail}. Sent is not received — no acknowledgement has come back.`,
+      };
+    }
+
+    const routing = this.orderRouting(order.category);
+    if (!routing) {
+      return {
+        state: "not-declared",
+        detail:
+          `nobody has declared whether ${order.category} orders leave this site. Until somebody does, ` +
+          "there is no way to tell an order waiting in a queue from one that was never going anywhere.",
+      };
+    }
+    if (!routing.transmits) {
+      return {
+        state: "no-route",
+        detail:
+          `${order.category} orders are not transmitted from this site (${routing.detail}). ` +
+          "This order is here, and whatever happens next happens outside this system.",
+      };
+    }
+    return {
+      state: "not-sent",
+      detail:
+        `${order.category} orders go to ${routing.destination}, and this one has not been handed over yet. ` +
+        "No laboratory holds it.",
+    };
+  }
+
+  /**
+   * Placed orders that no laboratory has acknowledged holding.
+   *
+   * The list this whole mechanism exists to make possible. `awaitingResult`
+   * answers "who is late?", which quietly assumes somebody was asked. This
+   * answers the question underneath it — was anybody asked at all — and on a
+   * site with no outbound interface it returns every open order, which is the
+   * correct and uncomfortable answer.
+   */
+  notWithFiller(): Array<OrderRow & { transmission: TransmissionState }> {
+    const open = this.db.sql
+      .prepare(
+        `SELECT * FROM orders WHERE tenant_id = ? AND status IN ('placed', 'in-progress')
+          ORDER BY ordered_at`
+      )
+      .all(this.db.tenantId) as unknown as OrderRow[];
+    return open
+      .map((o) => ({ ...o, transmission: this.transmissionState(o.id) }))
+      .filter((o) => o.transmission.state !== "acknowledged");
+  }
+
+  /**
+   * Whether the laboratory has been told this order is cancelled.
+   *
+   * Separate from `transmissionState` because they answer opposite questions
+   * and a single state would let one hide the other: an order can be
+   * acknowledged *and* its cancellation unsent, which is the dangerous
+   * combination and the one that reads as fine if you only ask once.
+   */
+  cancellationState(orderId: string): TransmissionState {
+    const order = this.require(orderId);
+    if (order.status !== "cancelled") {
+      return { state: "no-route", detail: "this order is not cancelled, so there is nothing to withdraw" };
+    }
+    const attempts = this.transmissions(orderId, "cancel");
+    const last = attempts[attempts.length - 1];
+    if (!last) {
+      const held = this.transmissionState(orderId);
+      if (held.state !== "acknowledged") {
+        return {
+          state: "not-sent",
+          detail:
+            "no cancellation has been sent, and none is needed: no laboratory ever acknowledged the order.",
+        };
+      }
+      return {
+        state: "not-sent",
+        detail:
+          "this order was cancelled here and the laboratory that acknowledged it has not been told. " +
+          "They still hold the requisition, so the specimen is still due to be collected.",
+      };
+    }
+    const where = `${last.outcome} at ${last.at} to ${last.destination}`;
+    if (last.outcome === "acknowledged") {
+      return { state: "acknowledged", at: last.at, detail: `cancellation ${where}: ${last.detail}` };
+    }
+    if (last.outcome === "rejected") {
+      return {
+        state: "rejected",
+        at: last.at,
+        detail: `cancellation ${where}: ${last.detail}. They still hold the order.`,
+      };
+    }
+    if (last.outcome === "failed") {
+      return {
+        state: "failed",
+        at: last.at,
+        detail: `cancellation ${where}: ${last.detail}. Treat the order as still with them.`,
+      };
+    }
+    return {
+      state: "sent",
+      at: last.at,
+      detail: `cancellation ${where}: ${last.detail}. Nothing has confirmed they withdrew it.`,
+    };
+  }
+
+  /**
+   * Orders cancelled here that a laboratory still holds.
+   *
+   * The mirror of `notWithFiller`, and the more urgent list. There, the record
+   * claimed a laboratory had something it did not. Here a laboratory has
+   * something the record says it does not: the specimen is still collected,
+   * the test still run, and a result arrives for a test the chart says nobody
+   * wanted — against a patient who may have been told it was called off.
+   */
+  cancelledButStillWithFiller(): Array<OrderRow & { cancellation: TransmissionState }> {
+    const cancelled = this.db.sql
+      .prepare(`SELECT * FROM orders WHERE tenant_id = ? AND status = 'cancelled' ORDER BY updated_at`)
+      .all(this.db.tenantId) as unknown as OrderRow[];
+    return cancelled
+      .filter((o) => this.transmissionState(o.id).state === "acknowledged")
+      .map((o) => ({ ...o, cancellation: this.cancellationState(o.id) }))
+      .filter((o) => o.cancellation.state !== "acknowledged");
   }
 
   private require(orderId: string): OrderRow {

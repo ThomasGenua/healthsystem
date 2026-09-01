@@ -1914,6 +1914,67 @@ async function route(
       if (!patient) return send(res, 400, { error: "patient required" });
       return phi("ServiceRequest", () => tenant.orders.forPatient(patient), (rows) => rows.length);
     }
+    // Where one order actually got to, with every attempt behind it. Audited
+    // as a read of the patient because it is one: the state names the order,
+    // the destination and when it went.
+    if (path === "/api/clinical/order-transmission" && method === "GET") {
+      const orderId = url.searchParams.get("order");
+      if (!orderId) return send(res, 400, { error: "order required" });
+      const order = tenant.orders.get(orderId);
+      if (!order) return send(res, 404, { error: `no order ${orderId}` });
+      return phi("ServiceRequest", () => ({
+        order: orderId,
+        transmission: tenant.orders.transmissionState(orderId),
+        attempts: tenant.orders.transmissions(orderId),
+      }));
+    }
+    // Placed orders no laboratory has acknowledged holding. On a site with no
+    // outbound interface this is every open order, which is the correct
+    // answer and the one nothing was saying before.
+    if (path === "/api/clinical/orders-not-with-filler" && method === "GET") {
+      return phi(
+        "ServiceRequest",
+        () => filterByDirective(["ServiceRequest"], tenant.orders.notWithFiller()),
+        (r) => r.rows.length
+      );
+    }
+    if (path === "/api/clinical/order-transmission-record" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        order?: string;
+        outcome?: string;
+        destination?: string;
+        controlId?: string;
+        detail?: string;
+      };
+      if (!body.order || !body.outcome || !body.destination || !body.detail) {
+        return send(res, 400, { error: "order, outcome, destination and detail required" });
+      }
+      const order = tenant.orders.get(body.order);
+      if (!order) return send(res, 404, { error: `no order ${body.order}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      try {
+        const row = tenant.orders.recordTransmission(
+          body.order,
+          {
+            outcome: body.outcome as "sent" | "acknowledged" | "rejected" | "failed",
+            destination: body.destination,
+            ...(body.controlId === undefined ? {} : { controlId: body.controlId }),
+            detail: body.detail,
+          },
+          { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" }
+        );
+        audit({
+          action: "U",
+          outcome: 0,
+          resourceType: "ServiceRequest",
+          patient: order.patient_id,
+          detail: `order ${body.outcome} to ${body.destination}`,
+        });
+        return send(res, 200, row);
+      } catch (err) {
+        return send(res, 400, { error: (err as Error).message });
+      }
+    }
     if (path === "/api/clinical/referrals" && method === "GET") {
       return phi(
         "ServiceRequest",
@@ -3961,6 +4022,44 @@ async function route(
   // catalogue reads makes the access review worse at finding the real ones.
   if (method === "GET" && path === "/api/scores") {
     return send(res, 200, { scores: SCORE_IDS });
+  }
+  // Whether orders of a category leave this site, and to whom. Site
+  // configuration rather than patient data, so it is not under /api/clinical/
+  // for the same reason the score catalogue is not.
+  if (path === "/api/orders/routing" && method === "GET") {
+    const categories = ["lab", "imaging", "procedure", "referral", "other"] as const;
+    return send(res, 200, {
+      routing: categories.map((category) => ({
+        category,
+        declared: tenant.orders.orderRouting(category) ?? null,
+      })),
+    });
+  }
+  if (path === "/api/orders/routing" && method === "POST") {
+    const body = JSON.parse(await readBody(req)) as {
+      category?: string;
+      transmits?: boolean;
+      destination?: string;
+      detail?: string;
+    };
+    if (!body.category || typeof body.transmits !== "boolean" || !body.detail) {
+      return send(res, 400, { error: "category, transmits and detail required" });
+    }
+    const who = auth.ok ? auth.principal.id : "unauthenticated";
+    try {
+      tenant.orders.declareOrderRouting(
+        body.category as "lab" | "imaging" | "procedure" | "referral" | "other",
+        {
+          transmits: body.transmits,
+          ...(body.destination === undefined ? {} : { destination: body.destination }),
+          detail: body.detail,
+        },
+        { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" }
+      );
+      return send(res, 200, { category: body.category, declared: tenant.orders.orderRouting(body.category as "lab") });
+    } catch (err) {
+      return send(res, 400, { error: (err as Error).message });
+    }
   }
   if (method === "GET" && path === "/api/conformance/capability") {
     const pack = engine.conformance.get(url.searchParams.get("pack") ?? "");

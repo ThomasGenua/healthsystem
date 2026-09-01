@@ -136,7 +136,7 @@ test("sodium in mmol/L is recorded as a conversion even though the number does n
 // ── Refusal: a mismatch that needs a clinical fact ─────────────────────────
 
 test("a molar concentration is refused against a mass threshold, rather than guessed", () => {
-  // The example H-109 names. Relating µmol/L to mg/dL needs bilirubin's molar
+  // The example H-140 names. Relating µmol/L to mg/dL needs bilirubin's molar
   // mass, which is a fact about the analyte; choosing one here would be the
   // silent rescaling this contract exists to prevent.
   assert.throws(

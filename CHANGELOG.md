@@ -11,6 +11,20 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Governed provenance for every clinical risk score.** A result now carries
+  the exact instrument and Northstar implementation versions, original source,
+  intended population, exclusions, required units, calculation time and a
+  copy of the supplied inputs. The assurance state is deliberately machine
+  readable and unresolved: source-linked golden vectors exercise the
+  implementation, but no independent clinical reviewer or clinical owner has
+  signed it. Chart-derived scores also state their clinical `asOf` time.
+
+  The catalogue makes two easily hidden version choices explicit: MELD-Na is
+  the historical 2016 OPTN formula, not current MELD 3.0, and NEWS2 implements
+  Scale 1 only. `test/score-provenance.test.ts` requires one governed
+  definition and one source-linked vector per scorer and keeps those caveats
+  attached to the API result. Hazards H-139 through H-141.
+
 - **A measurement contract, so a score knows what scale its numbers are on.**
   `POST /api/clinical/score/v2` takes a value together with its UCUM unit —
   `{ "value": 98.6, "unit": "[degF]" }` — instead of a bare number whose unit
@@ -29,24 +43,9 @@ always forward-compatible and run automatically on open — see
   is converted and shows its working, one in a unit that cannot be read is
   reported unavailable like a stale value, and one recorded before this
   contract — carrying no unit at all — is used, with the evidence saying the
-  record stated no scale rather than implying one was checked. Hazards H-130
-  and H-131, and H-109's control is now enforced rather than declared.
-  980 tests.
-
-**Fixed**
-
-- **A blood pressure reported no unit, however carefully it was recorded.**
-  `Vitals.parse` read the unit off the top-level `valueQuantity`, which a
-  component-valued observation does not have, so the one vital always written
-  with a unit was the one vital whose unit was invisible. It is now read from
-  the components.
-
-- **A versioned clinical route was exempt from the audit-row guarantee.** The
-  test that discovers routes by reading `admin.ts` matched
-  `[a-z/-]+`, so `/api/clinical/score/v2` did not match at all — and the
-  scanner went on reporting a healthy 139 routes while covering 139 of 140.
-  The character class now admits digits. This is the second time that class
-  has been too narrow; the first was the "/" that exempted nested paths.
+  record stated no scale rather than implying one was checked. Hazards H-144
+  and H-145, and H-140's control is now enforced rather than declared.
+  1025 tests.
 
 - **A domain for every score input, distinct from the instrument's
   thresholds.** A supplied value that no measurement could have produced —
@@ -65,8 +64,184 @@ always forward-compatible and run automatically on open — see
   and respiratory rates and laboratory concentrations are deliberately
   unbounded above, because implausibility is a judgement about a patient
   rather than a fact about a unit. Below, on and above probes now cover every
-  numeric criterion and band edge in all ten instruments. Hazards H-128 and
-  H-129. 962 tests.
+  numeric criterion and band edge in all ten instruments. Hazards H-142 and
+  H-143. 962 tests.
+
+- **An order placed here is no longer assumed to be with a laboratory.**
+  `OrderStore.place()` wrote `status = 'placed'` and recorded an event.
+  Nothing sent the requisition anywhere, because until an outbound ordering
+  interface exists there is nothing to send it to. The chart showed "placed",
+  the worklist showed it awaiting a result, and `awaitingResult()` would
+  eventually list it as overdue — which reads as a slow laboratory. The
+  laboratory had never heard of it.
+
+  This is the third silence, and the earliest: `orders.ts` opens on an order
+  never resulted and a result never read, and this one comes before both. It
+  is also worse than the dispense silence it resembles. A prescription with no
+  dispense record may still have been collected; the pharmacy may simply not
+  report. Here *we* are the sender, so the absence is not ambiguous and not
+  somebody else's — it is ours, and it is knowable.
+
+  Transmission is now its own fact. A site declares per category whether
+  orders leave and to whom, with a detail saying how or why not, so "we print
+  the requisition" is distinguishable from "the interface is stuck" — the two
+  call for opposite actions and rendered identically before. Each attempt to
+  hand an order over is appended, never updated, and **only an acknowledgement
+  from the far end means a laboratory holds the order.** Sent, rejected and
+  failed each say what they are instead: a rejection says the order is not
+  with them and needs correcting; a transport failure says to treat it as not
+  sent. The state rides on the order row rather than being a second call a
+  caller has to remember, because a guarantee that depends on every screen
+  remembering holds until one screen forgets.
+
+  `notWithFiller()` lists placed orders no laboratory has acknowledged. On a
+  site with no outbound interface that is every open order, which is the
+  correct and uncomfortable answer.
+
+  `GET /api/clinical/order-transmission`, `GET
+  /api/clinical/orders-not-with-filler`, `POST
+  /api/clinical/order-transmission-record`, and `GET`/`POST
+  /api/orders/routing` — the last kept out of `/api/clinical/` because it
+  serves site configuration rather than patient data. Hazards H-128 to H-131.
+
+  This is the honesty half; the message that does the telling is below.
+
+- **The outbound order message** (`src/orders/outbound.ts`). `buildOml()`
+  turns a placed order into an OML^O21 a laboratory's engine will accept, or
+  says exactly what stopped it and builds nothing.
+
+  The module is built around refusing, because the dangerous failure here is
+  not a rejected message. A blank patient identifier is rejected, and somebody
+  fixes it. A *plausible* one is accepted and matched, and the specimen is
+  drawn against somebody else's chart with nothing raising an error. So the
+  assigning authority must be declared on the profile and the patient must
+  carry an identifier under it; a birth date is required because it is what a
+  laboratory verifies against, and names are not unique in a community of four
+  hundred people; the timezone is declared rather than read from this machine,
+  since a server in one zone sending for a clinic in another is ordinary in the
+  north. A draft is refused — a draft is a clinician thinking, and sending it
+  books a collection for a test nobody ordered — and so is a cancelled order.
+  Every missing field is reported at once, because an integration analyst
+  commissioning an interface wants one list rather than five round trips.
+
+  Building and sending are separate, so a message can be produced and shown to
+  a laboratory's analyst during commissioning without anything reaching a wire.
+  That is exactly how the first conversation with Dynacare or LifeLabs goes.
+
+  Hazards H-132 to H-134.
+
+- **Orders are sent, and the acknowledgement is correlated** (`src/orders/send.ts`).
+  The piece that makes the rest of this move: build, hand to the transport,
+  read what came back, record it. Every step can fail in a way that must not
+  read as success, so each has its own outcome — a refused build records
+  nothing at all ("we tried and the line was down" and "we never had enough to
+  send" are different conversations), a throwing transport is `failed` which
+  reads as *not sent*, and a negative acknowledgement is `rejected`.
+
+  The attempt is written down **before** the send. A process dying between the
+  socket and the database would otherwise leave an order reading as never sent
+  while a laboratory holds it, and a clinician resending produces two
+  requisitions for one specimen.
+
+  `interpretAck()` checks MSA-2 before MSA-1. That is the field an
+  implementation skips: MSA-1 says *an* acknowledgement was positive, and only
+  MSA-2 says it was about **this** message. Acknowledgements arrive on
+  connections carrying other traffic and a slow far end answers a previous
+  message after this one went out — so a perfectly positive AA carrying
+  somebody else's control id is `failed`, never `acknowledged`. A code the
+  parser does not recognise is not assumed positive either, and a commit
+  accept says it is one, because holding a message is not accepting an order.
+  Hazards H-135 and H-137.
+
+- **The laboratory is told when an order is cancelled** (H-136). `cancel()`
+  set the order to cancelled here and nothing told anyone. A laboratory that
+  acknowledged it still held the requisition, so the specimen was still
+  collected, the test still run, and a result came back for a test the chart
+  said nobody wanted — against a patient who may have been told it was called
+  off.
+
+  That is the original problem mirrored. The first was the record claiming a
+  laboratory had something it did not; this is a laboratory having something
+  the record says it does not, and it is the more urgent of the two because it
+  ends with a needle.
+
+  Cancellation goes as ORC-1 `CA` naming the same placer order number, since a
+  cancellation naming a different requisition cancels nothing. Its
+  acknowledgement is tracked separately from the order's, because an order can
+  be acknowledged *and* its cancellation unsent — the dangerous combination,
+  and the one that reads as fine if you only ask once.
+  `cancelledButStillWithFiller()` lists every order cancelled here that no
+  laboratory has confirmed withdrawing. A cancellation is refused for an order
+  nobody cancelled, which would stop a test somebody is waiting for.
+
+**Fixed**
+
+- **A blood pressure reported no unit, however carefully it was recorded.**
+  `Vitals.parse` read the unit off the top-level `valueQuantity`, which a
+  component-valued observation does not have, so the one vital always written
+  with a unit was the one vital whose unit was invisible. It is now read from
+  the components.
+
+- **A versioned clinical route was exempt from the audit-row guarantee.** The
+  test that discovers routes by reading `admin.ts` matched
+  `[a-z/-]+`, so `/api/clinical/score/v2` did not match at all — and the
+  scanner went on reporting a healthy 139 routes while covering 139 of 140.
+  The character class now admits digits. This is the second time that class
+  has been too narrow; the first was the "/" that exempted nested paths.
+
+- **Two HL7 fields were one position out** (H-133). The indication was landing
+  in OBR-14, Specimen Received Date/Time, and the ordering provider in OBR-17,
+  Order Callback Phone Number. Neither is a message that fails: a laboratory
+  parses it and files clinical information as a timestamp.
+
+  The cause was positional arrays, where a run of empty separators is
+  uncountable by eye and one too many shifts everything after it. Segments are
+  now built from explicit HL7 field numbers, so `{ 13: indication }` is OBR-13
+  and can be checked against a specification without counting. Found by
+  dumping the bytes of a built message rather than by rereading the array,
+  which had already been read twice.
+
+**Fixed**
+
+- **A superseded transmission attempt could override the one that superseded
+  it** (H-130). Attempts were ordered by timestamp with a tiebreak on a random
+  UUID, and a send with the acknowledgement answering it lands in the same
+  millisecond on a fast link — so the later attempt was whichever identifier
+  happened to sort last, and a rejected order reported as acknowledged about
+  half the time. That is the precise inversion the mechanism exists to
+  prevent. Ordering is now an autoincrementing sequence.
+
+  Caught as an intermittent failure in its own new tests: three runs gave 0, 0
+  and 1 failures. Diagnosed rather than re-run, and pinned by a test that
+  writes twenty attempts inside one millisecond and asserts the timestamps
+  really did collide, so it cannot pass by accident.
+
+## 0.8.0 — 2026-08-27
+
+A release about what the record admits it does not know. 0.7.0 stopped the
+system trusting a silence on the way out; this one stops it manufacturing
+confidence on the way in.
+
+Ten validated instruments now score risk, and refuse to when an input is
+missing — because the arithmetic that treats an undrawn urea as a normal one
+makes a patient read as safer for having been less investigated. Feeding those
+same instruments from the chart adds the second version of that failure, a
+value that is present but old, so every input carries a clock and a NEWS2 built
+from this morning's observations refuses rather than describing a patient who
+may since have deteriorated. A laboratory harness reads a vendor's own messages
+before anybody trusts the interface, and states in the report what a clean run
+does not establish. Documents, procedures and care plans stop being notes and
+become facts with structure, which is what makes their absence visible.
+Enrolment is attested by a named clerk who writes how they checked, rather than
+inferred from a token.
+
+And the product is now called Northstar — a rename carried out on the
+principle that it must not move anything a running site depends on. The
+database, the backups, the environment, the tenant claim, the metrics and the
+wire all still answer to their old names, because every one of those failures
+would have been silent.
+
+**Added**
 
 - **Patient-supplied documents as chart facts, not notes.** They write onto
   the existing append-only clinical record as `DocumentReference` with
@@ -104,6 +279,88 @@ always forward-compatible and run automatically on open — see
   was told. No channel is a visible failure, not a quiet skip. Not
   identity-proofing, not ONE ID, not a certified portal, not WCAG. Hazards
   H-114 to H-117. 826 tests.
+
+- **Risk scores computed from the chart, with a clock on every input**
+  (`src/clinical/score-from-chart.ts`, `POST /api/clinical/chart-score`).
+  Hand-supplied scores refuse a missing input. Feeding the same instruments
+  from the chart adds the failure the hand-supplied form cannot have: **a value
+  that is present but old.**
+
+  A NEWS2 assembled from the most recent vitals is a NEWS2 of whenever those
+  vitals were taken. If the last set was at 06:00 and it is now 20:00, the
+  number describes a patient from fourteen hours ago and puts today's date on
+  it — a complete set of real measurements, every field populated, rendering as
+  confidently as one taken five minutes ago. It is not wrong about the past; it
+  is wrong about now, which is the only tense anybody reads it in.
+
+  So every input carries a maximum age, and a value past its window is not a
+  value: it falls through to `missing` and the instrument refuses exactly as it
+  would for a measurement nobody took. The windows differ because the clinical
+  question does — NEWS2 accepts four hours, CURB-65 twelve — and every score
+  reports the age of its stalest input, because a score is only as current as
+  the oldest thing it rests on.
+
+  Nothing the chart does not hold is defaulted. NEWS2 needs to know whether the
+  patient is on supplemental oxygen and whether they are alert; neither is a
+  vital sign, and both plausible defaults understate — by two points and three
+  respectively, on the instrument that exists to escalate exactly those
+  patients. They are reported as unavailable with the size of the
+  understatement, so an interface can ask for precisely what is missing.
+
+  Comorbidity indices are deliberately not derived from diagnosis codes:
+  mapping ICD-10 onto Charlson's categories is real terminology work whose
+  failure mode is a confident lower score, and it deserves its own design
+  rather than a plausible lookup table. Hazards H-104 and H-105.
+
+- **A laboratory conformance harness** (`src/orders/conformance.ts`, `npm run
+  labcheck`). A laboratory interface is agreed on paper and discovered in
+  practice: the specification says the accession number is in ORC-3 and the
+  messages put it in OBR-3; the specification does not mention a timezone and
+  every result lands an hour out. None of it is visible until real messages
+  meet real parsing code, and by then the interface is usually live.
+
+  The harness reads a laboratory's own sample messages against a profile and
+  reports, per message and in aggregate, what parsed, what refused and why,
+  which fields were absent, and which assumptions had to be made — each with
+  the question to put to their integration analyst. A message that will not
+  parse is a finding rather than an exception, so fifty messages produce one
+  report instead of fifty round trips. Findings are marked blocking or not:
+  a missing accession number is answerable, while a patient identifier the
+  profile can never match would hold every result for identity.
+
+  What it will not do is conclude that an interface conforms. Every report
+  states that a sample set exercises only what it happens to contain, and that
+  nothing was inferred into a profile — guessing field locations from a sample
+  and calling the result a vendor interface is the failure `labs/README.md`
+  exists to refuse. Hazard H-103.
+
+- **Ten validated clinical risk scores** — CURB-65, CHA₂DS₂-VASc, HAS-BLED,
+  Wells for PE, HEART, MELD-Na, CIWA-Ar, Charlson, LACE and NEWS2, in
+  `src/clinical/scores.ts`, with `POST /api/clinical/score`.
+
+  The arithmetic is the easy half. The reason the module is shaped the way it
+  is: the obvious implementation of CURB-65 asks `urea > 7 ? 1 : 0`, and a
+  patient whose urea was never drawn then scores zero for that criterion —
+  identical to a patient whose urea came back normal. The total is lower, the
+  band is milder, and the recommendation moves toward discharge. **The patient
+  reads as safer because less is known about them.** That is the allergy list
+  that is empty because nobody asked, wearing a different name.
+
+  So a score with a missing input is not a score. It returns
+  `{ complete: false, missing: [...] }`, which has no `score` field at all —
+  there is no number to render and no way to misread one. Each criterion
+  distinguishes three states, not two: present, looked-for-and-absent, and
+  unstated; only the last refuses.
+
+  NEWS2 escalates on any single parameter scoring 3 even when the aggregate is
+  low, because a patient can be profoundly abnormal in one axis and
+  unremarkable in the rest. Every result carries the instrument's published
+  interpretation rather than an instruction, and HAS-BLED says in words that a
+  high score is a prompt to address modifiable risk, not a reason to withhold
+  anticoagulation. Hazards H-100 through H-102.
+
+  This is decision support, not a decision, and Northstar is not a certified
+  medical device.
 
 **Changed**
 
@@ -173,7 +430,7 @@ always forward-compatible and run automatically on open — see
   Portage", and `test/rename-compat.test.ts`, whose regressions were checked
   against the unfixed source.
 
-**Fixed
+**Fixed**
 
 - **The not-on-care-team flag never fired on real traffic** (H-106). The
   privacy office's review joined `principal_id` and required
@@ -197,103 +454,20 @@ always forward-compatible and run automatically on open — see
   branch had gone too stale to merge, so they are ported here with regression
   tests verified to fail against the unfixed source.
 
-**Added**
+- **The README claimed the clinical platform had no user interface.** It has
+  had a chart, a worklist, break-glass and the privacy inbox for two releases,
+  and a patient access page in English and French. An understatement is still
+  an inaccuracy, and the Status section is load-bearing precisely because its
+  caveats are meant to be exact. It now says which parts have a screen and
+  which are API-only.
 
-- **Governed provenance for every clinical risk score.** A result now carries
-  the exact instrument and Portage implementation versions, original source,
-  intended population, exclusions, required units, calculation time and a
-  copy of the supplied inputs. The assurance state is deliberately machine
-  readable and unresolved: source-linked golden vectors exercise the
-  implementation, but no independent clinical reviewer or clinical owner has
-  signed it. Chart-derived scores also state their clinical `asOf` time.
-
-  The catalogue makes two easily hidden version choices explicit: MELD-Na is
-  the historical 2016 OPTN formula, not current MELD 3.0, and NEWS2 implements
-  Scale 1 only. `test/score-provenance.test.ts` requires one governed
-  definition and one source-linked vector per scorer and keeps those caveats
-  attached to the API result. Hazards H-108 through H-110.
-
-- **Risk scores computed from the chart, with a clock on every input**
-  (`src/clinical/score-from-chart.ts`, `POST /api/clinical/chart-score`).
-  Hand-supplied scores refuse a missing input. Feeding the same instruments
-  from the chart adds the failure the hand-supplied form cannot have: **a value
-  that is present but old.**
-
-  A NEWS2 assembled from the most recent vitals is a NEWS2 of whenever those
-  vitals were taken. If the last set was at 06:00 and it is now 20:00, the
-  number describes a patient from fourteen hours ago and puts today's date on
-  it — a complete set of real measurements, every field populated, rendering as
-  confidently as one taken five minutes ago. It is not wrong about the past; it
-  is wrong about now, which is the only tense anybody reads it in.
-
-  So every input carries a maximum age, and a value past its window is not a
-  value: it falls through to `missing` and the instrument refuses exactly as it
-  would for a measurement nobody took. The windows differ because the clinical
-  question does — NEWS2 accepts four hours, CURB-65 twelve — and every score
-  reports the age of its stalest input, because a score is only as current as
-  the oldest thing it rests on.
-
-  Nothing the chart does not hold is defaulted. NEWS2 needs to know whether the
-  patient is on supplemental oxygen and whether they are alert; neither is a
-  vital sign, and both plausible defaults understate — by two points and three
-  respectively, on the instrument that exists to escalate exactly those
-  patients. They are reported as unavailable with the size of the
-  understatement, so an interface can ask for precisely what is missing.
-
-  Comorbidity indices are deliberately not derived from diagnosis codes:
-  mapping ICD-10 onto Charlson's categories is real terminology work whose
-  failure mode is a confident lower score, and it deserves its own design
-  rather than a plausible lookup table. Hazards H-104 and H-105.
-
-- **A laboratory conformance harness** (`src/orders/conformance.ts`, `npm run
-  labcheck`). A laboratory interface is agreed on paper and discovered in
-  practice: the specification says the accession number is in ORC-3 and the
-  messages put it in OBR-3; the specification does not mention a timezone and
-  every result lands an hour out. None of it is visible until real messages
-  meet real parsing code, and by then the interface is usually live.
-
-  The harness reads a laboratory's own sample messages against a profile and
-  reports, per message and in aggregate, what parsed, what refused and why,
-  which fields were absent, and which assumptions had to be made — each with
-  the question to put to their integration analyst. A message that will not
-  parse is a finding rather than an exception, so fifty messages produce one
-  report instead of fifty round trips. Findings are marked blocking or not:
-  a missing accession number is answerable, while a patient identifier the
-  profile can never match would hold every result for identity.
-
-  What it will not do is conclude that an interface conforms. Every report
-  states that a sample set exercises only what it happens to contain, and that
-  nothing was inferred into a profile — guessing field locations from a sample
-  and calling the result a vendor interface is the failure `labs/README.md`
-  exists to refuse. Hazard H-103.
-
-- **Ten implemented published clinical risk scores** — CURB-65, CHA₂DS₂-VASc, HAS-BLED,
-  Wells for PE, HEART, MELD-Na, CIWA-Ar, Charlson, LACE and NEWS2, in
-  `src/clinical/scores.ts`, with `POST /api/clinical/score`.
-
-  The arithmetic is the easy half. The reason the module is shaped the way it
-  is: the obvious implementation of CURB-65 asks `urea > 7 ? 1 : 0`, and a
-  patient whose urea was never drawn then scores zero for that criterion —
-  identical to a patient whose urea came back normal. The total is lower, the
-  band is milder, and the recommendation moves toward discharge. **The patient
-  reads as safer because less is known about them.** That is the allergy list
-  that is empty because nobody asked, wearing a different name.
-
-  So a score with a missing input is not a score. It returns
-  `{ complete: false, missing: [...] }`, which has no `score` field at all —
-  there is no number to render and no way to misread one. Each criterion
-  distinguishes three states, not two: present, looked-for-and-absent, and
-  unstated; only the last refuses.
-
-  NEWS2 escalates on any single parameter scoring 3 even when the aggregate is
-  low, because a patient can be profoundly abnormal in one axis and
-  unremarkable in the rest. Every result carries the instrument's published
-  interpretation rather than an instruction, and HAS-BLED says in words that a
-  high score is a prompt to address modifiable risk, not a reason to withhold
-  anticoagulation. Hazards H-100 through H-102.
-
-  This is decision support, not a decision, and Portage is not a certified
-  medical device.
+- **Nothing checked that the reported capability version was the shipped one.**
+  Three files carry the version at a release and only `src/version.ts` is read
+  at runtime, so forgetting it failed no build and no test — it shipped a
+  CapabilityStatement telling every federation partner it was talking to the
+  previous release. `src/version.ts` and `package.json` are now pinned to each
+  other, and to what the statement actually reports, rather than to a literal
+  that would be a third place to forget.
 
 ## 0.7.0 — 2026-08-26
 

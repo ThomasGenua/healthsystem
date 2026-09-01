@@ -14,7 +14,7 @@
  * temperature in Fahrenheit, produces a number that is silently scored against
  * thresholds written for a different scale. 98.6 is a normal temperature and a
  * catastrophic one, depending on a fact the request never carried. This is
- * H-109, and naming the required unit in a catalogue does not prevent it: a
+ * H-140, and naming the required unit in a catalogue does not prevent it: a
  * caller who reads the catalogue was never the one at risk.
  *
  * ## Saying the unit instead of spelling it into the name
@@ -47,7 +47,7 @@
  * to know what substance was measured.
  *
  * Bilirubin in µmol/L against a mg/dL threshold is *not* converted, even
- * though it is the example H-109 names. Going between a molar and a mass
+ * though it is the example H-140 names. Going between a molar and a mass
  * concentration requires that substance's molar mass, which is a clinical
  * fact about the analyte and not a property of the units. Choosing one on a
  * caller's behalf is exactly the silent rescaling this module exists to stop,
