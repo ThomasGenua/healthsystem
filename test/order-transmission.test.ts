@@ -98,7 +98,16 @@ test("with a route declared, an unsent order says no laboratory holds it", () =>
   try {
     s.orders.declareOrderRouting(
       "lab",
-      { transmits: true, destination: "Stanton Laboratory", detail: "MLLP over the site VPN" },
+      { transmits: true, destination: "Stanton Laboratory", detail: "MLLP over the site VPN", connection: {
+        host: "lab.example",
+        port: 6661,
+        sendingApplication: "NORTHSTAR",
+        sendingFacility: "GNWT",
+        receivingApplication: "LABAPP",
+        receivingFacility: "STANTON",
+        timezoneOffset: "-06:00",
+        profileId: "stanton",
+      } },
       CLERK
     );
     const state = s.orders.transmissionState(s.place());
@@ -279,7 +288,16 @@ test("routing is declared per category, so imaging is not answered by the lab's 
   try {
     s.orders.declareOrderRouting(
       "lab",
-      { transmits: true, destination: "Stanton Laboratory", detail: "MLLP" },
+      { transmits: true, destination: "Stanton Laboratory", detail: "MLLP", connection: {
+        host: "lab.example",
+        port: 6661,
+        sendingApplication: "NORTHSTAR",
+        sendingFacility: "GNWT",
+        receivingApplication: "LABAPP",
+        receivingFacility: "STANTON",
+        timezoneOffset: "-06:00",
+        profileId: "stanton",
+      } },
       CLERK
     );
     const imaging = s.orders.create({
@@ -366,8 +384,117 @@ test("a site that prints its requisitions is not chased forever", () => {
     assert.deepEqual(s.orders.notWithFiller(), [], "a declared paper process is not an outstanding question");
 
     // Same order, same site, with the declaration withdrawn: back on the list.
-    s.orders.declareOrderRouting("lab", { transmits: true, destination: "Stanton", detail: "MLLP" }, CLERK);
+    s.orders.declareOrderRouting(
+      "lab",
+      { transmits: true, destination: "Stanton", detail: "MLLP", connection: {
+        host: "lab.example",
+        port: 6661,
+        sendingApplication: "NORTHSTAR",
+        sendingFacility: "GNWT",
+        receivingApplication: "LABAPP",
+        receivingFacility: "STANTON",
+        timezoneOffset: "-06:00",
+        profileId: "stanton",
+      } },
+      CLERK
+    );
     assert.equal(s.orders.notWithFiller().length, 1, "a route that exists and has not carried it is a question");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a route that says it transmits and cannot is refused when it is declared", () => {
+  // Checked at declaration, not at send. A route that promises to carry orders
+  // and has no endpoint is a promise the record makes on a site's behalf, and
+  // the moment it is discovered should not be the moment a specimen is sitting
+  // in a fridge waiting for a requisition that was never going anywhere.
+  const s = site();
+  try {
+    assert.throws(
+      () => s.orders.declareOrderRouting("lab", { transmits: true, destination: "X", detail: "MLLP" }, CLERK),
+      /needs a connection/
+    );
+
+    const partial = {
+      host: "lab.example",
+      port: 6661,
+      sendingApplication: "NORTHSTAR",
+      sendingFacility: "GNWT",
+      receivingApplication: "LABAPP",
+      receivingFacility: "STANTON",
+      timezoneOffset: "-06:00",
+      profileId: "stanton",
+    };
+    for (const [field, broken] of [
+      ["host", { ...partial, host: "  " }],
+      ["port", { ...partial, port: 0 }],
+      ["port", { ...partial, port: 70000 }],
+      ["receivingFacility", { ...partial, receivingFacility: "" }],
+      ["profileId", { ...partial, profileId: "" }],
+      // Declared, never inferred, for the same reason the builder requires it:
+      // a server in one zone sending for a clinic in another is ordinary here.
+      ["timezoneOffset", { ...partial, timezoneOffset: "MST" }],
+    ] as const) {
+      assert.throws(
+        () =>
+          s.orders.declareOrderRouting(
+            "lab",
+            { transmits: true, destination: "X", detail: "MLLP", connection: broken },
+            CLERK
+          ),
+        new RegExp(field),
+        `${field} should stop the declaration`
+      );
+    }
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a site that does not transmit needs no connection", () => {
+  // The requirement attaches to the promise, not to every declaration. A
+  // paper-requisition site has nothing to put in an endpoint and should not be
+  // made to invent one.
+  const s = site();
+  try {
+    s.orders.declareOrderRouting("lab", { transmits: false, detail: "printed with the specimen" }, CLERK);
+    const declared = s.orders.orderRouting("lab");
+    assert.equal(declared?.transmits, false);
+    assert.equal(declared?.endpoint_host, null, "and nothing is invented to fill the column");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("the declared connection is what comes back, so a sender reads it rather than guessing", () => {
+  const s = site();
+  try {
+    s.orders.declareOrderRouting(
+      "lab",
+      {
+        transmits: true,
+        destination: "Stanton Laboratory",
+        detail: "MLLP over the site VPN",
+        connection: {
+          host: "lab.example",
+          port: 6661,
+          sendingApplication: "NORTHSTAR",
+          sendingFacility: "GNWT",
+          receivingApplication: "LABAPP",
+          receivingFacility: "STANTON",
+          timezoneOffset: "-06:00",
+          profileId: "stanton",
+        },
+      },
+      CLERK
+    );
+    const r = s.orders.orderRouting("lab")!;
+    assert.equal(r.endpoint_host, "lab.example");
+    assert.equal(r.endpoint_port, 6661);
+    assert.equal(r.receiving_application, "LABAPP");
+    assert.equal(r.timezone_offset, "-06:00");
+    assert.equal(r.profile_id, "stanton");
   } finally {
     s.cleanup();
   }

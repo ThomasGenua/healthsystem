@@ -84,6 +84,8 @@ import type { ChannelDocument } from "../core/channel-versions.ts";
 import { validateChannel } from "../core/engine.ts";
 import { Refusal } from "../core/refusal.ts";
 import { readEnv } from "../core/naming.ts";
+import { sendOrder, sendOrderCancellation } from "../orders/send.ts";
+import type { SpecimenDetail } from "../orders/outbound.ts";
 
 let UI_HTML: string | null = null;
 function uiHtml(): string {
@@ -1948,6 +1950,101 @@ async function route(
         () => filterByDirective(["ServiceRequest"], tenant.orders.notWithFiller()),
         (r) => r.rows.length
       );
+    }
+    // Sending an order, and its cancellation. The transmission work has been
+    // reachable only by a caller inside the process until now: every order
+    // read as "not sent" and was, correctly and permanently, because nothing
+    // could send one.
+    //
+    // The connection comes from the route the site declared, never from the
+    // request. A caller who could name their own endpoint could send a
+    // patient's requisition to a host of their choosing.
+    if (
+      (path === "/api/clinical/order-send" || path === "/api/clinical/order-cancel-send") &&
+      method === "POST"
+    ) {
+      const cancelling = path === "/api/clinical/order-cancel-send";
+      const body = JSON.parse(await readBody(req)) as {
+        order?: string;
+        aoeAnswers?: Record<string, string>;
+        specimen?: SpecimenDetail;
+      };
+      if (!body.order) return send(res, 400, { error: "order required" });
+      const order = tenant.orders.get(body.order);
+      if (!order) return send(res, 404, { error: `no order ${body.order}` });
+
+      const routing = tenant.orders.orderRouting(order.category);
+      if (!routing || !routing.transmits) {
+        return send(res, 409, {
+          error:
+            `${order.category} orders are not declared to leave this site, so nothing was sent. ` +
+            "Declare a route first, rather than sending against an undeclared one.",
+          transmission: tenant.orders.transmissionState(order.id),
+        });
+      }
+      const profile = engine.labProfiles.get(routing.profile_id ?? "");
+      if (!profile) {
+        return send(res, 409, {
+          error:
+            `this route builds against laboratory profile ${routing.profile_id}, which is not loaded. ` +
+            "A message built against a profile nobody has is a message built against a guess.",
+        });
+      }
+
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      const actor = { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      // Reading the chart to build the message is reading the chart, so it
+      // goes through the same directive check as any other access.
+      const block = withheld(order.patient_id, ["ServiceRequest", "Patient"]);
+      if (block) {
+        audit({
+          action: "U",
+          outcome: 4,
+          resourceType: "ServiceRequest",
+          patient: order.patient_id,
+          detail: `withheld by patient directive ${block.id}`,
+        });
+        return send(res, 403, {
+          error: "this record is withheld by a patient directive",
+          breakGlass: "POST /api/clinical/break-glass",
+        });
+      }
+
+      const result = await (cancelling ? sendOrderCancellation : sendOrder)(
+        {
+          orders: tenant.orders,
+          patients: tenant.clinical.patientIndex,
+          profile,
+        },
+        order.id,
+        { host: routing.endpoint_host!, port: routing.endpoint_port! },
+        {
+          sendingApplication: routing.sending_application!,
+          sendingFacility: routing.sending_facility!,
+          receivingApplication: routing.receiving_application!,
+          receivingFacility: routing.receiving_facility!,
+          timezoneOffset: routing.timezone_offset!,
+          orderingProvider: {
+            id: order.ordered_by,
+            family: order.ordered_by,
+          },
+          ...(body.aoeAnswers ? { aoeAnswers: body.aoeAnswers } : {}),
+          ...(body.specimen ? { specimen: body.specimen } : {}),
+        },
+        actor
+      );
+      audit({
+        action: "U",
+        outcome: result.sent ? 0 : 4,
+        resourceType: "ServiceRequest",
+        patient: order.patient_id,
+        detail: cancelling
+          ? `cancellation to ${routing.destination}: ${result.sent ? "acknowledged" : "not acknowledged"}`
+          : `order to ${routing.destination}: ${result.sent ? "acknowledged" : "not acknowledged"}`,
+      });
+      // 200 either way: a refusal to send is a real answer about this order,
+      // and the state it carries is the point of asking.
+      return send(res, 200, result);
     }
     if (path === "/api/clinical/order-transmission-record" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as {

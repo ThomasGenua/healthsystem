@@ -40,6 +40,30 @@ async function boot() {
       destinations: [{ id: "pharmacy", type: "http", url: "http://127.0.0.1:1/pharmacy" }],
     })
   );
+  // A declared route, so the order-send endpoints exercise their own logic
+  // rather than the "no route" refusal. It names the generic profile, which
+  // declares no patient assigning authority — so the builder refuses before
+  // anything reaches a socket, which is what keeps this test deterministic
+  // and off the network while still driving the route end to end.
+  engine.forTenant("default").orders.declareOrderRouting(
+    "lab",
+    {
+      transmits: true,
+      destination: "Stanton Laboratory",
+      detail: "MLLP over the site VPN",
+      connection: {
+        host: "127.0.0.1",
+        port: 1,
+        sendingApplication: "NORTHSTAR",
+        sendingFacility: "GNWT",
+        receivingApplication: "LABAPP",
+        receivingFacility: "STANTON",
+        timezoneOffset: "-06:00",
+        profileId: "generic-oru",
+      },
+    },
+    { actorId: "ops", actorKind: "practitioner" }
+  );
   const adminKey = engine.keys.issue("ops", ["admin"]);
   const admin = adminKey.key;
   const reader = engine.keys.issue("consumer", ["read"]).key;
@@ -649,6 +673,8 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/orders-not-with-filler": "",
       "/api/clinical/orders-cancelled-still-with-filler": "",
       "/api/clinical/order-transmission-record": "POST",
+      "/api/clinical/order-send": "POST",
+      "/api/clinical/order-cancel-send": "POST",
       "/api/clinical/referrals": "",
       "/api/clinical/tasks": "?owner=dr-tetso",
       "/api/clinical/notes": `?patient=${P}`,
@@ -786,6 +812,8 @@ test("every clinical route leaves an audit row, including ones added later", asy
 
     /** The body each POST route needs to do real work. */
     const bodies: Record<string, unknown> = {
+      "/api/clinical/order-send": { order: forAck.id },
+      "/api/clinical/order-cancel-send": { order: forAck.id },
       "/api/clinical/order-transmission-record": {
         order: forAck.id,
         outcome: "sent",

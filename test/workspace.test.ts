@@ -583,7 +583,16 @@ test("an order a laboratory acknowledged is awaited; one nobody sent is not", ()
     populate(w);
     w.orders.declareOrderRouting(
       "lab",
-      { transmits: true, destination: "Stanton Laboratory", detail: "MLLP" },
+      { transmits: true, destination: "Stanton Laboratory", detail: "MLLP", connection: {
+        host: "lab.example",
+        port: 6661,
+        sendingApplication: "NORTHSTAR",
+        sendingFacility: "GNWT",
+        receivingApplication: "LABAPP",
+        receivingFacility: "STANTON",
+        timezoneOffset: "-06:00",
+        profileId: "stanton",
+      } },
       GP
     );
     const sent = w.orders.create({

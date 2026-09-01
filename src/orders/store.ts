@@ -81,8 +81,29 @@ export interface OrderRouting {
   transmits: boolean;
   destination: string | null;
   detail: string;
+  endpoint_host: string | null;
+  endpoint_port: number | null;
+  sending_application: string | null;
+  sending_facility: string | null;
+  receiving_application: string | null;
+  receiving_facility: string | null;
+  timezone_offset: string | null;
+  profile_id: string | null;
   declared_at: string;
   declared_by: string;
+}
+
+/** Everything a route needs before an order can actually leave on it. */
+export interface RouteConnection {
+  host: string;
+  port: number;
+  sendingApplication: string;
+  sendingFacility: string;
+  receivingApplication: string;
+  receivingFacility: string;
+  /** The clinic's offset, e.g. "-06:00". */
+  timezoneOffset: string;
+  profileId: string;
 }
 
 /** Whether an attempt carried the order or its cancellation. */
@@ -795,7 +816,7 @@ export class OrderStore {
    */
   declareOrderRouting(
     category: OrderCategory,
-    routing: { transmits: boolean; destination?: string; detail: string },
+    routing: { transmits: boolean; destination?: string; detail: string; connection?: RouteConnection },
     by: Actor
   ): void {
     if (!routing.detail.trim()) {
@@ -804,12 +825,46 @@ export class OrderStore {
     if (routing.transmits && !routing.destination?.trim()) {
       throw new Error("a route that transmits needs a destination");
     }
+    // Checked when the declaration is made, not when somebody presses send.
+    // A route that says it transmits and cannot is a promise the record makes
+    // on a site's behalf, and the moment it is discovered should not be the
+    // moment a specimen is sitting in a fridge.
+    if (routing.transmits) {
+      const c = routing.connection;
+      const missing: string[] = [];
+      if (!c) {
+        throw new Error(
+          "a route that transmits needs a connection: host, port, the four MSH identities, " +
+            "a timezone offset and a laboratory profile"
+        );
+      }
+      if (!c.host?.trim()) missing.push("host");
+      if (!Number.isInteger(c.port) || c.port <= 0 || c.port > 65535) missing.push("port");
+      if (!c.sendingApplication?.trim()) missing.push("sendingApplication");
+      if (!c.sendingFacility?.trim()) missing.push("sendingFacility");
+      if (!c.receivingApplication?.trim()) missing.push("receivingApplication");
+      if (!c.receivingFacility?.trim()) missing.push("receivingFacility");
+      if (!c.profileId?.trim()) missing.push("profileId");
+      // Declared, never inferred, for the same reason the builder requires it.
+      if (!/^[+-]\d{2}:?\d{2}$/.test(c.timezoneOffset ?? "")) missing.push("timezoneOffset (e.g. -06:00)");
+      if (missing.length > 0) {
+        throw new Error(`this route cannot carry an order as declared: ${missing.join(", ")}`);
+      }
+    }
     this.db.sql
       .prepare(
-        `INSERT INTO order_routing (tenant_id, category, transmits, destination, detail, declared_at, declared_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO order_routing (tenant_id, category, transmits, destination, detail,
+            endpoint_host, endpoint_port, sending_application, sending_facility,
+            receiving_application, receiving_facility, timezone_offset, profile_id,
+            declared_at, declared_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(tenant_id, category) DO UPDATE SET
            transmits = excluded.transmits, destination = excluded.destination, detail = excluded.detail,
+           endpoint_host = excluded.endpoint_host, endpoint_port = excluded.endpoint_port,
+           sending_application = excluded.sending_application, sending_facility = excluded.sending_facility,
+           receiving_application = excluded.receiving_application,
+           receiving_facility = excluded.receiving_facility,
+           timezone_offset = excluded.timezone_offset, profile_id = excluded.profile_id,
            declared_at = excluded.declared_at, declared_by = excluded.declared_by`
       )
       .run(
@@ -818,6 +873,14 @@ export class OrderStore {
         routing.transmits ? 1 : 0,
         routing.transmits ? routing.destination!.trim() : null,
         routing.detail.trim(),
+        routing.transmits ? routing.connection!.host.trim() : null,
+        routing.transmits ? routing.connection!.port : null,
+        routing.transmits ? routing.connection!.sendingApplication.trim() : null,
+        routing.transmits ? routing.connection!.sendingFacility.trim() : null,
+        routing.transmits ? routing.connection!.receivingApplication.trim() : null,
+        routing.transmits ? routing.connection!.receivingFacility.trim() : null,
+        routing.transmits ? routing.connection!.timezoneOffset.trim() : null,
+        routing.transmits ? routing.connection!.profileId.trim() : null,
         new Date().toISOString(),
         by.actorId
       );
