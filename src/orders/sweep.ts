@@ -163,6 +163,17 @@ export class OrderDispatchSweeper {
   private deps: SweepDeps;
   private intervalMs: number;
   private timer: NodeJS.Timeout | null = null;
+  /**
+   * The configuration refusal last reported for each tenant.
+   *
+   * A skipped tenant is a misconfiguration, and a misconfiguration does not
+   * fix itself between passes: reporting it every time would put the same
+   * line in the log 1,440 times a day, for as long as it takes somebody to
+   * change it. That is not emphasis. It is how a log stops being read, and
+   * how the one line that mattered gets scrolled past. So a refusal is
+   * reported when it starts, and again when it clears, and not in between.
+   */
+  private reported = new Map<string, string>();
   /** The last pass, so `/api/admin/...` and tests can see what it did. */
   last: SweepPass | null = null;
 
@@ -229,15 +240,27 @@ export class OrderDispatchSweeper {
 
   private safeRun(): void {
     try {
-      const pass = this.run();
-      // Said once per pass rather than once per order per pass: a line every
-      // minute for the same stuck order is how a real one stops being read.
-      for (const skip of pass.skipped) console.warn(`order dispatch: tenant ${skip.tenant}: ${skip.reason}`);
+      this.report(this.run());
     } catch (err) {
       // A sweep that throws must not take the engine down. The orders it did
       // not reach are still on the not-with-a-laboratory list, and the next
       // pass tries again.
       console.error(`order dispatch sweep: ${err instanceof Error ? err.message : err}`);
     }
+  }
+
+  /** Says what changed since the last pass, and nothing that did not. */
+  private report(pass: SweepPass): void {
+    const now = new Map(pass.skipped.map((s) => [s.tenant, s.reason]));
+    for (const [tenant, reason] of now) {
+      if (this.reported.get(tenant) !== reason) console.warn(`order dispatch: tenant ${tenant}: ${reason}`);
+    }
+    for (const tenant of this.reported.keys()) {
+      // Worth a line of its own: an operator who has just changed the
+      // configuration should be able to see that it took, rather than
+      // inferring it from a warning that stopped appearing.
+      if (!now.has(tenant)) console.warn(`order dispatch: tenant ${tenant}: resolved; orders are being swept again`);
+    }
+    this.reported = now;
   }
 }
