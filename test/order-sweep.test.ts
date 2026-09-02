@@ -501,9 +501,9 @@ function laboratory(reply: (received: string, controlId: string) => string) {
   });
   return {
     seen,
-    listen: () =>
+    listen: (port = 0) =>
       new Promise<number>((resolve) => {
-        server.listen(0, "127.0.0.1", () => resolve((server.address() as { port: number }).port));
+        server.listen(port, "127.0.0.1", () => resolve((server.address() as { port: number }).port));
       }),
     close: () => new Promise<void>((r) => server.close(() => r())),
   };
@@ -514,7 +514,10 @@ function ackFor(controlId: string, code = "AA"): string {
 }
 
 /** Places one order on a started engine with a lab-order door out. */
-async function siteWithLaboratory(port: number, opts: { dispatchMs?: number } = {}) {
+async function siteWithLaboratory(
+  port: number,
+  opts: { dispatchMs?: number; maxAttempts?: number; backoffMs?: number } = {}
+) {
   const engine = new Engine({
     dbPath: ":memory:",
     tickMs: 15,
@@ -568,7 +571,18 @@ async function siteWithLaboratory(port: number, opts: { dispatchMs?: number } = 
       id: "orders-out",
       name: "Outbound orders",
       source: { type: "http", path: "/orders-out" },
-      destinations: [{ id: "stanton-lab", type: "lab-order", host: "127.0.0.1", port, maxAttempts: 2 }],
+      destinations: [
+        {
+          id: "stanton-lab",
+          type: "lab-order",
+          host: "127.0.0.1",
+          port,
+          maxAttempts: opts.maxAttempts ?? 2,
+          ...(opts.backoffMs === undefined
+            ? {}
+            : { backoffBaseMs: opts.backoffMs, backoffCapMs: opts.backoffMs, timeoutMs: 200 }),
+        },
+      ],
     })
   );
   return { engine, orders: t.orders, orderId: order.id };
@@ -699,6 +713,94 @@ test("an order cancelled before any laboratory had it is not chased", async () =
     await until(() => engine.orderDispatch.last !== null);
     assert.deepEqual(engine.orderDispatch.last?.enqueued, []);
     assert.equal(lab.seen.length, 0, "nothing was sent, so there is nothing to withdraw");
+  } finally {
+    await engine.stop();
+    await lab.close();
+  }
+});
+
+// --- the link that is not there ------------------------------------------
+
+/**
+ * A free port, learned by binding one and letting it go.
+ *
+ * A test that needs the link *down* has to configure the route before
+ * anything is listening, which means knowing the number in advance.
+ */
+async function freePort(): Promise<number> {
+  const probe = createTcpServer();
+  const port = await new Promise<number>((r) => {
+    probe.listen(0, "127.0.0.1", () => r((probe.address() as { port: number }).port));
+  });
+  await new Promise<void>((r) => probe.close(() => r()));
+  return port;
+}
+
+test("a sweep that runs all through an outage still sends one requisition", async () => {
+  // The scenario this product is for. The sweep does not know the link is
+  // down -- it runs on a clock, and the clock does not stop for weather. If
+  // it and the queue disagreed about whether an order had gone, every pass
+  // during an outage would add another requisition for one specimen.
+  const port = await freePort();
+  const { engine, orders, orderId } = await siteWithLaboratory(port, {
+    dispatchMs: 50,
+    maxAttempts: 500,
+    backoffMs: 30,
+  });
+  await engine.start();
+  const lab = laboratory((_msg, controlId) => ackFor(controlId));
+  try {
+    // Nothing is listening. Let the sweep run many times over.
+    await until(() => (engine.db.listDeliveries({ channelId: "orders-out" })[0]?.attempts ?? 0) >= 5);
+    const queued = engine.db.listDeliveries({ channelId: "orders-out" });
+    assert.equal(queued.length, 1, "many passes, one requisition");
+    assert.ok(queued[0].attempts >= 5, "and it really was trying");
+
+    await lab.listen(port);
+    await until(() => orders.transmissionState(orderId).state === "acknowledged");
+    assert.equal(lab.seen.length, 1, "the laboratory got it once, when the link came back");
+  } finally {
+    await engine.stop();
+    await lab.close();
+  }
+});
+
+test("an order cancelled during an outage is withdrawn once the laboratory has it", async () => {
+  // The subtle one, and the reason it is worth a test rather than an
+  // argument. While the link is down the order reads `failed` -- the queue
+  // has it and cannot deliver it -- so the withdrawal is *not* sent, because
+  // nothing can be withdrawn from a laboratory that has nothing.
+  //
+  // But the requisition is still in the queue and will be delivered. So the
+  // withdrawal has to follow it, without anybody intervening, the moment the
+  // order genuinely lands. Two ways to get this wrong: sweep withdrawals for
+  // `failed` orders too, and a laboratory is told to cancel something it was
+  // never sent; or stop watching once the order leaves `not-sent`, and the
+  // withdrawal is stranded and the specimen is collected.
+  const port = await freePort();
+  const { engine, orders, orderId } = await siteWithLaboratory(port, {
+    dispatchMs: 50,
+    maxAttempts: 500,
+    backoffMs: 30,
+  });
+  await engine.start();
+  const lab = laboratory((_msg, controlId) => ackFor(controlId));
+  try {
+    await until(() => orders.transmissionState(orderId).state === "failed");
+    orders.cancel(orderId, { ...GP, reason: "patient declined the test" });
+
+    // Sweeps keep running against a laboratory that has nothing.
+    await until(() => (engine.db.listDeliveries({ channelId: "orders-out" })[0]?.attempts ?? 0) >= 5);
+    assert.equal(orders.cancellationsNotSent().length, 0, "nothing to withdraw from a laboratory with nothing");
+    assert.equal(orders.cancellationState(orderId).state, "not-sent");
+
+    await lab.listen(port);
+    await until(() => orders.cancellationState(orderId).state === "acknowledged");
+
+    assert.equal(lab.seen.length, 2, "the requisition, then its withdrawal");
+    assert.match(lab.seen[0], /\rORC\|NW\|/, "the order first");
+    assert.match(lab.seen[1], /\rORC\|CA\|/, "the withdrawal second, never the other way round");
+    assert.ok(lab.seen[1].includes(orderId), "naming the order it withdraws");
   } finally {
     await engine.stop();
     await lab.close();
