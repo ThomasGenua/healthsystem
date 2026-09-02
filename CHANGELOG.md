@@ -40,134 +40,6 @@ always forward-compatible and run automatically on open — see
     delivered to the wrong laboratory is a disclosure rather than a delay.
     Hazard H-169.
 
-**Fixed**
-
-- **The order sweep warned about the same misconfiguration once a minute,
-  forever.** A tenant the sweep refuses to act for — two `lab-order`
-  destinations, so it cannot tell which laboratory a route means — had its
-  reason written to the log on every pass. At the default cadence that is
-  about 1,440 identical lines a day, for as long as it takes somebody to
-  change the configuration. That is not emphasis; it is how a log stops being
-  read, and how the one line that mattered gets scrolled past. The comment
-  above the code said as much and the code did it anyway.
-
-  A refusal is now reported when it starts, again if it changes into a
-  different refusal, and once more when it clears — the last of those being
-  worth a line of its own, because an operator who has just fixed something
-  should be told it took rather than having to infer it from a warning that
-  stopped appearing.
-
-- **A cancelled order was still collected, because only the chart was told.**
-  Automatic dispatch swept placed orders and not withdrawals of them. The
-  sweep's list selects orders whose status is `placed` or `in-progress`, so a
-  cancelled order left that list the moment it was cancelled — and the branch
-  in `dispatch.ts` that builds a withdrawal could not be reached from it. The
-  code read as though it handled both.
-
-  What that looks like in a clinic: the order reads as cancelled everywhere
-  somebody here would look. The chart says so. The clinician saw it. The
-  patient was told it was called off. A laboratory four hundred kilometres
-  away still holds the requisition, so the specimen is collected, the test is
-  run and billed, and a result arrives for a test the chart says nobody
-  wanted. Unlike an order that never left — which appears on a worklist built
-  to show exactly that — nothing showed this.
-
-  Withdrawals now go out on the same clock and through the same door as the
-  orders. The list they come from asks whether a laboratory *could* act on
-  the order rather than whether one acknowledged it, so an order still
-  sitting in the outbound queue is withdrawn too: waiting for the
-  acknowledgement means the withdrawal is always a step behind the thing it
-  is chasing, and withdrawing an order a laboratory never received costs an
-  application reject somebody can read, while the other way costs a patient a
-  needle. Enqueued behind the order on the same ordered key, so ORC-1 NW is
-  read before ORC-1 CA. Hazard H-170.
-
-- **A backup destination on Windows went somewhere else, quietly.** `fs:` and
-  `file://` destinations were parsed by slicing the scheme off and requiring a
-  leading `/`. `C:\backups` has no leading slash, so an absolute Windows path
-  was refused as relative; and `file:///C:/backups` sliced down to
-  `/C:/backups`, which is not a path — the backups landed in a directory named
-  `C:` at the root of the current drive. Both failures hit the one setting
-  whose whole job is to put backups somewhere other than the machine holding
-  the database. Parsing now goes through `fileURLToPath`, which knows the
-  drive-letter and percent-encoding rules, and absoluteness is checked with
-  the rules of the platform being targeted rather than of POSIX. Hazard H-158.
-
-- **An expired reading station answered 500 instead of 503.** The first
-  request past the serving budget destroys the cache, and `rmSync`'s `force`
-  suppresses a missing file but not a locked one: on Windows, deleting a
-  database another handle still holds throws EPERM, and the throw escaped into
-  the request. The station's deliberate refusal — with the remedy an operator
-  needs — became a generic fault. Refusing to serve is the guarantee and
-  destroying the file is the tidying that usually accompanies it, so a failed
-  purge is now reported rather than thrown, and the manifest is left unpurged
-  rather than claiming a destruction that did not happen. Hazard H-157.
-
-- **Platform-dependent logic is now testable from either platform.** CI runs
-  on Ubuntu only, so every Windows branch was unexecuted — which shows up as a
-  green build on a machine that never took the branch, and failures found on
-  somebody's laptop. Encryption-at-rest detection takes the platform as a
-  parameter, so its Linux path is exercised from any host instead of being
-  skipped into a "cannot check" branch. Temporary-directory cleanup across the
-  suite retries, which is inert on Linux and rides out the brief EPERM while a
-  Windows handle or virus scanner still holds a file.
-
-- **A medication reconciliation could be completed twice.** The status check
-  and the count of undecided items ran outside the transaction and the write
-  did not name the state they had read, so two clinicians completing the same
-  reconciliation both passed the guard and both wrote — two people each told
-  it was done, and a record naming only the second. The checks now run inside
-  the transaction and the write is conditional on the reconciliation still
-  being open.
-
-- **A referral's status and its event log could disagree.** `transition()`
-  moved the status and appended the event as two writes outside any
-  transaction, so a failure between them left a referral in a state its own
-  history did not account for — and that history is what the stalled-referral
-  review reads. Both writes now commit together or not at all.
-
-- **Lifecycle writes name the state they expect.** Result acknowledgement,
-  referral transitions, reconciliation completion and prescription
-  acknowledge/fail update conditionally on the status their check read, and a
-  write that changes no rows refuses with 409 rather than silently succeeding.
-  A score's approval chain is kept linear by the database as well as by the
-  code: one root decision per score, and one successor per decision, so a
-  score cannot acquire two current approvals. Hazards H-160 and H-161.
-
-**Security**
-
-- **`NORTHSTAR_OIDC_AUDIENCE` is now required when OAuth is enabled, and a
-  site without it will not boot.** It was optional, and an absent audience
-  skipped the check entirely: every token the configured issuer had ever
-  signed was accepted, including tokens minted for a different application in
-  the same directory. An identity provider serves many resource servers, so a
-  token for the expenses system, signed by the same Entra or Keycloak tenant,
-  was a valid Northstar token — and the deployments that never set the
-  variable were exactly the ones running without the check.
-
-  **Breaking, deliberately.** A site that cannot start is a site somebody
-  fixes; one that starts and honours another application's tokens is not. Set
-  `NORTHSTAR_OIDC_AUDIENCE` to the identifier this deployment is registered
-  under at the issuer. A token carrying no `aud` claim at all is now refused
-  for the same reason as one naming somebody else. Hazard H-162.
-
-- **`.well-known/smart-configuration`**, generated from what this deployment
-  is configured with. Northstar is a resource server — it validates tokens and
-  does not issue them — so the document advertises the site's own
-  authorization server, and lists only capabilities this end actually
-  enforces. A discovery document claiming a capability the server does not
-  have is how a client comes to trust a check that never runs.
-
-- **SMART launch context is surfaced and type-checked.** `patient`,
-  `encounter` and `fhirUser` are read from the token and exposed on the
-  verified result, with a structured value dropped rather than carried around
-  as though it were an identifier. It is not yet required: a patient token is
-  bound to a chart here through an explicit authority grant, which is the
-  stronger control, and demanding a launch claim as well would refuse tokens
-  that are already correctly constrained.
-
-**Added**
-
 - **Properties that hold across every instrument, not just the thresholds
   somebody wrote down.** A risk score is a sum of things that make a patient
   worse, so finding one more of them cannot make the total smaller — a
@@ -413,52 +285,6 @@ always forward-compatible and run automatically on open — see
   laboratory has confirmed withdrawing. A cancellation is refused for an order
   nobody cancelled, which would stop a test somebody is waiting for.
 
-**Fixed**
-
-- **A blood pressure reported no unit, however carefully it was recorded.**
-  `Vitals.parse` read the unit off the top-level `valueQuantity`, which a
-  component-valued observation does not have, so the one vital always written
-  with a unit was the one vital whose unit was invisible. It is now read from
-  the components.
-
-- **A versioned clinical route was exempt from the audit-row guarantee.** The
-  test that discovers routes by reading `admin.ts` matched
-  `[a-z/-]+`, so `/api/clinical/score/v2` did not match at all — and the
-  scanner went on reporting a healthy 139 routes while covering 139 of 140.
-  The character class now admits digits. This is the second time that class
-  has been too narrow; the first was the "/" that exempted nested paths.
-
-- **Two HL7 fields were one position out** (H-133). The indication was landing
-  in OBR-14, Specimen Received Date/Time, and the ordering provider in OBR-17,
-  Order Callback Phone Number. Neither is a message that fails: a laboratory
-  parses it and files clinical information as a timestamp.
-
-  The cause was positional arrays, where a run of empty separators is
-  uncountable by eye and one too many shifts everything after it. Segments are
-  now built from explicit HL7 field numbers, so `{ 13: indication }` is OBR-13
-  and can be checked against a specification without counting. Found by
-  dumping the bytes of a built message rather than by rereading the array,
-  which had already been read twice.
-
-**Fixed**
-
-- **A superseded transmission attempt could override the one that superseded
-  it** (H-130). Attempts were ordered by timestamp with a tiebreak on a random
-  UUID, and a send with the acknowledgement answering it lands in the same
-  millisecond on a fast link — so the later attempt was whichever identifier
-  happened to sort last, and a rejected order reported as acknowledged about
-  half the time. That is the precise inversion the mechanism exists to
-  prevent. Ordering is now an autoincrementing sequence.
-
-  Caught as an intermittent failure in its own new tests: three runs gave 0, 0
-  and 1 failures. Diagnosed rather than re-run, and pinned by a test that
-  writes twenty attempts inside one millisecond and asserts the timestamps
-  really did collide, so it cannot pass by accident.
-
-## Unreleased
-
-**Added**
-
 - **Ask-at-order-entry, and the answer that is never invented**
   (`LabProfile.askAtOrderEntry`, `OmlContext.aoeAnswers`). A laboratory
   requires certain questions answered before it will run certain tests —
@@ -487,10 +313,6 @@ always forward-compatible and run automatically on open — see
   value asserts that somebody answered and said nothing.
 
   Hazards H-146 and H-147.
-
-## Unreleased
-
-**Added**
 
 - **Placed orders go out on their own** (`src/orders/dispatch.ts`, the
   `lab-order` destination). A sweep finds orders nobody has sent, builds each,
@@ -599,6 +421,136 @@ always forward-compatible and run automatically on open — see
 
 **Fixed**
 
+- **The order sweep warned about the same misconfiguration once a minute,
+  forever.** A tenant the sweep refuses to act for — two `lab-order`
+  destinations, so it cannot tell which laboratory a route means — had its
+  reason written to the log on every pass. At the default cadence that is
+  about 1,440 identical lines a day, for as long as it takes somebody to
+  change the configuration. That is not emphasis; it is how a log stops being
+  read, and how the one line that mattered gets scrolled past. The comment
+  above the code said as much and the code did it anyway.
+
+  A refusal is now reported when it starts, again if it changes into a
+  different refusal, and once more when it clears — the last of those being
+  worth a line of its own, because an operator who has just fixed something
+  should be told it took rather than having to infer it from a warning that
+  stopped appearing.
+
+- **A cancelled order was still collected, because only the chart was told.**
+  Automatic dispatch swept placed orders and not withdrawals of them. The
+  sweep's list selects orders whose status is `placed` or `in-progress`, so a
+  cancelled order left that list the moment it was cancelled — and the branch
+  in `dispatch.ts` that builds a withdrawal could not be reached from it. The
+  code read as though it handled both.
+
+  What that looks like in a clinic: the order reads as cancelled everywhere
+  somebody here would look. The chart says so. The clinician saw it. The
+  patient was told it was called off. A laboratory four hundred kilometres
+  away still holds the requisition, so the specimen is collected, the test is
+  run and billed, and a result arrives for a test the chart says nobody
+  wanted. Unlike an order that never left — which appears on a worklist built
+  to show exactly that — nothing showed this.
+
+  Withdrawals now go out on the same clock and through the same door as the
+  orders. The list they come from asks whether a laboratory *could* act on
+  the order rather than whether one acknowledged it, so an order still
+  sitting in the outbound queue is withdrawn too: waiting for the
+  acknowledgement means the withdrawal is always a step behind the thing it
+  is chasing, and withdrawing an order a laboratory never received costs an
+  application reject somebody can read, while the other way costs a patient a
+  needle. Enqueued behind the order on the same ordered key, so ORC-1 NW is
+  read before ORC-1 CA. Hazard H-170.
+
+- **A backup destination on Windows went somewhere else, quietly.** `fs:` and
+  `file://` destinations were parsed by slicing the scheme off and requiring a
+  leading `/`. `C:\backups` has no leading slash, so an absolute Windows path
+  was refused as relative; and `file:///C:/backups` sliced down to
+  `/C:/backups`, which is not a path — the backups landed in a directory named
+  `C:` at the root of the current drive. Both failures hit the one setting
+  whose whole job is to put backups somewhere other than the machine holding
+  the database. Parsing now goes through `fileURLToPath`, which knows the
+  drive-letter and percent-encoding rules, and absoluteness is checked with
+  the rules of the platform being targeted rather than of POSIX. Hazard H-158.
+
+- **An expired reading station answered 500 instead of 503.** The first
+  request past the serving budget destroys the cache, and `rmSync`'s `force`
+  suppresses a missing file but not a locked one: on Windows, deleting a
+  database another handle still holds throws EPERM, and the throw escaped into
+  the request. The station's deliberate refusal — with the remedy an operator
+  needs — became a generic fault. Refusing to serve is the guarantee and
+  destroying the file is the tidying that usually accompanies it, so a failed
+  purge is now reported rather than thrown, and the manifest is left unpurged
+  rather than claiming a destruction that did not happen. Hazard H-157.
+
+- **Platform-dependent logic is now testable from either platform.** CI runs
+  on Ubuntu only, so every Windows branch was unexecuted — which shows up as a
+  green build on a machine that never took the branch, and failures found on
+  somebody's laptop. Encryption-at-rest detection takes the platform as a
+  parameter, so its Linux path is exercised from any host instead of being
+  skipped into a "cannot check" branch. Temporary-directory cleanup across the
+  suite retries, which is inert on Linux and rides out the brief EPERM while a
+  Windows handle or virus scanner still holds a file.
+
+- **A medication reconciliation could be completed twice.** The status check
+  and the count of undecided items ran outside the transaction and the write
+  did not name the state they had read, so two clinicians completing the same
+  reconciliation both passed the guard and both wrote — two people each told
+  it was done, and a record naming only the second. The checks now run inside
+  the transaction and the write is conditional on the reconciliation still
+  being open.
+
+- **A referral's status and its event log could disagree.** `transition()`
+  moved the status and appended the event as two writes outside any
+  transaction, so a failure between them left a referral in a state its own
+  history did not account for — and that history is what the stalled-referral
+  review reads. Both writes now commit together or not at all.
+
+- **Lifecycle writes name the state they expect.** Result acknowledgement,
+  referral transitions, reconciliation completion and prescription
+  acknowledge/fail update conditionally on the status their check read, and a
+  write that changes no rows refuses with 409 rather than silently succeeding.
+  A score's approval chain is kept linear by the database as well as by the
+  code: one root decision per score, and one successor per decision, so a
+  score cannot acquire two current approvals. Hazards H-160 and H-161.
+
+- **A blood pressure reported no unit, however carefully it was recorded.**
+  `Vitals.parse` read the unit off the top-level `valueQuantity`, which a
+  component-valued observation does not have, so the one vital always written
+  with a unit was the one vital whose unit was invisible. It is now read from
+  the components.
+
+- **A versioned clinical route was exempt from the audit-row guarantee.** The
+  test that discovers routes by reading `admin.ts` matched
+  `[a-z/-]+`, so `/api/clinical/score/v2` did not match at all — and the
+  scanner went on reporting a healthy 139 routes while covering 139 of 140.
+  The character class now admits digits. This is the second time that class
+  has been too narrow; the first was the "/" that exempted nested paths.
+
+- **Two HL7 fields were one position out** (H-133). The indication was landing
+  in OBR-14, Specimen Received Date/Time, and the ordering provider in OBR-17,
+  Order Callback Phone Number. Neither is a message that fails: a laboratory
+  parses it and files clinical information as a timestamp.
+
+  The cause was positional arrays, where a run of empty separators is
+  uncountable by eye and one too many shifts everything after it. Segments are
+  now built from explicit HL7 field numbers, so `{ 13: indication }` is OBR-13
+  and can be checked against a specification without counting. Found by
+  dumping the bytes of a built message rather than by rereading the array,
+  which had already been read twice.
+
+- **A superseded transmission attempt could override the one that superseded
+  it** (H-130). Attempts were ordered by timestamp with a tiebreak on a random
+  UUID, and a send with the acknowledgement answering it lands in the same
+  millisecond on a fast link — so the later attempt was whichever identifier
+  happened to sort last, and a rejected order reported as acknowledged about
+  half the time. That is the precise inversion the mechanism exists to
+  prevent. Ordering is now an autoincrementing sequence.
+
+  Caught as an intermittent failure in its own new tests: three runs gave 0, 0
+  and 1 failures. Diagnosed rather than re-run, and pinned by a test that
+  writes twenty attempts inside one millisecond and asserts the timestamps
+  really did collide, so it cannot pass by accident.
+
 - **The worklist called an order nobody sent a laboratory being slow** (H-148).
   "Orders awaiting a result" was built from orders past their expected date
   without asking whether anybody had ever received them. On a site with no
@@ -635,6 +587,38 @@ always forward-compatible and run automatically on open — see
   among them would not have been seen. Declared non-transmitting sites are
   excluded; undeclared ones are not, because nobody has said, and there every
   order is a real question.
+
+**Security**
+
+- **`NORTHSTAR_OIDC_AUDIENCE` is now required when OAuth is enabled, and a
+  site without it will not boot.** It was optional, and an absent audience
+  skipped the check entirely: every token the configured issuer had ever
+  signed was accepted, including tokens minted for a different application in
+  the same directory. An identity provider serves many resource servers, so a
+  token for the expenses system, signed by the same Entra or Keycloak tenant,
+  was a valid Northstar token — and the deployments that never set the
+  variable were exactly the ones running without the check.
+
+  **Breaking, deliberately.** A site that cannot start is a site somebody
+  fixes; one that starts and honours another application's tokens is not. Set
+  `NORTHSTAR_OIDC_AUDIENCE` to the identifier this deployment is registered
+  under at the issuer. A token carrying no `aud` claim at all is now refused
+  for the same reason as one naming somebody else. Hazard H-162.
+
+- **`.well-known/smart-configuration`**, generated from what this deployment
+  is configured with. Northstar is a resource server — it validates tokens and
+  does not issue them — so the document advertises the site's own
+  authorization server, and lists only capabilities this end actually
+  enforces. A discovery document claiming a capability the server does not
+  have is how a client comes to trust a check that never runs.
+
+- **SMART launch context is surfaced and type-checked.** `patient`,
+  `encounter` and `fhirUser` are read from the token and exposed on the
+  verified result, with a structured value dropped rather than carried around
+  as though it were an identifier. It is not yet required: a patient token is
+  bound to a chart here through an explicit authority grant, which is the
+  stronger control, and demanding a launch claim as well would refuse tokens
+  that are already correctly constrained.
 
 ## 0.8.0 — 2026-08-27
 
