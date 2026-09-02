@@ -153,6 +153,20 @@ that no longer exists fails the build.
 
 ## 4. Hazard log
 
+Identifiers are allocated by taking the highest in this file and adding one,
+which is a counter with nobody holding it: two branches taken from the same
+revision allocate the same number, and each is perfectly consistent on its
+own. `npm run hazardcheck` compares a revision against the branch it will
+merge into and refuses one that spends an identifier the other has already
+spent, or that drops one they both had. CI runs it on every pull request.
+
+A hazard's cause, control and evidence are expected to be refined in place —
+that is what a live safety case does. Its **name is its identity**: changing
+what the hazard *is* under a fixed identifier makes every citation of that
+identifier point somewhere else, so a different hazard takes a new number.
+A hazard that no longer applies is retired in place with the reason, never
+deleted, because the case still has to account for having considered it.
+
 Each row: the hazard, what causes it, what it does to a patient, how severe
 and likely it is *with the control in place*, the control, and the test that
 makes the control a fact rather than a comment.
