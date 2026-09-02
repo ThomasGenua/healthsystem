@@ -15,6 +15,16 @@ import type { LabProfile } from "../orders/hl7.ts";
 import type { DeliveryRow, DestinationConfig, DestinationTlsConfig } from "../types.ts";
 import type { FhirStore } from "../fhir/store.ts";
 import { mllpSend } from "../hl7/mllp.ts";
+import { interpretAck } from "../orders/outbound.ts";
+import type { OrderStore } from "../orders/store.ts";
+
+/** What a lab-order delivery needs to know to report itself back to the order. */
+interface LabOrderMeta {
+  orderId?: string;
+  controlId?: string;
+  kind?: "order" | "cancel";
+  destination?: string;
+}
 
 const DEFAULTS = {
   maxAttempts: 8,
@@ -28,6 +38,7 @@ export type StoreResolver = (tenantId: string) => {
   fhir: FhirStore;
   clinical: ClinicalRecord;
   labIntake: LabIntake;
+  orders: OrderStore;
 };
 
 /** Laboratory dialects a `labresults` destination can name. */
@@ -50,6 +61,34 @@ function readPath(obj: unknown, path: string): string | undefined {
     }
   }
   return typeof cur === "string" || typeof cur === "number" ? String(cur) : undefined;
+}
+
+/**
+ * A failure that will fail identically however many times it is retried.
+ *
+ * The distinction the retry loop was missing. A malformed message rejected
+ * with HTTP 400, or a receiving application answering AR, does not become
+ * acceptable by being sent again: the same bytes get the same answer. Retrying
+ * it costs three things, and the third is the one that matters.
+ *
+ *   - It burns the attempt budget on a message that was never going to land.
+ *   - It delays the dead letter, which is the thing a human has to look at,
+ *     by the whole backoff schedule.
+ *   - **It blocks the ordered destination behind it.** `drainOrdered` stops at
+ *     a key whose head is waiting, so one permanently rejected message holds
+ *     up every message queued behind it for the full retry cycle — and those
+ *     are somebody's results arriving late because of a message that could
+ *     never be delivered at all.
+ *
+ * Transient failures — a refused connection, a timeout, an HTTP 5xx, a 429 —
+ * are the opposite and keep the existing behaviour: they are exactly what
+ * retries are for.
+ */
+export class PermanentFailure extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PermanentFailure";
+  }
 }
 
 export class DeliveryWorker {
@@ -205,13 +244,17 @@ export class DeliveryWorker {
       const ack = await this.deliver(dest, d.payload, d.content_type, d.tenant_id, d.message_id);
       this.db.markDelivered(d.id, ack);
     } catch (err) {
+      const permanent = err instanceof PermanentFailure;
       const message = err instanceof Error ? err.message : String(err);
       const max = dest.maxAttempts ?? DEFAULTS.maxAttempts;
       const base = dest.backoffBaseMs ?? DEFAULTS.backoffBaseMs;
       const cap = dest.backoffCapMs ?? DEFAULTS.backoffCapMs;
-      const dead = attempts >= max;
+      const dead = permanent || attempts >= max;
       const delay = Math.min(base * 2 ** (attempts - 1), cap);
-      this.db.markFailed(d.id, message, Date.now() + delay, dead);
+      // Said in the dead letter, because a dead letter with one attempt on it
+      // otherwise reads as a retry loop that failed to run.
+      const detail = permanent ? `${message} (not retried: the same message would be refused again)` : message;
+      this.db.markFailed(d.id, detail, Date.now() + delay, dead);
     }
   }
 
@@ -311,16 +354,91 @@ export class DeliveryWorker {
           signal: controller.signal,
         });
         const body = await res.text();
-        if (!res.ok) throw new Error(`HTTP ${res.status}: ${body.slice(0, 300)}`);
+        if (!res.ok) {
+          const detail = `HTTP ${res.status}: ${body.slice(0, 300)}`;
+          // 4xx is a statement about this message, and sending it again will
+          // produce the same statement. The two exceptions are the ones that
+          // explicitly ask for a retry: 408 and 429.
+          throw res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429
+            ? new PermanentFailure(detail)
+            : new Error(detail);
+        }
         return body.slice(0, 4_000) || null;
       } finally {
         clearTimeout(timer);
       }
     }
 
+    // A laboratory order, and the acknowledgement brought back to it.
+    //
+    // Which order this is travels in the message's metadata rather than in the
+    // payload: the payload is the requisition as the laboratory will read it,
+    // and adding our own identifiers to it would be sending them something we
+    // invented for our own bookkeeping.
+    if (dest.type === "lab-order") {
+      if (!this.stores) throw new Error("clinical stores not attached to this worker");
+      const message = this.db.getMessage(messageId);
+      const meta = message?.meta ? (JSON.parse(message.meta) as LabOrderMeta) : undefined;
+      if (!meta?.orderId || !meta.controlId) {
+        // Permanent: nothing about retrying finds an order id that was never
+        // written. Dead-lettering puts it in front of somebody instead.
+        throw new PermanentFailure(
+          `this delivery carries no order to record against (message ${messageId}); it cannot be attributed`
+        );
+      }
+      const orders = this.stores(tenantId).orders;
+      const kind = meta.kind === "cancel" ? "cancel" : "order";
+
+      let ack: string;
+      try {
+        ack = await mllpSend(dest.host, dest.port, payload, dest.timeoutMs ?? DEFAULTS.timeoutMs);
+      } catch (err) {
+        // The link failed. Recorded against the order as failed, which reads
+        // as *not sent* rather than sent-and-waiting, and rethrown so the
+        // queue retries it — a refused connection is exactly what retries are
+        // for, and the requisition may still be perfectly acceptable.
+        orders.recordTransmission(
+          meta.orderId,
+          {
+            kind,
+            outcome: "failed",
+            destination: meta.destination ?? `${dest.host}:${dest.port}`,
+            controlId: meta.controlId,
+            detail: (err as Error).message,
+          },
+          { actorId: "delivery-worker", actorKind: "system" }
+        );
+        throw err;
+      }
+
+      const verdict = interpretAck(ack, meta.controlId);
+      orders.recordTransmission(
+        meta.orderId,
+        {
+          kind,
+          outcome: verdict.outcome,
+          destination: meta.destination ?? `${dest.host}:${dest.port}`,
+          controlId: meta.controlId,
+          detail: verdict.detail,
+        },
+        { actorId: "delivery-worker", actorKind: "system" }
+      );
+
+      if (verdict.outcome === "acknowledged") return ack.slice(0, 4_000) || null;
+      // A refusal is permanent. The same requisition sent again is refused
+      // again, and each attempt would write another rejection onto the chart.
+      if (verdict.outcome === "rejected") throw new PermanentFailure(verdict.detail);
+      // Everything else — no acknowledgement, an acknowledgement for another
+      // message, a code this does not recognise — is a maybe, and a maybe is
+      // worth retrying.
+      throw new Error(verdict.detail);
+    }
+
     if (dest.type === "mllp") {
       const ack = await mllpSend(dest.host, dest.port, payload, dest.timeoutMs ?? DEFAULTS.timeoutMs);
-      if (/(^|\r)MSA\|(AE|AR)\|/.test(ack)) throw new Error(`Remote NAK: ${ack.slice(0, 300)}`);
+      // AE and AR are the receiving application refusing this message, not the
+      // link failing. Resending identical bytes gets an identical refusal.
+      if (/(^|\r)MSA\|(AE|AR)\|/.test(ack)) throw new PermanentFailure(`Remote NAK: ${ack.slice(0, 300)}`);
       return ack.slice(0, 4_000) || null;
     }
 
