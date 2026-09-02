@@ -171,6 +171,17 @@ export function startApi(engine: Engine, port: number, host = "0.0.0.0", options
       // A refusal that escaped a route keeps its own status and words. It
       // was written to be read by the caller, and answering it with 500
       // would tell a client to retry a request that will be refused again.
+      // A body that is not JSON, and a channel `pattern` that is not a
+      // regular expression, both arrive here as SyntaxError. Ninety-seven
+      // `JSON.parse(await readBody(req))` calls in this router are not
+      // individually guarded, and do not need to be: the answer is the same
+      // for every one of them, and it is the caller's, not ours. Answering
+      // 500 told a client to retry a request that fails identically every
+      // time it is retried.
+      if (err instanceof SyntaxError) {
+        send(res, 400, { error: "malformed request body: expected JSON" });
+        return;
+      }
       const mapped = mapStoreError(err);
       logFault(`${req.method ?? "?"} ${routeArea(new URL(req.url ?? "/", "http://localhost").pathname)}`, mapped, err);
       send(res, mapped.status, errorBody(mapped));
@@ -4768,7 +4779,12 @@ function readBody(req: IncomingMessage): Promise<string> {
     req.on("data", (c: Buffer) => {
       size += c.length;
       if (size > MAX_BODY) {
-        reject(new Error("body too large"));
+        // A refusal, not a fault: 413 is the status that means do not send
+        // this again, and 500 is the one that means try it once more. The
+        // socket is destroyed at the limit rather than after the response,
+        // so a client may see the reset instead of the status — but nothing
+        // downstream logs this as the engine falling over any more.
+        reject(new Refusal("request body too large", 413));
         req.destroy();
         return;
       }

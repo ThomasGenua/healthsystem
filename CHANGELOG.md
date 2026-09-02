@@ -11,6 +11,44 @@ always forward-compatible and run automatically on open — see
 
 **Fixed**
 
+- **One MLLP frame could hold the engine's only thread for days.** `parseHl7`
+  trimmed trailing carriage returns with `.replace(/\r+$/, "")`, which is
+  quadratic when a non-CR character follows the run: the engine restarts the
+  greedy match at every position in it and `$` fails every time. Measured, 20k
+  carriage returns took 325ms and 400k took 130 seconds; the MLLP frame limit
+  is 16 MiB and MLLP has no authentication. The trim is gone rather than
+  rewritten — the empty-segment filter on the next line already removed exactly
+  what it removed, linearly.
+
+- **`\X..\` with a payload that is not hex no longer becomes a NUL.**
+  `parseInt("zz", 16)` is NaN and `String.fromCharCode(NaN)` is U+0000, so a
+  malformed escape put a NUL character inside a name or an identifier — stored
+  by SQLite, serialised by JSON, and unequal to the string anybody typed ever
+  after. A payload that is not an even number of hex digits is now left exactly
+  as it arrived, like every other escape the decoder does not know.
+
+- **An impossible date is no date.** `hl7DateToIso` reformatted whatever digits
+  it matched, so `20261301` became `2026-13-01` and `20260231` became
+  `2026-02-31` — Invalid Date to every reader downstream, out of a field that
+  looks populated. The month, the day against that month in that year, and the
+  clock are checked; anything impossible returns the empty string this function
+  already used for "no usable date". Offsets are still dropped, which is
+  deliberate and documented.
+
+- **An acknowledgement no longer carries fields the sender put there.**
+  `buildAck` escaped everything it copied from the received message except
+  MSH-10, MSH-9.2, MSH-11 and MSH-12, and `getHl7` returns values already
+  unescaped — so a control identifier containing `\F\` came back as a live
+  field separator and produced `MSA|AA|MSG|AE|INJECTED|`.
+
+- **A malformed request body is 400, and an oversized one is 413.** Ninety-seven
+  `JSON.parse(await readBody(req))` calls in the router are unguarded, so a body
+  that was not JSON reached the net underneath as a `SyntaxError` and was
+  answered 500 — telling a client to retry a request that fails identically
+  every time. A `SyntaxError` there is now 400 (it also covers a channel
+  `pattern` that is not a regular expression), and the body-size limit rejects
+  with a refusal carrying 413 instead of a fault.
+
 - **An interface that cannot reach its source no longer reports itself
   healthy.** Every inbound poll — filedrop, dbpoll, sqlpoll, sftp — caught its
   own exception, printed it and returned, and the guard around `readdirSync`
