@@ -72,6 +72,7 @@ import { score as computeScore, SCORE_IDS } from "../clinical/scores.ts";
 import { ingest, MEASURED_FIELDS, SCORE_MEASUREMENTS, type Measurement } from "../clinical/measurement.ts";
 import type { ScoreId } from "../clinical/score-definitions.ts";
 import type { PublicationStatus } from "../conformance/standards.ts";
+import { buildSummary, emptyReasonFor, type SummarySection } from "../clinical/summary.ts";
 import { news2FromChart, curb65FromChart } from "../clinical/score-from-chart.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
@@ -2914,6 +2915,57 @@ async function route(
     // actions each need a written reason. There is deliberately no route that
     // enables more than one score, because "enable all" is the request nobody
     // should be able to satisfy in a single click.
+    // The shareable copy, as distinct from /patient/summary which is the
+    // patient reading their own chart. This one leaves the building, so it
+    // carries a manifest saying what was in it, what was empty and why, and a
+    // signature binding the two.
+    if (path === "/api/clinical/patient-summary-export" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { patient?: string };
+      if (!body.patient) return send(res, 400, { error: "patient required" });
+      const patientId = body.patient;
+      return phiFor(patientId, "Composition", () => {
+        const allergyStatus = tenant.meds.allergyStatus(patientId);
+        const allergies = tenant.meds.allergies(patientId).filter((a) => a.kind !== "no-known-allergies");
+        const meds = tenant.meds.current(patientId);
+        const immunizationStatus = tenant.immunizations.historyStatus(patientId);
+        const immunizations = tenant.immunizations.forPatient(patientId);
+        const procedureStatus = tenant.procedures.historyStatus(patientId);
+        const procedures = tenant.procedures.forPatient(patientId);
+
+        const section = (title: string, code: string, entries: unknown[], status: string): SummarySection => ({
+          title,
+          code,
+          entries: entries as Array<Record<string, unknown>>,
+          status,
+          ...(entries.length === 0 ? { emptyReason: emptyReasonFor(status) } : {}),
+        });
+
+        const { bundle, manifest } = buildSummary(
+          patientId,
+          (tenant.clinical.patientIndex.get(patientId) ?? null) as Record<string, unknown> | null,
+          [
+            section("Allergies and intolerances", "48765-2", allergies, allergyStatus),
+            // Medications have no "nobody asked" state here: an empty list
+            // means none are recorded, which is not the same as none taken.
+            section("Medication summary", "10160-0", meds, meds.length > 0 ? "documented" : "never-recorded"),
+            section("Immunizations", "11369-6", immunizations, immunizationStatus),
+            section("Procedures", "47519-4", procedures, procedureStatus),
+          ],
+          {
+            tenantId: tenant.tenantId,
+            terminologySystems: () =>
+              (
+                tenant.db.sql
+                  .prepare("SELECT DISTINCT system FROM term_concepts ORDER BY system")
+                  .all() as Array<{ system: string }>
+              ).map((r) => r.system),
+            activeGuides: () => tenant.standards.active().map((p) => `${p.packageId}@${p.version}`),
+          },
+          readEnv("SUMMARY_SIGNING_KEY")
+        );
+        return { bundle, manifest };
+      });
+    }
     if (path === "/api/clinical/standards" && method === "GET") {
       return phiOffice("Bundle", () => ({
         statement: tenant.standards.conformanceStatement(),

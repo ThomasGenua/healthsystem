@@ -11,6 +11,14 @@ always forward-compatible and run automatically on open — see
 
 **Fixed**
 
+- **A structural check exempted routes that used the more explicit guard.**
+  The test asserting every patient-scoped clinical route consults the
+  directive check matched `phi(` and not `phiFor(` — the form that takes the
+  patient explicitly rather than reading it from the query, and runs the same
+  check. A route using it read as one that bypassed the check. This is the
+  second scanner in this file found too narrow; the first was the character
+  class that exempted versioned paths from the audit guarantee.
+
 - **A FHIR search could return the same resource on two pages, and skip
   others.** Stored resources were ordered by `updated_at` alone, which has
   second granularity — so a bulk load writes dozens of resources sharing one
@@ -105,6 +113,42 @@ always forward-compatible and run automatically on open — see
   that are already correctly constrained.
 
 **Added**
+
+- **A patient summary that can leave the building.** `POST
+  /api/clinical/patient-summary-export` produces a FHIR document bundle shaped
+  after the International Patient Summary, with a manifest and a signature
+  binding the two. Distinct from `/patient/summary`, which is a patient
+  reading their own chart and is unchanged.
+
+  The point is what an empty section means somewhere nobody can ask a
+  follow-up question. An empty allergy list can mean the patient has none,
+  that nobody asked, that somebody asked and the answer is unknown, that a
+  directive withholds it, or that this system holds no such record — five
+  facts that render identically, where a reader supplies the most comfortable
+  one. Each empty section now carries a coded `emptyReason` and, because the
+  mapping to FHIR's vocabulary is lossy, this system's own word beside it. A
+  status the mapping does not recognise becomes `unavailable`, never
+  `nilknown`: a state added later must not silently assert that a patient has
+  none of something.
+
+  The manifest states what is not known as well as what is. Terminology
+  release versions are reported as `unrecorded`, because `term_concepts`
+  stores a system and a code and nothing about which release they came from —
+  omitting the field would let a reader assume they had been checked. It names
+  the profile pack that validated the document and says that passing a
+  working-subset pack is not conformance, lists the implementation guides the
+  conformance registry holds active, and states that the document is *not*
+  IPS-conformant: no IPS package has been fetched and nothing has been
+  validated against the published profiles.
+
+  Export refuses without `NORTHSTAR_SUMMARY_SIGNING_KEY`. An unsigned summary
+  cannot be told from one edited after it left, and this is the copy that
+  leaves. Verification catches either half being altered.
+
+  **PS-CA is not implemented.** The specification for this work referred to an
+  official Canadian package supplied to the project; none was supplied. The
+  existing `conformance/ps-ca.json` remains what it says it is — a hand-written
+  working subset — and no Canadian conformance is claimed from it.
 
 - **FHIR Provenance, kept distinct from the audit trail.** `audit_events` is
   hash-chained and answers who reached a record and whether they were allowed

@@ -142,13 +142,22 @@ to activate it in production. See `43` below.
 - **Current capability** — No summary export.
 - **Target standard** — IPS `2.0.1` `[unverified]`;
   `http://hl7.org/fhir/uv/ips/` `[unresolved]`.
-- **Status** — `NOT_IMPLEMENTED`
-- **Evidence** — None yet.
+- **Status** — `SELF_TESTED` for the summary document, the empty-section
+  semantics and the signed manifest; `NOT_IMPLEMENTED` for IPS profile
+  conformance and for PS-CA.
+- **Evidence** — `test/patient-summary.test.ts`: the five reasons a section is
+  empty stay five distinct facts; an unrecognised status never reads as "the
+  patient has none"; the originating word travels with the code; the manifest
+  reports terminology versions as unrecorded rather than omitting them; export
+  refuses without a signing key; and verification catches either the document
+  or the manifest being altered.
 - **External validation required** — IPS validation against the official
   package; separately, any PS-CA claim requires the official Canadian package.
   **No PS-CA package has been supplied to this project**, and none will be
   reconstructed from memory or inference — a Canadian conformance claim built
-  from a guess is worse than no claim.
+  from a guess is worse than no claim. The document says in its own manifest
+  that it is not IPS-conformant, so the artifact carries the caveat even when
+  this roadmap is not to hand.
 - **Risk and rollback** — Medium. A summary that omits or mislabels a section
   is a clinical hazard, so absent / unknown / withheld / not-applicable stay
   distinct all the way through. Rollback is disabling the export flag.
