@@ -36,6 +36,7 @@ The escape hatch is break-glass, which is loud and recorded — see
   - [The disk is full](#the-disk-is-full)
   - [The engine will not start](#the-engine-will-not-start)
   - [The engine crashed](#the-engine-crashed)
+  - [A caller reports a fault id](#a-caller-reports-a-fault-id)
   - [Chain verification fails](#chain-verification-fails)
   - [A clinician cannot see a record they need](#a-clinician-cannot-see-a-record-they-need)
   - [Break-glass queues are not emptying](#break-glass-queues-are-not-emptying)
@@ -329,6 +330,52 @@ one per key. That is at-least-once by design, and the content-addressed FHIR
 facade absorbs the duplicate as a no-op.
 
 Then check `GET /api/chain/verify` and move on.
+
+### A caller reports a fault id
+
+A client got `500 {"error": "internal error", "faultId": "<uuid>"}`, and the log
+line for it says only where:
+
+```
+phi Observation: fault 655eee4b-… Error at OrderStore.report (…/orders/store.ts:416:9) <- …
+```
+
+That is deliberate and is not a truncated log. The exception message is the
+part of a fault that can carry a patient in it — a store that says
+`3 medication(s) still undecided: <drug names>` or `result is for <a> but order
+is for <b>` is being helpful to a clinician, not to stdout — and stdout is
+collected by systems nobody treats as holding PHI. So the message stays on the
+audit trail, which does, and the id is the way back to it:
+
+```bash
+curl -sH "authorization: Bearer $OPS" \
+  "$BASE/api/audit?limit=200" |
+  grep 655eee4b
+```
+
+Or in SQL against a copy of the database:
+
+```sql
+SELECT recorded_at, method, path, patient, detail
+  FROM audit_events
+ WHERE tenant_id = 'default' AND detail LIKE 'fault 655eee4b%';
+```
+
+The row carries the whole message, the patient it concerned, the principal and
+the route. Treat what you read there as chart content: it belongs in the
+incident record, not pasted into a ticket, a chat channel, or an upstream bug
+report.
+
+Two things the log line alone still tells you without a lookup: the exception
+class, and the top stack frames — the function and line that raised it, which
+is usually more precise than the route would have been. The route is reported
+as its area only (`/fhir/Patient`, not `/fhir/Patient/NT123456`) for the same
+reason.
+
+If there is no matching audit row, the throw happened before a tenant was
+resolved — a bug in the router or the gate rather than in a store. The stack
+frames in the log line are then the whole of the evidence, and they are enough
+to find it.
 
 ### Chain verification fails
 

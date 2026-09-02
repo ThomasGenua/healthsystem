@@ -63,7 +63,7 @@ import { CHART_TYPES, WORKLIST_TYPES } from "../workspace/summary.ts";
 import { VISIT_TYPES } from "../workspace/visit.ts";
 import type { EncounterClass } from "../clinical/encounters.ts";
 import { DIRECTORY_KINDS, type PartyKind } from "../directory/store.ts";
-import { mapStoreError, refuse } from "../core/refusal.ts";
+import { errorBody, logFault, mapStoreError, refuse, routeArea } from "../core/refusal.ts";
 import type { MigrationRecordType, SourceRecord } from "../migrate/run.ts";
 import type { AuthorityRow, PatientPermission } from "../patient/access.ts";
 import { DISPENSE_OUTCOMES, type DispenseOutcome } from "../meds/prescribe.ts";
@@ -160,7 +160,20 @@ export function startApi(engine: Engine, port: number, host = "0.0.0.0", options
   const remote = options.remote;
   const handler = (req: IncomingMessage, res: ServerResponse): void => {
     void route(engine, req, res, gate, limiter, remote, options.station).catch((err) => {
-      send(res, 500, { error: err instanceof Error ? err.message : "internal error" });
+      // The net under the router, for a throw no route caught. It used to
+      // send the exception message to the caller, which made it the one
+      // path where a fault from any store — including the ones that name a
+      // medication or a second patient — was quoted verbatim to whoever
+      // asked. There is no tenant here and so no trail row to put the
+      // message on, so a fault's message goes nowhere: the caller and the
+      // log get the same id, and the code path is in the frames.
+      //
+      // A refusal that escaped a route keeps its own status and words. It
+      // was written to be read by the caller, and answering it with 500
+      // would tell a client to retry a request that will be refused again.
+      const mapped = mapStoreError(err);
+      logFault(`${req.method ?? "?"} ${routeArea(new URL(req.url ?? "/", "http://localhost").pathname)}`, mapped, err);
+      send(res, mapped.status, errorBody(mapped));
     });
   };
   const server = options.tls ? createSecureServer(options.tls.serverOptions, handler) : createServer(handler);
@@ -659,7 +672,7 @@ async function route(
         });
       } catch (err) {
         const mapped = mapStoreError(err);
-        if (mapped.outcome === 8) console.error(`patient ${resourceType}: ${mapped.detail}`);
+        logFault(`patient ${resourceType}`, mapped, err);
         tenant.db.transaction(() => {
           access.logAccess({
             patientId,
@@ -678,7 +691,7 @@ async function route(
             detail: mapped.detail,
           });
         });
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
       return send(res, status, value);
     };
@@ -1383,7 +1396,7 @@ async function route(
             patient: body.patient,
             detail: mapped.detail,
           });
-          return send(res, mapped.status, { error: mapped.error });
+          return send(res, mapped.status, errorBody(mapped));
         }
       }
 
@@ -1529,9 +1542,9 @@ async function route(
         value = produce(withheldTypes);
       } catch (err) {
         const mapped = mapStoreError(err);
-        if (mapped.outcome === 8) console.error(`phi ${resourceType}: ${mapped.detail}`);
+        logFault(`phi ${resourceType}`, mapped, err);
         audit({ action: verbToAction(method), outcome: mapped.outcome, resourceType, patient, detail: mapped.detail });
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
       audit({
         action: verbToAction(method),
@@ -1582,7 +1595,7 @@ async function route(
         value = produce();
       } catch (err) {
         const mapped = mapStoreError(err);
-        if (mapped.outcome === 8) console.error(`phiOffice ${resourceType}: ${mapped.detail}`);
+        logFault(`phiOffice ${resourceType}`, mapped, err);
         audit({
           action: verbToAction(method),
           outcome: mapped.outcome,
@@ -1590,7 +1603,7 @@ async function route(
           patient: subject,
           detail: mapped.detail,
         });
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
       audit({
         action: verbToAction(method),
@@ -1689,7 +1702,7 @@ async function route(
       } catch (err) {
         const mapped = mapStoreError(err);
         audit({ action: "R", outcome: mapped.outcome, resourceType: "Composition", patient, detail: mapped.detail });
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
       // One row per member, because each member's record was disclosed and
       // each member's access review must see this read. A single row naming
@@ -1756,7 +1769,7 @@ async function route(
         for (const id of [body.a, body.b]) {
           audit({ action: "C", outcome: mapped.outcome, resourceType: "Patient", patient: id, detail: mapped.detail });
         }
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
     }
     if (path === "/api/clinical/unlink" && method === "POST") {
@@ -1801,7 +1814,7 @@ async function route(
             audit({ action: "U", outcome: mapped.outcome, resourceType: "Patient", patient: id, detail: mapped.detail });
           }
         }
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
     }
     if (path === "/api/clinical/encounters" && method === "GET") {
@@ -2267,7 +2280,7 @@ async function route(
         return send(res, 200, acknowledged);
       } catch (err) {
         const mapped = mapStoreError(err);
-        if (mapped.outcome === 8) console.error(`acknowledge: ${mapped.detail}`);
+        logFault(`acknowledge`, mapped, err);
         audit({
           action: "U",
           outcome: mapped.outcome,
@@ -2275,7 +2288,7 @@ async function route(
           patient: row.patient_id,
           detail: mapped.detail,
         });
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
     }
     if (path === "/api/clinical/book" && method === "POST") {
@@ -3588,7 +3601,7 @@ async function route(
       } catch (err) {
         const mapped = mapStoreError(err);
         audit({ action: "R", outcome: mapped.outcome, resourceType: "MeasureReport", detail: mapped.detail });
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
     }
     if (path === "/api/clinical/safety-check" && method === "POST") {

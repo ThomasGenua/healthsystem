@@ -413,7 +413,18 @@ export class OrderStore {
       if (o.patient_id !== input.patientId) {
         // The one mismatch never worth resolving automatically: a result on
         // the wrong chart is the harm this whole module is about.
-        throw new Error(`result is for ${input.patientId} but order ${input.orderId} is for ${o.patient_id}`);
+        //
+        // Refused rather than thrown: the caller sent two things that do not
+        // go together, which is a decision and not a fault, and a plain
+        // `Error` here became a 500 telling a client to retry a request that
+        // will be refused every time.
+        //
+        // The other patient is not named. The caller supplied one identifier
+        // and gets told it does not match; saying whose order it is would
+        // answer "which chart is this order on" for someone who has just
+        // demonstrated they are working from the wrong one. The trail row
+        // carries both ids, which is where that question belongs.
+        refuse(`result is for ${input.patientId} but order ${input.orderId} is for a different patient`, 409);
       }
     }
     return this.db.transaction(() => this.insertResult(input, null));
@@ -529,7 +540,8 @@ export class OrderStore {
     if (r.order_id) throw new Error(`that result is already filed against order ${r.order_id}`);
     const o = this.require(orderId);
     if (o.patient_id !== r.patient_id) {
-      throw new Error(`result is for ${r.patient_id} but order ${orderId} is for ${o.patient_id}`);
+      // Same refusal, same silence about the other chart, as `report` above.
+      refuse(`result is for ${r.patient_id} but order ${orderId} is for a different patient`, 409);
     }
     return this.db.transaction(() => {
       this.db.sql

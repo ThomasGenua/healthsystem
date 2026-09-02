@@ -11,6 +11,31 @@ always forward-compatible and run automatically on open — see
 
 **Fixed**
 
+- **A fault no longer prints a patient into the operator's log.** Stores write
+  their input into the exceptions they throw, because that is what makes an
+  error actionable — `3 medication(s) still undecided: <drug names>`, `result
+  is for <a> but order <o> is for <b>`. Those are plain `Error`s, so
+  `mapStoreError` classified them as faults, and a fault printed its message to
+  `console.error` and, from the net under the router, sent it back to the
+  caller. Both messages are reached by ordinary refusals: finishing a
+  reconciliation early, filing a result on the wrong order.
+
+  A fault now says where and never what. The log gets the exception class, the
+  top stack frames and an opaque `faultId`; the caller gets `{"error":
+  "internal error", "faultId": …}`; the message goes to the audit trail behind
+  that id, which is the sink built to hold it. The route is logged as its area,
+  because `/fhir/Patient/<id>` and `/patient/<id>/summary` name a patient in
+  the path. See [A caller reports a fault
+  id](docs/RUNBOOK.md#a-caller-reports-a-fault-id) for turning an id back into
+  the row.
+
+  A decision is not logged at all, so the two stores above now refuse rather
+  than throw — which also stops a 500 telling a client to retry a request that
+  will be refused every time. The cross-chart result refusal additionally stops
+  naming the *other* patient: somebody filing onto the wrong chart is told
+  their identifier does not match, not whose chart it is. The trail row still
+  carries both.
+
 - **Every clinical lifecycle write now names the state it decided from.** A
   previous change fixed six of these; this is the rest of the class. Encounter
   arrival, closure and cancellation, order placement and completion, paper
