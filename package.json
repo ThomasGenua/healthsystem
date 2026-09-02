@@ -20,7 +20,8 @@
     "restoretest": "node scripts/restore-rehearsal.ts",
     "labcheck": "node scripts/lab-conformance.ts",
     "terminology:import": "node scripts/import-terminology.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "hazardcheck": "node scripts/check-hazard-ids.ts"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",

@@ -11,6 +11,35 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **A hazard identifier can no longer be spent twice** (`npm run hazardcheck`,
+  run by CI on every pull request). Identifiers are allocated by taking the
+  highest in the log and adding one, which is a counter with nobody holding
+  it: two branches taken from a log ending at H-162 both allocate H-163, and
+  each is perfectly consistent on its own — no duplicate, no gap, nothing for
+  the existing guards to see. The collision exists only between them.
+
+  What happens at the merge is the part worth preventing. If the two rows
+  land on adjacent lines, git offers them as alternatives, which is a menu
+  with no right answer: keep both and two rows share an identifier, so a
+  control traced to H-163 is traced to whichever a reader finds first; keep
+  one and a hazard is *gone* from the safety case — its analysis, its control
+  and its evidence — leaving a log that still reads as clean, gapless and
+  duplicate-free, with the missing row missing the way an unwritten row is
+  missing. Nothing caught that second case. If instead the rows land far
+  enough apart to merge cleanly, the duplicate arrives silently and surfaces
+  later on a branch nobody is watching.
+
+  The check compares a revision against two references, because the two
+  questions need different ones: a **rename** is judged against the base
+  branch's tip, since a number meaning different things on the two sides is a
+  collision whenever the tip acquired it; a **removal** against the point the
+  branch was taken, since an identifier the tip gained afterwards is
+  *expected* to be absent. A first version asked both against the tip and
+  reported six hazards as deleted that were merely newer than the branch.
+
+  A hazard's cause, control and evidence are expected to be refined in place
+  and none of that is checked. Its name is its identity.
+
 - **Placed orders now leave for the laboratory on their own.** The dispatch
   sweep existed but nothing called it. It now runs inside the engine on a
   timer: default every minute, `NORTHSTAR_ORDER_DISPATCH_INTERVAL_MS` to

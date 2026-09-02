@@ -17,6 +17,11 @@ jobs:
     name: node ${{ matrix.node }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The hazard-identifier check compares this revision against the
+          # base branch and the point they diverged, so it needs history
+          # rather than the default single commit.
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -24,3 +29,8 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      # Last, because it is the only step that needs a second revision and so
+      # the only one that can be skipped for want of one. See
+      # src/safety/hazard-ids.ts for why a single tree cannot answer this.
+      - name: hazard identifiers
+        run: npm run hazardcheck -- origin/${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
