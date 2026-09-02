@@ -42,6 +42,21 @@ always forward-compatible and run automatically on open — see
 
 **Fixed**
 
+- **The order sweep warned about the same misconfiguration once a minute,
+  forever.** A tenant the sweep refuses to act for — two `lab-order`
+  destinations, so it cannot tell which laboratory a route means — had its
+  reason written to the log on every pass. At the default cadence that is
+  about 1,440 identical lines a day, for as long as it takes somebody to
+  change the configuration. That is not emphasis; it is how a log stops being
+  read, and how the one line that mattered gets scrolled past. The comment
+  above the code said as much and the code did it anyway.
+
+  A refusal is now reported when it starts, again if it changes into a
+  different refusal, and once more when it clears — the last of those being
+  worth a line of its own, because an operator who has just fixed something
+  should be told it took rather than having to infer it from a warning that
+  stopped appearing.
+
 - **A cancelled order was still collected, because only the chart was told.**
   Automatic dispatch swept placed orders and not withdrawals of them. The
   sweep's list selects orders whose status is `placed` or `in-progress`, so a

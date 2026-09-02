@@ -326,6 +326,94 @@ test("two laboratories are refused rather than guessed between", () => {
   }
 });
 
+/** Captures console.warn for the duration of one function. */
+function warnings(fn: () => void): string[] {
+  const said: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => said.push(args.join(" "));
+  try {
+    fn();
+  } finally {
+    console.warn = original;
+  }
+  return said;
+}
+
+test("a misconfiguration is reported when it starts, not once a minute forever", () => {
+  // A misconfiguration does not fix itself between passes. Saying it every
+  // time puts the same line in the log 1,440 times a day for as long as it
+  // takes somebody to change it -- which is not emphasis, it is how a log
+  // stops being read and how the line that mattered gets scrolled past.
+  const s = site({
+    channels: [labOrderChannel("orders-out", "stanton-lab"), labOrderChannel("orders-out-2", "dynacare")],
+  });
+  try {
+    const sweeper = new OrderDispatchSweeper(s.deps, 60_000);
+    const first = warnings(() => sweeper.start());
+    try {
+      assert.equal(first.length, 1, "said once when it starts");
+      assert.match(first[0], /2 lab-order destinations/);
+
+      const later = warnings(() => {
+        sweeper["safeRun"]();
+        sweeper["safeRun"]();
+        sweeper["safeRun"]();
+      });
+      assert.deepEqual(later, [], "and not again while nothing has changed");
+    } finally {
+      sweeper.stop();
+    }
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("an operator who fixes the configuration is told it took", () => {
+  // Inferring success from a warning that stopped appearing is not being
+  // told. It is noticing an absence, which is the thing nobody notices.
+  const s = site({
+    channels: [labOrderChannel("orders-out", "stanton-lab"), labOrderChannel("orders-out-2", "dynacare")],
+  });
+  try {
+    const sweeper = new OrderDispatchSweeper(s.deps, 60_000);
+    warnings(() => sweeper.start());
+    sweeper.stop();
+
+    // The operator removes the second door.
+    s.db.sql.prepare("DELETE FROM channels WHERE tenant_id = ? AND id = ?").run("default", "orders-out-2");
+
+    const said = warnings(() => sweeper["safeRun"]());
+    assert.equal(said.length, 1);
+    assert.match(said[0], /resolved; orders are being swept again/);
+
+    assert.deepEqual(warnings(() => sweeper["safeRun"]()), [], "and then it goes quiet again");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a refusal that changes into a different refusal is reported again", () => {
+  // Two doors becoming three is new information about the same tenant, and
+  // reporting only the first would leave the log describing a configuration
+  // that no longer exists.
+  const s = site({
+    channels: [labOrderChannel("orders-out", "stanton-lab"), labOrderChannel("orders-out-2", "dynacare")],
+  });
+  try {
+    const sweeper = new OrderDispatchSweeper(s.deps, 60_000);
+    const first = warnings(() => sweeper.start());
+    sweeper.stop();
+    assert.match(first[0], /2 lab-order destinations/);
+
+    s.db.upsertChannel(...labOrderChannel("orders-out-3", "lifelabs"));
+    const said = warnings(() => sweeper["safeRun"]());
+    assert.equal(said.length, 1);
+    assert.match(said[0], /3 lab-order destinations/);
+  } finally {
+    s.cleanup();
+  }
+});
+
 test("a channel whose configuration will not parse does not stop the sweep", () => {
   // One unreadable row must not take every other order with it.
   const s = site({ channels: [["broken", "Broken", true, "{not json"], labOrderChannel("orders-out", "stanton-lab")] });
