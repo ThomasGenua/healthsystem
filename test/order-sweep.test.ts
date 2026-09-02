@@ -648,9 +648,12 @@ test("stopping the engine stops the sweep", async () => {
   const port = await lab.listen();
   const { engine } = await siteWithLaboratory(port, { dispatchMs: 50 });
   await engine.start();
-  await engine.stop();
-  assert.equal(engine.orderDispatch["timer"], null, "no timer left running past shutdown");
-  await lab.close();
+  try {
+    await engine.stop();
+    assert.equal(engine.orderDispatch["timer"], null, "no timer left running past shutdown");
+  } finally {
+    await lab.close();
+  }
 });
 
 test("a cancellation reaches the laboratory on the same clock the order did", async () => {

@@ -10,7 +10,7 @@
   },
   "scripts": {
     "start": "node src/server.ts",
-    "test": "node --test \"test/**/*.test.ts\"",
+    "test": "node --test --test-force-exit \"test/**/*.test.ts\"",
     "demo": "node demo/run-demo.ts",
     "backup": "node scripts/backup.ts",
     "loadtest": "node scripts/loadtest.ts",
