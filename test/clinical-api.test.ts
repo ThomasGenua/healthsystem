@@ -26,6 +26,9 @@ const GP = { actorId: "dr-tetso", actorKind: "practitioner" };
 const GP_AUTHOR = { authorId: "dr-tetso", authorKind: "practitioner" };
 
 async function boot() {
+  // The summary export refuses without one, deliberately: an unsigned summary
+  // cannot be told from one edited after it left.
+  process.env.NORTHSTAR_SUMMARY_SIGNING_KEY = "a-signing-key-for-the-route-tests";
   // A pharmacy channel, so the prescription routes exercise the transmit path
   // rather than the refusal a deployment without one gets.
   const engine = new Engine({ dbPath: ":memory:", tickMs: 15, pharmacyChannel: "pharmacy-out" });
@@ -786,6 +789,7 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/lab-resolve": "POST",
       "/api/clinical/score": "POST",
       "/api/clinical/score/v2": "POST",
+      "/api/clinical/patient-summary-export": "POST",
       "/api/clinical/standards": "",
       "/api/clinical/standards-register": "POST",
       "/api/clinical/standards-activate": "POST",
@@ -1041,6 +1045,7 @@ test("every clinical route leaves an audit row, including ones added later", asy
         score: "has-bled",
         reason: "synthetic withdrawal recorded by the route test",
       },
+      "/api/clinical/patient-summary-export": { patient: P },
       "/api/clinical/standards-register": {
         canonicalUrl: "http://example.invalid/fhir/other-ig/",
         packageId: "example.fixture.other",
@@ -1340,7 +1345,7 @@ test("every patient-scoped clinical route consults the directive check", () => {
     const next = block.indexOf('if (path === "', i + 10);
     const body = block.slice(i, next === -1 ? undefined : next);
     assert.ok(
-      /\bphi\(/.test(body) || /consent\./.test(body),
+      /\bphi(For|Office)?\(/.test(body) || /consent\./.test(body),
       `${route} serves one patient's data without going through phi() or consulting consent directly`
     );
   }

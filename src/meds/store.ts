@@ -26,7 +26,7 @@
 import { randomUUID } from "node:crypto";
 import { an } from "../core/text.ts";
 import type { Db } from "../db.ts";
-import { Refusal } from "../core/refusal.ts";
+import { refuse, Refusal } from "../core/refusal.ts";
 import { Encounters } from "../clinical/encounters.ts";
 import { assess, normalise, type AllergyStatus, type Finding, type InteractionSource, type SafetyCheck } from "./safety.ts";
 
@@ -562,10 +562,18 @@ export class MedicationStore {
     // told it was done, and a record naming only the second.
     return this.db.transaction(() => {
       const rec = this.requireReconciliation(reconciliationId);
-      if (rec.status !== "open") throw new Error(`this reconciliation is already ${rec.status}`);
+      if (rec.status !== "open") refuse(`this reconciliation is already ${rec.status}`, 409);
       const open = this.items(reconciliationId).filter((i) => i.decision === "unresolved");
       if (open.length > 0) {
-        throw new Error(`${open.length} medication(s) still undecided: ${open.map((i) => i.display).join(", ")}`);
+        // Refused rather than thrown, and the distinction is not cosmetic.
+        // A plain `Error` is a fault: 500 to the caller, and the message on
+        // the operator's log — so this list of the patient's drug names was
+        // printed to stdout every time a clinician tried to finish early.
+        // A refusal is a decision: it goes to the clinician who asked, who
+        // is looking at these lines, and to the trail, which holds PHI by
+        // design. Naming them is what makes the refusal actionable; naming
+        // them in the log was the accident.
+        refuse(`${open.length} medication(s) still undecided: ${open.map((i) => i.display).join(", ")}`, 409);
       }
       const now = new Date().toISOString();
       const done = this.db.sql

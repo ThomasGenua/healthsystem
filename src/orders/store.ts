@@ -231,6 +231,18 @@ function hoursFrom(iso: string, hours: number): string {
   return new Date(new Date(iso).getTime() + hours * 3_600_000).toISOString();
 }
 
+/**
+ * The refusal when an order moved between the check and the write.
+ *
+ * Reading the order, deciding against its status and then writing are two
+ * steps. Naming the expected status in the update makes them one: a write
+ * that changes no rows means the order is no longer what the decision was
+ * about, and a refusal is the only honest answer.
+ */
+function orderMovedOn(id: string, expected: string): never {
+  throw new Error(`order ${id} is no longer ${expected}; it moved while this change was being applied`);
+}
+
 export class OrderStore {
   private db: Db;
   private encounters: Encounters;
@@ -315,12 +327,13 @@ export class OrderStore {
     if (o.status !== "draft") throw new Error(`${an(o.status)} order cannot be placed again`);
     return this.db.transaction(() => {
       const now = new Date().toISOString();
-      this.db.sql
+      const placed = this.db.sql
         .prepare(
           `UPDATE orders SET status = 'placed', ordered_at = ?, responsible_id = ?, expected_by = ?, updated_at = ?
-            WHERE tenant_id = ? AND id = ?`
+            WHERE tenant_id = ? AND id = ? AND status = 'draft'`
         )
         .run(now, by.responsibleId, by.expectedBy ?? null, now, this.db.tenantId, orderId);
+      if (placed.changes === 0) orderMovedOn(orderId, "a draft");
       this.event(orderId, "placed", by, {
         fromStatus: o.status,
         toStatus: "placed",
@@ -400,7 +413,18 @@ export class OrderStore {
       if (o.patient_id !== input.patientId) {
         // The one mismatch never worth resolving automatically: a result on
         // the wrong chart is the harm this whole module is about.
-        throw new Error(`result is for ${input.patientId} but order ${input.orderId} is for ${o.patient_id}`);
+        //
+        // Refused rather than thrown: the caller sent two things that do not
+        // go together, which is a decision and not a fault, and a plain
+        // `Error` here became a 500 telling a client to retry a request that
+        // will be refused every time.
+        //
+        // The other patient is not named. The caller supplied one identifier
+        // and gets told it does not match; saying whose order it is would
+        // answer "which chart is this order on" for someone who has just
+        // demonstrated they are working from the wrong one. The trail row
+        // carries both ids, which is where that question belongs.
+        refuse(`result is for ${input.patientId} but order ${input.orderId} is for a different patient`, 409);
       }
     }
     return this.db.transaction(() => this.insertResult(input, null));
@@ -516,7 +540,8 @@ export class OrderStore {
     if (r.order_id) throw new Error(`that result is already filed against order ${r.order_id}`);
     const o = this.require(orderId);
     if (o.patient_id !== r.patient_id) {
-      throw new Error(`result is for ${r.patient_id} but order ${orderId} is for ${o.patient_id}`);
+      // Same refusal, same silence about the other chart, as `report` above.
+      refuse(`result is for ${r.patient_id} but order ${orderId} is for a different patient`, 409);
     }
     return this.db.transaction(() => {
       this.db.sql
@@ -759,9 +784,17 @@ export class OrderStore {
     const final = this.resultsFor(orderId).some((r) => r.result_status === "final" || r.result_status === "corrected");
     if (!final) return;
     const now = new Date().toISOString();
-    this.db.sql
-      .prepare("UPDATE orders SET status = 'completed', updated_at = ?, closed_at = ? WHERE tenant_id = ? AND id = ?")
+    // Completion races cancellation: a result landing as somebody cancels the
+    // order must not reopen it as completed.
+    const completed = this.db.sql
+      .prepare(
+        `UPDATE orders SET status = 'completed', updated_at = ?, closed_at = ?
+          WHERE tenant_id = ? AND id = ? AND status NOT IN ('completed', 'cancelled')`
+      )
       .run(now, now, this.db.tenantId, orderId);
+    // Not a refusal: this runs as a side effect of filing a result, and the
+    // order having closed meanwhile is an ordinary outcome rather than a fault.
+    if (completed.changes === 0) return;
     this.event(orderId, "completed", by, { fromStatus: o.status, toStatus: "completed" });
   }
 

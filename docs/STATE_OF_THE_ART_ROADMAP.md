@@ -108,8 +108,29 @@ to activate it in production. See `43` below.
   conformance.
 - **Target standard** — IPA `1.1.0` `[unverified]`;
   `http://hl7.org/fhir/uv/ipa/` `[unresolved]`. FHIR R4 `4.0.1`.
-- **Status** — `NOT_IMPLEMENTED`
-- **Evidence** — None yet.
+- **Status** — `SELF_TESTED` for pagination, patient-compartment scoping and
+  the capability statement's guide claims; `NOT_IMPLEMENTED` for
+  `_include`/`_revinclude`, Provenance in search results, and deleted
+  resources.
+- **Evidence** — `test/fhir-pagination.test.ts`: every resource appears
+  exactly once across pages over a run of identical timestamps, a page is
+  stable when re-requested, `_count` is bounded, and one tenant's page never
+  contains another's; and the capability statement names a guide only once the
+  conformance registry holds it active. `test/fhir-compartment.test.ts`: a
+  scoped search returns only that chart, a resource whose patient cannot be
+  determined is excluded rather than included, scoping composes with paging
+  without leaking across the boundary, one tenant's scoped search never
+  reaches another's, and a database written before the column gains it with
+  the references recovered from stored JSON.
+- **Known gap** — `_include`/`_revinclude`, Provenance in search results, and
+  deleted-resource semantics. Compartment scoping is done: the patient
+  reference is a column on `fhir_resources`, populated at write time and
+  backfilled on open, and a patient-scoped search excludes what it cannot
+  attribute rather than including it. The patient-facing surface remains
+  `/patient/*`, where authority grants are enforced per chart, so there is one
+  boundary rather than two — a deliberate choice recorded here because the
+  alternative, serving patient tokens from `/fhir/*`, would put the grant
+  check in two route families.
 - **External validation required** — The official HL7 validator against the
   real IPA package, then a Connectathon track. Neither is possible here: the
   package cannot be fetched.
@@ -121,13 +142,22 @@ to activate it in production. See `43` below.
 - **Current capability** — No summary export.
 - **Target standard** — IPS `2.0.1` `[unverified]`;
   `http://hl7.org/fhir/uv/ips/` `[unresolved]`.
-- **Status** — `NOT_IMPLEMENTED`
-- **Evidence** — None yet.
+- **Status** — `SELF_TESTED` for the summary document, the empty-section
+  semantics and the signed manifest; `NOT_IMPLEMENTED` for IPS profile
+  conformance and for PS-CA.
+- **Evidence** — `test/patient-summary.test.ts`: the five reasons a section is
+  empty stay five distinct facts; an unrecognised status never reads as "the
+  patient has none"; the originating word travels with the code; the manifest
+  reports terminology versions as unrecorded rather than omitting them; export
+  refuses without a signing key; and verification catches either the document
+  or the manifest being altered.
 - **External validation required** — IPS validation against the official
   package; separately, any PS-CA claim requires the official Canadian package.
   **No PS-CA package has been supplied to this project**, and none will be
   reconstructed from memory or inference — a Canadian conformance claim built
-  from a guess is worse than no claim.
+  from a guess is worse than no claim. The document says in its own manifest
+  that it is not IPS-conformant, so the artifact carries the caveat even when
+  this roadmap is not to hand.
 - **Risk and rollback** — Medium. A summary that omits or mislabels a section
   is a clinical hazard, so absent / unknown / withheld / not-applicable stay
   distinct all the way through. Rollback is disabling the export flag.
@@ -140,13 +170,24 @@ to activate it in production. See `43` below.
   FHIR terms.
 - **Target standard** — FHIR R4 `4.0.1` `Provenance`;
   `http://hl7.org/fhir/R4/provenance.html` `[unresolved]`.
-- **Status** — `NOT_IMPLEMENTED`
-- **Evidence** — None yet.
+- **Status** — `SELF_TESTED` for FHIR writes; `NOT_IMPLEMENTED` for clinical
+  stores that do not go through the FHIR facade (medications, orders,
+  referrals, reconciliation), which record `source_message_id` but no
+  `Provenance`.
+- **Evidence** — `test/provenance.test.ts`: a create and an update each leave
+  a step; the lineage survives the resource being overwritten; a redelivery of
+  identical content records nothing further; a write nothing described is
+  recorded as unattributed rather than attributed; one message's whole output
+  is traceable from the message; a computed result names its rule and version;
+  the store is not chained and holds no audit rows; and one tenant's lineage is
+  invisible to another.
 - **External validation required** — Profile validation against the R4
-  package.
-- **Risk and rollback** — Low to medium. Additive resources. `AuditEvent` and
-  `Provenance` answer different questions — who looked, versus where this came
-  from — and are not interchangeable; conflating them would leave both wrong.
+  package, which cannot be fetched from this environment.
+- **Risk and rollback** — Low to medium. Additive: a new table and a write on
+  a path that already existed. `AuditEvent` and `Provenance` answer different
+  questions — who looked, versus where this came from — and are not
+  interchangeable; conflating them would leave both wrong, so they are
+  separate stores and a test asserts they stay that way.
 
 ## 48. Topic-based clinical event subscriptions
 

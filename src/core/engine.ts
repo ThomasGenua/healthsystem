@@ -10,7 +10,8 @@
 import { readdirSync, readFileSync, renameSync, unlinkSync, mkdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { Db } from "../db.ts";
+import { Db, type SourceFailureStage } from "../db.ts";
+import { faultLine } from "./refusal.ts";
 import { DeliveryWorker } from "./queue.ts";
 import { FhirStore } from "../fhir/store.ts";
 import { SubscriptionManager } from "../fhir/subscriptions.ts";
@@ -382,6 +383,11 @@ export class Engine {
     // this records which published standards this deployment claims.
     const standards = new StandardsRegistry(db);
     const fhir = new FhirStore(db, this.validation, directory);
+    // Resources written before fhir_resources carried a patient reference have
+    // none, and a patient-scoped search excludes what it cannot attribute. So
+    // the recovery runs here rather than waiting for somebody to notice a
+    // chart looking emptier than it is.
+    fhir.backfillPatients();
     const subs = new SubscriptionManager(db, this.worker);
     fhir.onChange((result, resource) => {
       subs.notify(result, resource);
@@ -697,9 +703,16 @@ export class Engine {
           let names: string[];
           try {
             names = readdirSync(src.dir).sort();
-          } catch {
+          } catch (err) {
+            // A drop directory that has been unmounted, renamed or had its
+            // permissions changed used to be swallowed by a bare `catch`
+            // with no log and nothing written down. The channel stayed
+            // `running`, the health check stayed green, and the only symptom
+            // was files nobody collected.
+            this.sourceFailed(config.id, "read", err);
             return;
           }
+          let clean = true;
           for (const name of names) {
             if (pattern && !pattern.test(name)) continue;
             const full = join(src.dir, name);
@@ -714,9 +727,15 @@ export class Engine {
                 unlinkSync(full);
               }
             } catch (err) {
-              console.error(`filedrop ${config.id}: ${name}: ${err instanceof Error ? err.message : err}`);
+              // The directory was read, so the link is up and one file is
+              // bad. The name goes to the record rather than the log: a drop
+              // file is routinely named by the sending system after an
+              // accession or a chart number.
+              clean = false;
+              this.sourceFailed(config.id, "item", err, name);
             }
           }
+          if (clean) this.sourcePassed(config.id);
         } finally {
           rc.polling = false;
         }
@@ -731,16 +750,34 @@ export class Engine {
         if (rc.polling || !rc.pollDb) return;
         rc.polling = true;
         try {
-          const cursor = this.db.getChannelState(config.id, "cursor");
-          const bound: string | number =
-            cursor === undefined ? 0 : /^-?\d+(\.\d+)?$/.test(cursor) ? Number(cursor) : cursor;
-          const rows = rc.pollDb.prepare(src.query).all(bound) as Array<Record<string, unknown>>;
-          for (const row of rows) {
-            this.ingest(config.id, JSON.stringify(row), "application/json", "dbpoll");
-            this.db.setChannelState(config.id, "cursor", String(row[src.cursorColumn]));
+          let rows: Array<Record<string, unknown>>;
+          try {
+            const cursor = this.db.getChannelState(config.id, "cursor");
+            const bound: string | number =
+              cursor === undefined ? 0 : /^-?\d+(\.\d+)?$/.test(cursor) ? Number(cursor) : cursor;
+            rows = rc.pollDb.prepare(src.query).all(bound) as Array<Record<string, unknown>>;
+          } catch (err) {
+            // The query is the link. A file that has moved, a schema that has
+            // changed under us, a database that will not open: whatever it
+            // is, nothing is arriving and somebody has to be told.
+            this.sourceFailed(config.id, "read", err);
+            return;
           }
-        } catch (err) {
-          console.error(`dbpoll ${config.id}: ${err instanceof Error ? err.message : err}`);
+          let clean = true;
+          for (const row of rows) {
+            try {
+              this.ingest(config.id, JSON.stringify(row), "application/json", "dbpoll");
+              this.db.setChannelState(config.id, "cursor", String(row[src.cursorColumn]));
+            } catch (err) {
+              // Stop at the first bad row rather than advancing past it. The
+              // cursor has not moved, so the next poll re-reads from here;
+              // continuing would step over the row and lose it silently.
+              clean = false;
+              this.sourceFailed(config.id, "item", err);
+              break;
+            }
+          }
+          if (clean) this.sourcePassed(config.id);
         } finally {
           rc.polling = false;
         }
@@ -757,17 +794,33 @@ export class Engine {
           // Connect lazily rather than at activation. A channel whose database
           // is unreachable at boot still starts and picks up when the link
           // returns, which is the normal condition here, not the exception.
-          if (!rc.sqlClient) rc.sqlClient = await this.connectors.sql(src.driver, src.dsn);
-          const stored = this.db.getChannelState(config.id, "cursor") ?? src.initialCursor ?? "0";
-          const bound: string | number = /^-?\d+(\.\d+)?$/.test(stored) ? Number(stored) : stored;
-          const rows = await rc.sqlClient.query(src.query, [bound]);
-          for (const row of rows) {
-            this.ingest(config.id, JSON.stringify(row), src.contentType ?? "application/json", "sqlpoll");
-            this.db.setChannelState(config.id, "cursor", cursorValue(row[src.cursorColumn]));
+          let rows: Array<Record<string, unknown>>;
+          try {
+            if (!rc.sqlClient) rc.sqlClient = await this.connectors.sql(src.driver, src.dsn);
+            const stored = this.db.getChannelState(config.id, "cursor") ?? src.initialCursor ?? "0";
+            const bound: string | number = /^-?\d+(\.\d+)?$/.test(stored) ? Number(stored) : stored;
+            rows = await rc.sqlClient.query(src.query, [bound]);
+          } catch (err) {
+            // Connecting and querying are both the link, and both fail the
+            // same way from an operator's chair: the far end is not
+            // answering. The client is dropped so the next poll reconnects.
+            this.sourceFailed(config.id, "read", err);
+            await this.dropSqlClient(rc);
+            return;
           }
-        } catch (err) {
-          console.error(`sqlpoll ${config.id}: ${err instanceof Error ? err.message : err}`);
-          await this.dropSqlClient(rc);
+          let clean = true;
+          for (const row of rows) {
+            try {
+              this.ingest(config.id, JSON.stringify(row), src.contentType ?? "application/json", "sqlpoll");
+              this.db.setChannelState(config.id, "cursor", cursorValue(row[src.cursorColumn]));
+            } catch (err) {
+              // As in dbpoll: stop here, leave the cursor, re-read next time.
+              clean = false;
+              this.sourceFailed(config.id, "item", err);
+              break;
+            }
+          }
+          if (clean) this.sourcePassed(config.id);
         } finally {
           rc.polling = false;
         }
@@ -782,35 +835,54 @@ export class Engine {
         if (rc.polling) return;
         rc.polling = true;
         try {
-          if (!rc.sftpClient) {
-            rc.sftpClient = await this.connectors.sftp({
-              host: src.host,
-              port: src.port,
-              username: src.username,
-              password: src.password,
-              privateKey: src.privateKeyPath ? readFileSync(src.privateKeyPath) : undefined,
-              passphrase: src.passphrase,
-            });
+          let files: Array<{ name: string }>;
+          try {
+            if (!rc.sftpClient) {
+              rc.sftpClient = await this.connectors.sftp({
+                host: src.host,
+                port: src.port,
+                username: src.username,
+                password: src.password,
+                privateKey: src.privateKeyPath ? readFileSync(src.privateKeyPath) : undefined,
+                passphrase: src.passphrase,
+              });
+            }
+            files = (await rc.sftpClient.list(src.dir))
+              .filter((f) => !pattern || pattern.test(f.name))
+              .sort((a, b) => a.name.localeCompare(b.name));
+          } catch (err) {
+            // Credentials, host key, network, a directory that has moved: all
+            // of them are "we cannot reach the far end", which is the thing
+            // an operator has to be told and the thing nothing recorded.
+            this.sourceFailed(config.id, "read", err);
+            await this.dropSftpClient(rc);
+            return;
           }
-          const files = (await rc.sftpClient.list(src.dir))
-            .filter((f) => !pattern || pattern.test(f.name))
-            .sort((a, b) => a.name.localeCompare(b.name));
+          let clean = true;
           for (const f of files) {
-            const remote = remoteJoin(src.dir, f.name);
-            const content = await rc.sftpClient.get(remote);
-            this.ingest(config.id, content, src.contentType ?? "text/plain", "sftp", { file: f.name });
-            // Archive or delete only after the message is durably stored, so a
-            // crash mid-poll re-reads the file rather than losing it.
-            if (src.archiveDir) {
-              await rc.sftpClient.mkdir(src.archiveDir);
-              await rc.sftpClient.rename(remote, remoteJoin(src.archiveDir, f.name));
-            } else {
-              await rc.sftpClient.delete(remote);
+            try {
+              const remote = remoteJoin(src.dir, f.name);
+              const content = await rc.sftpClient.get(remote);
+              this.ingest(config.id, content, src.contentType ?? "text/plain", "sftp", { file: f.name });
+              // Archive or delete only after the message is durably stored, so a
+              // crash mid-poll re-reads the file rather than losing it.
+              if (src.archiveDir) {
+                await rc.sftpClient.mkdir(src.archiveDir);
+                await rc.sftpClient.rename(remote, remoteJoin(src.archiveDir, f.name));
+              } else {
+                await rc.sftpClient.delete(remote);
+              }
+            } catch (err) {
+              // One file, on a link that answered. The session is dropped
+              // anyway, because a transfer that failed part-way is the most
+              // likely sign of a connection that has gone bad underneath it.
+              clean = false;
+              this.sourceFailed(config.id, "item", err, f.name);
+              await this.dropSftpClient(rc);
+              break;
             }
           }
-        } catch (err) {
-          console.error(`sftp ${config.id}: ${err instanceof Error ? err.message : err}`);
-          await this.dropSftpClient(rc);
+          if (clean) this.sourcePassed(config.id);
         } finally {
           rc.polling = false;
         }
@@ -819,6 +891,28 @@ export class Engine {
     }
 
     this.channels.set(config.id, rc);
+  }
+
+  /**
+   * Writes a poll failure down where a health check can see it.
+   *
+   * Every inbound poll used to catch its own exception, print it and return.
+   * A printed line is not a signal: nobody alerts on it, `/api/health` is
+   * built from the queue and from declared cadences, and a channel with no
+   * declared cadence therefore reported healthy for as long as its source
+   * stayed unreachable. The record is durable and per-channel; the log gets
+   * the id that reaches it, and the class and frames, and not the message —
+   * a polling query can quote the row it was reading, and a drop file is
+   * routinely named after a chart.
+   */
+  private sourceFailed(channelId: string, stage: SourceFailureStage, err: unknown, item?: string): void {
+    const record = this.db.recordSourceFailure(channelId, stage, err, item);
+    console.error(`channel ${channelId}: ${stage} failed ${record.consecutive}x - ${faultLine(record.faultId, err)}`);
+  }
+
+  /** Forgets a channel's failures, after a pass that read its source and handled everything on it. */
+  private sourcePassed(channelId: string): void {
+    if (this.db.sourceFailure(channelId)) this.db.clearSourceFailure(channelId);
   }
 
   /**
@@ -834,9 +928,17 @@ export class Engine {
     poll: () => void | Promise<void>
   ): void {
     const run = (): void => {
-      void Promise.resolve(poll()).catch((err: unknown) => {
-        console.error(`poll ${channelId}: ${err instanceof Error ? err.message : err}`);
-      });
+      // `Promise.resolve(poll())` evaluates `poll()` first, so a synchronous
+      // throw escapes before there is a promise to attach `.catch` to — out
+      // of the setInterval callback, and out of the process, which is an
+      // unhandled exception that takes the engine down over one bad poll.
+      // Every poll below guards itself, but this is the net under all of
+      // them and it has to actually be under them.
+      try {
+        void Promise.resolve(poll()).catch((err: unknown) => this.sourceFailed(channelId, "read", err));
+      } catch (err) {
+        this.sourceFailed(channelId, "read", err);
+      }
     };
 
     if (src.cron) {

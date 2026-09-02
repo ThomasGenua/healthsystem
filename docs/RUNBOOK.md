@@ -32,10 +32,12 @@ The escape hatch is break-glass, which is loud and recorded — see
   - [`/api/health` says degraded](#apihealth-says-degraded)
   - [A channel is stalled](#a-channel-is-stalled)
   - [A feed has gone silent](#a-feed-has-gone-silent)
+  - [A channel cannot reach its source](#a-channel-cannot-reach-its-source)
   - [Dead letters](#dead-letters)
   - [The disk is full](#the-disk-is-full)
   - [The engine will not start](#the-engine-will-not-start)
   - [The engine crashed](#the-engine-crashed)
+  - [A caller reports a fault id](#a-caller-reports-a-fault-id)
   - [Chain verification fails](#chain-verification-fails)
   - [A clinician cannot see a record they need](#a-clinician-cannot-see-a-record-they-need)
   - [Break-glass queues are not emptying](#break-glass-queues-are-not-emptying)
@@ -68,7 +70,7 @@ The escape hatch is break-glass, which is loud and recorded — see
 git clone https://github.com/ThomasGenua/healthsystem.git northstar
 cd northstar
 npm ci
-npm run typecheck && npm test    # 1127 tests; do not deploy a node that fails one
+npm run typecheck && npm test    # 1172 tests; do not deploy a node that fails one
 
 export NORTHSTAR_DATA=/var/lib/northstar
 export NORTHSTAR_PORT=8686
@@ -283,8 +285,53 @@ declared `expectMessageEverySec`.
 
 A dead ADT interface and a quiet night are indistinguishable from here, so this
 is a phone call to the sending site, not something to diagnose locally. Check
-first that the listener is actually up (`GET /api/channels`) so you are not
-calling them about your own outage.
+`failingChannels` first — below — so you are not calling them about our outage.
+
+### A channel cannot reach its source
+
+`/api/health` reports `signals.failingChannels`, and a channel there with
+`degrading: true` is why the engine is degraded.
+
+```json
+{ "channelId": "lab-in", "stage": "read", "consecutive": 47,
+  "kind": "Error ENOENT", "failingForSec": 3820, "degrading": true }
+```
+
+Read `stage` first, because it decides who you call:
+
+- **`read`** — our end cannot reach theirs. The drop directory is unmounted,
+  the polling query throws, the SFTP host refuses the connection. Nothing is
+  arriving and nothing will until somebody acts. `degrading` turns on after
+  three consecutive failed reads, which is past coincidence on any cadence.
+- **`item`** — the source answered and one thing on it could not be handled.
+  The link is up and the rest of the traffic is flowing, so this never
+  degrades the engine. Usually one stuck file, and it usually repeats on every
+  poll because it is not archived until it succeeds.
+
+`kind` is the exception class and its system code (`Error ENOENT`,
+`Error ECONNREFUSED`), which is normally enough to name the fault. The full
+message — and, for an `item` failure, the file it was on — is on the
+authenticated channel listing, not on the open health endpoint:
+
+```bash
+curl -sS -H "authorization: Bearer $ADMIN_KEY" \
+  http://localhost:8686/api/channels | jq '.[] | select(.sourceFailure)'
+```
+
+`sourceFailure.faultId` is the same id the log line carries, so a line in
+yesterday's log can be tied to the record it belongs to.
+
+There is nothing to acknowledge and nothing to reset. The record is cleared by
+a poll that reads the source and handles everything on it, so remount the
+volume or fix the credentials and the signal clears itself. If it does not,
+the source is still failing — check the detail again rather than the signal.
+
+A channel you deliberately disabled stops being reported without losing its
+record, so re-enabling one does not start from a clean slate it has not earned.
+
+`northstar_channel_source_failures{channel,stage}` is the same count in
+Prometheus. Alert on `stage="read"` above three; `stage="item"` is a ticket,
+not a page.
 
 ### Dead letters
 
@@ -342,6 +389,52 @@ one per key. That is at-least-once by design, and the content-addressed FHIR
 facade absorbs the duplicate as a no-op.
 
 Then check `GET /api/chain/verify` and move on.
+
+### A caller reports a fault id
+
+A client got `500 {"error": "internal error", "faultId": "<uuid>"}`, and the log
+line for it says only where:
+
+```
+phi Observation: fault 655eee4b-… Error at OrderStore.report (…/orders/store.ts:416:9) <- …
+```
+
+That is deliberate and is not a truncated log. The exception message is the
+part of a fault that can carry a patient in it — a store that says
+`3 medication(s) still undecided: <drug names>` or `result is for <a> but order
+is for <b>` is being helpful to a clinician, not to stdout — and stdout is
+collected by systems nobody treats as holding PHI. So the message stays on the
+audit trail, which does, and the id is the way back to it:
+
+```bash
+curl -sH "authorization: Bearer $OPS" \
+  "$BASE/api/audit?limit=200" |
+  grep 655eee4b
+```
+
+Or in SQL against a copy of the database:
+
+```sql
+SELECT recorded_at, method, path, patient, detail
+  FROM audit_events
+ WHERE tenant_id = 'default' AND detail LIKE 'fault 655eee4b%';
+```
+
+The row carries the whole message, the patient it concerned, the principal and
+the route. Treat what you read there as chart content: it belongs in the
+incident record, not pasted into a ticket, a chat channel, or an upstream bug
+report.
+
+Two things the log line alone still tells you without a lookup: the exception
+class, and the top stack frames — the function and line that raised it, which
+is usually more precise than the route would have been. The route is reported
+as its area only (`/fhir/Patient`, not `/fhir/Patient/NT123456`) for the same
+reason.
+
+If there is no matching audit row, the throw happened before a tenant was
+resolved — a bug in the router or the gate rather than in a store. The stack
+frames in the log line are then the whole of the evidence, and they are enough
+to find it.
 
 ### Chain verification fails
 

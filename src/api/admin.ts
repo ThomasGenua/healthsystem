@@ -63,7 +63,7 @@ import { CHART_TYPES, WORKLIST_TYPES } from "../workspace/summary.ts";
 import { VISIT_TYPES } from "../workspace/visit.ts";
 import type { EncounterClass } from "../clinical/encounters.ts";
 import { DIRECTORY_KINDS, type PartyKind } from "../directory/store.ts";
-import { mapStoreError, refuse } from "../core/refusal.ts";
+import { errorBody, logFault, mapStoreError, refuse, routeArea } from "../core/refusal.ts";
 import type { MigrationRecordType, SourceRecord } from "../migrate/run.ts";
 import type { AuthorityRow, PatientPermission } from "../patient/access.ts";
 import { DISPENSE_OUTCOMES, type DispenseOutcome } from "../meds/prescribe.ts";
@@ -72,6 +72,7 @@ import { score as computeScore, SCORE_IDS } from "../clinical/scores.ts";
 import { ingest, MEASURED_FIELDS, SCORE_MEASUREMENTS, type Measurement } from "../clinical/measurement.ts";
 import type { ScoreId } from "../clinical/score-definitions.ts";
 import type { PublicationStatus } from "../conformance/standards.ts";
+import { buildSummary, emptyReasonFor, type SummarySection } from "../clinical/summary.ts";
 import { news2FromChart, curb65FromChart } from "../clinical/score-from-chart.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
@@ -159,7 +160,31 @@ export function startApi(engine: Engine, port: number, host = "0.0.0.0", options
   const remote = options.remote;
   const handler = (req: IncomingMessage, res: ServerResponse): void => {
     void route(engine, req, res, gate, limiter, remote, options.station).catch((err) => {
-      send(res, 500, { error: err instanceof Error ? err.message : "internal error" });
+      // The net under the router, for a throw no route caught. It used to
+      // send the exception message to the caller, which made it the one
+      // path where a fault from any store — including the ones that name a
+      // medication or a second patient — was quoted verbatim to whoever
+      // asked. There is no tenant here and so no trail row to put the
+      // message on, so a fault's message goes nowhere: the caller and the
+      // log get the same id, and the code path is in the frames.
+      //
+      // A refusal that escaped a route keeps its own status and words. It
+      // was written to be read by the caller, and answering it with 500
+      // would tell a client to retry a request that will be refused again.
+      // A body that is not JSON, and a channel `pattern` that is not a
+      // regular expression, both arrive here as SyntaxError. Ninety-seven
+      // `JSON.parse(await readBody(req))` calls in this router are not
+      // individually guarded, and do not need to be: the answer is the same
+      // for every one of them, and it is the caller's, not ours. Answering
+      // 500 told a client to retry a request that fails identically every
+      // time it is retried.
+      if (err instanceof SyntaxError) {
+        send(res, 400, { error: "malformed request body: expected JSON" });
+        return;
+      }
+      const mapped = mapStoreError(err);
+      logFault(`${req.method ?? "?"} ${routeArea(new URL(req.url ?? "/", "http://localhost").pathname)}`, mapped, err);
+      send(res, mapped.status, errorBody(mapped));
     });
   };
   const server = options.tls ? createSecureServer(options.tls.serverOptions, handler) : createServer(handler);
@@ -337,10 +362,17 @@ async function route(
       // A configured remote whose last replica failed counts too: local
       // snapshots still exist, but the copy that survives the machine does
       // not, and that is an incident rather than a posture.
+      // A source nothing can be read from counts too, and it is the failure
+      // that used to be invisible: a poll caught its own exception, printed
+      // it and returned, so a channel whose far end had been unreachable for
+      // days sat here reporting a clean bill of health. One bad file is
+      // reported without degrading — the link is up, and the message
+      // pipeline already owns that.
       degraded:
         stalled.length > 0 ||
         signals.deadLetters > 0 ||
         signals.silentChannels.length > 0 ||
+        signals.failingChannels.some((c) => c.degrading) ||
         Boolean(remote?.isDegraded()),
       stats: db.stats(),
       signals: { ...signals, stalledChannels: stalled, stalledAfterSec: stalledAfter },
@@ -401,6 +433,18 @@ async function route(
       Object.entries(stats.fhir).map(([k, v]) => [`{resource_type="${k}"}`, v] as [string, number])
     );
     metric("dead_letters", "Deliveries in the dead-letter queue.", "gauge", [["", signals.deadLetters]]);
+    // Labelled by channel and stage and nothing else. `kind` is an exception
+    // class and would be a fine label, but a metric name plus its labels is
+    // the one part of a scrape that is stored forever and copied into every
+    // dashboard, and an unbounded label set is how a leak starts.
+    metric("channel_source_failures",
+      "Consecutive failures reading a channel's source (stage=read) or handling one thing on it (stage=item).",
+      "gauge",
+      signals.failingChannels.map(
+        (c) =>
+          [`{channel="${c.channelId.replace(/"/g, "")}",stage="${c.stage}"}`, c.consecutive] as [string, number]
+      )
+    );
     metric("oldest_queued_age_seconds", "Age of the oldest undelivered message.", "gauge", [
       ["", signals.oldestQueuedAgeSec ?? 0],
     ]);
@@ -658,7 +702,7 @@ async function route(
         });
       } catch (err) {
         const mapped = mapStoreError(err);
-        if (mapped.outcome === 8) console.error(`patient ${resourceType}: ${mapped.detail}`);
+        logFault(`patient ${resourceType}`, mapped, err);
         tenant.db.transaction(() => {
           access.logAccess({
             patientId,
@@ -677,7 +721,7 @@ async function route(
             detail: mapped.detail,
           });
         });
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
       return send(res, status, value);
     };
@@ -896,7 +940,17 @@ async function route(
   }
 
   if (path === "/api/channels" && method === "GET") {
-    return send(res, 200, engine.listChannels());
+    // Authenticated, so this is where the failure detail lives: the exception
+    // message, and for a bad file its name. `/api/health` is open and carries
+    // the class and the count only.
+    return send(
+      res,
+      200,
+      engine.listChannels().map((c) => {
+        const failure = db.sourceFailure(c.id);
+        return failure ? { ...c, sourceFailure: failure } : c;
+      })
+    );
   }
   if (path === "/api/channels" && method === "POST") {
     const body = await readBody(req);
@@ -1382,7 +1436,7 @@ async function route(
             patient: body.patient,
             detail: mapped.detail,
           });
-          return send(res, mapped.status, { error: mapped.error });
+          return send(res, mapped.status, errorBody(mapped));
         }
       }
 
@@ -1528,9 +1582,9 @@ async function route(
         value = produce(withheldTypes);
       } catch (err) {
         const mapped = mapStoreError(err);
-        if (mapped.outcome === 8) console.error(`phi ${resourceType}: ${mapped.detail}`);
+        logFault(`phi ${resourceType}`, mapped, err);
         audit({ action: verbToAction(method), outcome: mapped.outcome, resourceType, patient, detail: mapped.detail });
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
       audit({
         action: verbToAction(method),
@@ -1581,7 +1635,7 @@ async function route(
         value = produce();
       } catch (err) {
         const mapped = mapStoreError(err);
-        if (mapped.outcome === 8) console.error(`phiOffice ${resourceType}: ${mapped.detail}`);
+        logFault(`phiOffice ${resourceType}`, mapped, err);
         audit({
           action: verbToAction(method),
           outcome: mapped.outcome,
@@ -1589,7 +1643,7 @@ async function route(
           patient: subject,
           detail: mapped.detail,
         });
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
       audit({
         action: verbToAction(method),
@@ -1688,7 +1742,7 @@ async function route(
       } catch (err) {
         const mapped = mapStoreError(err);
         audit({ action: "R", outcome: mapped.outcome, resourceType: "Composition", patient, detail: mapped.detail });
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
       // One row per member, because each member's record was disclosed and
       // each member's access review must see this read. A single row naming
@@ -1755,7 +1809,7 @@ async function route(
         for (const id of [body.a, body.b]) {
           audit({ action: "C", outcome: mapped.outcome, resourceType: "Patient", patient: id, detail: mapped.detail });
         }
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
     }
     if (path === "/api/clinical/unlink" && method === "POST") {
@@ -1800,7 +1854,7 @@ async function route(
             audit({ action: "U", outcome: mapped.outcome, resourceType: "Patient", patient: id, detail: mapped.detail });
           }
         }
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
     }
     if (path === "/api/clinical/encounters" && method === "GET") {
@@ -2266,7 +2320,7 @@ async function route(
         return send(res, 200, acknowledged);
       } catch (err) {
         const mapped = mapStoreError(err);
-        if (mapped.outcome === 8) console.error(`acknowledge: ${mapped.detail}`);
+        logFault(`acknowledge`, mapped, err);
         audit({
           action: "U",
           outcome: mapped.outcome,
@@ -2274,7 +2328,7 @@ async function route(
           patient: row.patient_id,
           detail: mapped.detail,
         });
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
     }
     if (path === "/api/clinical/book" && method === "POST") {
@@ -2914,6 +2968,57 @@ async function route(
     // actions each need a written reason. There is deliberately no route that
     // enables more than one score, because "enable all" is the request nobody
     // should be able to satisfy in a single click.
+    // The shareable copy, as distinct from /patient/summary which is the
+    // patient reading their own chart. This one leaves the building, so it
+    // carries a manifest saying what was in it, what was empty and why, and a
+    // signature binding the two.
+    if (path === "/api/clinical/patient-summary-export" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { patient?: string };
+      if (!body.patient) return send(res, 400, { error: "patient required" });
+      const patientId = body.patient;
+      return phiFor(patientId, "Composition", () => {
+        const allergyStatus = tenant.meds.allergyStatus(patientId);
+        const allergies = tenant.meds.allergies(patientId).filter((a) => a.kind !== "no-known-allergies");
+        const meds = tenant.meds.current(patientId);
+        const immunizationStatus = tenant.immunizations.historyStatus(patientId);
+        const immunizations = tenant.immunizations.forPatient(patientId);
+        const procedureStatus = tenant.procedures.historyStatus(patientId);
+        const procedures = tenant.procedures.forPatient(patientId);
+
+        const section = (title: string, code: string, entries: unknown[], status: string): SummarySection => ({
+          title,
+          code,
+          entries: entries as Array<Record<string, unknown>>,
+          status,
+          ...(entries.length === 0 ? { emptyReason: emptyReasonFor(status) } : {}),
+        });
+
+        const { bundle, manifest } = buildSummary(
+          patientId,
+          (tenant.clinical.patientIndex.get(patientId) ?? null) as Record<string, unknown> | null,
+          [
+            section("Allergies and intolerances", "48765-2", allergies, allergyStatus),
+            // Medications have no "nobody asked" state here: an empty list
+            // means none are recorded, which is not the same as none taken.
+            section("Medication summary", "10160-0", meds, meds.length > 0 ? "documented" : "never-recorded"),
+            section("Immunizations", "11369-6", immunizations, immunizationStatus),
+            section("Procedures", "47519-4", procedures, procedureStatus),
+          ],
+          {
+            tenantId: tenant.tenantId,
+            terminologySystems: () =>
+              (
+                tenant.db.sql
+                  .prepare("SELECT DISTINCT system FROM term_concepts ORDER BY system")
+                  .all() as Array<{ system: string }>
+              ).map((r) => r.system),
+            activeGuides: () => tenant.standards.active().map((p) => `${p.packageId}@${p.version}`),
+          },
+          readEnv("SUMMARY_SIGNING_KEY")
+        );
+        return { bundle, manifest };
+      });
+    }
     if (path === "/api/clinical/standards" && method === "GET") {
       return phiOffice("Bundle", () => ({
         statement: tenant.standards.conformanceStatement(),
@@ -3536,7 +3641,7 @@ async function route(
       } catch (err) {
         const mapped = mapStoreError(err);
         audit({ action: "R", outcome: mapped.outcome, resourceType: "MeasureReport", detail: mapped.detail });
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
     }
     if (path === "/api/clinical/safety-check" && method === "POST") {
@@ -4482,19 +4587,69 @@ async function route(
     return send(res, 200, smart);
   }
   if (path === "/fhir/metadata" && method === "GET") {
-    return send(res, 200, fhir.capability(baseUrl(req), VERSION));
+    return send(res, 200, fhir.capability(baseUrl(req), VERSION, tenant.standards.active().map((p) => p.canonicalUrl)));
+  }
+
+  // Lineage for one resource. Distinct from /fhir/AuditEvent, which answers
+  // who reached the record rather than where the record came from.
+  m = /^\/fhir\/Provenance$/.exec(path);
+  if (m && method === "GET") {
+    const target = url.searchParams.get("target");
+    if (!target || !target.includes("/")) {
+      return send(res, 400, {
+        resourceType: "OperationOutcome",
+        issue: [{ severity: "error", code: "required", diagnostics: "target is required, as Type/id" }],
+      });
+    }
+    const [targetType, targetId] = target.split("/", 2);
+    const rows = fhir.provenance.forTarget(targetType, targetId);
+    audit({ action: "R", resourceType: "Provenance", resourceId: target, count: rows.length });
+    return send(res, 200, {
+      resourceType: "Bundle",
+      type: "searchset",
+      total: rows.length,
+      entry: rows.map((r) => ({
+        fullUrl: `${baseUrl(req)}/fhir/Provenance/${r.id}`,
+        resource: fhir.provenance.toFhir(r, baseUrl(req) + "/fhir"),
+      })),
+    });
   }
 
   m = /^\/fhir\/([A-Z][A-Za-z]+)$/.exec(path);
   if (m && method === "GET") {
     const type = m[1];
     const identifier = url.searchParams.get("identifier") ?? undefined;
-    const result = fhir.search(type, { identifier, count: num(url.searchParams.get("_count")) });
-    audit({ action: "R", resourceType: type, patient: identifier, count: result.total });
+    const patient = url.searchParams.get("patient") ?? undefined;
+    const count = Math.min(Math.max(num(url.searchParams.get("_count")) ?? 20, 1), 100);
+    const offset = Math.max(num(url.searchParams.get("_offset")) ?? 0, 0);
+    const result = fhir.search(type, { identifier, count, offset, ...(patient ? { patient } : {}) });
+    audit({ action: "R", resourceType: type, patient: patient ?? identifier, count: result.total });
+
+    // Continuation links. A client that pages by re-issuing the search with a
+    // bigger offset needs the ordering to be stable, which is why the store
+    // orders on a tiebreak — without it a page boundary falling inside a run
+    // of identical timestamps repeats some resources and skips others.
+    const page = (at: number): string => {
+      const link = new URL(`${baseUrl(req)}/fhir/${type}`);
+      if (identifier) link.searchParams.set("identifier", identifier);
+      if (patient) link.searchParams.set("patient", patient);
+      link.searchParams.set("_count", String(count));
+      link.searchParams.set("_offset", String(at));
+      return link.toString();
+    };
+    const links: Array<{ relation: string; url: string }> = [{ relation: "self", url: page(offset) }];
+    if (offset + result.resources.length < result.total) {
+      links.push({ relation: "next", url: page(offset + count) });
+    }
+    if (offset > 0) {
+      links.push({ relation: "previous", url: page(Math.max(offset - count, 0)) });
+    }
+
     return send(res, 200, {
       resourceType: "Bundle",
       type: "searchset",
       total: result.total,
+      link: links,
       entry: result.resources.map((r) => ({
         fullUrl: `${baseUrl(req)}/fhir/${type}/${String((r as { id?: unknown }).id ?? "")}`,
         resource: r,
@@ -4624,7 +4779,12 @@ function readBody(req: IncomingMessage): Promise<string> {
     req.on("data", (c: Buffer) => {
       size += c.length;
       if (size > MAX_BODY) {
-        reject(new Error("body too large"));
+        // A refusal, not a fault: 413 is the status that means do not send
+        // this again, and 500 is the one that means try it once more. The
+        // socket is destroyed at the limit rather than after the response,
+        // so a client may see the reset instead of the status — but nothing
+        // downstream logs this as the engine falling over any more.
+        reject(new Refusal("request body too large", 413));
         req.destroy();
         return;
       }

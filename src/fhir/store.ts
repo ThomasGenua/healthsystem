@@ -8,6 +8,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import type { Db } from "../db.ts";
+import { ProvenanceStore, type ProvenanceInput } from "./provenance.ts";
 import { validateResource, type ConformanceRegistry } from "../conformance/validator.ts";
 import type { TerminologyStore } from "../terminology/store.ts";
 import type { ConformanceIssue } from "../types.ts";
@@ -35,6 +36,15 @@ export interface FacadeValidation {
   pack?: string;
   mode?: "reject" | "annotate";
 }
+
+/**
+ * Where this write came from, for the lineage record.
+ *
+ * Optional because most existing callers cannot say: a write with no context
+ * is recorded as unattributed rather than refused, which keeps the lineage
+ * honest without making every caller supply something it does not know.
+ */
+export type WriteContext = Pick<ProvenanceInput, "agent" | "source" | "transformation" | "rule" | "occurredAt">;
 
 /**
  * What the store needs to validate. Supplied by the Engine, which owns the
@@ -67,13 +77,46 @@ interface Identifier {
   value?: string;
 }
 
+/**
+ * The chart a resource is about, as a bare patient id.
+ *
+ * FHIR spells this several ways depending on the resource: most clinical
+ * resources use `subject`, some use `patient`, and a Patient is about itself.
+ * All three are read, because a resource whose patient cannot be found is
+ * excluded from a patient-scoped search — so failing to recognise a spelling
+ * hides records rather than leaking them, and the failure is silent either
+ * way unless the spellings are covered here.
+ *
+ * Returns undefined where no patient reference is present, which is a real
+ * answer: an Organization, a Practitioner or a ValueSet is about nobody.
+ */
+export function patientOf(resource: Record<string, unknown>): string | undefined {
+  if (resource.resourceType === "Patient") {
+    return typeof resource.id === "string" ? resource.id : undefined;
+  }
+  for (const field of ["subject", "patient"]) {
+    const ref = resource[field];
+    if (!ref || typeof ref !== "object") continue;
+    const reference = (ref as { reference?: unknown }).reference;
+    if (typeof reference !== "string") continue;
+    // "Patient/NT123456" or a bare id; anything pointing at another resource
+    // type is not a patient reference and is left alone.
+    const m = /^(?:Patient\/)?([A-Za-z0-9.-]{1,64})$/.exec(reference);
+    if (m && (reference.startsWith("Patient/") || !reference.includes("/"))) return m[1];
+  }
+  return undefined;
+}
+
 export class FhirStore {
+  /** Lineage for everything this store writes. See fhir/provenance.ts. */
+  readonly provenance: ProvenanceStore;
   private db: Db;
   private listeners: Array<(result: FhirUpsertResult, resource: Record<string, unknown>) => void> = [];
   private validation?: ValidationContext;
   private directory?: Directory;
 
   constructor(db: Db, validation?: ValidationContext, directory?: Directory) {
+    this.provenance = new ProvenanceStore(db);
     this.db = db;
     this.validation = validation;
     this.directory = directory;
@@ -84,7 +127,7 @@ export class FhirStore {
     this.listeners.push(fn);
   }
 
-  upsert(resource: Record<string, unknown>, validate?: FacadeValidation): FhirUpsertResult {
+  upsert(resource: Record<string, unknown>, validate?: FacadeValidation, context?: WriteContext): FhirUpsertResult {
     const type = resource.resourceType;
     if (typeof type !== "string" || !/^[A-Z][A-Za-z]{1,63}$/.test(type)) {
       throw new Error("FHIR resource requires a valid resourceType");
@@ -127,13 +170,13 @@ export class FhirStore {
 
     this.db.sql
       .prepare(
-        `INSERT INTO fhir_resources (tenant_id, resource_type, id, version_id, json, hash, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        `INSERT INTO fhir_resources (tenant_id, resource_type, id, version_id, json, hash, patient_id, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
          ON CONFLICT(tenant_id, resource_type, id) DO UPDATE SET
            version_id = excluded.version_id, json = excluded.json,
-           hash = excluded.hash, updated_at = datetime('now')`
+           hash = excluded.hash, patient_id = excluded.patient_id, updated_at = datetime('now')`
       )
-      .run(this.db.tenantId, type, id, versionId, JSON.stringify(body), hash);
+      .run(this.db.tenantId, type, id, versionId, JSON.stringify(body), hash, patientOf(body) ?? null);
 
     this.db.sql
       .prepare("DELETE FROM fhir_identifiers WHERE tenant_id = ? AND resource_type = ? AND id = ?")
@@ -153,6 +196,20 @@ export class FhirStore {
       changed: true,
       ...(issues.length ? { issues } : {}),
     };
+    // Lineage for the write that just happened. Recorded for every persisted
+    // change, including one nothing described: an unattributed record is a
+    // fact about the gap, and leaving no record at all would make the gap
+    // indistinguishable from a resource nobody has touched.
+    this.provenance.record({
+      target: { type, id, version: versionId },
+      activity: context?.transformation ? "transform" : existing ? "update" : "create",
+      ...(context?.agent ? { agent: context.agent } : {}),
+      ...(context?.source ? { source: context.source } : {}),
+      ...(context?.transformation ? { transformation: context.transformation } : {}),
+      ...(context?.rule ? { rule: context.rule } : {}),
+      ...(context?.occurredAt ? { occurredAt: context.occurredAt } : {}),
+    });
+
     // Listeners (today: rest-hook subscription notification) only ever see
     // resources that passed validation and actually persisted.
     for (const fn of this.listeners) fn(result, body);
@@ -200,20 +257,68 @@ export class FhirStore {
   }
 
   /** Search by identifier token ("system|value" or bare "value"). */
-  search(type: string, opts: { identifier?: string; count?: number } = {}): FhirSearchResult {
+  /**
+   * Backfills patient_id for resources written before the column existed.
+   *
+   * Runs once per store and only over rows that have none, so an upgraded
+   * database gains the scoping without a separate migration step. Reading the
+   * JSON is the only way to recover it: the reference was never anywhere else.
+   */
+  backfillPatients(): number {
+    const rows = this.db.sql
+      .prepare("SELECT resource_type, id, json FROM fhir_resources WHERE tenant_id = ? AND patient_id IS NULL")
+      .all(this.db.tenantId) as Array<{ resource_type: string; id: string; json: string }>;
+    const set = this.db.sql.prepare(
+      "UPDATE fhir_resources SET patient_id = ? WHERE tenant_id = ? AND resource_type = ? AND id = ?"
+    );
+    let filled = 0;
+    this.db.transaction(() => {
+      for (const r of rows) {
+        const patient = patientOf(JSON.parse(r.json) as Record<string, unknown>);
+        if (!patient) continue;
+        set.run(patient, this.db.tenantId, r.resource_type, r.id);
+        filled++;
+      }
+    });
+    return filled;
+  }
+
+  search(
+    type: string,
+    opts: { identifier?: string; count?: number; offset?: number; patient?: string } = {}
+  ): FhirSearchResult {
     const count = Math.min(Math.max(opts.count ?? 20, 1), 100);
-    const stored = this.searchStored(type, opts, count);
+    const offset = Math.max(Math.trunc(opts.offset ?? 0), 0);
+    const stored = this.searchStored(type, opts, count, offset);
     if (!this.directory || !isDirectoryType(type)) return stored;
-    const projected = directorySearch(this.directory, type, { identifier: opts.identifier, count });
+    // The directory projection has no offset of its own, so a page past the
+    // first is taken by over-fetching and slicing. Honest and bounded: count
+    // is capped at 100, so the widest fetch is offset + 100 rows.
+    const projected = directorySearch(this.directory, type, { identifier: opts.identifier, count: count + offset });
     const seen = new Set(projected.resources.map((r) => String((r as { id?: unknown }).id ?? "")));
     const extra = stored.resources.filter((r) => !seen.has(String((r as { id?: unknown }).id ?? "")));
     return {
       total: projected.total + extra.length,
-      resources: [...projected.resources, ...extra].slice(0, count),
+      resources: [...projected.resources.slice(offset), ...extra].slice(0, count),
     };
   }
 
-  private searchStored(type: string, opts: { identifier?: string; count?: number }, count: number): FhirSearchResult {
+  /**
+   * One page of stored resources.
+   *
+   * The ordering carries a tiebreak on id, and that is load-bearing rather
+   * than tidy. `updated_at` has second granularity, so a bulk load writes
+   * dozens of resources with identical timestamps; an unbroken tie orders
+   * arbitrarily, and SQLite is free to order it differently between two
+   * queries. Paging through that skips resources and repeats others, and a
+   * client reading a patient's observations would silently miss some.
+   */
+  private searchStored(
+    type: string,
+    opts: { identifier?: string; count?: number; patient?: string },
+    count: number,
+    offset: number
+  ): FhirSearchResult {
     if (opts.identifier) {
       const bar = opts.identifier.indexOf("|");
       const system = bar >= 0 ? opts.identifier.slice(0, bar) : null;
@@ -236,22 +341,33 @@ export class FhirStore {
           `SELECT DISTINCT r.json FROM fhir_resources r
            JOIN fhir_identifiers i
              ON i.tenant_id = r.tenant_id AND i.resource_type = r.resource_type AND i.id = r.id
-           WHERE i.tenant_id = ? AND ${where} ORDER BY r.updated_at DESC LIMIT ${count}`
+           WHERE i.tenant_id = ? AND ${where} ORDER BY r.updated_at DESC, r.id LIMIT ${count} OFFSET ${offset}`
         )
         .all(...(args as never[])) as Array<{ json: string }>;
       return { total, resources: rows.map((r) => JSON.parse(r.json) as Record<string, unknown>) };
     }
 
+    // A patient-scoped search matches on the column, so a row whose patient
+    // could not be determined is absent rather than included. Null is not a
+    // wildcard here.
+    // Only the optional patient clause is interpolated; the tenant stays in
+    // the statement text, so the scope is visible where the query is read
+    // rather than assembled out of sight. The identifier branch above takes
+    // the same care, and the structural test that enforces it caught this.
+    const scoped = opts.patient !== undefined;
+    const byPatient = scoped ? " AND patient_id = ?" : "";
+    const args = scoped ? [this.db.tenantId, type, opts.patient] : [this.db.tenantId, type];
     const total = (
       this.db.sql
-        .prepare("SELECT COUNT(*) AS n FROM fhir_resources WHERE tenant_id = ? AND resource_type = ?")
-        .get(this.db.tenantId, type) as { n: number }
+        .prepare(`SELECT COUNT(*) AS n FROM fhir_resources WHERE tenant_id = ? AND resource_type = ?${byPatient}`)
+        .get(...(args as never[])) as { n: number }
     ).n;
     const rows = this.db.sql
       .prepare(
-        `SELECT json FROM fhir_resources WHERE tenant_id = ? AND resource_type = ? ORDER BY updated_at DESC LIMIT ${count}`
+        `SELECT json FROM fhir_resources WHERE tenant_id = ? AND resource_type = ?${byPatient}
+           ORDER BY updated_at DESC, id LIMIT ${count} OFFSET ${offset}`
       )
-      .all(this.db.tenantId, type) as Array<{ json: string }>;
+      .all(...(args as never[])) as Array<{ json: string }>;
     return { total, resources: rows.map((r) => JSON.parse(r.json) as Record<string, unknown>) };
   }
 
@@ -272,10 +388,20 @@ export class FhirStore {
     return [...seen.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([type, count]) => ({ type, count }));
   }
 
-  capability(baseUrl: string, version: string): Record<string, unknown> {
+  /**
+   * What this server supports, and which guides it claims to follow.
+   *
+   * `instantiates` comes from the conformance registry rather than from a
+   * literal here, so the statement cannot claim an implementation guide the
+   * deployment has not actually put into force. A capability statement naming
+   * a guide nobody installed is the same failure as a conformance page
+   * written by hand: it is the artifact a partner reads and believes.
+   */
+  capability(baseUrl: string, version: string, instantiates: readonly string[] = []): Record<string, unknown> {
     return {
       resourceType: "CapabilityStatement",
       status: "active",
+      ...(instantiates.length > 0 ? { instantiates: [...instantiates] } : {}),
       date: new Date().toISOString(),
       kind: "instance",
       fhirVersion: "4.0.1",

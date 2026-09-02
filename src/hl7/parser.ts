@@ -35,7 +35,14 @@ export interface Hl7Message {
 const PATH_RE = /^([A-Z][A-Z0-9]{2})(?:\[(\d+)\])?-(\d+)(?:\[(\d+)\])?(?:\.(\d+)(?:\.(\d+))?)?$/;
 
 export function parseHl7(raw: string): Hl7Message {
-  const text = raw.replace(/\r\n/g, "\r").replace(/\n/g, "\r").replace(/\r+$/, "");
+  // No trailing-CR trim. `.replace(/\r+$/, "")` was here and was quadratic:
+  // when a non-CR character follows a run of carriage returns, the engine
+  // restarts the greedy match at every position in the run and `$` fails
+  // every time. 400k CRs took 130 seconds, and the MLLP frame limit is
+  // 16 MiB — from an unauthenticated socket, one frame could hold the
+  // engine's only thread for days. The empty-segment filter below already
+  // removes exactly what the trim removed, in one linear pass.
+  const text = raw.replace(/\r\n/g, "\r").replace(/\n/g, "\r");
   const lines = text.split("\r").filter((l) => l.length > 0);
   if (lines.length === 0 || !lines[0].startsWith("MSH")) {
     throw new Error("Not an HL7 v2 message: missing MSH segment");
@@ -113,9 +120,16 @@ export function unescapeHl7(value: string, d: Hl7Delimiters): string {
         out += "\n";
         break;
       default:
-        if (code.startsWith("X")) {
-          const hex = code.slice(1);
-          for (let h = 0; h + 1 < hex.length + 1 && h < hex.length; h += 2) {
+        // `\X..\` is hex data, and only when it actually is: `parseInt("zz", 16)`
+        // is NaN and `String.fromCharCode(NaN)` is U+0000, so an unparseable
+        // escape used to become a NUL in the middle of a value. SQLite stores
+        // that, JSON serialises it, and every reader afterwards treats it as a
+        // character in somebody's name. Anything that is not an even number of
+        // hex digits falls through to the same handling as any other escape
+        // this does not know: left exactly as it arrived.
+        const hex = code.startsWith("X") ? code.slice(1) : "";
+        if (hex.length > 0 && hex.length % 2 === 0 && /^[0-9A-Fa-f]+$/.test(hex)) {
+          for (let h = 0; h < hex.length; h += 2) {
             out += String.fromCharCode(parseInt(hex.slice(h, h + 2), 16));
           }
         } else {
@@ -211,8 +225,14 @@ export function serializeHl7(msg: Hl7Message): string {
 export function buildAck(original: Hl7Message, code: "AA" | "AE" | "AR", text?: string): string {
   const d = original.delimiters;
   const now = hl7Now();
-  const controlId = getHl7(original, "MSH-10") || "UNKNOWN";
-  const trigger = getHl7(original, "MSH-9.2");
+  // Everything below comes from the message being acknowledged, and `getHl7`
+  // returns it already unescaped — so a value has to be re-escaped before it
+  // goes back out. MSH-10, MSH-9.2, MSH-11 and MSH-12 were not, which let a
+  // sender put `\F\` in a control id and have the acknowledgement come back
+  // with live field separators in it: `MSA|AA|MSG|AE|INJECTED|`, where the
+  // receiving system reads MSA-3 as a value nobody sent.
+  const controlId = escapeHl7(getHl7(original, "MSH-10"), d) || "UNKNOWN";
+  const trigger = escapeHl7(getHl7(original, "MSH-9.2"), d);
   const msh = [
     "MSH",
     d.component + d.repetition + d.escape + d.subcomponent,
@@ -224,8 +244,8 @@ export function buildAck(original: Hl7Message, code: "AA" | "AE" | "AR", text?: 
     "",
     trigger ? `ACK${d.component}${trigger}${d.component}ACK` : "ACK",
     `${hl7ApplicationName()}${Date.now()}`,
-    getHl7(original, "MSH-11") || "P",
-    getHl7(original, "MSH-12") || "2.5.1",
+    escapeHl7(getHl7(original, "MSH-11"), d) || "P",
+    escapeHl7(getHl7(original, "MSH-12"), d) || "2.5.1",
   ].join(d.field);
   const msa = ["MSA", code, controlId, text ? escapeHl7(text, d) : ""].join(d.field);
   return `${msh}\r${msa}\r`;
@@ -239,12 +259,39 @@ export function hl7Now(date: Date = new Date()): string {
   );
 }
 
-/** Convert an HL7 TS (YYYYMMDD[HHMM[SS]]) to ISO 8601. Date-only stays date-only. */
+const MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/** Days in a month, by the calendar rather than by `Date`, whose 0-99 years are 1900+. */
+function daysInMonth(year: number, month: number): number {
+  if (month === 2 && ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0)) return 29;
+  return MONTH_DAYS[month - 1];
+}
+
+/**
+ * Convert an HL7 TS (YYYYMMDD[HHMM[SS]]) to ISO 8601. Date-only stays date-only.
+ *
+ * A date that is not on the calendar is not a date. `20261301` and `20260231`
+ * used to come back shaped like timestamps — `2026-13-01`, `2026-02-31` — and
+ * be stored as ones, so every reader afterwards got Invalid Date out of a
+ * field that looked populated. An empty string is the existing signal for "no
+ * usable date here", and it has the advantage of being visibly empty.
+ *
+ * Seconds are 0-59: a leap second is a valid TS that `Date` cannot represent
+ * either, and answering "no date" is the safer of the two wrong answers.
+ *
+ * Offsets are still dropped, which is deliberate and documented — see
+ * `src/orders/hl7.ts`, which reads them properly because a result an hour out
+ * is a result on the wrong side of a shift change.
+ */
 export function hl7DateToIso(ts: string): string {
   const t = ts.trim();
   const m = /^(\d{4})(\d{2})(\d{2})(?:(\d{2})(\d{2})(\d{2})?)?/.exec(t);
   if (!m) return "";
   const [, y, mo, da, h, mi, s] = m;
+  const month = Number(mo);
+  const day = Number(da);
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth(Number(y), month)) return "";
   if (!h) return `${y}-${mo}-${da}`;
-  return `${y}-${mo}-${da}T${h}:${mi ?? "00"}:${s ?? "00"}`;
+  if (Number(h) > 23 || Number(mi) > 59 || (s !== undefined && Number(s) > 59)) return "";
+  return `${y}-${mo}-${da}T${h}:${mi}:${s ?? "00"}`;
 }

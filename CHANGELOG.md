@@ -448,7 +448,173 @@ always forward-compatible and run automatically on open — see
 
   Hazards H-151 and H-152.
 
+- **A patient summary that can leave the building.** `POST
+  /api/clinical/patient-summary-export` produces a FHIR document bundle shaped
+  after the International Patient Summary, with a manifest and a signature
+  binding the two. Distinct from `/patient/summary`, which is a patient
+  reading their own chart and is unchanged.
+
+  The point is what an empty section means somewhere nobody can ask a
+  follow-up question. An empty allergy list can mean the patient has none,
+  that nobody asked, that somebody asked and the answer is unknown, that a
+  directive withholds it, or that this system holds no such record — five
+  facts that render identically, where a reader supplies the most comfortable
+  one. Each empty section now carries a coded `emptyReason` and, because the
+  mapping to FHIR's vocabulary is lossy, this system's own word beside it. A
+  status the mapping does not recognise becomes `unavailable`, never
+  `nilknown`: a state added later must not silently assert that a patient has
+  none of something.
+
+  The manifest states what is not known as well as what is. Terminology
+  release versions are reported as `unrecorded`, because `term_concepts`
+  stores a system and a code and nothing about which release they came from —
+  omitting the field would let a reader assume they had been checked. It names
+  the profile pack that validated the document and says that passing a
+  working-subset pack is not conformance, lists the implementation guides the
+  conformance registry holds active, and states that the document is *not*
+  IPS-conformant: no IPS package has been fetched and nothing has been
+  validated against the published profiles.
+
+  Export refuses without `NORTHSTAR_SUMMARY_SIGNING_KEY`. An unsigned summary
+  cannot be told from one edited after it left, and this is the copy that
+  leaves. Verification catches either half being altered.
+
+  **PS-CA is not implemented.** The specification for this work referred to an
+  official Canadian package supplied to the project; none was supplied. The
+  existing `conformance/ps-ca.json` remains what it says it is — a hand-written
+  working subset — and no Canadian conformance is claimed from it.
+
+- **FHIR Provenance, kept distinct from the audit trail.** `audit_events` is
+  hash-chained and answers who reached a record and whether they were allowed
+  to. It is the wrong shape for the question asked after something goes wrong
+  about the data rather than the people: where did this value come from. An
+  audit row can say a laboratory feed wrote something at 04:12; it cannot say
+  this potassium was produced by mapping version 3 from message 8812, or that
+  this entry arrived in a migration rather than from a prescriber.
+
+  Every persisted FHIR write now records lineage — the target and the version
+  it produced, the activity, the actor and organization where one was stated,
+  the source message or resource, and the transformation or clinical rule with
+  its version. `GET /fhir/Provenance?target=Type/id` returns it as FHIR
+  resources, and the lineage survives the resource being overwritten, so a
+  superseded value's origin is still reconstructable after a correction.
+  `forSource` answers the other direction: everything one bad feed produced.
+
+  Two decisions worth naming. A write nothing described is recorded as
+  **unattributed** rather than attributed to whoever was nearby — a lineage
+  naming the wrong author is worse than one admitting it does not know,
+  because the first is believed. And a redelivery of identical content records
+  **nothing further**, so a replayed message does not make one result look
+  like two reports of the same value.
+
+  Provenance is deliberately not hash-chained. The audit trail is chained
+  because its claim is that nothing was removed from it; provenance makes no
+  such claim, and chaining it would imply a completeness guarantee that a
+  write path recording none would quietly break.
+
+- **A FHIR search can be scoped to one chart.** `fhir_resources` recorded a
+  resource's type, id and JSON and nothing about whose record it was, so the
+  only way to answer "everything about this person" was to read every row and
+  parse it. The patient reference is now lifted out at write time into a
+  column, with `?patient=` on the search and a matching index.
+
+  What its absence means is the load-bearing decision: a row whose patient
+  could not be determined is **excluded** from a patient-scoped search, never
+  included. Null is not a wildcard. If the extraction misses a reference
+  spelling the result is a record that fails to appear — visible and
+  conservative — rather than one appearing on the wrong chart. An unscoped
+  search is unchanged, so nothing an existing caller sees is narrowed, and the
+  unattributed resource is still readable there rather than silently gone.
+
+  Databases written before the column gain it on open and the references are
+  recovered from the stored JSON, which is the only place they ever were. The
+  backfill is idempotent and leaves a resource it cannot attribute alone
+  rather than guessing at one.
+
+  The patient-facing surface is deliberately not this: a patient or proxy is
+  still served by `/patient/*`, where an authority grant is checked per chart.
+  This scoping is for staff and system callers already authorised broadly, so
+  there is one boundary to get right rather than two.
+
+- **FHIR search pagination.** `_count` (bounded to 100) and `_offset`, with
+  `Bundle.link` carrying self, next and previous, so a client can page without
+  constructing URLs itself.
+
+- **The capability statement claims an implementation guide only where the
+  conformance registry says that guide is in force.** `instantiates` is
+  generated from the active packages rather than written literally, so the
+  statement cannot name a guide the deployment never installed — the same
+  failure as a hand-written conformance page, in the artifact a partner reads
+  first.
+
 **Fixed**
+
+- **One MLLP frame could hold the engine's only thread for days.** `parseHl7`
+  trimmed trailing carriage returns with `.replace(/\r+$/, "")`, which is
+  quadratic when a non-CR character follows the run: the engine restarts the
+  greedy match at every position in it and `$` fails every time. Measured, 20k
+  carriage returns took 325ms and 400k took 130 seconds; the MLLP frame limit
+  is 16 MiB and MLLP has no authentication. The trim is gone rather than
+  rewritten — the empty-segment filter on the next line already removed exactly
+  what it removed, linearly.
+
+- **`\X..\` with a payload that is not hex no longer becomes a NUL.**
+  `parseInt("zz", 16)` is NaN and `String.fromCharCode(NaN)` is U+0000, so a
+  malformed escape put a NUL character inside a name or an identifier — stored
+  by SQLite, serialised by JSON, and unequal to the string anybody typed ever
+  after. A payload that is not an even number of hex digits is now left exactly
+  as it arrived, like every other escape the decoder does not know.
+
+- **An impossible date is no date.** `hl7DateToIso` reformatted whatever digits
+  it matched, so `20261301` became `2026-13-01` and `20260231` became
+  `2026-02-31` — Invalid Date to every reader downstream, out of a field that
+  looks populated. The month, the day against that month in that year, and the
+  clock are checked; anything impossible returns the empty string this function
+  already used for "no usable date". Offsets are still dropped, which is
+  deliberate and documented.
+
+- **An acknowledgement no longer carries fields the sender put there.**
+  `buildAck` escaped everything it copied from the received message except
+  MSH-10, MSH-9.2, MSH-11 and MSH-12, and `getHl7` returns values already
+  unescaped — so a control identifier containing `\F\` came back as a live
+  field separator and produced `MSA|AA|MSG|AE|INJECTED|`.
+
+- **A malformed request body is 400, and an oversized one is 413.** Ninety-seven
+  `JSON.parse(await readBody(req))` calls in the router are unguarded, so a body
+  that was not JSON reached the net underneath as a `SyntaxError` and was
+  answered 500 — telling a client to retry a request that fails identically
+  every time. A `SyntaxError` there is now 400 (it also covers a channel
+  `pattern` that is not a regular expression), and the body-size limit rejects
+  with a refusal carrying 413 instead of a fault.
+
+- **An interface that cannot reach its source no longer reports itself
+  healthy.** Every inbound poll — filedrop, dbpoll, sqlpoll, sftp — caught its
+  own exception, printed it and returned, and the guard around `readdirSync`
+  did not even print. Nothing was written down. `/api/health` is assembled from
+  the delivery queue and from cadences a channel declared, and an unreachable
+  source puts nothing in the queue, so a drop directory unmounted since Tuesday
+  produced `ok: true, degraded: false` — and a channel that declared no cadence
+  reported healthy for as long as its source stayed away.
+
+  A failed poll is now recorded per channel, durably and tenant-scoped, with a
+  run length. Three consecutive failed reads degrade the health check and raise
+  `northstar_channel_source_failures{channel,stage}`. Reading the source and
+  handling one thing on it are separate stages, because they are different
+  phone calls: a bad file is reported and never degrades the interface. A pass
+  that reads and handles everything clears the record, so recovery needs no
+  acknowledgement, and a channel somebody disabled stops being reported without
+  losing its history. See [A channel cannot reach its
+  source](docs/RUNBOOK.md#a-channel-cannot-reach-its-source).
+
+  The open health endpoint publishes the exception class, its system code and
+  the count; the message — and the name of the file it was on, which a sending
+  system routinely derives from an accession or a chart number — stays on the
+  authenticated channel listing.
+
+  Also fixed while here: `Promise.resolve(poll()).catch(…)` evaluates `poll()`
+  before there is a promise to attach the handler to, so a synchronous throw
+  escaped the interval callback and would have taken the process down. Every
+  poll guards itself today, which is what made it a latent one.
 
 - **The order sweep warned about the same misconfiguration once a minute,
   forever.** A tenant the sweep refuses to act for — two `lab-order`
@@ -616,6 +782,97 @@ always forward-compatible and run automatically on open — see
   among them would not have been seen. Declared non-transmitting sites are
   excluded; undeclared ones are not, because nobody has said, and there every
   order is a real question.
+
+- **An interface that cannot reach its source no longer reports itself
+  healthy.** Every inbound poll — filedrop, dbpoll, sqlpoll, sftp — caught its
+  own exception, printed it and returned, and the guard around `readdirSync`
+  did not even print. Nothing was written down. `/api/health` is assembled from
+  the delivery queue and from cadences a channel declared, and an unreachable
+  source puts nothing in the queue, so a drop directory unmounted since Tuesday
+  produced `ok: true, degraded: false` — and a channel that declared no cadence
+  reported healthy for as long as its source stayed away.
+
+  A failed poll is now recorded per channel, durably and tenant-scoped, with a
+  run length. Three consecutive failed reads degrade the health check and raise
+  `northstar_channel_source_failures{channel,stage}`. Reading the source and
+  handling one thing on it are separate stages, because they are different
+  phone calls: a bad file is reported and never degrades the interface. A pass
+  that reads and handles everything clears the record, so recovery needs no
+  acknowledgement, and a channel somebody disabled stops being reported without
+  losing its history. See [A channel cannot reach its
+  source](docs/RUNBOOK.md#a-channel-cannot-reach-its-source).
+
+  The open health endpoint publishes the exception class, its system code and
+  the count; the message — and the name of the file it was on, which a sending
+  system routinely derives from an accession or a chart number — stays on the
+  authenticated channel listing.
+
+  Also fixed while here: `Promise.resolve(poll()).catch(…)` evaluates `poll()`
+  before there is a promise to attach the handler to, so a synchronous throw
+  escaped the interval callback and would have taken the process down. Every
+  poll guards itself today, which is what made it a latent one.
+
+- **A fault no longer prints a patient into the operator's log.** Stores write
+  their input into the exceptions they throw, because that is what makes an
+  error actionable — `3 medication(s) still undecided: <drug names>`, `result
+  is for <a> but order <o> is for <b>`. Those are plain `Error`s, so
+  `mapStoreError` classified them as faults, and a fault printed its message to
+  `console.error` and, from the net under the router, sent it back to the
+  caller. Both messages are reached by ordinary refusals: finishing a
+  reconciliation early, filing a result on the wrong order.
+
+  A fault now says where and never what. The log gets the exception class, the
+  top stack frames and an opaque `faultId`; the caller gets `{"error":
+  "internal error", "faultId": …}`; the message goes to the audit trail behind
+  that id, which is the sink built to hold it. The route is logged as its area,
+  because `/fhir/Patient/<id>` and `/patient/<id>/summary` name a patient in
+  the path. See [A caller reports a fault
+  id](docs/RUNBOOK.md#a-caller-reports-a-fault-id) for turning an id back into
+  the row.
+
+  A decision is not logged at all, so the two stores above now refuse rather
+  than throw — which also stops a 500 telling a client to retry a request that
+  will be refused every time. The cross-chart result refusal additionally stops
+  naming the *other* patient: somebody filing onto the wrong chart is told
+  their identifier does not match, not whose chart it is. The trail row still
+  carries both.
+
+- **Every clinical lifecycle write now names the state it decided from.** A
+  previous change fixed six of these; this is the rest of the class. Encounter
+  arrival, closure and cancellation, order placement and completion, paper
+  hand-out and cancellation of a prescription, booking cancellation, patient
+  access-request completion and decline, and directive revocation all read a
+  row, decided against its status, and then wrote an update naming only the
+  row. Between the two steps the row could move, so a later writer overwrote
+  whatever had happened in between and both callers were told they had
+  succeeded.
+
+  Each update now names the status it expects and refuses when it changes no
+  rows. Which way each one fails is the part that matters: a visit cancelled
+  after the patient arrived is refused rather than erasing that they attended;
+  a decline racing a completion on an access request must not report a record
+  as withheld when it was sent; a revocation that lost the race must not tell
+  the caller it lifted a directive it did not. Order completion is the one
+  exception that returns quietly rather than refusing — it runs as a side
+  effect of filing a result, and the order having been closed meanwhile is an
+  ordinary outcome rather than a fault.
+
+- **A structural check exempted routes that used the more explicit guard.**
+  The test asserting every patient-scoped clinical route consults the
+  directive check matched `phi(` and not `phiFor(` — the form that takes the
+  patient explicitly rather than reading it from the query, and runs the same
+  check. A route using it read as one that bypassed the check. This is the
+  second scanner in this file found too narrow; the first was the character
+  class that exempted versioned paths from the audit guarantee.
+
+- **A FHIR search could return the same resource on two pages, and skip
+  others.** Stored resources were ordered by `updated_at` alone, which has
+  second granularity — so a bulk load writes dozens of resources sharing one
+  timestamp, and SQLite specifies no order among rows equal under the ORDER
+  BY. Paging through such a run repeats some resources and omits others, with
+  no error and a correct-looking total: a client reading a patient's
+  observations gets a chart with holes in it. The ordering now carries a
+  tiebreak on id, so it is specified rather than incidental.
 
 **Security**
 
