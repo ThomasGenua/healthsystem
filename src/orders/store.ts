@@ -1138,6 +1138,40 @@ export class OrderStore {
       .filter((o) => o.cancellation.state !== "acknowledged");
   }
 
+  /**
+   * Cancellations a sweep should send, which is not the same list.
+   *
+   * `cancelledButStillWithFiller` answers a clinician's question -- who has a
+   * requisition they should not -- and so it asks whether a laboratory
+   * *acknowledged* the order. A sweep has to answer a different one: could
+   * they end up with it? An order handed to the outbound queue and cancelled
+   * a minute later has not been acknowledged and may still be delivered, and
+   * waiting for the acknowledgement before withdrawing it means the
+   * withdrawal is always a step behind the thing it is chasing.
+   *
+   * So this includes `sent` as well as `acknowledged`, and the two failure
+   * modes are not comparable. Withdrawing an order the laboratory never
+   * received earns an application reject, which is recorded and visible and
+   * costs somebody a minute. Not withdrawing one they did receive is a
+   * patient sitting down to be drawn for a test nobody wants.
+   *
+   * Only cancellations that have gone nowhere at all: `rejected` and `failed`
+   * are answers somebody has to read, and resending past them buries the
+   * refusal under repetitions of itself (H-165).
+   */
+  cancellationsNotSent(): Array<OrderRow & { cancellation: TransmissionState }> {
+    const cancelled = this.db.sql
+      .prepare(`SELECT * FROM orders WHERE tenant_id = ? AND status = 'cancelled' ORDER BY updated_at`)
+      .all(this.db.tenantId) as unknown as OrderRow[];
+    return cancelled
+      .filter((o) => {
+        const held = this.transmissionState(o.id).state;
+        return held === "sent" || held === "acknowledged";
+      })
+      .map((o) => ({ ...o, cancellation: this.cancellationState(o.id) }))
+      .filter((o) => o.cancellation.state === "not-sent");
+  }
+
   private require(orderId: string): OrderRow {
     const o = this.get(orderId);
     if (!o) throw new Error(`no order ${orderId}`);
