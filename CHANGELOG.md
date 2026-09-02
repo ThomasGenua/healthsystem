@@ -42,6 +42,31 @@ always forward-compatible and run automatically on open — see
 
 **Fixed**
 
+- **A cancelled order was still collected, because only the chart was told.**
+  Automatic dispatch swept placed orders and not withdrawals of them. The
+  sweep's list selects orders whose status is `placed` or `in-progress`, so a
+  cancelled order left that list the moment it was cancelled — and the branch
+  in `dispatch.ts` that builds a withdrawal could not be reached from it. The
+  code read as though it handled both.
+
+  What that looks like in a clinic: the order reads as cancelled everywhere
+  somebody here would look. The chart says so. The clinician saw it. The
+  patient was told it was called off. A laboratory four hundred kilometres
+  away still holds the requisition, so the specimen is collected, the test is
+  run and billed, and a result arrives for a test the chart says nobody
+  wanted. Unlike an order that never left — which appears on a worklist built
+  to show exactly that — nothing showed this.
+
+  Withdrawals now go out on the same clock and through the same door as the
+  orders. The list they come from asks whether a laboratory *could* act on
+  the order rather than whether one acknowledged it, so an order still
+  sitting in the outbound queue is withdrawn too: waiting for the
+  acknowledgement means the withdrawal is always a step behind the thing it
+  is chasing, and withdrawing an order a laboratory never received costs an
+  application reject somebody can read, while the other way costs a patient a
+  needle. Enqueued behind the order on the same ordered key, so ORC-1 NW is
+  read before ORC-1 CA. Hazard H-170.
+
 - **A backup destination on Windows went somewhere else, quietly.** `fs:` and
   `file://` destinations were parsed by slicing the scheme off and requiring a
   leading `/`. `C:\backups` has no leading slash, so an absolute Windows path

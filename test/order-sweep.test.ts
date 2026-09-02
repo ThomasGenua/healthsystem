@@ -564,3 +564,52 @@ test("stopping the engine stops the sweep", async () => {
   assert.equal(engine.orderDispatch["timer"], null, "no timer left running past shutdown");
   await lab.close();
 });
+
+test("a cancellation reaches the laboratory on the same clock the order did", async () => {
+  // The asymmetry that would otherwise be silent: orders leave on their own,
+  // and withdrawals of them do not. A clinician sees the order cancelled in
+  // the chart, the patient is told it is called off, and the laboratory keeps
+  // the requisition and collects the specimen.
+  const lab = laboratory((_msg, controlId) => ackFor(controlId));
+  const port = await lab.listen();
+  const { engine, orders, orderId } = await siteWithLaboratory(port, { dispatchMs: 50 });
+  await engine.start();
+  try {
+    await until(() => orders.transmissionState(orderId).state === "acknowledged");
+
+    orders.cancel(orderId, { ...GP, reason: "patient declined the test" });
+    await until(() => orders.cancellationState(orderId).state === "acknowledged");
+
+    assert.equal(lab.seen.length, 2, "the order, then its withdrawal");
+    assert.match(lab.seen[1], /\rORC\|CA\|/, "ORC-1 CA");
+    assert.ok(lab.seen[1].includes(orderId), "against the placer order number they were given");
+    assert.equal(
+      orders.cancelledButStillWithFiller().length,
+      0,
+      "and it is off the list of requisitions somebody else still holds"
+    );
+  } finally {
+    await engine.stop();
+    await lab.close();
+  }
+});
+
+test("an order cancelled before any laboratory had it is not chased", async () => {
+  // Nothing to withdraw. A cancel for a requisition nobody was sent earns an
+  // application reject and a line on the chart about a message that should
+  // never have been built.
+  const lab = laboratory((_msg, controlId) => ackFor(controlId));
+  const port = await lab.listen();
+  // An hour between passes, so the order is still unsent when it is cancelled.
+  const { engine, orders, orderId } = await siteWithLaboratory(port, { dispatchMs: 3_600_000 });
+  orders.cancel(orderId, { ...GP, reason: "wrong patient" });
+  await engine.start();
+  try {
+    await until(() => engine.orderDispatch.last !== null);
+    assert.deepEqual(engine.orderDispatch.last?.enqueued, []);
+    assert.equal(lab.seen.length, 0, "nothing was sent, so there is nothing to withdraw");
+  } finally {
+    await engine.stop();
+    await lab.close();
+  }
+});

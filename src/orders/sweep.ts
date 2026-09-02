@@ -60,7 +60,7 @@
  * laboratory is worse than sending it late, and the site that first has two
  * is the site that can say which is which.
  */
-import { dispatchPlacedOrders, type DispatchResult } from "./dispatch.ts";
+import { dispatchCancellations, dispatchPlacedOrders, type DispatchResult } from "./dispatch.ts";
 import { readEnv } from "../core/naming.ts";
 import type { PatientIndex } from "../clinical/patients.ts";
 import type { OrderStore } from "./store.ts";
@@ -193,16 +193,23 @@ export class OrderDispatchSweeper {
       }
       const view = this.deps.forTenant(tenant.id);
       pass.tenants += 1;
-      const result = dispatchPlacedOrders({
+      const deps = {
         db: view.db,
         orders: view.orders,
         patients: view.patients,
         profiles: this.deps.profiles,
         channelId: door.channelId,
         destinationId: door.destinationId,
-      });
-      pass.enqueued.push(...result.enqueued);
-      pass.unbuildable.push(...result.unbuildable);
+      };
+      // Withdrawals first. Both lists are disjoint -- an order is placed or
+      // it is cancelled -- so the order of these two calls changes nothing
+      // about what is sent. It changes what happens when a pass is cut short
+      // by the per-call limit, and a withdrawal that waits a minute is a
+      // patient who may already be sitting down to be drawn.
+      for (const result of [dispatchCancellations(deps), dispatchPlacedOrders(deps)]) {
+        pass.enqueued.push(...result.enqueued);
+        pass.unbuildable.push(...result.unbuildable);
+      }
     }
     this.last = pass;
     return pass;

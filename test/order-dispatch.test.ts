@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import { Db, DEFAULT_TENANT } from "../src/db.ts";
 import { OrderStore } from "../src/orders/store.ts";
 import { ClinicalRecord } from "../src/clinical/record.ts";
-import { dispatchPlacedOrders, type DispatchDeps } from "../src/orders/dispatch.ts";
+import { dispatchCancellations, dispatchPlacedOrders, type DispatchDeps } from "../src/orders/dispatch.ts";
 import type { LabProfile } from "../src/orders/hl7.ts";
 
 const P = "NT123456";
@@ -93,6 +93,14 @@ function site(opts: { profile?: LabProfile | undefined; identifiers?: Array<{ sy
       return o.id;
     },
     queued: () => db.listDeliveries({ channelId: "orders-out" }),
+    /** What a laboratory saying "we have it" leaves on the order. */
+    acknowledge: (id: string) =>
+      orders.recordTransmission(
+        id,
+        { kind: "order", outcome: "acknowledged", destination: "Stanton Laboratory", controlId: "C1", detail: "AA" },
+        GP
+      ),
+    cancel: (id: string) => orders.cancel(id, { ...GP, reason: "patient declined the test" }),
     cleanup: () => db.close(),
   };
 }
@@ -268,6 +276,157 @@ test("the delivery knows which order it answers for, without reading the requisi
     assert.ok(delivery.payload.includes(id), "the placer order number is the order id, so a result can come home");
     assert.ok(delivery.payload.includes(meta.controlId), "and the control id is what MSA-2 will echo");
     assert.notEqual(meta.controlId, id, "they are different identifiers doing different jobs");
+  } finally {
+    s.cleanup();
+  }
+});
+
+/**
+ * Withdrawing an order a laboratory could still act on.
+ *
+ * The asymmetry these cover is the dangerous one. An order that never left
+ * is visible as an order no laboratory has, on a list built to show exactly
+ * that. A cancellation that never left is visible as a cancelled order —
+ * which is what the chart says, what the clinician saw, and what the patient
+ * was told. Nothing here can see the requisition still sitting on a bench
+ * four hundred kilometres away, so nothing here will say it is there.
+ */
+test("a cancelled order the laboratory acknowledged is withdrawn without anybody asking", () => {
+  const s = site();
+  try {
+    const id = s.place();
+    dispatchPlacedOrders(s.deps);
+    s.acknowledge(id);
+    s.cancel(id);
+    assert.equal(s.orders.cancellationState(id).state, "not-sent");
+
+    assert.deepEqual(dispatchCancellations(s.deps).enqueued, [id]);
+    assert.equal(s.orders.cancellationState(id).state, "sent");
+    assert.equal(s.queued().length, 2, "the order, then the withdrawal of it");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("the withdrawal is a cancel, and names the order it withdraws", () => {
+  // ORC-1 CA against the same placer order number. A withdrawal the
+  // laboratory cannot match to a requisition is a withdrawal they cannot act
+  // on, which is indistinguishable from not sending one.
+  const s = site();
+  try {
+    const id = s.place();
+    dispatchPlacedOrders(s.deps);
+    s.acknowledge(id);
+    s.cancel(id);
+    dispatchCancellations(s.deps);
+
+    // listDeliveries reads newest first, so position is not the argument --
+    // the sequence numbers are, because that is what the queue delivers by.
+    const [withdrawal, original] = s.queued();
+    assert.match(original.payload, /\rORC\|NW\|/, "the order");
+    assert.match(withdrawal.payload, /\rORC\|CA\|/, "a cancel, not a second new order");
+    assert.ok(withdrawal.payload.includes(id), "naming the placer order number it withdraws");
+    assert.ok(withdrawal.seq > original.seq, "queued behind the order, not ahead of it");
+    assert.equal(withdrawal.ordering_key, original.ordering_key, "on the one key, so the sequence is kept");
+    assert.equal(withdrawal.ordered, 1);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("withdrawing twice does not send two withdrawals", () => {
+  // The same property the orders have, for the same reason: a laboratory
+  // told twice to cancel one requisition is a laboratory whose second
+  // message matches nothing.
+  const s = site();
+  try {
+    const id = s.place();
+    dispatchPlacedOrders(s.deps);
+    s.acknowledge(id);
+    s.cancel(id);
+    assert.deepEqual(dispatchCancellations(s.deps).enqueued, [id]);
+    assert.deepEqual(dispatchCancellations(s.deps).enqueued, [], "the second pass finds nothing to do");
+    assert.equal(s.queued().length, 2);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("an order still on the queue is withdrawn too, rather than waited on", () => {
+  // Cancelled a minute after it was placed, before any acknowledgement. The
+  // requisition may still be delivered, and a withdrawal that waits for the
+  // acknowledgement is always a step behind the thing it is chasing.
+  const s = site();
+  try {
+    const id = s.place();
+    dispatchPlacedOrders(s.deps);
+    assert.equal(s.orders.transmissionState(id).state, "sent", "handed over, not yet acknowledged");
+    s.cancel(id);
+
+    assert.deepEqual(dispatchCancellations(s.deps).enqueued, [id]);
+    assert.equal(s.queued().length, 2);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("an order no laboratory ever had is not chased with a withdrawal", () => {
+  // Nothing to withdraw. A cancel for a requisition nobody was sent earns an
+  // application reject and a line on the chart about a message that should
+  // never have been built.
+  const s = site();
+  try {
+    const id = s.place();
+    s.cancel(id);
+    assert.deepEqual(dispatchCancellations(s.deps).enqueued, []);
+    assert.equal(s.queued().length, 0);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a withdrawal the laboratory refused is not resent behind the clinician's back", () => {
+  // H-165 again, on the other message. The refusal is what somebody has to
+  // read, and repeating it every minute buries it under copies of itself.
+  const s = site();
+  try {
+    const id = s.place();
+    dispatchPlacedOrders(s.deps);
+    s.acknowledge(id);
+    s.cancel(id);
+    dispatchCancellations(s.deps);
+    s.orders.recordTransmission(
+      id,
+      { kind: "cancel", outcome: "rejected", destination: "Stanton Laboratory", controlId: "C2", detail: "AR: already collected" },
+      GP
+    );
+    assert.equal(s.orders.cancellationState(id).state, "rejected");
+
+    assert.deepEqual(dispatchCancellations(s.deps).enqueued, [], "a refusal is an answer, not a retry condition");
+    assert.equal(s.queued().length, 2);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a withdrawn order stays on the worklist until the laboratory says they dropped it", () => {
+  // Handed to the queue is not withdrawn. Until an acknowledgement comes
+  // back, the honest answer is still that they may collect the specimen.
+  const s = site();
+  try {
+    const id = s.place();
+    dispatchPlacedOrders(s.deps);
+    s.acknowledge(id);
+    s.cancel(id);
+    dispatchCancellations(s.deps);
+
+    assert.equal(s.orders.cancelledButStillWithFiller().length, 1, "sent is not withdrawn");
+    s.orders.recordTransmission(
+      id,
+      { kind: "cancel", outcome: "acknowledged", destination: "Stanton Laboratory", controlId: "C2", detail: "AA" },
+      GP
+    );
+    assert.equal(s.orders.cancelledButStillWithFiller().length, 0, "and now it is");
   } finally {
     s.cleanup();
   }
