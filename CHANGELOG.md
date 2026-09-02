@@ -11,6 +11,26 @@ always forward-compatible and run automatically on open — see
 
 **Fixed**
 
+- **Every clinical lifecycle write now names the state it decided from.** A
+  previous change fixed six of these; this is the rest of the class. Encounter
+  arrival, closure and cancellation, order placement and completion, paper
+  hand-out and cancellation of a prescription, booking cancellation, patient
+  access-request completion and decline, and directive revocation all read a
+  row, decided against its status, and then wrote an update naming only the
+  row. Between the two steps the row could move, so a later writer overwrote
+  whatever had happened in between and both callers were told they had
+  succeeded.
+
+  Each update now names the status it expects and refuses when it changes no
+  rows. Which way each one fails is the part that matters: a visit cancelled
+  after the patient arrived is refused rather than erasing that they attended;
+  a decline racing a completion on an access request must not report a record
+  as withheld when it was sent; a revocation that lost the race must not tell
+  the caller it lifted a directive it did not. Order completion is the one
+  exception that returns quietly rather than refusing — it runs as a side
+  effect of filing a result, and the order having been closed meanwhile is an
+  ordinary outcome rather than a fault.
+
 - **A structural check exempted routes that used the more explicit guard.**
   The test asserting every patient-scoped clinical route consults the
   directive check matched `phi(` and not `phiFor(` — the form that takes the

@@ -277,12 +277,17 @@ export class Schedule {
     const b = this.requireBooking(bookingId);
     if (b.status !== "booked") throw new Error(`${an(b.status)} booking cannot be cancelled`);
     const now = new Date().toISOString();
-    this.db.sql
+    const cancelled = this.db.sql
       .prepare(
         `UPDATE schedule_bookings SET status = 'cancelled', cancelled_by = ?, cancelled_at = ?, cancel_reason = ?
-          WHERE tenant_id = ? AND id = ?`
+          WHERE tenant_id = ? AND id = ? AND status = 'booked'`
       )
       .run(by.actorId, now, by.reason, this.db.tenantId, bookingId);
+    // A booking attended while this cancellation was being applied must not be
+    // erased: the patient came, and the seat was not free.
+    if (cancelled.changes === 0) {
+      throw new Error(`booking ${bookingId} is no longer booked; it changed while this was being applied`);
+    }
     this.event(bookingId, "cancelled", by, by.reason);
     return this.booking(bookingId)!;
   }

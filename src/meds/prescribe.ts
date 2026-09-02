@@ -485,9 +485,15 @@ export class Prescribing {
     if (row.status !== "draft" && row.status !== "failed") {
       refuse(`${an(row.status)} prescription cannot be handed out on paper`);
     }
-    this.db.sql
-      .prepare("UPDATE prescriptions SET status = 'handed-out' WHERE tenant_id = ? AND id = ?")
+    const handed = this.db.sql
+      .prepare(
+        `UPDATE prescriptions SET status = 'handed-out'
+          WHERE tenant_id = ? AND id = ? AND status IN ('draft', 'failed')`
+      )
       .run(this.db.tenantId, prescriptionId);
+    if (handed.changes === 0) {
+      refuse(`prescription ${prescriptionId} is no longer a draft or a failed transmission`, 409);
+    }
     this.event(prescriptionId, "handed-out", by, by.reason ?? "given to the patient on paper");
     return this.get(prescriptionId)!;
   }
@@ -596,12 +602,13 @@ export class Prescribing {
     if (!by.reason.trim()) refuse("cancelling a prescription needs a reason");
     const row = this.require(prescriptionId);
     if (row.status === "cancelled") refuse("that prescription is already cancelled");
-    this.db.sql
+    const cancelled = this.db.sql
       .prepare(
         `UPDATE prescriptions SET status = 'cancelled', cancelled_at = ?, cancel_reason = ?
-          WHERE tenant_id = ? AND id = ?`
+          WHERE tenant_id = ? AND id = ? AND status != 'cancelled'`
       )
       .run(new Date().toISOString(), by.reason.trim(), this.db.tenantId, prescriptionId);
+    if (cancelled.changes === 0) refuse(`prescription ${prescriptionId} was cancelled while this was being applied`, 409);
     this.event(prescriptionId, "cancelled", by, by.reason.trim());
     return this.get(prescriptionId)!;
   }

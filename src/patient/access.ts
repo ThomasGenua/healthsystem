@@ -583,11 +583,17 @@ export class PatientAccess {
     return this.db.transaction(() => {
       this.tasks!.complete(row.task_id, { ...by, evidence: by.outcome.trim() });
       const now = new Date().toISOString();
-      this.db.sql
+      const completed = this.db.sql
         .prepare(
-          "UPDATE patient_requests SET status = 'completed', completed_at = ?, outcome = ? WHERE tenant_id = ? AND id = ?"
+          `UPDATE patient_requests SET status = 'completed', completed_at = ?, outcome = ?
+            WHERE tenant_id = ? AND id = ? AND status = 'submitted'`
         )
         .run(now, by.outcome.trim(), this.db.tenantId, id);
+      // Two people answering one access request would otherwise leave the
+      // later outcome over the earlier, with only one of them told they did it.
+      if (completed.changes === 0) {
+        throw new Error(`patient request ${id} is no longer submitted; it was answered while this was being applied`);
+      }
       this.requestEvent(id, "completed", by, by.outcome.trim());
       return this.request(id)!;
     });
@@ -602,11 +608,18 @@ export class PatientAccess {
     return this.db.transaction(() => {
       this.tasks!.cancel(row.task_id, { ...by, reason: by.reason.trim() });
       const now = new Date().toISOString();
-      this.db.sql
+      const declined = this.db.sql
         .prepare(
-          "UPDATE patient_requests SET status = 'declined', completed_at = ?, outcome = ? WHERE tenant_id = ? AND id = ?"
+          `UPDATE patient_requests SET status = 'declined', completed_at = ?, outcome = ?
+            WHERE tenant_id = ? AND id = ? AND status = 'submitted'`
         )
         .run(now, by.reason.trim(), this.db.tenantId, id);
+      // A decline racing a completion must not overwrite the fulfilment: the
+      // patient was given their record, and saying otherwise is the wrong way
+      // for this to fail.
+      if (declined.changes === 0) {
+        throw new Error(`patient request ${id} is no longer submitted; it was answered while this was being applied`);
+      }
       this.requestEvent(id, "declined", by, by.reason.trim());
       return this.request(id)!;
     });

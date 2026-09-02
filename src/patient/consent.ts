@@ -241,9 +241,18 @@ export class ConsentDirectives {
     const d = this.directive(directiveId);
     if (!d) throw new Error(`no directive ${directiveId}`);
     if (d.status !== "active") throw new Error(`that directive is already ${d.status}`);
-    this.db.sql
-      .prepare("UPDATE consent_directives SET status = 'revoked', revoked_at = ?, revoked_by = ? WHERE tenant_id = ? AND id = ?")
+    const revoked = this.db.sql
+      .prepare(
+        `UPDATE consent_directives SET status = 'revoked', revoked_at = ?, revoked_by = ?
+          WHERE tenant_id = ? AND id = ? AND status = 'active'`
+      )
       .run(new Date().toISOString(), by.actorId, this.db.tenantId, directiveId);
+    // A directive that expired or was revoked between the check and here must
+    // not be reported as revoked by this caller: a withheld record staying
+    // withheld is the safe outcome, but claiming to have lifted it is not.
+    if (revoked.changes === 0) {
+      throw new Error(`directive ${directiveId} is no longer active; it changed while this was being applied`);
+    }
     return this.directive(directiveId)!;
   }
 
