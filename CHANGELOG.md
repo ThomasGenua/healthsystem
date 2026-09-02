@@ -9,321 +9,36 @@ always forward-compatible and run automatically on open — see
 
 ## Unreleased
 
-**Fixed**
-
-- **One MLLP frame could hold the engine's only thread for days.** `parseHl7`
-  trimmed trailing carriage returns with `.replace(/\r+$/, "")`, which is
-  quadratic when a non-CR character follows the run: the engine restarts the
-  greedy match at every position in it and `$` fails every time. Measured, 20k
-  carriage returns took 325ms and 400k took 130 seconds; the MLLP frame limit
-  is 16 MiB and MLLP has no authentication. The trim is gone rather than
-  rewritten — the empty-segment filter on the next line already removed exactly
-  what it removed, linearly.
-
-- **`\X..\` with a payload that is not hex no longer becomes a NUL.**
-  `parseInt("zz", 16)` is NaN and `String.fromCharCode(NaN)` is U+0000, so a
-  malformed escape put a NUL character inside a name or an identifier — stored
-  by SQLite, serialised by JSON, and unequal to the string anybody typed ever
-  after. A payload that is not an even number of hex digits is now left exactly
-  as it arrived, like every other escape the decoder does not know.
-
-- **An impossible date is no date.** `hl7DateToIso` reformatted whatever digits
-  it matched, so `20261301` became `2026-13-01` and `20260231` became
-  `2026-02-31` — Invalid Date to every reader downstream, out of a field that
-  looks populated. The month, the day against that month in that year, and the
-  clock are checked; anything impossible returns the empty string this function
-  already used for "no usable date". Offsets are still dropped, which is
-  deliberate and documented.
-
-- **An acknowledgement no longer carries fields the sender put there.**
-  `buildAck` escaped everything it copied from the received message except
-  MSH-10, MSH-9.2, MSH-11 and MSH-12, and `getHl7` returns values already
-  unescaped — so a control identifier containing `\F\` came back as a live
-  field separator and produced `MSA|AA|MSG|AE|INJECTED|`.
-
-- **A malformed request body is 400, and an oversized one is 413.** Ninety-seven
-  `JSON.parse(await readBody(req))` calls in the router are unguarded, so a body
-  that was not JSON reached the net underneath as a `SyntaxError` and was
-  answered 500 — telling a client to retry a request that fails identically
-  every time. A `SyntaxError` there is now 400 (it also covers a channel
-  `pattern` that is not a regular expression), and the body-size limit rejects
-  with a refusal carrying 413 instead of a fault.
-
-- **An interface that cannot reach its source no longer reports itself
-  healthy.** Every inbound poll — filedrop, dbpoll, sqlpoll, sftp — caught its
-  own exception, printed it and returned, and the guard around `readdirSync`
-  did not even print. Nothing was written down. `/api/health` is assembled from
-  the delivery queue and from cadences a channel declared, and an unreachable
-  source puts nothing in the queue, so a drop directory unmounted since Tuesday
-  produced `ok: true, degraded: false` — and a channel that declared no cadence
-  reported healthy for as long as its source stayed away.
-
-  A failed poll is now recorded per channel, durably and tenant-scoped, with a
-  run length. Three consecutive failed reads degrade the health check and raise
-  `northstar_channel_source_failures{channel,stage}`. Reading the source and
-  handling one thing on it are separate stages, because they are different
-  phone calls: a bad file is reported and never degrades the interface. A pass
-  that reads and handles everything clears the record, so recovery needs no
-  acknowledgement, and a channel somebody disabled stops being reported without
-  losing its history. See [A channel cannot reach its
-  source](docs/RUNBOOK.md#a-channel-cannot-reach-its-source).
-
-  The open health endpoint publishes the exception class, its system code and
-  the count; the message — and the name of the file it was on, which a sending
-  system routinely derives from an accession or a chart number — stays on the
-  authenticated channel listing.
-
-  Also fixed while here: `Promise.resolve(poll()).catch(…)` evaluates `poll()`
-  before there is a promise to attach the handler to, so a synchronous throw
-  escaped the interval callback and would have taken the process down. Every
-  poll guards itself today, which is what made it a latent one.
-
-- **A fault no longer prints a patient into the operator's log.** Stores write
-  their input into the exceptions they throw, because that is what makes an
-  error actionable — `3 medication(s) still undecided: <drug names>`, `result
-  is for <a> but order <o> is for <b>`. Those are plain `Error`s, so
-  `mapStoreError` classified them as faults, and a fault printed its message to
-  `console.error` and, from the net under the router, sent it back to the
-  caller. Both messages are reached by ordinary refusals: finishing a
-  reconciliation early, filing a result on the wrong order.
-
-  A fault now says where and never what. The log gets the exception class, the
-  top stack frames and an opaque `faultId`; the caller gets `{"error":
-  "internal error", "faultId": …}`; the message goes to the audit trail behind
-  that id, which is the sink built to hold it. The route is logged as its area,
-  because `/fhir/Patient/<id>` and `/patient/<id>/summary` name a patient in
-  the path. See [A caller reports a fault
-  id](docs/RUNBOOK.md#a-caller-reports-a-fault-id) for turning an id back into
-  the row.
-
-  A decision is not logged at all, so the two stores above now refuse rather
-  than throw — which also stops a 500 telling a client to retry a request that
-  will be refused every time. The cross-chart result refusal additionally stops
-  naming the *other* patient: somebody filing onto the wrong chart is told
-  their identifier does not match, not whose chart it is. The trail row still
-  carries both.
-
-- **Every clinical lifecycle write now names the state it decided from.** A
-  previous change fixed six of these; this is the rest of the class. Encounter
-  arrival, closure and cancellation, order placement and completion, paper
-  hand-out and cancellation of a prescription, booking cancellation, patient
-  access-request completion and decline, and directive revocation all read a
-  row, decided against its status, and then wrote an update naming only the
-  row. Between the two steps the row could move, so a later writer overwrote
-  whatever had happened in between and both callers were told they had
-  succeeded.
-
-  Each update now names the status it expects and refuses when it changes no
-  rows. Which way each one fails is the part that matters: a visit cancelled
-  after the patient arrived is refused rather than erasing that they attended;
-  a decline racing a completion on an access request must not report a record
-  as withheld when it was sent; a revocation that lost the race must not tell
-  the caller it lifted a directive it did not. Order completion is the one
-  exception that returns quietly rather than refusing — it runs as a side
-  effect of filing a result, and the order having been closed meanwhile is an
-  ordinary outcome rather than a fault.
-
-- **A structural check exempted routes that used the more explicit guard.**
-  The test asserting every patient-scoped clinical route consults the
-  directive check matched `phi(` and not `phiFor(` — the form that takes the
-  patient explicitly rather than reading it from the query, and runs the same
-  check. A route using it read as one that bypassed the check. This is the
-  second scanner in this file found too narrow; the first was the character
-  class that exempted versioned paths from the audit guarantee.
-
-- **A FHIR search could return the same resource on two pages, and skip
-  others.** Stored resources were ordered by `updated_at` alone, which has
-  second granularity — so a bulk load writes dozens of resources sharing one
-  timestamp, and SQLite specifies no order among rows equal under the ORDER
-  BY. Paging through such a run repeats some resources and omits others, with
-  no error and a correct-looking total: a client reading a patient's
-  observations gets a chart with holes in it. The ordering now carries a
-  tiebreak on id, so it is specified rather than incidental.
-
-- **A backup destination on Windows went somewhere else, quietly.** `fs:` and
-  `file://` destinations were parsed by slicing the scheme off and requiring a
-  leading `/`. `C:\backups` has no leading slash, so an absolute Windows path
-  was refused as relative; and `file:///C:/backups` sliced down to
-  `/C:/backups`, which is not a path — the backups landed in a directory named
-  `C:` at the root of the current drive. Both failures hit the one setting
-  whose whole job is to put backups somewhere other than the machine holding
-  the database. Parsing now goes through `fileURLToPath`, which knows the
-  drive-letter and percent-encoding rules, and absoluteness is checked with
-  the rules of the platform being targeted rather than of POSIX. Hazard H-158.
-
-- **An expired reading station answered 500 instead of 503.** The first
-  request past the serving budget destroys the cache, and `rmSync`'s `force`
-  suppresses a missing file but not a locked one: on Windows, deleting a
-  database another handle still holds throws EPERM, and the throw escaped into
-  the request. The station's deliberate refusal — with the remedy an operator
-  needs — became a generic fault. Refusing to serve is the guarantee and
-  destroying the file is the tidying that usually accompanies it, so a failed
-  purge is now reported rather than thrown, and the manifest is left unpurged
-  rather than claiming a destruction that did not happen. Hazard H-157.
-
-- **Platform-dependent logic is now testable from either platform.** CI runs
-  on Ubuntu only, so every Windows branch was unexecuted — which shows up as a
-  green build on a machine that never took the branch, and failures found on
-  somebody's laptop. Encryption-at-rest detection takes the platform as a
-  parameter, so its Linux path is exercised from any host instead of being
-  skipped into a "cannot check" branch. Temporary-directory cleanup across the
-  suite retries, which is inert on Linux and rides out the brief EPERM while a
-  Windows handle or virus scanner still holds a file.
-
-- **A medication reconciliation could be completed twice.** The status check
-  and the count of undecided items ran outside the transaction and the write
-  did not name the state they had read, so two clinicians completing the same
-  reconciliation both passed the guard and both wrote — two people each told
-  it was done, and a record naming only the second. The checks now run inside
-  the transaction and the write is conditional on the reconciliation still
-  being open.
-
-- **A referral's status and its event log could disagree.** `transition()`
-  moved the status and appended the event as two writes outside any
-  transaction, so a failure between them left a referral in a state its own
-  history did not account for — and that history is what the stalled-referral
-  review reads. Both writes now commit together or not at all.
-
-- **Lifecycle writes name the state they expect.** Result acknowledgement,
-  referral transitions, reconciliation completion and prescription
-  acknowledge/fail update conditionally on the status their check read, and a
-  write that changes no rows refuses with 409 rather than silently succeeding.
-  A score's approval chain is kept linear by the database as well as by the
-  code: one root decision per score, and one successor per decision, so a
-  score cannot acquire two current approvals. Hazards H-160 and H-161.
-
-**Security**
-
-- **`NORTHSTAR_OIDC_AUDIENCE` is now required when OAuth is enabled, and a
-  site without it will not boot.** It was optional, and an absent audience
-  skipped the check entirely: every token the configured issuer had ever
-  signed was accepted, including tokens minted for a different application in
-  the same directory. An identity provider serves many resource servers, so a
-  token for the expenses system, signed by the same Entra or Keycloak tenant,
-  was a valid Northstar token — and the deployments that never set the
-  variable were exactly the ones running without the check.
-
-  **Breaking, deliberately.** A site that cannot start is a site somebody
-  fixes; one that starts and honours another application's tokens is not. Set
-  `NORTHSTAR_OIDC_AUDIENCE` to the identifier this deployment is registered
-  under at the issuer. A token carrying no `aud` claim at all is now refused
-  for the same reason as one naming somebody else. Hazard H-162.
-
-- **`.well-known/smart-configuration`**, generated from what this deployment
-  is configured with. Northstar is a resource server — it validates tokens and
-  does not issue them — so the document advertises the site's own
-  authorization server, and lists only capabilities this end actually
-  enforces. A discovery document claiming a capability the server does not
-  have is how a client comes to trust a check that never runs.
-
-- **SMART launch context is surfaced and type-checked.** `patient`,
-  `encounter` and `fhirUser` are read from the token and exposed on the
-  verified result, with a structured value dropped rather than carried around
-  as though it were an identifier. It is not yet required: a patient token is
-  bound to a chart here through an explicit authority grant, which is the
-  stronger control, and demanding a launch claim as well would refuse tokens
-  that are already correctly constrained.
-
 **Added**
 
-- **A patient summary that can leave the building.** `POST
-  /api/clinical/patient-summary-export` produces a FHIR document bundle shaped
-  after the International Patient Summary, with a manifest and a signature
-  binding the two. Distinct from `/patient/summary`, which is a patient
-  reading their own chart and is unchanged.
+- **Placed orders now leave for the laboratory on their own.** The dispatch
+  sweep existed but nothing called it. It now runs inside the engine on a
+  timer: default every minute, `NORTHSTAR_ORDER_DISPATCH_INTERVAL_MS` to
+  change it, `0` to send only when somebody presses
+  `POST /api/clinical/order-send`. An order placed in clinic reaches the
+  laboratory over MLLP, and the acknowledgement lands back on the order,
+  with nobody pressing anything.
 
-  The point is what an empty section means somewhere nobody can ask a
-  follow-up question. An empty allergy list can mean the patient has none,
-  that nobody asked, that somebody asked and the answer is unknown, that a
-  directive withholds it, or that this system holds no such record — five
-  facts that render identically, where a reader supplies the most comfortable
-  one. Each empty section now carries a coded `emptyReason` and, because the
-  mapping to FHIR's vocabulary is lossy, this system's own word beside it. A
-  status the mapping does not recognise becomes `unavailable`, never
-  `nilknown`: a state added later must not silently assert that a patient has
-  none of something.
+  Wiring a sweep to a clock is three questions a function nobody calls never
+  has to answer, and two of the answers are safety controls:
 
-  The manifest states what is not known as well as what is. Terminology
-  release versions are reported as `unrecorded`, because `term_concepts`
-  stores a system and a code and nothing about which release they came from —
-  omitting the field would let a reader assume they had been checked. It names
-  the profile pack that validated the document and says that passing a
-  working-subset pack is not conformance, lists the implementation guides the
-  conformance registry holds active, and states that the document is *not*
-  IPS-conformant: no IPS package has been fetched and nothing has been
-  validated against the published profiles.
-
-  Export refuses without `NORTHSTAR_SUMMARY_SIGNING_KEY`. An unsigned summary
-  cannot be told from one edited after it left, and this is the copy that
-  leaves. Verification catches either half being altered.
-
-  **PS-CA is not implemented.** The specification for this work referred to an
-  official Canadian package supplied to the project; none was supplied. The
-  existing `conformance/ps-ca.json` remains what it says it is — a hand-written
-  working subset — and no Canadian conformance is claimed from it.
-
-- **FHIR Provenance, kept distinct from the audit trail.** `audit_events` is
-  hash-chained and answers who reached a record and whether they were allowed
-  to. It is the wrong shape for the question asked after something goes wrong
-  about the data rather than the people: where did this value come from. An
-  audit row can say a laboratory feed wrote something at 04:12; it cannot say
-  this potassium was produced by mapping version 3 from message 8812, or that
-  this entry arrived in a migration rather than from a prescriber.
-
-  Every persisted FHIR write now records lineage — the target and the version
-  it produced, the activity, the actor and organization where one was stated,
-  the source message or resource, and the transformation or clinical rule with
-  its version. `GET /fhir/Provenance?target=Type/id` returns it as FHIR
-  resources, and the lineage survives the resource being overwritten, so a
-  superseded value's origin is still reconstructable after a correction.
-  `forSource` answers the other direction: everything one bad feed produced.
-
-  Two decisions worth naming. A write nothing described is recorded as
-  **unattributed** rather than attributed to whoever was nearby — a lineage
-  naming the wrong author is worse than one admitting it does not know,
-  because the first is believed. And a redelivery of identical content records
-  **nothing further**, so a replayed message does not make one result look
-  like two reports of the same value.
-
-  Provenance is deliberately not hash-chained. The audit trail is chained
-  because its claim is that nothing was removed from it; provenance makes no
-  such claim, and chaining it would imply a completeness guarantee that a
-  write path recording none would quietly break.
-
-- **A FHIR search can be scoped to one chart.** `fhir_resources` recorded a
-  resource's type, id and JSON and nothing about whose record it was, so the
-  only way to answer "everything about this person" was to read every row and
-  parse it. The patient reference is now lifted out at write time into a
-  column, with `?patient=` on the search and a matching index.
-
-  What its absence means is the load-bearing decision: a row whose patient
-  could not be determined is **excluded** from a patient-scoped search, never
-  included. Null is not a wildcard. If the extraction misses a reference
-  spelling the result is a record that fails to appear — visible and
-  conservative — rather than one appearing on the wrong chart. An unscoped
-  search is unchanged, so nothing an existing caller sees is narrowed, and the
-  unattributed resource is still readable there rather than silently gone.
-
-  Databases written before the column gain it on open and the references are
-  recovered from the stored JSON, which is the only place they ever were. The
-  backfill is idempotent and leaves a resource it cannot attribute alone
-  rather than guessing at one.
-
-  The patient-facing surface is deliberately not this: a patient or proxy is
-  still served by `/patient/*`, where an authority grant is checked per chart.
-  This scoping is for staff and system callers already authorised broadly, so
-  there is one boundary to get right rather than two.
-
-- **FHIR search pagination.** `_count` (bounded to 100) and `_offset`, with
-  `Bundle.link` carrying self, next and previous, so a client can page without
-  constructing URLs itself.
-
-- **The capability statement claims an implementation guide only where the
-  conformance registry says that guide is in force.** `instantiates` is
-  generated from the active packages rather than written literally, so the
-  statement cannot name a guide the deployment never installed — the same
-  failure as a hand-written conformance page, in the artifact a partner reads
-  first.
+  - It sends only for **active** tenants. Suspension stops credentials at the
+    gate, and a timer is not at the gate — without this, a suspended
+    custodian's orders would keep being transmitted to a laboratory on behalf
+    of an organisation whose relationship with the patient has ended. Hazard
+    H-168.
+  - It sends only through a `lab-order` destination on an **enabled** channel.
+    A reading station runs a full engine over a restored copy of the primary's
+    database, with every channel disabled at fill time so it does not become a
+    second engine (H-39). A sweep that ignored that flag would resend every
+    placed order in the snapshot from a machine that is not the record.
+    Hazard H-167.
+  - With **two** `lab-order` destinations it sweeps neither and says why. A
+    route names its laboratory as a label a human wrote; a channel names its
+    destinations as queue identifiers; nothing maps one to the other. That is
+    invisible with one laboratory and arbitrary with two, and a requisition
+    delivered to the wrong laboratory is a disclosure rather than a delay.
+    Hazard H-169.
 
 - **Properties that hold across every instrument, not just the thresholds
   somebody wrote down.** A risk score is a sum of things that make a patient
@@ -570,52 +285,6 @@ always forward-compatible and run automatically on open — see
   laboratory has confirmed withdrawing. A cancellation is refused for an order
   nobody cancelled, which would stop a test somebody is waiting for.
 
-**Fixed**
-
-- **A blood pressure reported no unit, however carefully it was recorded.**
-  `Vitals.parse` read the unit off the top-level `valueQuantity`, which a
-  component-valued observation does not have, so the one vital always written
-  with a unit was the one vital whose unit was invisible. It is now read from
-  the components.
-
-- **A versioned clinical route was exempt from the audit-row guarantee.** The
-  test that discovers routes by reading `admin.ts` matched
-  `[a-z/-]+`, so `/api/clinical/score/v2` did not match at all — and the
-  scanner went on reporting a healthy 139 routes while covering 139 of 140.
-  The character class now admits digits. This is the second time that class
-  has been too narrow; the first was the "/" that exempted nested paths.
-
-- **Two HL7 fields were one position out** (H-133). The indication was landing
-  in OBR-14, Specimen Received Date/Time, and the ordering provider in OBR-17,
-  Order Callback Phone Number. Neither is a message that fails: a laboratory
-  parses it and files clinical information as a timestamp.
-
-  The cause was positional arrays, where a run of empty separators is
-  uncountable by eye and one too many shifts everything after it. Segments are
-  now built from explicit HL7 field numbers, so `{ 13: indication }` is OBR-13
-  and can be checked against a specification without counting. Found by
-  dumping the bytes of a built message rather than by rereading the array,
-  which had already been read twice.
-
-**Fixed**
-
-- **A superseded transmission attempt could override the one that superseded
-  it** (H-130). Attempts were ordered by timestamp with a tiebreak on a random
-  UUID, and a send with the acknowledgement answering it lands in the same
-  millisecond on a fast link — so the later attempt was whichever identifier
-  happened to sort last, and a rejected order reported as acknowledged about
-  half the time. That is the precise inversion the mechanism exists to
-  prevent. Ordering is now an autoincrementing sequence.
-
-  Caught as an intermittent failure in its own new tests: three runs gave 0, 0
-  and 1 failures. Diagnosed rather than re-run, and pinned by a test that
-  writes twenty attempts inside one millisecond and asserts the timestamps
-  really did collide, so it cannot pass by accident.
-
-## Unreleased
-
-**Added**
-
 - **Ask-at-order-entry, and the answer that is never invented**
   (`LabProfile.askAtOrderEntry`, `OmlContext.aoeAnswers`). A laboratory
   requires certain questions answered before it will run certain tests —
@@ -645,9 +314,53 @@ always forward-compatible and run automatically on open — see
 
   Hazards H-146 and H-147.
 
-## Unreleased
+- **Placed orders go out on their own** (`src/orders/dispatch.ts`, the
+  `lab-order` destination). A sweep finds orders nobody has sent, builds each,
+  and puts it on **the ordinary delivery queue** — the same one carrying every
+  other outbound message, with its retries, its ordering and its dead-letter
+  queue. A second queue beside that one would be a second thing to monitor and
+  a second set of failures nobody had seen before.
 
-**Added**
+  The acknowledgement comes back to the order it answers: the destination
+  correlates it by MSA-2 before believing it, records the outcome, and treats a
+  refusal as permanent so a requisition the laboratory has already rejected is
+  not resent — each retry would write a fresh rejection onto the chart.
+
+  **The enqueue and the record of that handover commit in one transaction.**
+  Two writes would leave a window where a crash puts an order on the queue that
+  still reads as never sent, and the next sweep enqueues it again. That is not
+  a duplicate message; it is two requisitions for one specimen — two
+  collections booked, or a patient drawn twice, or a result reported against an
+  order the clinician cannot find.
+
+  Only orders that have gone nowhere at all are swept. Rejected and failed are
+  answers somebody has to read, not conditions to retry silently. An order that
+  cannot be built is reported with its missing fields and left where it is
+  visible, rather than queued to dead-letter; the sweep runs again, so one that
+  could not be built this morning goes out this afternoon once the answer is
+  recorded, with no intervention.
+
+  Hazards H-164 to H-166.
+
+- **A message the far end refused is no longer retried** (H-156,
+  `PermanentFailure`). Every delivery failure was treated as transient, so a
+  message rejected with an HTTP 4xx, or answered `AE`/`AR` by a receiving
+  application, went round the whole backoff schedule before dead-lettering.
+  The same bytes get the same answer, so none of those attempts could succeed.
+
+  The cost that matters is not the wasted attempts. **An ordered destination
+  stops at a blocked head**, so one permanently rejected message held up every
+  message queued behind it for the full retry cycle — results and
+  registrations arriving late because of a message that was never going to
+  land — and delayed the dead letter a human has to act on by the same amount.
+
+  A failure that would fail identically on a retry now dead-letters on the
+  first attempt, and the dead letter says it was not retried and why, since a
+  dead letter with one attempt on it otherwise reads as a retry loop that
+  failed to run. Transient failures keep the existing backoff: 5xx, timeouts,
+  refused connections, and the two 4xx statuses that explicitly ask to be
+  retried — 408 and 429. Reading a rate limit as permanent would discard a
+  message a retry would have delivered.
 
 - **The outbound order path is reachable** (`POST /api/clinical/order-send`,
   `POST /api/clinical/order-cancel-send`). Four merged changes built a message,
@@ -706,7 +419,303 @@ always forward-compatible and run automatically on open — see
 
   Hazards H-151 and H-152.
 
+- **A patient summary that can leave the building.** `POST
+  /api/clinical/patient-summary-export` produces a FHIR document bundle shaped
+  after the International Patient Summary, with a manifest and a signature
+  binding the two. Distinct from `/patient/summary`, which is a patient
+  reading their own chart and is unchanged.
+
+  The point is what an empty section means somewhere nobody can ask a
+  follow-up question. An empty allergy list can mean the patient has none,
+  that nobody asked, that somebody asked and the answer is unknown, that a
+  directive withholds it, or that this system holds no such record — five
+  facts that render identically, where a reader supplies the most comfortable
+  one. Each empty section now carries a coded `emptyReason` and, because the
+  mapping to FHIR's vocabulary is lossy, this system's own word beside it. A
+  status the mapping does not recognise becomes `unavailable`, never
+  `nilknown`: a state added later must not silently assert that a patient has
+  none of something.
+
+  The manifest states what is not known as well as what is. Terminology
+  release versions are reported as `unrecorded`, because `term_concepts`
+  stores a system and a code and nothing about which release they came from —
+  omitting the field would let a reader assume they had been checked. It names
+  the profile pack that validated the document and says that passing a
+  working-subset pack is not conformance, lists the implementation guides the
+  conformance registry holds active, and states that the document is *not*
+  IPS-conformant: no IPS package has been fetched and nothing has been
+  validated against the published profiles.
+
+  Export refuses without `NORTHSTAR_SUMMARY_SIGNING_KEY`. An unsigned summary
+  cannot be told from one edited after it left, and this is the copy that
+  leaves. Verification catches either half being altered.
+
+  **PS-CA is not implemented.** The specification for this work referred to an
+  official Canadian package supplied to the project; none was supplied. The
+  existing `conformance/ps-ca.json` remains what it says it is — a hand-written
+  working subset — and no Canadian conformance is claimed from it.
+
+- **FHIR Provenance, kept distinct from the audit trail.** `audit_events` is
+  hash-chained and answers who reached a record and whether they were allowed
+  to. It is the wrong shape for the question asked after something goes wrong
+  about the data rather than the people: where did this value come from. An
+  audit row can say a laboratory feed wrote something at 04:12; it cannot say
+  this potassium was produced by mapping version 3 from message 8812, or that
+  this entry arrived in a migration rather than from a prescriber.
+
+  Every persisted FHIR write now records lineage — the target and the version
+  it produced, the activity, the actor and organization where one was stated,
+  the source message or resource, and the transformation or clinical rule with
+  its version. `GET /fhir/Provenance?target=Type/id` returns it as FHIR
+  resources, and the lineage survives the resource being overwritten, so a
+  superseded value's origin is still reconstructable after a correction.
+  `forSource` answers the other direction: everything one bad feed produced.
+
+  Two decisions worth naming. A write nothing described is recorded as
+  **unattributed** rather than attributed to whoever was nearby — a lineage
+  naming the wrong author is worse than one admitting it does not know,
+  because the first is believed. And a redelivery of identical content records
+  **nothing further**, so a replayed message does not make one result look
+  like two reports of the same value.
+
+  Provenance is deliberately not hash-chained. The audit trail is chained
+  because its claim is that nothing was removed from it; provenance makes no
+  such claim, and chaining it would imply a completeness guarantee that a
+  write path recording none would quietly break.
+
+- **A FHIR search can be scoped to one chart.** `fhir_resources` recorded a
+  resource's type, id and JSON and nothing about whose record it was, so the
+  only way to answer "everything about this person" was to read every row and
+  parse it. The patient reference is now lifted out at write time into a
+  column, with `?patient=` on the search and a matching index.
+
+  What its absence means is the load-bearing decision: a row whose patient
+  could not be determined is **excluded** from a patient-scoped search, never
+  included. Null is not a wildcard. If the extraction misses a reference
+  spelling the result is a record that fails to appear — visible and
+  conservative — rather than one appearing on the wrong chart. An unscoped
+  search is unchanged, so nothing an existing caller sees is narrowed, and the
+  unattributed resource is still readable there rather than silently gone.
+
+  Databases written before the column gain it on open and the references are
+  recovered from the stored JSON, which is the only place they ever were. The
+  backfill is idempotent and leaves a resource it cannot attribute alone
+  rather than guessing at one.
+
+  The patient-facing surface is deliberately not this: a patient or proxy is
+  still served by `/patient/*`, where an authority grant is checked per chart.
+  This scoping is for staff and system callers already authorised broadly, so
+  there is one boundary to get right rather than two.
+
+- **FHIR search pagination.** `_count` (bounded to 100) and `_offset`, with
+  `Bundle.link` carrying self, next and previous, so a client can page without
+  constructing URLs itself.
+
+- **The capability statement claims an implementation guide only where the
+  conformance registry says that guide is in force.** `instantiates` is
+  generated from the active packages rather than written literally, so the
+  statement cannot name a guide the deployment never installed — the same
+  failure as a hand-written conformance page, in the artifact a partner reads
+  first.
+
 **Fixed**
+
+- **One MLLP frame could hold the engine's only thread for days.** `parseHl7`
+  trimmed trailing carriage returns with `.replace(/\r+$/, "")`, which is
+  quadratic when a non-CR character follows the run: the engine restarts the
+  greedy match at every position in it and `$` fails every time. Measured, 20k
+  carriage returns took 325ms and 400k took 130 seconds; the MLLP frame limit
+  is 16 MiB and MLLP has no authentication. The trim is gone rather than
+  rewritten — the empty-segment filter on the next line already removed exactly
+  what it removed, linearly.
+
+- **`\X..\` with a payload that is not hex no longer becomes a NUL.**
+  `parseInt("zz", 16)` is NaN and `String.fromCharCode(NaN)` is U+0000, so a
+  malformed escape put a NUL character inside a name or an identifier — stored
+  by SQLite, serialised by JSON, and unequal to the string anybody typed ever
+  after. A payload that is not an even number of hex digits is now left exactly
+  as it arrived, like every other escape the decoder does not know.
+
+- **An impossible date is no date.** `hl7DateToIso` reformatted whatever digits
+  it matched, so `20261301` became `2026-13-01` and `20260231` became
+  `2026-02-31` — Invalid Date to every reader downstream, out of a field that
+  looks populated. The month, the day against that month in that year, and the
+  clock are checked; anything impossible returns the empty string this function
+  already used for "no usable date". Offsets are still dropped, which is
+  deliberate and documented.
+
+- **An acknowledgement no longer carries fields the sender put there.**
+  `buildAck` escaped everything it copied from the received message except
+  MSH-10, MSH-9.2, MSH-11 and MSH-12, and `getHl7` returns values already
+  unescaped — so a control identifier containing `\F\` came back as a live
+  field separator and produced `MSA|AA|MSG|AE|INJECTED|`.
+
+- **A malformed request body is 400, and an oversized one is 413.** Ninety-seven
+  `JSON.parse(await readBody(req))` calls in the router are unguarded, so a body
+  that was not JSON reached the net underneath as a `SyntaxError` and was
+  answered 500 — telling a client to retry a request that fails identically
+  every time. A `SyntaxError` there is now 400 (it also covers a channel
+  `pattern` that is not a regular expression), and the body-size limit rejects
+  with a refusal carrying 413 instead of a fault.
+
+- **An interface that cannot reach its source no longer reports itself
+  healthy.** Every inbound poll — filedrop, dbpoll, sqlpoll, sftp — caught its
+  own exception, printed it and returned, and the guard around `readdirSync`
+  did not even print. Nothing was written down. `/api/health` is assembled from
+  the delivery queue and from cadences a channel declared, and an unreachable
+  source puts nothing in the queue, so a drop directory unmounted since Tuesday
+  produced `ok: true, degraded: false` — and a channel that declared no cadence
+  reported healthy for as long as its source stayed away.
+
+  A failed poll is now recorded per channel, durably and tenant-scoped, with a
+  run length. Three consecutive failed reads degrade the health check and raise
+  `northstar_channel_source_failures{channel,stage}`. Reading the source and
+  handling one thing on it are separate stages, because they are different
+  phone calls: a bad file is reported and never degrades the interface. A pass
+  that reads and handles everything clears the record, so recovery needs no
+  acknowledgement, and a channel somebody disabled stops being reported without
+  losing its history. See [A channel cannot reach its
+  source](docs/RUNBOOK.md#a-channel-cannot-reach-its-source).
+
+  The open health endpoint publishes the exception class, its system code and
+  the count; the message — and the name of the file it was on, which a sending
+  system routinely derives from an accession or a chart number — stays on the
+  authenticated channel listing.
+
+  Also fixed while here: `Promise.resolve(poll()).catch(…)` evaluates `poll()`
+  before there is a promise to attach the handler to, so a synchronous throw
+  escaped the interval callback and would have taken the process down. Every
+  poll guards itself today, which is what made it a latent one.
+
+- **The order sweep warned about the same misconfiguration once a minute,
+  forever.** A tenant the sweep refuses to act for — two `lab-order`
+  destinations, so it cannot tell which laboratory a route means — had its
+  reason written to the log on every pass. At the default cadence that is
+  about 1,440 identical lines a day, for as long as it takes somebody to
+  change the configuration. That is not emphasis; it is how a log stops being
+  read, and how the one line that mattered gets scrolled past. The comment
+  above the code said as much and the code did it anyway.
+
+  A refusal is now reported when it starts, again if it changes into a
+  different refusal, and once more when it clears — the last of those being
+  worth a line of its own, because an operator who has just fixed something
+  should be told it took rather than having to infer it from a warning that
+  stopped appearing.
+
+- **A cancelled order was still collected, because only the chart was told.**
+  Automatic dispatch swept placed orders and not withdrawals of them. The
+  sweep's list selects orders whose status is `placed` or `in-progress`, so a
+  cancelled order left that list the moment it was cancelled — and the branch
+  in `dispatch.ts` that builds a withdrawal could not be reached from it. The
+  code read as though it handled both.
+
+  What that looks like in a clinic: the order reads as cancelled everywhere
+  somebody here would look. The chart says so. The clinician saw it. The
+  patient was told it was called off. A laboratory four hundred kilometres
+  away still holds the requisition, so the specimen is collected, the test is
+  run and billed, and a result arrives for a test the chart says nobody
+  wanted. Unlike an order that never left — which appears on a worklist built
+  to show exactly that — nothing showed this.
+
+  Withdrawals now go out on the same clock and through the same door as the
+  orders. The list they come from asks whether a laboratory *could* act on
+  the order rather than whether one acknowledged it, so an order still
+  sitting in the outbound queue is withdrawn too: waiting for the
+  acknowledgement means the withdrawal is always a step behind the thing it
+  is chasing, and withdrawing an order a laboratory never received costs an
+  application reject somebody can read, while the other way costs a patient a
+  needle. Enqueued behind the order on the same ordered key, so ORC-1 NW is
+  read before ORC-1 CA. Hazard H-170.
+
+- **A backup destination on Windows went somewhere else, quietly.** `fs:` and
+  `file://` destinations were parsed by slicing the scheme off and requiring a
+  leading `/`. `C:\backups` has no leading slash, so an absolute Windows path
+  was refused as relative; and `file:///C:/backups` sliced down to
+  `/C:/backups`, which is not a path — the backups landed in a directory named
+  `C:` at the root of the current drive. Both failures hit the one setting
+  whose whole job is to put backups somewhere other than the machine holding
+  the database. Parsing now goes through `fileURLToPath`, which knows the
+  drive-letter and percent-encoding rules, and absoluteness is checked with
+  the rules of the platform being targeted rather than of POSIX. Hazard H-158.
+
+- **An expired reading station answered 500 instead of 503.** The first
+  request past the serving budget destroys the cache, and `rmSync`'s `force`
+  suppresses a missing file but not a locked one: on Windows, deleting a
+  database another handle still holds throws EPERM, and the throw escaped into
+  the request. The station's deliberate refusal — with the remedy an operator
+  needs — became a generic fault. Refusing to serve is the guarantee and
+  destroying the file is the tidying that usually accompanies it, so a failed
+  purge is now reported rather than thrown, and the manifest is left unpurged
+  rather than claiming a destruction that did not happen. Hazard H-157.
+
+- **Platform-dependent logic is now testable from either platform.** CI runs
+  on Ubuntu only, so every Windows branch was unexecuted — which shows up as a
+  green build on a machine that never took the branch, and failures found on
+  somebody's laptop. Encryption-at-rest detection takes the platform as a
+  parameter, so its Linux path is exercised from any host instead of being
+  skipped into a "cannot check" branch. Temporary-directory cleanup across the
+  suite retries, which is inert on Linux and rides out the brief EPERM while a
+  Windows handle or virus scanner still holds a file.
+
+- **A medication reconciliation could be completed twice.** The status check
+  and the count of undecided items ran outside the transaction and the write
+  did not name the state they had read, so two clinicians completing the same
+  reconciliation both passed the guard and both wrote — two people each told
+  it was done, and a record naming only the second. The checks now run inside
+  the transaction and the write is conditional on the reconciliation still
+  being open.
+
+- **A referral's status and its event log could disagree.** `transition()`
+  moved the status and appended the event as two writes outside any
+  transaction, so a failure between them left a referral in a state its own
+  history did not account for — and that history is what the stalled-referral
+  review reads. Both writes now commit together or not at all.
+
+- **Lifecycle writes name the state they expect.** Result acknowledgement,
+  referral transitions, reconciliation completion and prescription
+  acknowledge/fail update conditionally on the status their check read, and a
+  write that changes no rows refuses with 409 rather than silently succeeding.
+  A score's approval chain is kept linear by the database as well as by the
+  code: one root decision per score, and one successor per decision, so a
+  score cannot acquire two current approvals. Hazards H-160 and H-161.
+
+- **A blood pressure reported no unit, however carefully it was recorded.**
+  `Vitals.parse` read the unit off the top-level `valueQuantity`, which a
+  component-valued observation does not have, so the one vital always written
+  with a unit was the one vital whose unit was invisible. It is now read from
+  the components.
+
+- **A versioned clinical route was exempt from the audit-row guarantee.** The
+  test that discovers routes by reading `admin.ts` matched
+  `[a-z/-]+`, so `/api/clinical/score/v2` did not match at all — and the
+  scanner went on reporting a healthy 139 routes while covering 139 of 140.
+  The character class now admits digits. This is the second time that class
+  has been too narrow; the first was the "/" that exempted nested paths.
+
+- **Two HL7 fields were one position out** (H-133). The indication was landing
+  in OBR-14, Specimen Received Date/Time, and the ordering provider in OBR-17,
+  Order Callback Phone Number. Neither is a message that fails: a laboratory
+  parses it and files clinical information as a timestamp.
+
+  The cause was positional arrays, where a run of empty separators is
+  uncountable by eye and one too many shifts everything after it. Segments are
+  now built from explicit HL7 field numbers, so `{ 13: indication }` is OBR-13
+  and can be checked against a specification without counting. Found by
+  dumping the bytes of a built message rather than by rereading the array,
+  which had already been read twice.
+
+- **A superseded transmission attempt could override the one that superseded
+  it** (H-130). Attempts were ordered by timestamp with a tiebreak on a random
+  UUID, and a send with the acknowledgement answering it lands in the same
+  millisecond on a fast link — so the later attempt was whichever identifier
+  happened to sort last, and a rejected order reported as acknowledged about
+  half the time. That is the precise inversion the mechanism exists to
+  prevent. Ordering is now an autoincrementing sequence.
+
+  Caught as an intermittent failure in its own new tests: three runs gave 0, 0
+  and 1 failures. Diagnosed rather than re-run, and pinned by a test that
+  writes twenty attempts inside one millisecond and asserts the timestamps
+  really did collide, so it cannot pass by accident.
 
 - **The worklist called an order nobody sent a laboratory being slow** (H-148).
   "Orders awaiting a result" was built from orders past their expected date
@@ -744,6 +753,129 @@ always forward-compatible and run automatically on open — see
   among them would not have been seen. Declared non-transmitting sites are
   excluded; undeclared ones are not, because nobody has said, and there every
   order is a real question.
+
+- **An interface that cannot reach its source no longer reports itself
+  healthy.** Every inbound poll — filedrop, dbpoll, sqlpoll, sftp — caught its
+  own exception, printed it and returned, and the guard around `readdirSync`
+  did not even print. Nothing was written down. `/api/health` is assembled from
+  the delivery queue and from cadences a channel declared, and an unreachable
+  source puts nothing in the queue, so a drop directory unmounted since Tuesday
+  produced `ok: true, degraded: false` — and a channel that declared no cadence
+  reported healthy for as long as its source stayed away.
+
+  A failed poll is now recorded per channel, durably and tenant-scoped, with a
+  run length. Three consecutive failed reads degrade the health check and raise
+  `northstar_channel_source_failures{channel,stage}`. Reading the source and
+  handling one thing on it are separate stages, because they are different
+  phone calls: a bad file is reported and never degrades the interface. A pass
+  that reads and handles everything clears the record, so recovery needs no
+  acknowledgement, and a channel somebody disabled stops being reported without
+  losing its history. See [A channel cannot reach its
+  source](docs/RUNBOOK.md#a-channel-cannot-reach-its-source).
+
+  The open health endpoint publishes the exception class, its system code and
+  the count; the message — and the name of the file it was on, which a sending
+  system routinely derives from an accession or a chart number — stays on the
+  authenticated channel listing.
+
+  Also fixed while here: `Promise.resolve(poll()).catch(…)` evaluates `poll()`
+  before there is a promise to attach the handler to, so a synchronous throw
+  escaped the interval callback and would have taken the process down. Every
+  poll guards itself today, which is what made it a latent one.
+
+- **A fault no longer prints a patient into the operator's log.** Stores write
+  their input into the exceptions they throw, because that is what makes an
+  error actionable — `3 medication(s) still undecided: <drug names>`, `result
+  is for <a> but order <o> is for <b>`. Those are plain `Error`s, so
+  `mapStoreError` classified them as faults, and a fault printed its message to
+  `console.error` and, from the net under the router, sent it back to the
+  caller. Both messages are reached by ordinary refusals: finishing a
+  reconciliation early, filing a result on the wrong order.
+
+  A fault now says where and never what. The log gets the exception class, the
+  top stack frames and an opaque `faultId`; the caller gets `{"error":
+  "internal error", "faultId": …}`; the message goes to the audit trail behind
+  that id, which is the sink built to hold it. The route is logged as its area,
+  because `/fhir/Patient/<id>` and `/patient/<id>/summary` name a patient in
+  the path. See [A caller reports a fault
+  id](docs/RUNBOOK.md#a-caller-reports-a-fault-id) for turning an id back into
+  the row.
+
+  A decision is not logged at all, so the two stores above now refuse rather
+  than throw — which also stops a 500 telling a client to retry a request that
+  will be refused every time. The cross-chart result refusal additionally stops
+  naming the *other* patient: somebody filing onto the wrong chart is told
+  their identifier does not match, not whose chart it is. The trail row still
+  carries both.
+
+- **Every clinical lifecycle write now names the state it decided from.** A
+  previous change fixed six of these; this is the rest of the class. Encounter
+  arrival, closure and cancellation, order placement and completion, paper
+  hand-out and cancellation of a prescription, booking cancellation, patient
+  access-request completion and decline, and directive revocation all read a
+  row, decided against its status, and then wrote an update naming only the
+  row. Between the two steps the row could move, so a later writer overwrote
+  whatever had happened in between and both callers were told they had
+  succeeded.
+
+  Each update now names the status it expects and refuses when it changes no
+  rows. Which way each one fails is the part that matters: a visit cancelled
+  after the patient arrived is refused rather than erasing that they attended;
+  a decline racing a completion on an access request must not report a record
+  as withheld when it was sent; a revocation that lost the race must not tell
+  the caller it lifted a directive it did not. Order completion is the one
+  exception that returns quietly rather than refusing — it runs as a side
+  effect of filing a result, and the order having been closed meanwhile is an
+  ordinary outcome rather than a fault.
+
+- **A structural check exempted routes that used the more explicit guard.**
+  The test asserting every patient-scoped clinical route consults the
+  directive check matched `phi(` and not `phiFor(` — the form that takes the
+  patient explicitly rather than reading it from the query, and runs the same
+  check. A route using it read as one that bypassed the check. This is the
+  second scanner in this file found too narrow; the first was the character
+  class that exempted versioned paths from the audit guarantee.
+
+- **A FHIR search could return the same resource on two pages, and skip
+  others.** Stored resources were ordered by `updated_at` alone, which has
+  second granularity — so a bulk load writes dozens of resources sharing one
+  timestamp, and SQLite specifies no order among rows equal under the ORDER
+  BY. Paging through such a run repeats some resources and omits others, with
+  no error and a correct-looking total: a client reading a patient's
+  observations gets a chart with holes in it. The ordering now carries a
+  tiebreak on id, so it is specified rather than incidental.
+
+**Security**
+
+- **`NORTHSTAR_OIDC_AUDIENCE` is now required when OAuth is enabled, and a
+  site without it will not boot.** It was optional, and an absent audience
+  skipped the check entirely: every token the configured issuer had ever
+  signed was accepted, including tokens minted for a different application in
+  the same directory. An identity provider serves many resource servers, so a
+  token for the expenses system, signed by the same Entra or Keycloak tenant,
+  was a valid Northstar token — and the deployments that never set the
+  variable were exactly the ones running without the check.
+
+  **Breaking, deliberately.** A site that cannot start is a site somebody
+  fixes; one that starts and honours another application's tokens is not. Set
+  `NORTHSTAR_OIDC_AUDIENCE` to the identifier this deployment is registered
+  under at the issuer. A token carrying no `aud` claim at all is now refused
+  for the same reason as one naming somebody else. Hazard H-162.
+
+- **`.well-known/smart-configuration`**, generated from what this deployment
+  is configured with. Northstar is a resource server — it validates tokens and
+  does not issue them — so the document advertises the site's own
+  authorization server, and lists only capabilities this end actually
+  enforces. A discovery document claiming a capability the server does not
+  have is how a client comes to trust a check that never runs.
+
+- **SMART launch context is surfaced and type-checked.** `patient`,
+  `encounter` and `fhirUser` are read from the token and exposed on the
+  verified result, with a structured value dropped rather than carried around
+  as though it were an identifier. It is not yet required: a patient token is
+  bound to a chart here through an explicit authority grant, which is the
+  stronger control, and demanding a launch claim as well would refuse tokens
+  that are already correctly constrained.
 
 ## 0.8.0 — 2026-08-27
 
