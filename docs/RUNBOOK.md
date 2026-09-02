@@ -103,6 +103,19 @@ Then, before any real feed is pointed at it:
 7. **Declare `expectMessageEverySec` on every channel you would notice the
    absence of.** Silence detection is off unless declared, and silence is the
    failure most likely to run for days unnoticed.
+8. **Decide whether orders leave on their own.** With an order route declared
+   to transmit and a `lab-order` destination on an enabled channel, placed
+   orders are swept onto the outbound queue every minute — the delay between
+   a clinician placing an order and the laboratory being able to see it, so
+   it is set against how long a patient takes to walk to the draw station.
+   `NORTHSTAR_ORDER_DISPATCH_INTERVAL_MS` changes it;
+   `NORTHSTAR_ORDER_DISPATCH_INTERVAL_MS=0` turns automatic send off, leaving
+   `POST /api/clinical/order-send` as the only way out. Set the `0`
+   explicitly if that is the decision: it should read as a decision rather
+   than as something nobody configured. Note that one enabled `lab-order`
+   destination per tenant is the supported shape — with two, the sweep cannot
+   tell which laboratory a route's destination label means, and refuses to
+   guess (H-169).
 
 ### Upgrading
 

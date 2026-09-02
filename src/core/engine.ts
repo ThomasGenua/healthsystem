@@ -56,6 +56,7 @@ import { PatientAccess } from "../patient/access.ts";
 import { PatientEnrolment } from "../patient/enrolment.ts";
 import { PrivacyOffice } from "../privacy/office.ts";
 import { RetentionRunner, type RetentionPolicy } from "./retention.ts";
+import { OrderDispatchSweeper, resolveInterval } from "../orders/sweep.ts";
 import { buildAck, getHl7, parseHl7, serializeHl7 } from "../hl7/parser.ts";
 import { startMllpServer, type MllpServerHandle } from "../hl7/mllp.ts";
 import { applyMapping, type MapperContext } from "../transform/mapper.ts";
@@ -166,6 +167,13 @@ export interface EngineOptions {
   /** How long stored patient data is kept. Off unless configured. */
   retention?: RetentionPolicy;
   /**
+   * How often placed orders are swept onto the outbound queue, in
+   * milliseconds. `0` sends orders only when somebody presses send. Defaults
+   * to `NORTHSTAR_ORDER_DISPATCH_INTERVAL_MS`, and to a minute when that is
+   * unset — see `src/orders/sweep.ts` for why a minute.
+   */
+  orderDispatchIntervalMs?: number;
+  /**
    * How long another instance's claim on the database stays valid without a
    * heartbeat. A crashed holder on this host is detected at once by its pid,
    * so this only bounds the cross-host and reused-pid cases.
@@ -215,6 +223,7 @@ export class Engine {
   readonly keys: ApiKeyStore;
   readonly audit: AuditStore;
   readonly retention: RetentionRunner;
+  readonly orderDispatch: OrderDispatchSweeper;
   /** The ledger of every shape each channel's configuration has had. */
   readonly channelVersions: ChannelVersions;
   readonly mappings = new Map<string, MappingDoc>();
@@ -269,6 +278,17 @@ export class Engine {
     this.audit = new AuditStore(this.db);
     this.channelVersions = new ChannelVersions(this.db);
     this.retention = new RetentionRunner(this.db, opts.retention ?? {}, this.audit);
+    this.orderDispatch = new OrderDispatchSweeper(
+      {
+        db: this.db,
+        forTenant: (id) => {
+          const view = this.forTenant(id);
+          return { db: view.db, orders: view.orders, patients: view.clinical.patientIndex };
+        },
+        profiles: (id) => this.labProfiles.get(id),
+      },
+      opts.orderDispatchIntervalMs ?? resolveInterval()
+    );
     this.connectors = {
       sql: opts.connectors?.sql ?? connectSql,
       sftp: opts.connectors?.sftp ?? connectSftp,
@@ -495,11 +515,20 @@ export class Engine {
       const config = JSON.parse(row.config) as ChannelConfig;
       await this.activate(config);
     }
+
+    // Last, and after the channels are up. The sweep's first pass enqueues
+    // immediately, and the worker parks a delivery whose destination is not
+    // registered yet on a five-second backoff. Nothing is lost either way --
+    // that path does not burn an attempt or touch the order -- but on a cold
+    // start it is five seconds added to every order in the building, for no
+    // reason other than the order these two lines are written in.
+    this.orderDispatch.start();
   }
 
   async stop(): Promise<void> {
     if (this.lockTimer) clearInterval(this.lockTimer);
     this.lockTimer = null;
+    this.orderDispatch.stop();
     await this.worker.stop();
     this.retention.stop();
     for (const rc of this.channels.values()) {
