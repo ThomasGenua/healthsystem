@@ -53,40 +53,119 @@ const SQL_SOURCES = [
   "../src/schedule/clinics.ts",
   "../src/audit/review.ts",
   "../src/core/channel-versions.ts",
+  "../src/core/invariants.ts",
 ];
 
 /**
- * Removes comments before scanning.
+ * A table name this scan cannot read.
  *
- * Not incidental. Prose in this codebase is full of apostrophes — "a channel's
- * chain", "the sender's log" — and an apostrophe reads as a string delimiter,
- * so a scanner that skips this treats everything from the comment to the next
- * apostrophe as one string and silently loses every statement in between. The
- * first version of this file did exactly that and reported a third of the
- * offenders it should have, which for a check whose entire job is completeness
- * is worse than not having it.
+ * The check below matches literal table names, so a statement that builds its
+ * own — `FROM ${table}` — is invisible to it: `touches` comes back empty and
+ * the statement is skipped as if it reached nothing tenant-scoped. That is the
+ * failure mode this file already fixed twice (a comment that swallowed a third
+ * of the source, an exemption borrowed from the method above), and it is worse
+ * than either, because a registry-driven query is exactly the kind that sweeps
+ * every row of a table.
+ *
+ * So an unreadable table name is held to the same standard as an unscoped one:
+ * name a tenant, or declare that you deliberately cross. The four in
+ * `directory/store.ts` name one, and the schema rebuild and the invariant
+ * inspection declare that they do not.
  */
-function stripComments(source: string): string {
-  // Replaced with newlines rather than deleted, so reported line numbers still
-  // point at the right place in the original file.
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + " ".repeat(Math.max(0, m.length - p1.length)));
-}
+const INTERPOLATED_TABLE = /\b(FROM|INTO|UPDATE|JOIN)\s+\$\{/i;
 
 /**
- * Pulls out anything that looks like a SQL statement: the contents of a
- * template literal or quoted string that starts with a SQL verb.
+ * Pulls out every SQL statement, in one pass that knows what it is inside.
+ *
+ * This used to be two steps: blank the comments with a regex, then match
+ * quoted strings with another. Both steps are blind to the thing that
+ * actually matters — whether a character is inside a string — and the second
+ * bug that caused was worse than the first.
+ *
+ * `SCHEMA` in `db.ts` is a 2,200-line template literal, and one of the SQL
+ * comments inside it reads `-- The conformance packs in conformance/*.json`.
+ * The `/*` in that glob opened a block comment as far as the stripper was
+ * concerned, and the next `*` `/` it found was in a doc comment 270 lines
+ * below — so it blanked everything between, including the backtick that
+ * closes `SCHEMA` and both backticks of `INDEXES`. From there every backtick
+ * paired off by one: code was read as string content and string content as
+ * code.
+ *
+ * The measurable effect was that this scan saw **4 of the 81 statements in
+ * `db.ts`** — the schema and the core query layer, the largest SQL source in
+ * the repository, 95% invisible to the test its own header calls the one the
+ * isolation rests on. It reported no offenders, which is what a check that
+ * reads almost nothing looks like from outside.
+ *
+ * So there is one scanner now. It walks the source once, tracking whether it
+ * is in a line comment, a block comment, or a string of each kind, and
+ * `${...}` inside a template literal is followed so a nested literal does not
+ * end the outer one. A `/*` inside a string is then what it is: text.
  */
 function statements(source: string): Array<{ sql: string; line: number }> {
   const out: Array<{ sql: string; line: number }> = [];
-  // Template literals and ordinary strings, non-greedy, across lines.
-  const re = /`([^`]*)`|"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(source)) !== null) {
-    const body = m[1] ?? m[2] ?? m[3] ?? "";
-    if (!/^\s*(SELECT|INSERT|UPDATE|DELETE)\b/i.test(body)) continue;
-    out.push({ sql: body, line: source.slice(0, m.index).split("\n").length });
+  const n = source.length;
+  let i = 0;
+  let line = 1;
+  while (i < n) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (ch === "\n") {
+      line++;
+      i++;
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      while (i < n && source[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      i += 2;
+      while (i < n && !(source[i] === "*" && source[i + 1] === "/")) {
+        if (source[i] === "\n") line++;
+        i++;
+      }
+      i += 2;
+      continue;
+    }
+    if (ch === "`" || ch === '"' || ch === "'") {
+      const quote = ch;
+      const startLine = line;
+      let body = "";
+      let depth = 0;
+      i++;
+      while (i < n) {
+        const c = source[i];
+        if (c === "\\") {
+          body += c + (source[i + 1] ?? "");
+          if (source[i + 1] === "\n") line++;
+          i += 2;
+          continue;
+        }
+        // Interpolation. Its contents may hold a backtick of their own, and
+        // that one closes nothing.
+        if (quote === "`" && c === "$" && source[i + 1] === "{") {
+          depth++;
+          body += "${";
+          i += 2;
+          continue;
+        }
+        if (quote === "`" && depth > 0 && c === "}") {
+          depth--;
+          body += c;
+          i++;
+          continue;
+        }
+        if (c === quote && depth === 0) break;
+        if (c === "\n") line++;
+        body += c;
+        i++;
+      }
+      i++;
+      if (/^\s*(SELECT|INSERT|UPDATE|DELETE)\b/i.test(body)) out.push({ sql: body, line: startLine });
+      continue;
+    }
+    i++;
   }
   return out;
 }
@@ -128,19 +207,20 @@ test("no statement reads or writes tenant-scoped data without naming a tenant", 
   for (const rel of SQL_SOURCES) {
     const path = new URL(rel, import.meta.url);
     const raw = readFileSync(path, "utf8");
-    const source = stripComments(raw);
 
-    for (const { sql, line } of statements(source)) {
+    for (const { sql, line } of statements(raw)) {
       const touches = TENANT_SCOPED_TABLES.filter((t) =>
         new RegExp(`\\b(FROM|INTO|UPDATE|JOIN)\\s+"?${t}"?\\b`, "i").test(sql)
       );
-      if (touches.length === 0) continue;
+      const unreadable = INTERPOLATED_TABLE.test(sql);
+      if (touches.length === 0 && !unreadable) continue;
       if (/\btenant_id\b/.test(sql)) continue;
       // An explicit, reasoned exemption.
       if (/crosses-tenants:/.test(precedingComment(raw, line))) continue;
 
+      const what = touches.length > 0 ? `touches ${touches.join(", ")}` : "builds its table name, so this scan cannot see what it touches";
       offenders.push(
-        `${rel.replace("../", "")}:${line} touches ${touches.join(", ")} without a tenant:\n` +
+        `${rel.replace("../", "")}:${line} ${what} without a tenant:\n` +
           `      ${sql.replace(/\s+/g, " ").trim().slice(0, 140)}`
       );
     }
@@ -154,7 +234,7 @@ test("no statement reads or writes tenant-scoped data without naming a tenant", 
 });
 
 const scoped = (src: string) =>
-  statements(stripComments(src)).filter((st) =>
+  statements(src).filter((st) =>
     TENANT_SCOPED_TABLES.some((t) => new RegExp(`\\b(FROM|INTO|UPDATE|JOIN)\\s+"?${t}"?\\b`, "i").test(st.sql))
   );
 
@@ -230,4 +310,45 @@ test("a doc comment is not so long that the scan gives up before reaching it", (
   const [st] = scoped(src);
   assert.ok(st, "the statement is seen");
   assert.ok(/crosses-tenants:/.test(precedingComment(src, st.line)), "and the reason above it still reaches it");
+});
+
+test("a glob in a SQL comment does not blind the scan", () => {
+  // The bug this file shipped with for a second time, and the more expensive
+  // of the two. `conformance/*.json` inside the schema's own SQL comment
+  // opened a block comment for the old regex stripper, which then blanked
+  // 270 lines of real source looking for the close — taking the backticks
+  // that delimit `SCHEMA` and `INDEXES` with it and shifting every string
+  // boundary in the file from there on.
+  const src = [
+    "const SCHEMA = `",
+    "-- The conformance packs in conformance/*.json are hand-written.",
+    "CREATE TABLE messages (tenant_id TEXT NOT NULL, id TEXT NOT NULL);",
+    "`;",
+    "const q = `SELECT * FROM messages WHERE channel_id = ?`;",
+  ].join("\n");
+
+  const found = statements(src);
+  assert.equal(found.length, 1, "the statement after the glob must still be seen");
+  assert.match(found[0].sql, /SELECT \* FROM messages/);
+});
+
+test("a nested template literal does not end the one containing it", () => {
+  const src = "const q = `SELECT * FROM messages WHERE id = ${`${a}-${b}`} AND tenant_id = ?`;";
+  const found = statements(src);
+  assert.equal(found.length, 1);
+  assert.match(found[0].sql, /tenant_id/, "the outer literal must run to its own end");
+});
+
+test("the scan sees the whole of the largest SQL source, not a corner of it", () => {
+  // A floor rather than an exact count, because statements come and go. The
+  // number that matters is the one it used to be: four. A tokenizer that
+  // loses its place again fails here rather than reporting a clean sweep of
+  // almost nothing.
+  const raw = readFileSync(new URL("../src/db.ts", import.meta.url), "utf8");
+  const found = statements(raw);
+  assert.ok(found.length > 70, `only ${found.length} statements found in db.ts`);
+  // And they are SQL, not fragments of code caught between misplaced quotes.
+  for (const { sql, line } of found) {
+    assert.match(sql, /^\s*(SELECT|INSERT|UPDATE|DELETE)\b/i, `db.ts:${line} is not a statement`);
+  }
 });

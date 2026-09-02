@@ -39,6 +39,7 @@ The escape hatch is break-glass, which is loud and recorded — see
   - [The engine crashed](#the-engine-crashed)
   - [A caller reports a fault id](#a-caller-reports-a-fault-id)
   - [Chain verification fails](#chain-verification-fails)
+  - [The database contradicts itself](#the-database-contradicts-itself)
   - [A clinician cannot see a record they need](#a-clinician-cannot-see-a-record-they-need)
   - [Break-glass queues are not emptying](#break-glass-queues-are-not-emptying)
   - [A credential is compromised](#a-credential-is-compromised)
@@ -435,6 +436,51 @@ If there is no matching audit row, the throw happened before a tenant was
 resolved — a bug in the router or the gate rather than in a store. The stack
 frames in the log line are then the whole of the evidence, and they are enough
 to find it.
+
+### The database contradicts itself
+
+```bash
+npm run invariants                 # the configured data directory
+node scripts/invariants.ts <path>  # a specific file — a restored backup, say
+```
+
+Read-only, so it is safe against a running node. Run it against a **snapshot
+before you restore it**, too: a backup carrying a cross-tenant reference
+carries it into whatever you restore it onto.
+
+```
+0  every registered invariant holds
+1  at least one is violated
+2  at least one could not be evaluated
+3  the database could not be opened
+```
+
+**Exit 2 is not a pass.** It means the registry names a table or column this
+database does not have — an older schema, or a newer one this build predates.
+The report says which checks did not run and why. Treat it as "this database
+has not been checked", not as "this database is fine".
+
+Three things are checked, and they fail differently:
+
+- **A row with no tenant.** It exists, it is in the backups, the retention
+  sweep counts it, and no tenant-bound query can ever return it. Nobody can
+  see it and nothing will delete it.
+- **A reference that resolves nowhere.** Data loss: an order event whose order
+  is gone, a booking whose slot is gone. Usually a partial restore, or a
+  delete run by hand.
+- **A reference that resolves under a different custodian.** This is the
+  serious one and it is reported separately for that reason. A row in one
+  site's chart pointing at another site's record is a disclosure, and no query
+  at either site reports it, because each one only ever looks at its own rows.
+  Escalate to your privacy officer before fixing anything, and preserve the
+  file first — the same handling as a broken chain.
+
+The report names rows so you can find them. What is in those rows is chart
+content: keep the output out of tickets and chat.
+
+There is nothing to acknowledge and nothing that clears itself. Every finding
+here is a repair somebody makes deliberately, with the engine stopped and a
+backup taken first.
 
 ### Chain verification fails
 

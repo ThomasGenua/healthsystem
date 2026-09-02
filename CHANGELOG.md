@@ -11,6 +11,24 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **`npm run invariants` checks the database against what it is supposed to be
+  true of itself.** The schema declares no foreign keys, so
+  `PRAGMA foreign_keys = ON` enforces nothing; the tenant boundary is a column
+  every query is expected to name rather than a database. Both are held up by
+  application code, and the structural test that reads the source can only say
+  the queries written so far are scoped — not that the rows obey it. A restore
+  that merged two sites' snapshots, an edit outside the engine, or a one-off
+  migration script produces a database no source scan can speak for.
+
+  The inspection reads the data: every row carries a tenant, every populated
+  reference resolves, and it resolves inside its own tenant. An orphan and a
+  reference resolving under another custodian are different findings, because
+  one is data loss and the other is a disclosure. It is read-only, so it runs
+  against a live node or against a snapshot before restoring it, and exits 1
+  on a violation and 2 on a check it could not evaluate — because an
+  unevaluated check is not a pass. See [The database contradicts
+  itself](docs/RUNBOOK.md#the-database-contradicts-itself).
+
 - **A hazard identifier can no longer be spent twice** (`npm run hazardcheck`,
   run by CI on every pull request). Identifiers are allocated by taking the
   highest in the log and adding one, which is a counter with nobody holding
@@ -548,6 +566,31 @@ always forward-compatible and run automatically on open — see
   first.
 
 **Fixed**
+
+- **The tenant-isolation scan was reading 4 of the 81 statements in `db.ts`.**
+  It stripped comments with one regex and matched strings with another, and
+  neither knows whether a character is inside a string. `SCHEMA` contains the
+  SQL comment `-- The conformance packs in conformance/*.json`; that `/*`
+  opened a block comment as far as the stripper was concerned, the nearest
+  close was 270 lines below, and blanking everything between took the
+  backticks delimiting `SCHEMA` and `INDEXES` with it — so every string
+  boundary in the file from there on was off by one, and code was read as
+  string content and string content as code.
+
+  The effect was that the test its own header calls "the test the isolation
+  actually rests on" had never read the schema or the core query layer, and
+  reported no offenders, which is what a check that reads almost nothing looks
+  like from outside. There is one scanner now: a single pass that tracks
+  whether it is in a line comment, a block comment, or a string of each kind,
+  and follows `${…}` so a nested template literal does not end the outer one.
+  A statement that builds its table name is now held to the same standard as
+  an unscoped one, since a scan that cannot read the table name cannot vouch
+  for it, and a floor on the statement count in `db.ts` fails loudly if the
+  tokenizer loses its place again.
+
+  With the whole file visible there was exactly one statement to declare — the
+  schema rebuild, which copies a table and so genuinely crosses every tenant.
+  The code was clean; the check could not see it.
 
 - **One MLLP frame could hold the engine's only thread for days.** `parseHl7`
   trimmed trailing carriage returns with `.replace(/\r+$/, "")`, which is

@@ -2774,6 +2774,10 @@ export class Db {
           const list = columns.join(", ");
           this.transaction(() => {
             this.sql.exec(ddl);
+            // crosses-tenants: a schema rebuild copies the table, which means
+            // every custodian's rows in it. There is no tenant to name here —
+            // naming one would rebuild a fraction of the table and drop the
+            // rest, which is the opposite of what this is for.
             this.sql.exec(`INSERT INTO ${table}__new (${list}) SELECT ${list} FROM ${table}`);
             this.sql.exec(`DROP TABLE ${table}`);
             this.sql.exec(`ALTER TABLE ${table}__new RENAME TO ${table}`);
