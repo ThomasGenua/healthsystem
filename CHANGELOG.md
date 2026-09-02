@@ -11,6 +11,35 @@ always forward-compatible and run automatically on open — see
 
 **Fixed**
 
+- **An interface that cannot reach its source no longer reports itself
+  healthy.** Every inbound poll — filedrop, dbpoll, sqlpoll, sftp — caught its
+  own exception, printed it and returned, and the guard around `readdirSync`
+  did not even print. Nothing was written down. `/api/health` is assembled from
+  the delivery queue and from cadences a channel declared, and an unreachable
+  source puts nothing in the queue, so a drop directory unmounted since Tuesday
+  produced `ok: true, degraded: false` — and a channel that declared no cadence
+  reported healthy for as long as its source stayed away.
+
+  A failed poll is now recorded per channel, durably and tenant-scoped, with a
+  run length. Three consecutive failed reads degrade the health check and raise
+  `northstar_channel_source_failures{channel,stage}`. Reading the source and
+  handling one thing on it are separate stages, because they are different
+  phone calls: a bad file is reported and never degrades the interface. A pass
+  that reads and handles everything clears the record, so recovery needs no
+  acknowledgement, and a channel somebody disabled stops being reported without
+  losing its history. See [A channel cannot reach its
+  source](docs/RUNBOOK.md#a-channel-cannot-reach-its-source).
+
+  The open health endpoint publishes the exception class, its system code and
+  the count; the message — and the name of the file it was on, which a sending
+  system routinely derives from an accession or a chart number — stays on the
+  authenticated channel listing.
+
+  Also fixed while here: `Promise.resolve(poll()).catch(…)` evaluates `poll()`
+  before there is a promise to attach the handler to, so a synchronous throw
+  escaped the interval callback and would have taken the process down. Every
+  poll guards itself today, which is what made it a latent one.
+
 - **A fault no longer prints a patient into the operator's log.** Stores write
   their input into the exceptions they throw, because that is what makes an
   error actionable — `3 medication(s) still undecided: <drug names>`, `result

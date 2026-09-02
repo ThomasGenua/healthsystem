@@ -351,10 +351,17 @@ async function route(
       // A configured remote whose last replica failed counts too: local
       // snapshots still exist, but the copy that survives the machine does
       // not, and that is an incident rather than a posture.
+      // A source nothing can be read from counts too, and it is the failure
+      // that used to be invisible: a poll caught its own exception, printed
+      // it and returned, so a channel whose far end had been unreachable for
+      // days sat here reporting a clean bill of health. One bad file is
+      // reported without degrading — the link is up, and the message
+      // pipeline already owns that.
       degraded:
         stalled.length > 0 ||
         signals.deadLetters > 0 ||
         signals.silentChannels.length > 0 ||
+        signals.failingChannels.some((c) => c.degrading) ||
         Boolean(remote?.isDegraded()),
       stats: db.stats(),
       signals: { ...signals, stalledChannels: stalled, stalledAfterSec: stalledAfter },
@@ -415,6 +422,18 @@ async function route(
       Object.entries(stats.fhir).map(([k, v]) => [`{resource_type="${k}"}`, v] as [string, number])
     );
     metric("dead_letters", "Deliveries in the dead-letter queue.", "gauge", [["", signals.deadLetters]]);
+    // Labelled by channel and stage and nothing else. `kind` is an exception
+    // class and would be a fine label, but a metric name plus its labels is
+    // the one part of a scrape that is stored forever and copied into every
+    // dashboard, and an unbounded label set is how a leak starts.
+    metric("channel_source_failures",
+      "Consecutive failures reading a channel's source (stage=read) or handling one thing on it (stage=item).",
+      "gauge",
+      signals.failingChannels.map(
+        (c) =>
+          [`{channel="${c.channelId.replace(/"/g, "")}",stage="${c.stage}"}`, c.consecutive] as [string, number]
+      )
+    );
     metric("oldest_queued_age_seconds", "Age of the oldest undelivered message.", "gauge", [
       ["", signals.oldestQueuedAgeSec ?? 0],
     ]);
@@ -910,7 +929,17 @@ async function route(
   }
 
   if (path === "/api/channels" && method === "GET") {
-    return send(res, 200, engine.listChannels());
+    // Authenticated, so this is where the failure detail lives: the exception
+    // message, and for a bad file its name. `/api/health` is open and carries
+    // the class and the count only.
+    return send(
+      res,
+      200,
+      engine.listChannels().map((c) => {
+        const failure = db.sourceFailure(c.id);
+        return failure ? { ...c, sourceFailure: failure } : c;
+      })
+    );
   }
   if (path === "/api/channels" && method === "POST") {
     const body = await readBody(req);

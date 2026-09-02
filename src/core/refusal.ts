@@ -72,8 +72,17 @@ export function mapStoreError(err: unknown): MappedStoreError {
  * identifiers and positions, never values. The first line of `err.stack` is
  * dropped precisely because it repeats the message.
  */
+/** A system error code: `ENOENT`, `ECONNREFUSED`, `ERR_SQLITE_ERROR`. Safe, and the first thing an operator wants. */
+const ERROR_CODE = /^[A-Z][A-Z0-9_]{1,31}$/;
+
 export function faultLine(faultId: string, err: unknown): string {
-  const name = err instanceof Error ? err.name : typeof err;
+  const raw = err instanceof Error ? (err as { code?: unknown }).code : undefined;
+  // Restricted by shape rather than trusted: a code comes from a fixed
+  // vocabulary and says which failure this is, but nothing stops a library
+  // putting a sentence there, and a sentence is what this whole function
+  // exists to keep out of the log.
+  const code = typeof raw === "string" && ERROR_CODE.test(raw) ? ` ${raw}` : "";
+  const name = (err instanceof Error ? err.name : typeof err) + code;
   const frames =
     err instanceof Error && typeof err.stack === "string"
       ? err.stack

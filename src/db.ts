@@ -120,6 +120,51 @@ export const TENANT_SCOPED_TABLES = [
  * somewhere on upgrade rather than becoming unreachable. They land here, and a
  * deployment that never configures a second tenant behaves exactly as before.
  */
+/** Where a channel's poll failed: reading the source, or handling one thing it read. */
+export type SourceFailureStage = "read" | "item";
+
+/** A channel's most recent failure, and how long it has been failing. */
+export interface SourceFailure {
+  stage: SourceFailureStage;
+  /** Consecutive failures at this stage. Reset by a pass that read and handled everything. */
+  consecutive: number;
+  /** When this run of failures began. */
+  since: string;
+  /** The most recent one. */
+  at: string;
+  /** The exception class. Published. */
+  kind: string;
+  /** The exception message. Not published — a polling query can quote the row it was reading. */
+  detail: string;
+  /** The thing that failed, when the stage is `item`. Not published — drop files are named after charts. */
+  item?: string;
+  /** Ties this record to the line the engine logged when it happened. */
+  faultId: string;
+}
+
+/** What `/api/health` says about a failing channel. Deliberately without the detail. */
+export interface FailingChannel {
+  channelId: string;
+  stage: SourceFailureStage;
+  consecutive: number;
+  kind: string;
+  failingForSec: number | null;
+  lastFailureAgeSec: number | null;
+  /** True once this is an outage rather than a blip. Folded into `degraded`. */
+  degrading: boolean;
+}
+
+/**
+ * Consecutive failed reads before a channel is an outage rather than a blip.
+ *
+ * Polls, not seconds: three misses is past coincidence on a lab feed pushing
+ * every ten seconds and on a nightly extract alike, and a wall-clock
+ * threshold would have to be wrong for one of them.
+ */
+export const SOURCE_FAILURES_BEFORE_DEGRADED = 3;
+
+const SOURCE_FAILURE_KEY = "source_failure";
+
 export const DEFAULT_TENANT = "default";
 
 /**
@@ -3311,6 +3356,111 @@ export class Db {
       .run(this.tenantId, channelId, key, value);
   }
 
+  /* --------------------------- source failures --------------------------- */
+
+  /**
+   * What a channel's last failure to read its source was, kept where a
+   * health check can see it.
+   *
+   * Every inbound poll caught its own exception, printed it, and returned —
+   * and the bare `catch { return; }` around `readdirSync` did not even print.
+   * Nothing was written down, and `/api/health` is built from the delivery
+   * queue and from declared cadences, so a channel whose database had been
+   * unreachable since Tuesday reported `ok: true, degraded: false`. A channel
+   * that declared no cadence reported healthy forever. It is the one failure
+   * where the engine knows something is wrong and says nothing.
+   *
+   * `read` is the source itself: a drop directory that is gone, a polling
+   * query that throws, a database that will not connect. `item` is one
+   * message after a successful read — a file that could not be opened, a row
+   * that could not be ingested — which says the link is up and one thing on
+   * it is bad. They need different responses, so they are not one signal.
+   */
+  recordSourceFailure(channelId: string, stage: SourceFailureStage, err: unknown, item?: string): SourceFailure {
+    const previous = this.sourceFailure(channelId);
+    const now = new Date().toISOString();
+    const record: SourceFailure = {
+      stage,
+      // A run of failures is failures of the same kind of thing. A directory
+      // that came back and then served one bad file is not four failures.
+      consecutive: previous && previous.stage === stage ? previous.consecutive + 1 : 1,
+      since: previous && previous.stage === stage ? previous.since : now,
+      at: now,
+      kind: err instanceof Error ? err.name : typeof err,
+      detail: err instanceof Error ? err.message : String(err),
+      faultId: randomUUID(),
+      ...(item === undefined ? {} : { item }),
+    };
+    this.setChannelState(channelId, SOURCE_FAILURE_KEY, JSON.stringify(record));
+    return record;
+  }
+
+  /** Forgets a channel's failures. Called after a pass that read and handled everything. */
+  clearSourceFailure(channelId: string): void {
+    this.sql
+      .prepare("DELETE FROM channel_state WHERE tenant_id = ? AND channel_id = ? AND key = ?")
+      .run(this.tenantId, channelId, SOURCE_FAILURE_KEY);
+  }
+
+  sourceFailure(channelId: string): SourceFailure | undefined {
+    const raw = this.getChannelState(channelId, SOURCE_FAILURE_KEY);
+    if (raw === undefined) return undefined;
+    try {
+      return JSON.parse(raw) as SourceFailure;
+    } catch {
+      // A health check must not be the thing that throws. An unreadable
+      // record is reported as a failure of unknown kind rather than dropped,
+      // because "we cannot read our own note about the outage" is not a
+      // reason to say the channel is fine.
+      return { stage: "read", consecutive: 1, since: "", at: "", kind: "Unreadable", detail: raw, faultId: "" };
+    }
+  }
+
+  /**
+   * Channels that could not read or handle their source, most stuck first.
+   *
+   * Carries no `detail` and no `item`: this is what `/api/health` publishes,
+   * and that endpoint is unauthenticated. A drop file is routinely named by
+   * the sending system after an accession or a chart number, and an exception
+   * from a polling query can quote the row it was reading. The class of the
+   * error and how long it has been failing are enough to raise an alert; the
+   * rest is on the authenticated channel listing.
+   */
+  failingChannels(): FailingChannel[] {
+    const rows = this.sql
+      .prepare("SELECT channel_id FROM channel_state WHERE tenant_id = ? AND key = ?")
+      .all(this.tenantId, SOURCE_FAILURE_KEY) as Array<{ channel_id: string }>;
+    const enabled = new Set(this.listChannels().filter((c) => c.enabled).map((c) => c.id));
+    const out: FailingChannel[] = [];
+    for (const row of rows) {
+      // A channel somebody has disabled is not an outage. Its record is kept
+      // so re-enabling does not start from a clean slate it has not earned.
+      if (!enabled.has(row.channel_id)) continue;
+      const f = this.sourceFailure(row.channel_id);
+      if (!f) continue;
+      const ageSec = (iso: string): number | null => {
+        const t = Date.parse(iso);
+        return Number.isNaN(t) ? null : Math.max(0, Math.floor((Date.now() - t) / 1000));
+      };
+      out.push({
+        channelId: row.channel_id,
+        stage: f.stage,
+        consecutive: f.consecutive,
+        kind: f.kind,
+        failingForSec: ageSec(f.since),
+        lastFailureAgeSec: ageSec(f.at),
+        // Reading is the link. Three consecutive failures is not a blip on
+        // any cadence, and counting polls rather than seconds scales with the
+        // channel's own interval instead of a wall clock that fits a lab feed
+        // and not a nightly extract. A bad item is reported and never
+        // degrades: the interface is up, and one message is the pipeline's
+        // problem, which records it on the message itself.
+        degrading: f.stage === "read" && f.consecutive >= SOURCE_FAILURES_BEFORE_DEGRADED,
+      });
+    }
+    return out.sort((a, b) => b.consecutive - a.consecutive || a.channelId.localeCompare(b.channelId));
+  }
+
   /* ---------------------------- subscriptions ---------------------------- */
 
   listSubscriptions(): SubscriptionRow[] {
@@ -3661,6 +3811,7 @@ export class Db {
     stalledChannels: Array<{ channelId: string; oldestQueuedAgeSec: number; queued: number }>;
     lastDeliveryAt: string | null;
     silentChannels: Array<{ channelId: string; lastMessageAgeSec: number | null; expectEverySec: number }>;
+    failingChannels: FailingChannel[];
   } {
     const counts = this.sql
       .prepare("SELECT state, COUNT(*) AS n FROM deliveries WHERE tenant_id = ? GROUP BY state")
@@ -3700,6 +3851,11 @@ export class Db {
       })),
       lastDeliveryAt: lastDelivery.t,
       silentChannels: this.silentChannels(),
+      // A silent channel and a failing one are different incidents with
+      // different first calls: one is "the sending site has stopped", the
+      // other is "our end cannot reach theirs". Reporting them as one signal
+      // sends an operator to the wrong phone.
+      failingChannels: this.failingChannels(),
     };
   }
 
