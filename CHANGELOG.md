@@ -9,6 +9,37 @@ always forward-compatible and run automatically on open — see
 
 ## Unreleased
 
+**Added**
+
+- **Placed orders now leave for the laboratory on their own.** The dispatch
+  sweep existed but nothing called it. It now runs inside the engine on a
+  timer: default every minute, `NORTHSTAR_ORDER_DISPATCH_INTERVAL_MS` to
+  change it, `0` to send only when somebody presses
+  `POST /api/clinical/order-send`. An order placed in clinic reaches the
+  laboratory over MLLP, and the acknowledgement lands back on the order,
+  with nobody pressing anything.
+
+  Wiring a sweep to a clock is three questions a function nobody calls never
+  has to answer, and two of the answers are safety controls:
+
+  - It sends only for **active** tenants. Suspension stops credentials at the
+    gate, and a timer is not at the gate — without this, a suspended
+    custodian's orders would keep being transmitted to a laboratory on behalf
+    of an organisation whose relationship with the patient has ended. Hazard
+    H-168.
+  - It sends only through a `lab-order` destination on an **enabled** channel.
+    A reading station runs a full engine over a restored copy of the primary's
+    database, with every channel disabled at fill time so it does not become a
+    second engine (H-39). A sweep that ignored that flag would resend every
+    placed order in the snapshot from a machine that is not the record.
+    Hazard H-167.
+  - With **two** `lab-order` destinations it sweeps neither and says why. A
+    route names its laboratory as a label a human wrote; a channel names its
+    destinations as queue identifiers; nothing maps one to the other. That is
+    invisible with one laboratory and arbitrary with two, and a requisition
+    delivered to the wrong laboratory is a disclosure rather than a delay.
+    Hazard H-169.
+
 **Fixed**
 
 - **A backup destination on Windows went somewhere else, quietly.** `fs:` and
