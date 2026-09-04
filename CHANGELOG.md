@@ -11,6 +11,52 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **`GET /me` is a patient and caregiver application, not chrome.** The
+  `/patient/*` OAuth API was already complete and already tested; what was
+  missing was something to use it with. `/me` now signs in, switches between
+  the charts a caregiver holds, and has screens for results, appointments,
+  medications, messages, care team, access history and access/correction
+  requests — each with its own loading, error and empty state.
+
+  Nothing underneath it changed: no new patient route, no new permission, no
+  relaxation of a grant check. If the portal can see it, an authorised `curl`
+  could already see it.
+
+  Whose chart is being viewed sits in a band above the content on every
+  screen, with the relationship beside it and a proxy grant marked as one. A
+  tab the grant does not cover is not drawn, and the router will not route to
+  one either, so a pasted URL cannot reach a screen the grant does not cover.
+  A held result renders as held with the clinician's reason and the expected
+  date; the API sends no value for one, so there is nothing to leak. A grant
+  that expires or is revoked while a tab is open produces a sentence saying
+  the chart is no longer shared, not a blank screen.
+
+  English and French, both complete — a test compares the two key sets and
+  fails on a string that exists in one. Landmarks, a skip link, visible focus,
+  labelled controls and a live region. One file, no framework, no CDN, a
+  20-second request timeout: satellite and cellular links are the ordinary
+  condition this is deployed into, and a blocked CDN is a blank page. **No
+  browser-driven test and no assistive-technology test**, so no WCAG or AODA
+  claim — see `docs/PROVINCIAL.md` §20.
+
+- **A development identity provider, for demonstrating the portal without
+  production credentials.** `NORTHSTAR_DEV_IDP=on` runs a synthetic issuer at
+  `/dev-idp`. Northstar stays a resource server: there is no branch in the
+  gate for development, and its tokens are validated over JWKS exactly as a
+  real provider's are, so what a demo exercises is the production path with a
+  different issuer behind it.
+
+  It refuses to start beside `NORTHSTAR_OIDC_ISSUER` rather than warning; its
+  signing key is generated at boot and never written down; and it lists only
+  subjects that already hold a live grant, so it cannot create authority that
+  a named clerk did not. `node scripts/portal-demo.ts` seeds synthetic people,
+  a released result and a held one. See [The patient
+  portal](docs/RUNBOOK.md#the-patient-portal).
+
+- **`docs/PATIENT-WORKFLOWS-ROADMAP.md`** classifies items 58–67 against the
+  repository with file references, including one correction: item 67 assumes
+  small-cell suppression exists to be reused, and it does not.
+
 - **`npm run invariants` checks the database against what it is supposed to be
   true of itself.** The schema declares no foreign keys, so
   `PRAGMA foreign_keys = ON` enforces nothing; the tenant boundary is a column
@@ -566,6 +612,13 @@ always forward-compatible and run automatically on open — see
   first.
 
 **Fixed**
+
+- **The first operator key is issued under the development identity provider
+  too.** It was issued only on the `apikey` path, so a demo came up with a
+  working portal and no way into the clinic side of it — which is half the
+  journey, and the half that shows the patient's question arriving on the
+  worklist. The boot banner also reported `NORTHSTAR_AUTH_MODE` rather than
+  what was actually enforcing.
 
 - **The tenant-isolation scan was reading 4 of the 81 statements in `db.ts`.**
   It stripped comments with one regex and matched strings with another, and

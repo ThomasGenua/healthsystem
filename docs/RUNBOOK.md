@@ -25,6 +25,7 @@ The escape hatch is break-glass, which is loud and recorded — see
   - [What a node needs](#what-a-node-needs)
   - [First install](#first-install)
   - [Upgrading](#upgrading)
+  - [The patient portal](#the-patient-portal)
   - [Upgrading a site installed as Portage](#upgrading-a-site-installed-as-portage)
   - [Rolling back](#rolling-back)
 - [Daily and weekly](#daily-and-weekly)
@@ -201,6 +202,70 @@ every partner has scheduled the change, set `NORTHSTAR_HL7_APPLICATION`.
 Metrics are exposed under both prefixes, so existing dashboards and alert rules
 keep working untouched. Move them when convenient; a renamed metric does not
 break a rule loudly, it just evaluates against a series that no longer exists.
+
+### The patient portal
+
+`GET /me` is the patient and caregiver application. It is served from one
+file, loads nothing from anywhere else, and talks only to `/patient/*` — the
+OAuth surface that was already there. Nothing about it can widen a grant.
+
+**In production**, point it at your identity provider and there is nothing
+else to configure:
+
+```bash
+NORTHSTAR_AUTH_MODE=apikey+oauth
+NORTHSTAR_OIDC_ISSUER=https://login.example.ca/realms/clinic
+NORTHSTAR_OIDC_AUDIENCE=northstar-prod     # required; the engine refuses to start without it
+```
+
+A person signs in at that provider, arrives holding a token, and the portal
+uses it. Northstar validates it and does not issue it, which is why there is
+no login form here to configure.
+
+**In development**, where you have no provider yet:
+
+```bash
+node scripts/portal-demo.ts            # synthetic people, a released result, a held one
+NORTHSTAR_DEV_IDP=on npm start
+open http://localhost:8686/me
+```
+
+`NORTHSTAR_DEV_IDP=on` runs a synthetic issuer at `/dev-idp`. The engine
+still validates its tokens over JWKS exactly as it validates a real
+provider's — there is no branch in the gate for development — so what you see
+working is the production path with a different issuer behind it.
+
+Three things constrain it, and none is a setting:
+
+- It **refuses to start beside a real issuer.** `NORTHSTAR_DEV_IDP=on` and
+  `NORTHSTAR_OIDC_ISSUER` together is a boot failure, not a warning. There is
+  no half-and-half deployment.
+- Its **signing key is generated at boot and never written down.** No key file
+  exists, and every token it has ever issued stops verifying when the process
+  exits.
+- It **cannot invent authority.** The sign-in list is exactly the OAuth
+  subjects that already hold a live grant in `NORTHSTAR_DEV_IDP_TENANT`
+  (default `default`). If nobody has been enrolled, nobody can sign in, and
+  the page says so rather than showing a broken picker.
+
+| Variable | Meaning |
+|---|---|
+| `NORTHSTAR_DEV_IDP` | `on` to run the synthetic issuer. Anything else, including unset, and `/dev-idp/*` returns 404. |
+| `NORTHSTAR_DEV_IDP_TENANT` | Which custodian's grants the picker lists. Defaults to `default`. |
+| `NORTHSTAR_OIDC_AUDIENCE` | Reused as the audience for synthetic tokens. Defaults to `northstar-development`. |
+
+**What the portal still is not.** There is no identity-proofing and no ONE ID:
+a named clerk at the clinic writes how they checked who somebody is, and that
+is what creates a grant. The page says so in both languages, in its footer,
+where somebody reading it will see it. It carries no WCAG or AODA conformance
+claim — it has landmarks, a skip link, visible focus, labelled controls and a
+live region, and none of that is a substitute for testing with a real screen
+reader and a real user.
+
+A token lives in `sessionStorage` while a tab is open. That is the ordinary
+compromise for a page with no server session, and it is one of the reasons
+this is not a certified portal: a deployment that needs one puts a
+confidential client in front of it.
 
 ### Rolling back
 

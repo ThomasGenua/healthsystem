@@ -22,7 +22,8 @@
     "terminology:import": "node scripts/import-terminology.ts",
     "typecheck": "tsc --noEmit",
     "hazardcheck": "node scripts/check-hazard-ids.ts",
-    "invariants": "node scripts/invariants.ts"
+    "invariants": "node scripts/invariants.ts",
+    "portal:demo": "node scripts/portal-demo.ts"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",

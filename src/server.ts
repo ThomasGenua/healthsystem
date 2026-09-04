@@ -5,9 +5,11 @@ import { readEnv, legacyEnvWarning, resolveDbPath, legacyDbNotice } from "./core
 import { RemoteBackup, remoteBackupWarning } from "./core/remote.ts";
 import { join } from "node:path";
 import { Engine } from "./core/engine.ts";
+import { DEFAULT_TENANT } from "./db.ts";
 import { startApi } from "./api/admin.ts";
 import { tlsFromEnv } from "./api/tls.ts";
 import { AuthGate } from "./auth/gate.ts";
+import { DevIdentityProvider, devIdpRefusal } from "./auth/dev-idp.ts";
 import { JwtVerifier } from "./auth/jwt.ts";
 import type { ChannelConfig, MappingDoc } from "./types.ts";
 
@@ -47,7 +49,91 @@ function warnIfSqliteExperimental(): void {
   }
 }
 
-function buildAuthGate(engine: Engine): AuthGate {
+/** Issues the first operator key, once, when a database has none. */
+function bootstrapKey(engine: Engine): void {
+  if (engine.keys.countActive() !== 0) return;
+  const issued = engine.keys.issue("bootstrap");
+  console.log(
+    [
+      "",
+      "  No API key existed, so one was issued for this instance:",
+      "",
+      `    ${issued.key}`,
+      "",
+      "  This is the only time it is shown. Store it now.",
+      "  Issue more with POST /api/keys, revoke with DELETE /api/keys/:id.",
+      "",
+    ].join("\n")
+  );
+}
+
+/**
+ * Stands up the development identity provider, or explains why it will not.
+ *
+ * Returns the provider and the verifier that trusts it, so the caller wires
+ * both or neither. There is no state where the endpoints answer and the
+ * tokens do not verify, and none where a real issuer is configured alongside
+ * a key generated at boot — that combination is refused loudly here rather
+ * than producing a deployment that is half on each.
+ */
+function buildDevIdp(engine: Engine, port: number): { idp: DevIdentityProvider; jwt: JwtVerifier } | null {
+  const refusal = devIdpRefusal({ devIdp: readEnv("DEV_IDP"), oidcIssuer: readEnv("OIDC_ISSUER") });
+  if (refusal === "not enabled") return null;
+  if (refusal) throw new Error(refusal);
+
+  // Loopback, and the port this process is about to listen on: the verifier
+  // fetches this JWKS over HTTP from inside the same process.
+  const issuer = `http://127.0.0.1:${port}/dev-idp`;
+  const audience = readEnv("OIDC_AUDIENCE") ?? "northstar-development";
+  const tenantId = readEnv("DEV_IDP_TENANT") ?? DEFAULT_TENANT;
+
+  const idp = new DevIdentityProvider({
+    issuer,
+    audience,
+    // Read per request, so a grant revoked while the picker is on screen
+    // takes that person out of it. Bounded to one custodian: a picker that
+    // spanned them would enumerate one clinic's delegates to another's.
+    liveSubjects: () =>
+      engine
+        .forTenant(tenantId)
+        .patientAccess.liveSubjects()
+        .map((s) => ({ ...s, tenantId })),
+  });
+
+  console.warn(
+    [
+      "",
+      "  WARNING: NORTHSTAR_DEV_IDP=on — a synthetic identity provider is running.",
+      "",
+      `    issuer   ${issuer}`,
+      `    tenant   ${tenantId}`,
+      "",
+      "  It mints patient tokens for anyone the clinic has already granted a chart to.",
+      "  Its signing key was generated at boot and is never written down, so every token",
+      "  it issues stops verifying when this process exits. Never run this in production;",
+      "  set NORTHSTAR_OIDC_ISSUER instead and this refuses to start.",
+      "",
+    ].join("\n")
+  );
+
+  return {
+    idp,
+    jwt: new JwtVerifier({ issuer, audience, jwksUri: `${issuer}/.well-known/jwks.json` }),
+  };
+}
+
+function buildAuthGate(engine: Engine, dev: { jwt: JwtVerifier } | null): AuthGate {
+  if (dev) {
+    // The development provider is the identity provider. API keys stay on for
+    // the operator console, which is a different surface with a different
+    // credential; the patient boundary refuses an API key either way.
+    //
+    // The bootstrap key is issued here too. Without it a demo comes up with a
+    // working portal and no way into the clinic side of it — which is half
+    // the journey, and the half that shows the patient's question arriving.
+    bootstrapKey(engine);
+    return new AuthGate({ keys: engine.keys, jwt: dev.jwt, tenants: engine.db });
+  }
   if (AUTH_MODE === "off") {
     console.warn("WARNING: NORTHSTAR_AUTH_MODE=off — the API is unauthenticated and open to anyone who can reach it");
     return new AuthGate();
@@ -65,21 +151,7 @@ function buildAuthGate(engine: Engine): AuthGate {
 
   if (modes.has("apikey")) {
     gate.keys = engine.keys;
-    if (engine.keys.countActive() === 0) {
-      const issued = engine.keys.issue("bootstrap");
-      console.log(
-        [
-          "",
-          "  No API key existed, so one was issued for this instance:",
-          "",
-          `    ${issued.key}`,
-          "",
-          "  This is the only time it is shown. Store it now.",
-          "  Issue more with POST /api/keys, revoke with DELETE /api/keys/:id.",
-          "",
-        ].join("\n")
-      );
-    }
+    bootstrapKey(engine);
   }
 
   if (modes.has("oauth")) {
@@ -229,8 +301,10 @@ async function main(): Promise<void> {
     return n;
   };
 
+  const dev = buildDevIdp(engine, PORT);
   const api = await startApi(engine, PORT, "0.0.0.0", {
-    auth: buildAuthGate(engine),
+    auth: buildAuthGate(engine, dev),
+    ...(dev ? { devIdp: dev.idp } : {}),
     tls: tls ?? undefined,
     rateLimit: {
       enabled: readEnv("RATE_LIMIT") !== "off",
@@ -240,7 +314,12 @@ async function main(): Promise<void> {
     remote,
   });
   console.log(
-    `Northstar listening on :${api.port} (${api.tls ? (tls?.mutual ? "mutual TLS" : "TLS") : "plain HTTP"}, auth ${AUTH_MODE})`
+    // What is actually enforcing, not what the variable says. With the
+    // development provider on, NORTHSTAR_AUTH_MODE is not what decided this,
+    // and a banner reporting it would be wrong at the one moment an
+    // operator reads the line.
+    `Northstar listening on :${api.port} (${api.tls ? (tls?.mutual ? "mutual TLS" : "TLS") : "plain HTTP"}, ` +
+      `auth ${dev ? "apikey + development identity provider" : AUTH_MODE})`
   );
   for (const ch of engine.listChannels()) {
     const port = ch.mllpPort ? ` mllp:${ch.mllpPort}` : "";

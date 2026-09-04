@@ -86,6 +86,7 @@ import type { ChannelConfig, MappingDoc, MessageRow } from "../types.ts";
 import type { ChannelDocument } from "../core/channel-versions.ts";
 import { validateChannel } from "../core/engine.ts";
 import { Refusal } from "../core/refusal.ts";
+import type { DevIdentityProvider } from "../auth/dev-idp.ts";
 import { readEnv } from "../core/naming.ts";
 import { sendOrder, sendOrderCancellation } from "../orders/send.ts";
 import type { SpecimenDetail } from "../orders/outbound.ts";
@@ -106,9 +107,9 @@ let PATIENT_HTML: string | null = null;
 function patientHtml(): string {
   if (PATIENT_HTML === null) {
     try {
-      PATIENT_HTML = readFileSync(new URL("./patient.html", import.meta.url), "utf8");
+      PATIENT_HTML = readFileSync(new URL("./portal.html", import.meta.url), "utf8");
     } catch {
-      PATIENT_HTML = "<h1>Northstar</h1><p>patient.html not found</p>";
+      PATIENT_HTML = "<h1>Northstar</h1><p>portal.html not found</p>";
     }
   }
   return PATIENT_HTML;
@@ -149,6 +150,15 @@ export interface ApiOptions {
    * copy of the primary's. Absent is the ordinary case — the primary.
    */
   station?: ReadingStation;
+  /**
+   * A development identity provider, when one is running.
+   *
+   * Present only where `NORTHSTAR_DEV_IDP=on`, which `server.ts` refuses to
+   * combine with a configured issuer. Its routes are mounted like any other
+   * and its tokens are validated by the ordinary verifier over the ordinary
+   * JWKS fetch; there is no branch anywhere in the gate for it.
+   */
+  devIdp?: DevIdentityProvider;
 }
 
 export function startApi(engine: Engine, port: number, host = "0.0.0.0", options: ApiOptions = {}): Promise<ApiHandle> {
@@ -159,7 +169,7 @@ export function startApi(engine: Engine, port: number, host = "0.0.0.0", options
   const limiter = new RateLimiter(options.rateLimit);
   const remote = options.remote;
   const handler = (req: IncomingMessage, res: ServerResponse): void => {
-    void route(engine, req, res, gate, limiter, remote, options.station).catch((err) => {
+    void route(engine, req, res, gate, limiter, remote, options.station, options.devIdp).catch((err) => {
       // The net under the router, for a throw no route caught. It used to
       // send the exception message to the caller, which made it the one
       // path where a fault from any store — including the ones that name a
@@ -232,7 +242,8 @@ async function route(
   gate: AuthGate,
   limiter: RateLimiter,
   remote?: RemoteBackup,
-  station?: ReadingStation
+  station?: ReadingStation,
+  devIdp?: DevIdentityProvider
 ): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname.replace(/\/+$/, "") || "/";
@@ -336,6 +347,38 @@ async function route(
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(html) });
     res.end(html);
     return;
+  }
+
+  // The development identity provider. Absent unless one was constructed, in
+  // which case these 404 like any unrouted path — there is no half-enabled
+  // state where the endpoints answer but the tokens do not verify.
+  if (path === "/dev-idp" || path.startsWith("/dev-idp/")) {
+    if (!devIdp) return send(res, 404, { error: "no development identity provider is running" });
+    if (method === "GET" && path === "/dev-idp/.well-known/openid-configuration") {
+      return send(res, 200, devIdp.openidConfiguration());
+    }
+    if (method === "GET" && path === "/dev-idp/.well-known/jwks.json") {
+      return send(res, 200, devIdp.jwks());
+    }
+    if (method === "GET" && path === "/dev-idp/subjects") {
+      // Who the clinic has already granted a chart to. This provider cannot
+      // create authority, so an empty list means nobody has been enrolled —
+      // which is the correct state for a fresh database and is said as such
+      // rather than shown as a broken picker.
+      return send(res, 200, { subjects: devIdp.subjects(), issuer: devIdp.issuer });
+    }
+    if (method === "POST" && path === "/dev-idp/token") {
+      const body = JSON.parse(await readBody(req)) as { subject?: string };
+      if (!body.subject) return send(res, 400, { error: "subject required" });
+      try {
+        return send(res, 200, devIdp.issue(body.subject));
+      } catch (err) {
+        // A subject whose grant expired or was revoked between the picker
+        // being drawn and the button being pressed. Refused, not minted.
+        return send(res, 400, { error: err instanceof Error ? err.message : "cannot issue" });
+      }
+    }
+    return send(res, 404, { error: "not found" });
   }
 
   if (method === "GET" && path === "/api/health") {
