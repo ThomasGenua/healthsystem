@@ -46,6 +46,7 @@ import { ingestFhir } from "../directory/fhir.ts";
 import { ChannelNoticeDispatcher, PatientNotices } from "../patient/notice.ts";
 import { PatientContacts } from "../patient/contacts.ts";
 import { ClinicBoard } from "../workspace/board.ts";
+import { Discharges, Handoffs } from "../work/discharge.ts";
 import { AccessReview } from "../audit/review.ts";
 import { Clinics } from "../schedule/clinics.ts";
 import { ChannelVersions } from "./channel-versions.ts";
@@ -133,6 +134,10 @@ export interface TenantView {
    * what one clinician owes somebody.
    */
   board: ClinicBoard;
+  /** What is still outstanding when somebody leaves, taken from the chart rather than typed. */
+  discharges: Discharges;
+  /** Transfers of accountability that are not complete until somebody accepts them. */
+  handoffs: Handoffs;
   /** Notices a patient is owed, published onto a channel. Dispatching is not telling. */
   notices: PatientNotices;
   /**
@@ -387,8 +392,12 @@ export class Engine {
     const contacts = new PatientContacts(db);
     const enrolment = new PatientEnrolment(db, patientAccess, notices);
     const encounters = new Encounters(db);
+    // Reads the chart to take its snapshot, so it is built after the stores
+    // that hold the four loose ends it looks for.
+    const discharges = new Discharges(db, { orders, meds, referrals, schedule });
+    const handoffs = new Handoffs(db);
     // After encounters, which it reads to tell an arrival from an expectation.
-    const board = new ClinicBoard({ schedule, encounters, tasks });
+    const board = new ClinicBoard({ schedule, encounters, tasks, discharges, handoffs });
     // Built here rather than inline in the view because the key store needs it
     // too: issuing a credential for an organization nobody has registered is a
     // typo worth refusing, and only the directory can tell.
@@ -450,6 +459,8 @@ export class Engine {
       notices,
       contacts,
       board,
+      discharges,
+      handoffs,
       registry: new Registry(db),
       migration: new Migration(db, { clinical, meds }),
       consent,

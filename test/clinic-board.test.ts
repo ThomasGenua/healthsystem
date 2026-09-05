@@ -252,22 +252,22 @@ test("a patient nobody could reach is on the board, owned or not", async () => {
 
     const attention = s.t.board.attention();
     assert.deepEqual(
-      attention.unreachablePatients.map((x) => x.id),
+      attention.unreachablePatients.rows.map((x) => x.id),
       [report.followUpTaskId]
     );
-    assert.match(attention.because, /nobody has been able to tell this patient/);
+    assert.match(attention.unreachablePatients.because, /nobody has been able to tell this patient/);
 
     // Somebody picks it up. It stays: assigned is not finished, and a patient
     // nobody has managed to tell is still a patient nobody has told.
     s.t.tasks.assign(report.followUpTaskId!, "clerk-avery", { actorId: "clerk-avery", actorKind: "practitioner" });
-    assert.equal(s.t.board.attention().unreachablePatients.length, 1);
+    assert.equal(s.t.board.attention().unreachablePatients.rows.length, 1);
 
     s.t.tasks.complete(report.followUpTaskId!, {
       actorId: "clerk-avery",
       actorKind: "practitioner",
       evidence: "reached her on her sister's phone; new number verified at the desk",
     });
-    assert.deepEqual(s.t.board.attention().unreachablePatients, []);
+    assert.deepEqual(s.t.board.attention().unreachablePatients.rows, []);
   } finally {
     await s.close();
   }

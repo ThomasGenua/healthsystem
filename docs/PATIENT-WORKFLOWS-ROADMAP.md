@@ -20,7 +20,7 @@ around — see item 67, where the premise is wrong.
 | 63 | Longitudinal chart | **Partial** — assembly and units are strong; timeline and trends are absent |
 | 64 | Outreach campaigns | **Missing** — cohorts and gaps exist; nothing campaign-shaped |
 | 65 | Travelling-clinic coordination | **Partial** — visits and waitlist exist; arrangements do not |
-| 66 | Clinic operations workspace | **Partial** — the board and resources are in; two views wait on item 62 |
+| 66 | Clinic operations workspace | **Partial** — board, resources and three attention queues; intake waits on item 60 |
 | 67 | Measuring whether this helps | **Partial**, and one premise is wrong — see below |
 
 ---
@@ -131,13 +131,24 @@ signed IPS-shaped export, which is a different artefact for a different reader.
 
 ## 62. Discharge follow-up and team handoffs — **missing**
 
-The word occurs four times and none of them is this workflow:
-`Transition = "…​| discharge | …"` triggers a medication reconciliation
-(`src/meds/store.ts:38`), and `src/clinical/encounters.ts:8`,
-`encounters.ts:325` and `src/workspace/visit.ts:6` mention discharge summaries
-in prose. There is no discharge workflow, no accountable owner on a piece of
-work, no handoff to accept, no temporary coverage with dates, and nothing that
-surfaces an unaccepted transfer.
+**Added in this increment.** `src/work/discharge.ts`: a discharge snapshot
+computed from the chart at the moment a visit closes, covering unacknowledged
+results, unfinished reconciliations, open referrals and a missing follow-up;
+items that resolve with a written resolution and a discharge that will not
+close over an outstanding one. Handoffs that require acceptance, with the
+proposer accountable until then, one live proposal per subject, and
+`accountableFor()` answering ownership from the record. Coverage as a distinct
+kind with a required end date that reverts without anybody acting. Unaccepted
+handoffs and open follow-ups on the clinic board.
+
+**Still missing.** Handoffs are not yet wired into the stores whose work they
+move: `accountableFor()` answers correctly for any subject, but `TaskStore`,
+`ReferralStore` and the discharge follow-up itself still carry their own owner
+columns and nothing consults the handoff record when routing. A team is not
+modelled — `to_id` is a person, and "the diabetes team" would need a directory
+concept that does not exist. And nothing expires a proposal: an offer nobody
+answers stays proposed forever and is visible rather than acted on, which is
+the safe direction but not the finished one.
 
 ## 63. A useful longitudinal chart — **partial**
 
@@ -198,12 +209,14 @@ where it is. A room with nothing scheduled says so rather than reading as
 free, and `progressKnown` is false on every row because the encounter model
 cannot distinguish "in the waiting room" from "with the clinician".
 
-**Still missing.** Intake status needs item 60. Recently-discharged patients
-and unaccepted handoffs need item 62, and are absent rather than rendered
-empty — an empty panel and a quiet day look the same. Staff workload exists
-as `TaskStore.load()` but is not on the board. The ranking is stated but not
-configurable: a deployment that wanted a different rule would edit the
+**Still missing.** Intake status needs item 60, and is absent rather than
+rendered empty — an empty panel and a quiet day look the same. Staff workload
+exists as `TaskStore.load()` but is not on the board. The ranking is stated but
+not configurable: a deployment that wanted a different rule would edit the
 source, and governed configuration is its own piece of work.
+
+*(Recently-discharged patients and unaccepted handoffs were listed here and
+are now on the board, since item 62 built the workflow underneath them.)*
 
 ## 67. Measuring whether these workflows help — **partial, and one premise is wrong**
 

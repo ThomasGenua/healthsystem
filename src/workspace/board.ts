@@ -32,15 +32,17 @@
  *
  * ## What is deliberately not here
  *
- * Recently-discharged patients and unaccepted handoffs are two of the four
- * views the operations workspace is meant to carry. Both need a discharge and
- * handoff workflow that does not exist yet, and a view built on a workflow
- * that is not there would be an empty panel indistinguishable from a quiet
- * day. They are absent rather than empty, and the roadmap says so.
+ * Intake status needs a pre-visit intake workflow that does not exist yet. A
+ * panel built on a workflow that is not there is an empty panel
+ * indistinguishable from a quiet day, so it is absent rather than empty.
+ *
+ * Recently-discharged patients and unaccepted handoffs *were* absent for the
+ * same reason and are now here, because the workflow underneath them exists.
  */
 import type { BookingRow, SlotRow } from "../schedule/store.ts";
 import type { EncounterRow } from "../clinical/encounters.ts";
 import type { TaskRow } from "../work/tasks.ts";
+import type { DischargeItemRow, DischargeRow, HandoffRow } from "../work/discharge.ts";
 
 /**
  * Where somebody is in a visit.
@@ -109,6 +111,15 @@ export interface BoardSources {
   tasks: {
     /** Every live task of one kind, owned or not — see TaskStore.openOfKind. */
     openOfKind(kind: "patient-contact", opts?: { limit?: number }): TaskRow[];
+  };
+  discharges: {
+    openFollowUps(opts?: { accountableId?: string }): DischargeRow[];
+    overdue(olderThanHours: number, asOf?: Date): DischargeRow[];
+    items(dischargeId: string): DischargeItemRow[];
+  };
+  handoffs: {
+    unaccepted(opts?: { olderThanHours?: number }, asOf?: Date): HandoffRow[];
+    activeCoverage(asOf?: Date): HandoffRow[];
   };
 }
 
@@ -281,12 +292,41 @@ export class ClinicBoard {
    * than rendered empty, because an empty panel and a quiet day look the
    * same, and only one of them is true.
    */
-  attention(): { unreachablePatients: TaskRow[]; because: string } {
+  attention(opts: { staleAfterHours?: number } = {}, asOf = new Date()): {
+    unreachablePatients: { rows: TaskRow[]; because: string };
+    unacceptedHandoffs: { rows: HandoffRow[]; because: string };
+    openFollowUps: { rows: Array<DischargeRow & { outstanding: number }>; because: string };
+    coveringNow: { rows: HandoffRow[]; because: string };
+  } {
+    const stale = opts.staleAfterHours;
+    const followUps = this.sources.discharges.openFollowUps().map((d) => ({
+      ...d,
+      outstanding: this.sources.discharges.items(d.id).filter((i) => i.status === "outstanding").length,
+    }));
     return {
-      // Owned or not. A task somebody has picked up but not finished is
-      // still a patient nobody has managed to tell.
-      unreachablePatients: this.sources.tasks.openOfKind("patient-contact"),
-      because: "every contact point on file was unusable, so nobody has been able to tell this patient",
+      unreachablePatients: {
+        // Owned or not. A task somebody has picked up but not finished is
+        // still a patient nobody has managed to tell.
+        rows: this.sources.tasks.openOfKind("patient-contact"),
+        because: "every contact point on file was unusable, so nobody has been able to tell this patient",
+      },
+      unacceptedHandoffs: {
+        // The sharpest row on this board. Every one of these is work two
+        // people may each believe the other is holding.
+        rows: this.sources.handoffs.unaccepted(stale === undefined ? {} : { olderThanHours: stale }, asOf),
+        because: "offered and not yet answered, so it still belongs to whoever offered it",
+      },
+      openFollowUps: {
+        rows: followUps,
+        because: "the visit is over and something from it is not",
+      },
+      coveringNow: {
+        // Not a problem — a fact. Somebody reading this board needs to know
+        // who is actually holding a list today, and coverage is invisible
+        // otherwise until the moment it matters.
+        rows: this.sources.handoffs.activeCoverage(asOf),
+        because: "standing in for somebody, until the date they agreed",
+      },
     };
   }
 
