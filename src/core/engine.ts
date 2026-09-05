@@ -44,6 +44,7 @@ import { ScoreGovernance } from "../clinical/score-governance.ts";
 import { StandardsRegistry } from "../conformance/standards.ts";
 import { ingestFhir } from "../directory/fhir.ts";
 import { ChannelNoticeDispatcher, PatientNotices } from "../patient/notice.ts";
+import { PatientContacts } from "../patient/contacts.ts";
 import { AccessReview } from "../audit/review.ts";
 import { Clinics } from "../schedule/clinics.ts";
 import { ChannelVersions } from "./channel-versions.ts";
@@ -127,6 +128,12 @@ export interface TenantView {
   standards: StandardsRegistry;
   /** Notices a patient is owed, published onto a channel. Dispatching is not telling. */
   notices: PatientNotices;
+  /**
+   * Where a patient has agreed to be reached. Demographics from an ADT feed
+   * are what a sending system believes; these are addresses a named clerk
+   * checked and a patient consented to, which is what a notice may use.
+   */
+  contacts: PatientContacts;
   registry: Registry;
   /** Bulk loads from an incumbent system, and whether they were complete. */
   migration: Migration;
@@ -370,6 +377,7 @@ export class Engine {
     const referrals = new ReferralStore(db);
     const patientAccess = new PatientAccess(db, orders, tasks);
     const notices = new PatientNotices(db, this.noticeChannel);
+    const contacts = new PatientContacts(db);
     const enrolment = new PatientEnrolment(db, patientAccess, notices);
     const encounters = new Encounters(db);
     // Built here rather than inline in the view because the key store needs it
@@ -431,6 +439,7 @@ export class Engine {
       scoreGovernance,
       standards,
       notices,
+      contacts,
       registry: new Registry(db),
       migration: new Migration(db, { clinical, meds }),
       consent,

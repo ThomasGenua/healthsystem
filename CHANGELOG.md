@@ -11,6 +11,52 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Patients can be told there is something waiting, at an address somebody
+  checked.** The engine could already publish a notice onto a channel; it had
+  no way to say where. `patient_index` carries a phone and an email copied out
+  of an ADT feed — what a sending system believes, not an address this clinic
+  verified — and sending to that is how a result notice reaches a number
+  mistyped four years ago.
+
+  `patient_contacts` holds addresses that are unusable until two separate
+  people have done two separate things, both recorded by name: a clerk writes
+  at least twelve characters saying how they checked the address belongs to
+  this patient, and the patient agrees to be contacted there. Consent cannot
+  be recorded against an unchecked address. Withdrawal keeps the row rather
+  than deleting it. Quiet hours need the zone they are in — 21:00 is a
+  different instant in Iqaluit and Vancouver — and a window that wraps
+  midnight is read as wrapping. Language is nullable and null means unstated,
+  never English.
+
+- **Five delivery states, and the queue's success is not one of them.** A
+  destination returning 2xx means a gateway took the request, which is
+  `provider-accepted` and nothing more. Only a receipt reaches `delivered`, so
+  with no receipt path configured an attempt stays accepted forever — the true
+  answer rather than an optimistic one. A receipt this build cannot read is
+  `unknown`, neither delivered nor failed, and joins the failures on the
+  follow-up queue. Attempts silent past a threshold a deployment names can be
+  chased too; this does not guess the threshold.
+
+  A contact inside its quiet hours is held rather than dropped, and
+  `releaseHeld()` re-checks consent before sending, so a hold cannot become a
+  way past a withdrawal. One notice reaches one address once, enforced by a
+  partial unique index and handled as idempotence rather than a conflict. When
+  nothing can be sent at all, a `patient-contact` task opens on the unassigned
+  queue — a patient nobody could reach is somebody's job, not a row on a list.
+
+  The words that go out are the same for every kind: the clinic has an update,
+  sign in to read it. No kind, no summary, no identifier, and the outbound
+  message is not tagged with the patient it concerns, so an address and a
+  chart are never put together in the outbound log. "You have a new result" on
+  a lock screen is clinical information arriving through the feature built to
+  send none.
+
+- **Reading a notice in the portal is recorded separately from delivering
+  it.** A patient signing in and looking is the strongest evidence available
+  and it is about a person, where a gateway's opinion is about a phone. It
+  deliberately changes no delivery state and does not set `told`, which stays
+  a human writing down that they spoke to somebody.
+
 - **`GET /me` is a patient and caregiver application, not chrome.** The
   `/patient/*` OAuth API was already complete and already tested; what was
   missing was something to use it with. `/me` now signs in, switches between
