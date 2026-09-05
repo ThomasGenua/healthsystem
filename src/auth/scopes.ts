@@ -113,6 +113,18 @@ export function requiredScope(method: string, path: string): Scope | null {
   if (method === "GET" && path === "/metrics") return null;
   if (method === "GET" && path === "/fhir/metadata") return null;
 
+  // The development identity provider, where one is running. An issuer's
+  // discovery, key and token endpoints are unauthenticated by definition —
+  // they are what a client uses *before* it has a credential — so these are
+  // open in exactly the way the real provider's are.
+  //
+  // Nothing is trusted because it came from here. The engine reaches these
+  // over HTTP as `JwtVerifier` reaches any JWKS, and a token from them is
+  // checked the same way a token from Entra is. The provider only exists at
+  // all when NORTHSTAR_DEV_IDP=on, which server.ts refuses to combine with a
+  // configured issuer; when it is off these paths 404 like any other.
+  if (path === "/dev-idp" || path.startsWith("/dev-idp/")) return null;
+
   if (path === "/patient" || path.startsWith("/patient/")) return "patient";
   if (path.startsWith("/api/")) return "admin";
   if (path.startsWith("/ingest/")) return "write";

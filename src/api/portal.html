@@ -1,0 +1,739 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Northstar — patient access</title>
+<link rel="icon" href="data:,">
+<style>
+/*
+  No framework and no CDN, on purpose. This is served to people on satellite
+  and cellular links in the north, where a 200 KB bundle is a visible wait and
+  a blocked CDN is a blank page. Everything needed is in this one file.
+*/
+:root{
+  --bg:#f4f1ea;--panel:#fff;--line:#d7d0c4;--text:#1f1b16;--dim:#5c564c;
+  --acc:#1d4f8c;--warn:#8a5a12;--held:#6b4f9e;--bad:#8c1d1d;--ok:#1d6b3f;
+  font-size:18px;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:1rem/1.55 Georgia,Cambria,"Times New Roman",serif}
+a{color:var(--acc)}
+button{font:inherit}
+.skip{position:absolute;left:-999px;width:1px;height:1px;overflow:hidden}
+.skip:focus{position:static;width:auto;height:auto;padding:8px 12px;background:#fff;border:2px solid var(--acc)}
+:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+
+header{background:var(--panel);border-bottom:1px solid var(--line);padding:10px 16px}
+.bar{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px;max-width:46rem;margin:0 auto}
+.bar h1{margin:0;font-size:1.05rem}
+.sub{color:var(--dim);font-size:.85rem}
+.lang{margin-left:auto}
+select,input,textarea{font:inherit;padding:6px 8px;border:1px solid var(--line);background:#fff;color:inherit;max-width:100%}
+
+/* Whose chart this is. Never below the fold, never ambiguous. */
+.who{background:#eef3fa;border-bottom:1px solid var(--line);padding:8px 16px}
+.who .inner{max-width:46rem;margin:0 auto;display:flex;flex-wrap:wrap;gap:8px;align-items:baseline}
+.who b{font-size:1.02rem}
+.badge{font-size:.78rem;letter-spacing:.03em;text-transform:uppercase;border:1px solid var(--line);
+  border-radius:999px;padding:2px 9px;background:#fff;color:var(--dim)}
+.badge.proxy{border-color:var(--held);color:var(--held)}
+
+nav{background:var(--panel);border-bottom:1px solid var(--line);overflow-x:auto}
+nav ul{list-style:none;display:flex;gap:2px;margin:0 auto;padding:0 10px;max-width:46rem}
+nav a{display:block;padding:10px 12px;text-decoration:none;color:var(--dim);white-space:nowrap;
+  border-bottom:3px solid transparent}
+nav a[aria-current="page"]{color:var(--text);border-bottom-color:var(--acc);font-weight:bold}
+
+main{max-width:46rem;margin:0 auto;padding:16px}
+h2{font-size:1.15rem;margin:.2rem 0 .8rem}
+.card{background:var(--panel);border:1px solid var(--line);padding:12px 14px;margin:0 0 12px}
+.card h3{margin:0 0 .3rem;font-size:1rem}
+.meta{color:var(--dim);font-size:.86rem}
+.note{border-left:4px solid var(--warn);background:#fff8ea;padding:10px 12px;margin:0 0 14px}
+.err{border-left:4px solid var(--bad);background:#fdf0f0;padding:10px 12px;margin:0 0 14px}
+.empty{color:var(--dim);font-style:italic;padding:10px 0}
+.held{border-left:4px solid var(--held);background:#f6f3fb}
+.abn{color:var(--bad);font-weight:bold}
+button.act{padding:8px 14px;background:var(--acc);color:#fff;border:1px solid var(--acc);cursor:pointer}
+button.act:disabled{opacity:.55;cursor:progress}
+button.link{background:none;border:none;color:var(--acc);text-decoration:underline;cursor:pointer;padding:0}
+label{display:block;margin:.6rem 0 .2rem;font-weight:bold}
+textarea{width:100%;min-height:6rem}
+ul.plain{list-style:none;padding:0;margin:0}
+ul.plain li{padding:6px 0;border-bottom:1px solid var(--line)}
+ul.plain li:last-child{border-bottom:none}
+footer{max-width:46rem;margin:0 auto;padding:14px 16px 30px;color:var(--dim);font-size:.85rem}
+[hidden]{display:none !important}
+@media (max-width:34rem){:root{font-size:17px}main{padding:12px}}
+</style>
+</head>
+<body>
+<a class="skip" href="#main" data-t="skip">Skip to main content</a>
+
+<header>
+  <div class="bar">
+    <h1>Northstar</h1>
+    <span class="sub" data-t="tagline">Patient access</span>
+    <span class="lang">
+      <label for="lang" class="skip" data-t="langLabel">Language</label>
+      <select id="lang" aria-label="Language / Langue">
+        <option value="en">English</option>
+        <option value="fr">Français</option>
+      </select>
+    </span>
+  </div>
+</header>
+
+<div class="who" id="who" hidden>
+  <div class="inner">
+    <span data-t="viewing">Viewing</span>
+    <b id="whoName">—</b>
+    <span class="badge" id="whoRel"></span>
+    <button class="link" id="switch" hidden data-t="switchChart">Switch chart</button>
+    <button class="link" id="signout" style="margin-left:auto" data-t="signOut">Sign out</button>
+  </div>
+</div>
+
+<nav id="nav" hidden><ul id="tabs"></ul></nav>
+
+<main id="main" tabindex="-1">
+  <p id="live" role="status" aria-live="polite" class="skip"></p>
+  <div id="view"></div>
+</main>
+
+<footer>
+  <p data-t="footer">This is not a certified patient portal. There is no identity-proofing and no ONE ID,
+    and this page does not enrol anyone: a named clerk at your clinic writes how they checked who you are
+    before any access is granted. Nothing here is a claim of WCAG or AODA conformance. Your chart is
+    reached only through a live grant your clinic issued.</p>
+  <p lang="fr">Ceci n’est pas un portail patient certifié.</p>
+</footer>
+
+<script>
+"use strict";
+/* ------------------------------------------------------------------ copy */
+/*
+  Both languages in one table rather than two files: a missing translation is
+  then a visibly missing key at review time instead of a page that silently
+  falls back to English for one string. `t()` returns the key itself when a
+  string is absent, which is ugly on purpose.
+*/
+const COPY = {
+  en: {
+    skip:"Skip to main content", tagline:"Patient access", langLabel:"Language",
+    viewing:"Viewing", switchChart:"Switch chart", signOut:"Sign out",
+    footer:"This is not a certified patient portal. There is no identity-proofing and no ONE ID, and this page does not enrol anyone: a named clerk at your clinic writes how they checked who you are before any access is granted. Nothing here is a claim of WCAG or AODA conformance. Your chart is reached only through a live grant your clinic issued.",
+    signInTitle:"Sign in", loading:"Loading…", retry:"Try again",
+    offline:"That did not reach the clinic. Your connection may have dropped.",
+    expired:"Your session has ended. Sign in again.",
+    noAccess:"This chart is no longer shared with you. If that is unexpected, contact the clinic.",
+    devTitle:"Development sign-in",
+    devBody:"This site is running a development identity provider. Choose a synthetic person to sign in as. Only people the clinic has already granted a chart to appear here — signing in does not create access.",
+    devNone:"Nobody has been granted a chart yet, so there is nobody to sign in as.",
+    tokenTitle:"Sign in with a token",
+    tokenBody:"Paste an access token from your identity provider. The portal does not issue tokens.",
+    tokenLabel:"Access token", signIn:"Sign in",
+    noCharts:"You do not have access to any chart right now.",
+    chooseChart:"Choose a chart",
+    self:"Your chart", proxy:"On behalf of",
+    tabResults:"Results", tabAppointments:"Appointments", tabMedications:"Medications",
+    tabMessages:"Messages", tabTeam:"Care team", tabAccess:"Access history", tabRequests:"Requests",
+    noResults:"No results have been released to you.",
+    heldTitle:"Held", heldUntil:"Expected to be available",
+    noAppointments:"You have no appointments booked.",
+    noMeds:"No medications are recorded.",
+    medsTaking:"What you are taking", medsPrescribed:"What was prescribed",
+    allergiesNever:"Nobody has recorded whether you have allergies. That is not the same as having none.",
+    noTeam:"No care team is recorded.",
+    noAccessLog:"Nobody has looked at your chart yet.",
+    noMessages:"You have no messages.",
+    newMessage:"Ask a question", subject:"Subject", messageBody:"Your message", send:"Send",
+    sent:"Sent. The clinic will see it in their worklist.",
+    reply:"Reply", replyPlaceholder:"Your reply",
+    openThread:"Open", closedThread:"Closed",
+    noRequests:"You have not made any requests.",
+    newRequest:"Make a request", requestKind:"What kind", access:"See my record", correction:"Correct my record",
+    requestDetail:"What are you asking for", submit:"Submit",
+    requestSent:"Sent. The clinic has it on their list.",
+    by:"by", on:"on", refused:"refused", allowed:"looked at",
+    reported:"Reported", unitless:"no unit recorded", abnormal:"abnormal",
+    status:"Status", when:"When", role:"Role", relationship:"Relationship",
+    permissionsNote:"Your access covers:",
+    sectionUnavailable:"This section could not be loaded."
+  },
+  fr: {
+    skip:"Aller au contenu principal", tagline:"Accès patient", langLabel:"Langue",
+    viewing:"Dossier consulté", switchChart:"Changer de dossier", signOut:"Se déconnecter",
+    footer:"Ceci n’est pas un portail patient certifié. Il n’y a ni preuve d’identité ni ONE ID, et cette page n’inscrit personne : un commis nommé de votre clinique décrit par écrit comment il a vérifié votre identité avant qu’un accès soit accordé. Rien ici ne constitue une revendication de conformité WCAG ou AODA. Votre dossier n’est accessible que par une autorisation en vigueur délivrée par votre clinique.",
+    signInTitle:"Connexion", loading:"Chargement…", retry:"Réessayer",
+    offline:"La demande n’est pas parvenue à la clinique. Votre connexion s’est peut-être interrompue.",
+    expired:"Votre session est terminée. Reconnectez-vous.",
+    noAccess:"Ce dossier ne vous est plus partagé. Si cela vous surprend, communiquez avec la clinique.",
+    devTitle:"Connexion de développement",
+    devBody:"Ce site utilise un fournisseur d’identité de développement. Choisissez une personne synthétique. Seules les personnes à qui la clinique a déjà accordé un dossier apparaissent ici — se connecter ne crée aucun accès.",
+    devNone:"Aucun dossier n’a encore été accordé; il n’y a donc personne à qui se connecter.",
+    tokenTitle:"Connexion par jeton",
+    tokenBody:"Collez un jeton d’accès de votre fournisseur d’identité. Le portail n’émet pas de jetons.",
+    tokenLabel:"Jeton d’accès", signIn:"Se connecter",
+    noCharts:"Vous n’avez accès à aucun dossier pour le moment.",
+    chooseChart:"Choisir un dossier",
+    self:"Votre dossier", proxy:"Au nom de",
+    tabResults:"Résultats", tabAppointments:"Rendez-vous", tabMedications:"Médicaments",
+    tabMessages:"Messages", tabTeam:"Équipe de soins", tabAccess:"Historique d’accès", tabRequests:"Demandes",
+    noResults:"Aucun résultat ne vous a été communiqué.",
+    heldTitle:"Retenu", heldUntil:"Disponible prévu le",
+    noAppointments:"Vous n’avez aucun rendez-vous.",
+    noMeds:"Aucun médicament n’est inscrit.",
+    medsTaking:"Ce que vous prenez", medsPrescribed:"Ce qui a été prescrit",
+    allergiesNever:"Personne n’a inscrit si vous avez des allergies. Ce n’est pas la même chose que ne pas en avoir.",
+    noTeam:"Aucune équipe de soins n’est inscrite.",
+    noAccessLog:"Personne n’a encore consulté votre dossier.",
+    noMessages:"Vous n’avez aucun message.",
+    newMessage:"Poser une question", subject:"Objet", messageBody:"Votre message", send:"Envoyer",
+    sent:"Envoyé. La clinique le verra dans sa liste de travail.",
+    reply:"Répondre", replyPlaceholder:"Votre réponse",
+    openThread:"Ouvert", closedThread:"Fermé",
+    noRequests:"Vous n’avez fait aucune demande.",
+    newRequest:"Faire une demande", requestKind:"Type de demande", access:"Consulter mon dossier",
+    correction:"Corriger mon dossier",
+    requestDetail:"Que demandez-vous", submit:"Envoyer",
+    requestSent:"Envoyé. La clinique l’a dans sa liste.",
+    by:"par", on:"le", refused:"refusé", allowed:"consulté",
+    reported:"Signalé", unitless:"aucune unité inscrite", abnormal:"anormal",
+    status:"Statut", when:"Quand", role:"Rôle", relationship:"Lien",
+    permissionsNote:"Votre accès couvre :",
+    sectionUnavailable:"Cette section n’a pas pu être chargée."
+  }
+};
+let LANG = (navigator.language || "en").toLowerCase().startsWith("fr") ? "fr" : "en";
+const t = (k) => (COPY[LANG] && COPY[LANG][k]) || k;
+
+/* ----------------------------------------------------------------- state */
+const S = { token:null, authorities:[], active:null, tab:"results", busy:false };
+
+/* Session storage, not local: closing the tab ends the session. A bearer
+   token in browser storage is the ordinary compromise for a page with no
+   server session, and it is the reason this is not a certified portal —
+   a deployment that needs one puts a confidential client in front. */
+try { S.token = sessionStorage.getItem("ns.token"); } catch { /* private mode */ }
+function setToken(v){
+  S.token = v;
+  try { v ? sessionStorage.setItem("ns.token", v) : sessionStorage.removeItem("ns.token"); } catch {}
+}
+
+const el = (tag, attrs, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k,v] of Object.entries(attrs||{})) {
+    if (v === null || v === undefined || v === false) continue;
+    if (k === "class") n.className = v;
+    else if (k === "text") n.textContent = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v === true ? "" : String(v));
+  }
+  for (const kid of kids.flat()) if (kid !== null && kid !== undefined) {
+    n.appendChild(typeof kid === "string" ? document.createTextNode(kid) : kid);
+  }
+  return n;
+};
+const say = (msg) => { document.getElementById("live").textContent = msg; };
+
+/* ------------------------------------------------------------------- api */
+/*
+  One place where every failure a patient can hit is turned into a sentence
+  they can act on. A blank screen is the worst outcome here: somebody on a
+  dropped satellite link and somebody whose caregiver access was revoked
+  this morning must be told two different things.
+*/
+class ApiError extends Error {
+  constructor(kind, message){ super(message); this.kind = kind; }
+}
+async function api(path, opts){
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  let res;
+  try {
+    res = await fetch(path, {
+      ...(opts||{}),
+      signal: controller.signal,
+      headers: {
+        "authorization": "Bearer " + S.token,
+        ...(opts && opts.body ? {"content-type":"application/json"} : {}),
+        ...((opts||{}).headers||{})
+      }
+    });
+  } catch {
+    // Aborted, offline, DNS, TLS. All of them mean the same thing to a
+    // reader: it did not arrive, and trying again is reasonable.
+    throw new ApiError("offline", t("offline"));
+  } finally {
+    clearTimeout(timer);
+  }
+  if (res.status === 401) throw new ApiError("expired", t("expired"));
+  if (res.status === 403) throw new ApiError("forbidden", t("noAccess"));
+  if (!res.ok) {
+    let detail = "";
+    try { detail = (await res.json()).error || ""; } catch {}
+    throw new ApiError("error", detail || (res.status + ""));
+  }
+  return res.json();
+}
+
+/* --------------------------------------------------------------- sign-in */
+async function devSubjects(){
+  try {
+    const res = await fetch("/dev-idp/subjects");
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+async function renderSignIn(){
+  const view = document.getElementById("view");
+  view.replaceChildren(el("h2", {text: t("signInTitle")}));
+  document.getElementById("who").hidden = true;
+  document.getElementById("nav").hidden = true;
+
+  const dev = await devSubjects();
+  if (dev) {
+    view.appendChild(el("div", {class:"note"},
+      el("h3", {text: t("devTitle")}), el("p", {text: t("devBody")})));
+    if (!dev.subjects.length) {
+      view.appendChild(el("p", {class:"empty", text: t("devNone")}));
+    } else {
+      const list = el("ul", {class:"plain"});
+      for (const s of dev.subjects) {
+        const charts = s.patients.map((p) => p.patientId).join(", ");
+        list.appendChild(el("li", {},
+          el("button", {class:"act", onclick: () => devSignIn(s.subject)}, s.subject),
+          el("div", {class:"meta", text: charts})
+        ));
+      }
+      view.appendChild(list);
+    }
+  }
+
+  // Always offered, dev provider or not: a real deployment signs in at its
+  // own identity provider and arrives here holding a token.
+  const form = el("form", {onsubmit: (e) => { e.preventDefault(); manualSignIn(); }},
+    el("h3", {text: t("tokenTitle")}),
+    el("p", {class:"meta", text: t("tokenBody")}),
+    el("label", {for:"tok", text: t("tokenLabel")}),
+    el("input", {id:"tok", type:"password", autocomplete:"off", spellcheck:"false", style:"width:100%"}),
+    el("p", {}, el("button", {class:"act", type:"submit", text: t("signIn")}))
+  );
+  view.appendChild(form);
+}
+
+async function devSignIn(subject){
+  try {
+    const res = await fetch("/dev-idp/token", {
+      method:"POST", headers:{"content-type":"application/json"},
+      body: JSON.stringify({subject})
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || "sign-in failed");
+    setToken(body.access_token);
+    await start();
+  } catch (err) {
+    showError(err instanceof Error ? err.message : String(err), renderSignIn);
+  }
+}
+
+function manualSignIn(){
+  const v = document.getElementById("tok").value.trim();
+  if (!v) return;
+  setToken(v);
+  start();
+}
+
+function signOut(){
+  setToken(null);
+  S.authorities = []; S.active = null;
+  location.hash = "";
+  renderSignIn();
+}
+
+/* ---------------------------------------------------------------- shell */
+function showError(message, retry){
+  const view = document.getElementById("view");
+  const box = el("div", {class:"err"}, el("p", {text: message}));
+  if (retry) box.appendChild(el("p", {}, el("button", {class:"act", onclick: retry, text: t("retry")})));
+  view.replaceChildren(box);
+  say(message);
+}
+
+function showLoading(){
+  document.getElementById("view").replaceChildren(el("p", {class:"empty", text: t("loading")}));
+}
+
+/** Every screen funnels its failures here, so no failure ends as a blank page. */
+async function guard(fn, retry){
+  if (S.busy) return;
+  S.busy = true;
+  showLoading();
+  try {
+    await fn();
+  } catch (err) {
+    if (err instanceof ApiError && err.kind === "expired") { signOut(); showError(t("expired")); }
+    else if (err instanceof ApiError && err.kind === "forbidden") {
+      // The grant went away underneath us. Re-read the list rather than
+      // leaving a chart on screen that is no longer shared.
+      showError(err.message, () => start());
+    }
+    else showError(err instanceof Error ? err.message : String(err), retry);
+  } finally {
+    S.busy = false;
+  }
+}
+
+const TABS = [
+  {id:"results",      key:"tabResults",      perm:"results"},
+  {id:"appointments", key:"tabAppointments", perm:"appointments"},
+  {id:"medications",  key:"tabMedications",  perm:"summary"},
+  {id:"messages",     key:"tabMessages",     perm:"messages"},
+  {id:"team",         key:"tabTeam",         perm:"summary"},
+  {id:"access",       key:"tabAccess",       perm:"access-log"},
+  {id:"requests",     key:"tabRequests",     perm:"requests"}
+];
+
+function drawChrome(){
+  const who = document.getElementById("who");
+  const a = S.active;
+  who.hidden = !a;
+  document.getElementById("nav").hidden = !a;
+  if (!a) return;
+
+  // Whose chart this is, above everything, always. A caregiver holding three
+  // charts must never have to infer which one is on screen.
+  document.getElementById("whoName").textContent = a.patientId;
+  const rel = document.getElementById("whoRel");
+  rel.textContent = a.relationship === "self" ? t("self") : t("proxy") + " · " + a.relationship;
+  rel.className = "badge" + (a.relationship === "self" ? "" : " proxy");
+  document.getElementById("switch").hidden = S.authorities.length < 2;
+
+  const tabs = document.getElementById("tabs");
+  tabs.replaceChildren();
+  for (const tab of TABS) {
+    // A tab the grant does not cover is not drawn. Showing one that answers
+    // 403 teaches a caregiver that the portal is broken rather than that
+    // their access is narrower than they thought.
+    if (!a.permissions.includes(tab.perm)) continue;
+    tabs.appendChild(el("li", {}, el("a", {
+      href:"#/" + tab.id, text: t(tab.key),
+      "aria-current": S.tab === tab.id ? "page" : null
+    })));
+  }
+}
+
+/* --------------------------------------------------------------- screens */
+const fmtDate = (iso) => {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(LANG === "fr" ? "fr-CA" : "en-CA", {dateStyle:"medium", timeStyle:"short"});
+};
+const card = (...kids) => el("div", {class:"card"}, ...kids);
+const empty = (key) => el("p", {class:"empty", text: t(key)});
+
+async function screenResults(){
+  const rows = await api("/patient/results?patient=" + encodeURIComponent(S.active.patientId));
+  const view = document.getElementById("view");
+  view.replaceChildren(el("h2", {text: t("tabResults")}));
+  if (!rows.length) return view.appendChild(empty("noResults"));
+  for (const r of rows) {
+    if (r.held) {
+      // The API sends no value for a held result, so there is none to leak.
+      view.appendChild(el("div", {class:"card held"},
+        el("h3", {text: r.display}),
+        el("p", {}, el("b", {text: t("heldTitle") + ": "}), r.held.because),
+        r.held.until ? el("p", {class:"meta", text: t("heldUntil") + " " + fmtDate(r.held.until)}) : null,
+        el("p", {class:"meta", text: t("reported") + " " + fmtDate(r.reportedAt)})
+      ));
+      continue;
+    }
+    view.appendChild(card(
+      el("h3", {text: r.display}),
+      el("p", {},
+        el("span", {class: r.abnormalFlag && r.abnormalFlag !== "N" ? "abn" : null,
+          text: (r.value ?? "—") + " " + (r.unit || t("unitless"))}),
+        r.abnormalFlag && r.abnormalFlag !== "N" ? el("span", {class:"meta", text: " · " + t("abnormal")}) : null
+      ),
+      el("p", {class:"meta", text: t("reported") + " " + fmtDate(r.reportedAt)})
+    ));
+  }
+}
+
+async function screenAppointments(){
+  const rows = await api("/patient/appointments?patient=" + encodeURIComponent(S.active.patientId));
+  const view = document.getElementById("view");
+  view.replaceChildren(el("h2", {text: t("tabAppointments")}));
+  if (!rows.length) return view.appendChild(empty("noAppointments"));
+  for (const a of rows) {
+    view.appendChild(card(
+      el("h3", {text: fmtDate(a.startsAt || a.starts_at)}),
+      el("p", {class:"meta", text: [a.service, a.resourceId || a.resource_id, a.status].filter(Boolean).join(" · ")})
+    ));
+  }
+}
+
+async function screenMedications(){
+  const s = await api("/patient/summary?patient=" + encodeURIComponent(S.active.patientId));
+  const view = document.getElementById("view");
+  view.replaceChildren(el("h2", {text: t("tabMedications")}));
+  const meds = s.medications || {};
+  const list = (label, items) => {
+    const box = card(el("h3", {text: label}));
+    if (!items || !items.length) box.appendChild(empty("noMeds"));
+    else {
+      const ul = el("ul", {class:"plain"});
+      for (const m of items) ul.appendChild(el("li", {},
+        el("b", {text: m.display || m.name || "—"}),
+        m.dose || m.dosage ? el("div", {class:"meta", text: m.dose || m.dosage}) : null));
+      box.appendChild(ul);
+    }
+    return box;
+  };
+  view.appendChild(list(t("medsTaking"), meds.taking));
+  view.appendChild(list(t("medsPrescribed"), meds.prescribed));
+
+  // Never-asked is not none. The API says which it is; the portal must not
+  // flatten the two into an empty list.
+  const allergies = s.allergies || {};
+  if (allergies.status && allergies.status !== "recorded" && (!allergies.items || !allergies.items.length)) {
+    view.appendChild(el("div", {class:"note"}, el("p", {text: t("allergiesNever")})));
+  }
+}
+
+async function screenTeam(){
+  const s = await api("/patient/summary?patient=" + encodeURIComponent(S.active.patientId));
+  const view = document.getElementById("view");
+  view.replaceChildren(el("h2", {text: t("tabTeam")}));
+  const team = s.careTeam || [];
+  if (!team.length) return view.appendChild(empty("noTeam"));
+  for (const m of team) {
+    view.appendChild(card(
+      el("h3", {text: m.display || m.practitionerId || m.practitioner_id || "—"}),
+      el("p", {class:"meta", text: [m.role, m.organizationId || m.organization_id].filter(Boolean).join(" · ")})
+    ));
+  }
+}
+
+async function screenAccess(){
+  const rows = await api("/patient/access-log?patient=" + encodeURIComponent(S.active.patientId));
+  const view = document.getElementById("view");
+  view.replaceChildren(el("h2", {text: t("tabAccess")}));
+  if (!rows.length) return view.appendChild(empty("noAccessLog"));
+  const ul = el("ul", {class:"plain"});
+  for (const r of rows) {
+    const outcome = r.outcome === "refused" ? t("refused") : t("allowed");
+    ul.appendChild(el("li", {},
+      el("b", {text: r.subject_id || r.subjectId || "—"}),
+      el("div", {class:"meta",
+        text: [outcome, r.resource, r.action, fmtDate(r.at || r.logged_at)].filter(Boolean).join(" · ")})
+    ));
+  }
+  view.appendChild(ul);
+}
+
+async function screenMessages(){
+  const threads = await api("/patient/threads?patient=" + encodeURIComponent(S.active.patientId));
+  const view = document.getElementById("view");
+  view.replaceChildren(el("h2", {text: t("tabMessages")}));
+
+  const form = el("form", {onsubmit: (e) => { e.preventDefault(); sendNewThread(e.target); }},
+    el("h3", {text: t("newMessage")}),
+    el("label", {for:"subj", text: t("subject")}),
+    el("input", {id:"subj", required:true, style:"width:100%"}),
+    el("label", {for:"body", text: t("messageBody")}),
+    el("textarea", {id:"body", required:true}),
+    el("p", {}, el("button", {class:"act", type:"submit", text: t("send")}))
+  );
+  view.appendChild(el("div", {class:"card"}, form));
+
+  if (!threads.length) { view.appendChild(empty("noMessages")); return; }
+  for (const th of threads) {
+    view.appendChild(card(
+      el("h3", {}, el("button", {class:"link", text: th.subject,
+        onclick: () => guard(() => openThread(th.id), () => guard(screenMessages))})),
+      el("p", {class:"meta", text: (th.status === "closed" ? t("closedThread") : t("openThread")) +
+        " · " + fmtDate(th.last_message_at || th.updated_at || th.created_at)})
+    ));
+  }
+}
+
+async function openThread(id){
+  const data = await api("/patient/thread?id=" + encodeURIComponent(id));
+  const view = document.getElementById("view");
+  view.replaceChildren(
+    el("p", {}, el("button", {class:"link", text: "← " + t("tabMessages"),
+      onclick: () => guard(screenMessages)})),
+    el("h2", {text: data.thread.subject})
+  );
+  for (const m of data.messages) {
+    view.appendChild(card(
+      el("p", {text: m.body}),
+      el("p", {class:"meta", text: (m.author_kind || m.authorKind || "") + " · " + fmtDate(m.sent_at || m.created_at)})
+    ));
+  }
+  if (data.thread.status !== "closed") {
+    view.appendChild(el("div", {class:"card"},
+      el("form", {onsubmit: (e) => { e.preventDefault(); sendReply(id, e.target); }},
+        el("label", {for:"rep", text: t("reply")}),
+        el("textarea", {id:"rep", required:true, placeholder: t("replyPlaceholder")}),
+        el("p", {}, el("button", {class:"act", type:"submit", text: t("send")}))
+      )));
+  }
+}
+
+/*
+  Submitting anything disables its own button first.
+  A double tap on a slow link would otherwise open two threads asking the
+  same question, and the clinic would answer a duplicate in their worklist.
+*/
+async function submitting(form, fn){
+  const button = form.querySelector("button[type=submit]");
+  if (button.disabled) return;
+  button.disabled = true;
+  try { await fn(); }
+  catch (err) {
+    if (err instanceof ApiError && err.kind === "expired") return signOut();
+    showError(err instanceof Error ? err.message : String(err), () => guard(screenMessages));
+  }
+  finally { button.disabled = false; }
+}
+
+function sendNewThread(form){
+  return submitting(form, async () => {
+    await api("/patient/thread-open", {method:"POST", body: JSON.stringify({
+      patient: S.active.patientId,
+      subject: form.querySelector("#subj").value.trim(),
+      body: form.querySelector("#body").value.trim()
+    })});
+    say(t("sent"));
+    await guard(screenMessages);
+  });
+}
+
+function sendReply(id, form){
+  return submitting(form, async () => {
+    await api("/patient/thread-reply", {method:"POST", body: JSON.stringify({
+      id, body: form.querySelector("#rep").value.trim()
+    })});
+    say(t("sent"));
+    await guard(() => openThread(id));
+  });
+}
+
+async function screenRequests(){
+  const rows = await api("/patient/requests?patient=" + encodeURIComponent(S.active.patientId));
+  const view = document.getElementById("view");
+  view.replaceChildren(el("h2", {text: t("tabRequests")}));
+
+  const form = el("form", {onsubmit: (e) => { e.preventDefault(); sendRequest(e.target); }},
+    el("h3", {text: t("newRequest")}),
+    el("label", {for:"kind", text: t("requestKind")}),
+    el("select", {id:"kind"},
+      el("option", {value:"access", text: t("access")}),
+      el("option", {value:"correction", text: t("correction")})),
+    el("label", {for:"detail", text: t("requestDetail")}),
+    el("textarea", {id:"detail", required:true}),
+    el("p", {}, el("button", {class:"act", type:"submit", text: t("submit")}))
+  );
+  view.appendChild(el("div", {class:"card"}, form));
+
+  if (!rows.length) return view.appendChild(empty("noRequests"));
+  for (const r of rows) {
+    view.appendChild(card(
+      el("h3", {text: r.kind === "correction" ? t("correction") : t("access")}),
+      el("p", {text: r.detail}),
+      el("p", {class:"meta", text: [r.status, fmtDate(r.requested_at || r.created_at)].filter(Boolean).join(" · ")})
+    ));
+  }
+}
+
+function sendRequest(form){
+  return submitting(form, async () => {
+    await api("/patient/request", {method:"POST", body: JSON.stringify({
+      patient: S.active.patientId,
+      kind: form.querySelector("#kind").value,
+      detail: form.querySelector("#detail").value.trim()
+    })});
+    say(t("requestSent"));
+    await guard(screenRequests);
+  });
+}
+
+const SCREENS = {
+  results: screenResults, appointments: screenAppointments, medications: screenMedications,
+  messages: screenMessages, team: screenTeam, access: screenAccess, requests: screenRequests
+};
+
+/* --------------------------------------------------------------- routing */
+function chartPicker(){
+  const view = document.getElementById("view");
+  view.replaceChildren(el("h2", {text: t("chooseChart")}));
+  document.getElementById("who").hidden = true;
+  document.getElementById("nav").hidden = true;
+  if (!S.authorities.length) return view.appendChild(empty("noCharts"));
+  const ul = el("ul", {class:"plain"});
+  for (const a of S.authorities) {
+    ul.appendChild(el("li", {},
+      el("button", {class:"act", onclick: () => { S.active = a; location.hash = "#/results"; route(); }},
+        a.patientId),
+      el("div", {class:"meta", text:
+        (a.relationship === "self" ? t("self") : t("proxy") + " · " + a.relationship) +
+        " · " + t("permissionsNote") + " " + a.permissions.join(", ")})
+    ));
+  }
+  view.appendChild(ul);
+}
+
+function route(){
+  if (!S.token) return renderSignIn();
+  if (!S.active) return chartPicker();
+  const want = (location.hash || "").replace(/^#\//, "") || "results";
+  const tab = TABS.find((x) => x.id === want && S.active.permissions.includes(x.perm));
+  S.tab = tab ? tab.id : (TABS.find((x) => S.active.permissions.includes(x.perm)) || {id:"results"}).id;
+  drawChrome();
+  const screen = SCREENS[S.tab];
+  if (screen) guard(screen, () => guard(screen));
+}
+
+async function start(){
+  if (!S.token) return renderSignIn();
+  showLoading();
+  try {
+    const body = await api("/patient/authorities");
+    S.authorities = body.authorities || [];
+  } catch (err) {
+    if (err instanceof ApiError && err.kind === "expired") { setToken(null); return renderSignIn(); }
+    return showError(err instanceof Error ? err.message : String(err), start);
+  }
+  // A grant that disappeared while the tab was open must not leave a stale
+  // chart selected.
+  if (S.active) {
+    S.active = S.authorities.find((a) => a.patientId === S.active.patientId) || null;
+  }
+  if (!S.active && S.authorities.length === 1) S.active = S.authorities[0];
+  route();
+}
+
+/* ------------------------------------------------------------------ boot */
+function applyLanguage(){
+  document.documentElement.lang = LANG;
+  for (const node of document.querySelectorAll("[data-t]")) node.textContent = t(node.dataset.t);
+  document.getElementById("lang").value = LANG;
+  route();
+}
+document.getElementById("lang").addEventListener("change", (e) => { LANG = e.target.value; applyLanguage(); });
+document.getElementById("signout").addEventListener("click", signOut);
+document.getElementById("switch").addEventListener("click", () => { S.active = null; location.hash = ""; route(); });
+window.addEventListener("hashchange", route);
+
+applyLanguage();
+start();
+</script>
+</body>
+</html>

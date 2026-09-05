@@ -1,9 +1,17 @@
 /**
- * The patient HTML shell at /me.
+ * The patient application at /me.
  *
- * Not a certified portal. This page is chrome: language, landmarks, an honest
- * banner. Chart access is /patient/* plus OAuth. An unauthenticated GET must
- * not be audited as a reach for a patient record.
+ * This used to be chrome that loaded no chart, and these tests were written
+ * about the chrome. What they actually pin survived it becoming an
+ * application, which is why they are unchanged apart from this note: the page
+ * is served without credentials, it carries its limits in both languages, it
+ * has the landmarks a screen reader needs, and it enrols nobody. A portal
+ * that quietly dropped "there is no identity-proofing" on the day it started
+ * showing results would be the version worth catching.
+ *
+ * Still not a certified portal. Chart access is /patient/* plus OAuth, and an
+ * unauthenticated GET here must not be audited as a reach for a patient
+ * record. The application itself is tested in test/portal.test.ts.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";

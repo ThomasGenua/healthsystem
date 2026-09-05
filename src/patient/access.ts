@@ -254,6 +254,41 @@ export class PatientAccess {
   }
 
   /**
+   * Every OAuth subject holding a live grant in this custodian, and the
+   * charts each one reaches.
+   *
+   * Written for the development identity provider, which lists who may sign
+   * in. It is the reverse of `forSubject` and it is deliberately bounded by
+   * the tenant like everything else here: a picker that spanned custodians
+   * would enumerate one clinic's delegates to another's, which is a
+   * disclosure whether or not the environment is a demo.
+   *
+   * The relationship travels with each chart so a caregiver's picker can say
+   * which chart is theirs and which they hold on somebody else's behalf. It
+   * never names a chart the grant does not reach.
+   */
+  liveSubjects(asOf = new Date().toISOString()): Array<{
+    subject: string;
+    patients: Array<{ patientId: string; relationship: string }>;
+  }> {
+    const rows = this.db.sql
+      .prepare(
+        `SELECT subject_id, patient_id, relationship FROM patient_authority
+          WHERE tenant_id = ? AND revoked_at IS NULL
+            AND (expires_at IS NULL OR expires_at > ?)
+          ORDER BY subject_id, relationship, patient_id`
+      )
+      .all(this.db.tenantId, asOf) as Array<{ subject_id: string; patient_id: string; relationship: string }>;
+    const by = new Map<string, Array<{ patientId: string; relationship: string }>>();
+    for (const row of rows) {
+      const list = by.get(row.subject_id) ?? [];
+      list.push({ patientId: row.patient_id, relationship: row.relationship });
+      by.set(row.subject_id, list);
+    }
+    return [...by.entries()].map(([subject, patients]) => ({ subject, patients }));
+  }
+
+  /**
    * Whether one live grant contains one capability.
    *
    * Old self grants are all-capability because they are the patient's own.
