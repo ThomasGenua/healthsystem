@@ -11,6 +11,40 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **A clinic board, and a separate one for the wall.** `worklist()` answers
+  what a clinician owes somebody. The front desk asks a different question —
+  who is here, how long have they been waiting, which rooms are free, who has
+  fallen through — and `board` answers that.
+
+  The wall rendering is the point. A waiting-room display is read by everybody
+  in the room, continuously, and nobody records that they did; in a small
+  community that is the most consequential disclosure this software can make.
+  So `publicBoard()` returns a separate type with three fields — a per-visit
+  token, a state, and minutes waited — and there is no field an identifier
+  could go in. Built by construction rather than by omission, because a
+  redaction somebody has to remember is one somebody eventually forgets. The
+  token is derived per booking rather than counted, so it does not tell the
+  room how many people are ahead, and its alphabet leaves out 0/O and 1/I/L. A
+  finished visit leaves the wall.
+
+  Every row states why it is where it is: `here and waiting 20 minutes past
+  their appointment`, `urgent priority, …`, `1 of 2 seats open, next at 14:00`.
+  Staff argue about the order of a waiting room, and a stated rule is one
+  somebody can disagree with where an unexplained sort is one they work around.
+
+  Two things it refuses to claim. A room with nothing scheduled reports that,
+  not that it is free. And `progressKnown` is false on every row, because the
+  encounter model has one `in-progress` state covering both "in the waiting
+  room" and "with the clinician" — putting the second on a board for somebody
+  doing the first is exactly the number the front desk is being asked about.
+
+  `attention()` carries the patients nobody could reach — the follow-up tasks
+  the notice machinery opens — including ones somebody has picked up but not
+  finished, via a new `TaskStore.openOfKind()`. Recently-discharged patients
+  and unaccepted handoffs are the two views not here: both need a discharge
+  and handoff workflow that does not exist, and an empty panel is
+  indistinguishable from a quiet day.
+
 - **Patients can be told there is something waiting, at an address somebody
   checked.** The engine could already publish a notice onto a channel; it had
   no way to say where. `patient_index` carries a phone and an email copied out

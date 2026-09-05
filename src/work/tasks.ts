@@ -296,6 +296,26 @@ export class TaskStore {
     return this.rank(rows).slice(0, Math.min(opts.limit ?? 100, 500));
   }
 
+  /**
+   * Every live item of one kind, owned or not.
+   *
+   * `unassigned()` answers "what has nobody picked up" and `inbox()` answers
+   * "what is mine". An operations board asks a third question — what of this
+   * kind is still outstanding anywhere — and answering it with `unassigned()`
+   * would drop the moment somebody assigned it to themselves, which is the
+   * point at which it starts being work in progress rather than work nobody
+   * has seen.
+   */
+  openOfKind(kind: TaskKind, opts: { limit?: number } = {}): TaskRow[] {
+    const rows = this.db.sql
+      .prepare(
+        `SELECT * FROM tasks
+          WHERE tenant_id = ? AND kind = ? AND status IN ('open', 'in-progress')`
+      )
+      .all(this.db.tenantId, kind) as unknown as TaskRow[];
+    return this.rank(rows).slice(0, Math.min(opts.limit ?? 100, 500));
+  }
+
   /** Open items past their due date, most overdue first. */
   overdue(asOf = new Date().toISOString()): TaskRow[] {
     const rows = this.db.sql
