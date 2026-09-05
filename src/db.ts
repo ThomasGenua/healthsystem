@@ -36,6 +36,9 @@ export const TENANT_SCOPED_TABLES = [
   "fhir_identifiers",
   "channel_state",
   "patient_contacts",
+  "discharges",
+  "discharge_items",
+  "handoffs",
   "patient_notice_deliveries",
   "fhir_subscriptions",
   "api_keys",
@@ -2449,6 +2452,112 @@ CREATE TABLE IF NOT EXISTS patient_contacts (
   created_at TEXT NOT NULL,
   PRIMARY KEY (tenant_id, id)
 );
+-- What is still outstanding when somebody leaves.
+--
+-- Derived rather than typed. A discharge form somebody fills in records what
+-- they remembered at the end of a long shift; the four things that actually
+-- go wrong after a visit — a result nobody read, a medication list nobody
+-- reconciled, a follow-up nobody booked, a referral nobody chased — are all
+-- computable from the chart at the moment the encounter closes. So the
+-- snapshot is taken, not requested, and what a clinician does is resolve the
+-- items rather than remember them.
+--
+-- The snapshot is kept even after the items resolve, because the question
+-- asked afterwards is what was outstanding when this person went home, and a
+-- list that empties itself cannot answer it.
+CREATE TABLE IF NOT EXISTS discharges (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  encounter_id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  disposition TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  -- Who is accountable for the follow-up. Never null while the discharge is
+  -- open: work owned by nobody is work on nobody's list.
+  accountable_id TEXT NOT NULL,
+  accountable_kind TEXT NOT NULL DEFAULT 'practitioner',
+  opened_at TEXT NOT NULL,
+  opened_by TEXT NOT NULL,
+  closed_at TEXT,
+  closed_by TEXT,
+  closed_outcome TEXT,
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_discharges_status
+  ON discharges(tenant_id, status, opened_at);
+CREATE INDEX IF NOT EXISTS idx_discharges_patient
+  ON discharges(tenant_id, patient_id, opened_at);
+-- One discharge per encounter. Closing a visit twice would otherwise take two
+-- snapshots of the same moment and leave two lists somebody has to reconcile.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_discharge_per_encounter
+  ON discharges(tenant_id, encounter_id);
+
+-- One thing still outstanding, and whether it was dealt with.
+--
+-- The reference is deliberately loose: kind plus the identifier of whatever
+-- it points at, rather than a column per kind. A result, a reconciliation, a
+-- referral and a missing appointment are four different tables, and a schema
+-- that named all four would need a fifth column the day somebody adds a
+-- fifth kind of loose end.
+CREATE TABLE IF NOT EXISTS discharge_items (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  discharge_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  reference_id TEXT,
+  summary TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'outstanding',
+  resolved_at TEXT,
+  resolved_by TEXT,
+  resolution TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_discharge_items
+  ON discharge_items(tenant_id, discharge_id, status);
+
+-- A transfer of accountability, and the acceptance that completes it.
+--
+-- Proposing is not transferring. Until somebody accepts, the person who
+-- proposed it is still accountable — which is the whole point, because "I
+-- handed it over" and "somebody has it" are different statements and only the
+-- second is true of a transfer nobody answered. An unaccepted handoff is
+-- visible as its own queue rather than as a gap.
+--
+-- Coverage is a different thing and lives here too, distinguished by kind. A
+-- handoff moves accountability permanently; coverage lends it for a window
+-- and hands it back. Coverage with no end is the failure this guards against,
+-- so covers_until is required for that kind and checked in code.
+CREATE TABLE IF NOT EXISTS handoffs (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  subject_kind TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  patient_id TEXT,
+  from_id TEXT NOT NULL,
+  to_id TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'proposed',
+  covers_from TEXT,
+  covers_until TEXT,
+  proposed_at TEXT NOT NULL,
+  proposed_by TEXT NOT NULL,
+  responded_at TEXT,
+  responded_by TEXT,
+  response_reason TEXT,
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_handoffs_status
+  ON handoffs(tenant_id, status, proposed_at);
+CREATE INDEX IF NOT EXISTS idx_handoffs_subject
+  ON handoffs(tenant_id, subject_kind, subject_id);
+-- One live proposal per subject. Two people cannot each be offered the same
+-- work, because then two people can each accept it and each believe the other
+-- did not.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_one_proposal
+  ON handoffs(tenant_id, subject_kind, subject_id) WHERE status = 'proposed';
+
 CREATE INDEX IF NOT EXISTS idx_patient_contacts_patient
   ON patient_contacts(tenant_id, patient_id, status);
 -- One live row per address. Two active contacts holding the same number

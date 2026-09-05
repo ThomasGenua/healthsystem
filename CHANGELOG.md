@@ -11,6 +11,49 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **A discharge list taken from the chart, not typed into a form.** A form
+  records what somebody remembered at the end of a shift. The four things that
+  actually go wrong after a visit — an unacknowledged result, an unfinished
+  medication reconciliation, no follow-up booked, a referral still open — are
+  computable at the moment the encounter closes, so `discharges.open()` takes
+  the snapshot and what a clinician does afterwards is resolve items rather
+  than remember them. `outstandingFor()` exposes the same list *before* the
+  visit closes, which is the only moment somebody can still act on it with the
+  patient in front of them.
+
+  A discharge cannot be closed while anything is outstanding — a button that
+  makes the list go away is worse than no list, because it produces a record
+  saying the follow-up was completed. Resolving an item needs a written
+  resolution. The snapshot survives its own resolution, because the question
+  asked six months later is what was outstanding when this person went home. A
+  follow-up item is raised only where the disposition implies one, so a
+  patient admitted to hospital is not added to a clinic list nobody will read.
+  One snapshot per encounter, enforced by a unique index.
+
+- **Handoffs that are not complete until somebody accepts them.** "I handed it
+  over" and "somebody has it" are different statements, and only the second is
+  true of a transfer nobody answered. A handoff is proposed and then accepted;
+  until it is accepted **the person who proposed it is still accountable**,
+  answered from the record by `accountableFor()` rather than from a column
+  somebody has to remember to update. Only the person it was offered to may
+  accept or decline; only the proposer may withdraw. One live proposal per
+  subject, so two people cannot each be offered the same work and each accept
+  it.
+
+  **Coverage is a different thing** and needs an end date, with no default —
+  when it ends is the safeguard, exactly as with a delegated patient-access
+  grant, and a locum who covered a list in March must not still be covering it
+  in November. Accountability reverts when the window closes without anybody
+  acting, and coverage sits on top of whoever holds the work, so a transfer
+  underneath it is respected when it lapses.
+
+- **Two more views on the clinic board.** `attention()` now carries unaccepted
+  handoffs — every row is work two people may each believe the other is
+  holding — and open discharge follow-ups with a count of what is still loose,
+  alongside who is covering for whom right now. Both were absent rather than
+  empty in the previous increment because the workflow underneath them did not
+  exist; it does now. Intake status is still absent, and still for that reason.
+
 - **A clinic board, and a separate one for the wall.** `worklist()` answers
   what a clinician owes somebody. The front desk asks a different question —
   who is here, how long have they been waiting, which rooms are free, who has
