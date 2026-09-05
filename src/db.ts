@@ -35,6 +35,8 @@ export const TENANT_SCOPED_TABLES = [
   "fhir_resources",
   "fhir_identifiers",
   "channel_state",
+  "patient_contacts",
+  "patient_notice_deliveries",
   "fhir_subscriptions",
   "api_keys",
   "audit_events",
@@ -2406,6 +2408,96 @@ CREATE INDEX IF NOT EXISTS idx_enrolments_status ON patient_enrolments(tenant_id
 CREATE INDEX IF NOT EXISTS idx_enrolments_patient ON patient_enrolments(tenant_id, patient_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_enrolment_pending
   ON patient_enrolments(tenant_id, patient_id, subject_id) WHERE status = 'pending';
+-- Where a patient has agreed to be reached, and on what terms.
+--
+-- Two facts, deliberately separate columns, because they are two different
+-- questions and a system that conflates them sends a result notice to a
+-- number somebody typed wrong. verified_at says a named clerk checked that
+-- this address belongs to this patient and wrote down how. consent says the
+-- patient agreed to be contacted here. Neither implies the other: a verified
+-- number nobody asked about is unasked, and consent to a number nobody
+-- checked reaches whoever actually holds it.
+--
+-- language is nullable and null means unstated, never English. A notice
+-- sent in a language the patient does not read is a notice that was not sent,
+-- and defaulting the column would make that indistinguishable from a
+-- deliberate choice.
+--
+-- Quiet hours need a zone. quiet_from/quiet_to without timezone cannot
+-- be evaluated at all — 21:00 is a different instant in Iqaluit and Vancouver
+-- — so a contact carrying hours and no zone is refused on the way in rather
+-- than silently interpreted as UTC.
+CREATE TABLE IF NOT EXISTS patient_contacts (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  value TEXT NOT NULL,
+  language TEXT,
+  verified_at TEXT,
+  verified_by TEXT,
+  verification_method TEXT,
+  consent TEXT NOT NULL DEFAULT 'unasked',
+  consent_at TEXT,
+  consent_by TEXT,
+  quiet_from TEXT,
+  quiet_to TEXT,
+  timezone TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  retired_at TEXT,
+  retired_reason TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_patient_contacts_patient
+  ON patient_contacts(tenant_id, patient_id, status);
+-- One live row per address. Two active contacts holding the same number
+-- would be two notices to one phone, which reads to the patient as the
+-- clinic having lost track of them.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_patient_contacts_live
+  ON patient_contacts(tenant_id, patient_id, channel, value) WHERE status = 'active';
+
+-- One attempt to reach one contact point about one notice.
+--
+-- The five states are not a refinement of the delivery queue's; they are a
+-- different question. The queue's delivered means a destination returned
+-- 2xx — the gateway took the request. Whether a text message reached a phone
+-- is something only the gateway can say, and it says it later or not at all.
+-- So a queue success lands here as provider-accepted, and delivered
+-- requires a receipt somebody wired up. With no receipt path configured an
+-- attempt stays provider-accepted forever, which is the true answer:
+-- nobody knows.
+--
+-- unknown is for a receipt that arrived and did not map — a status string
+-- this build does not recognise. It is not failed and it is not
+-- delivered, and collapsing it into either invents a fact.
+CREATE TABLE IF NOT EXISTS patient_notice_deliveries (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  notice_id TEXT NOT NULL,
+  contact_id TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  state TEXT NOT NULL,
+  message_id TEXT,
+  provider_reference TEXT,
+  held_until TEXT,
+  accepted_at TEXT,
+  delivered_at TEXT,
+  failed_at TEXT,
+  detail TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+-- One notice reaches one contact point once. Without this a retry loop, or
+-- two operators pressing send, is two texts about one result — which is the
+-- duplicate-outreach failure, arriving through the machinery meant to
+-- prevent silence.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notice_delivery_once
+  ON patient_notice_deliveries(tenant_id, notice_id, contact_id);
+CREATE INDEX IF NOT EXISTS idx_notice_delivery_state
+  ON patient_notice_deliveries(tenant_id, state, created_at);
+
 CREATE INDEX IF NOT EXISTS idx_patient_notices_status ON patient_notices(tenant_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_patient_notices_patient ON patient_notices(tenant_id, patient_id);
 -- The deduplication lookup. Every inbound result does it, so it is the one
@@ -2518,6 +2610,13 @@ export interface DbOptions {
  */
 const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
   { table: "fhir_resources", column: "patient_id", type: "TEXT" },
+  // Reading a notice in the portal, which is a different fact from any
+  // provider's opinion about delivery. Null on every existing row, which
+  // reads correctly: before this there was no portal to read one in.
+  { table: "patient_notices", column: "viewed_at", type: "TEXT" },
+  // The follow-up task a failed delivery opened, so the chase is a queue item
+  // somebody owns rather than a row on a list nobody is assigned.
+  { table: "patient_notices", column: "follow_up_task_id", type: "TEXT" },
   { table: "prescriptions", column: "dispense_reporting", type: "INTEGER" },
   { table: "prescriptions", column: "safety_summary", type: "TEXT" },
   { table: "referrals", column: "to_service_id", type: "TEXT" },

@@ -40,7 +40,11 @@ export type TaskKind =
   | "care-gap"
   | "administrative"
   | "privacy-request"
-  | "portal-submission";
+  | "portal-submission"
+  // A patient the clinic could not reach. Its own kind rather than
+  // administrative: the work is chasing a person, and burying it among
+  // configuration chores is how "nobody could be told" stops being visible.
+  | "patient-contact";
 
 export type TaskPriority = "routine" | "urgent" | "stat";
 export type TaskStatus = "open" | "in-progress" | "completed" | "cancelled";

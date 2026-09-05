@@ -13,7 +13,7 @@ around — see item 67, where the premise is wrong.
 | # | Item | Status |
 |---|---|---|
 | 58 | Patient and caregiver portal | **Partial** — the API is complete; there is no application |
-| 59 | Patient notification delivery | **Partial** — durable dispatch exists; preferences, providers and consent do not |
+| 59 | Patient notification delivery | **Done**, bar provider adapters — see the note under item 59 |
 | 60 | Pre-visit intake and uploads | **Missing** — documents-as-chart-facts is the only adjacent piece |
 | 61 | Structured care plans and after-visit summaries | **Partial** — plans exist; goals, actions and the summary do not |
 | 62 | Discharge follow-up and team handoffs | **Missing** — the word appears; the workflow does not |
@@ -80,13 +80,25 @@ undelivered and untold queues are both exposed (`:277`, `:281`), and the
 payload is a fact — `{type, kind, noticeId, patientId, aboutId, summary}` —
 never a result field. That last property is hazard H-116 and is tested.
 
-**Missing.** Verified contact points and preferences; the patient's language
-carried onto the notice; consent to be contacted; quiet hours. A provider
-abstraction for SMS and email. Two of the five delivery states the item names:
-`provider-accepted` and `unknown` are not distinguishable from `dispatched`
-today. Recording a portal view as its own event, separate from delivery. And
-a failed delivery becomes a row on a list rather than an assignment to a
-named follow-up queue.
+**Added in this increment.** `patient_contacts` with verification and consent
+as separate recorded facts, language, quiet hours with a required zone, and
+withdrawal that keeps the row. Five delivery states where the queue's success
+is `provider-accepted` and only a receipt reaches `delivered`; `unknown` for a
+receipt this build cannot read. Held sends that re-check consent when the
+window closes. A portal view recorded separately from every delivery state and
+from `told`. A `patient-contact` task on the unassigned queue when nobody can
+be reached. Generic bilingual wording that names no kind, no summary and no
+chart.
+
+**Still missing.** A provider *adapter*: the outbound message carries an
+address and a body onto a channel, and turning that into an SMS is the
+deployment's HTTP destination plus a gateway account. Nothing here has sent a
+text message. A receipt route for a gateway to call back into
+`recordReceipt()` is a store method with no HTTP surface yet, so `delivered`
+is currently reachable only from code. Verification is a clerk attesting, not
+a code sent to the number — that check would need the sending path that does
+not exist. And there is no per-patient digest or rate limit: ten results
+released at once are ten notices.
 
 ## 60. Pre-visit intake and patient uploads — **missing**
 
