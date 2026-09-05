@@ -20,7 +20,7 @@ around — see item 67, where the premise is wrong.
 | 63 | Longitudinal chart | **Partial** — assembly and units are strong; timeline and trends are absent |
 | 64 | Outreach campaigns | **Missing** — cohorts and gaps exist; nothing campaign-shaped |
 | 65 | Travelling-clinic coordination | **Partial** — visits and waitlist exist; arrangements do not |
-| 66 | Clinic operations workspace | **Partial** — a worklist exists; the board and the resource views do not |
+| 66 | Clinic operations workspace | **Partial** — the board and resources are in; two views wait on item 62 |
 | 67 | Measuring whether this helps | **Partial**, and one premise is wrong — see below |
 
 ---
@@ -189,13 +189,21 @@ referrals, open tasks, overdue orders, incomplete reconciliations and care
 plans past their review date, ordered by urgency and abnormality rather than
 arrival.
 
-**Missing.** The operations view: waiting-room board, rooms and resources,
-intake status, encounter progress, staff workload. The four views the item
-names — awaiting results, recently discharged, unaccepted handoffs, overdue
-follow-up — of which the first exists inside the worklist and the other three
-depend on item 62. Nothing states *why* an item ranks where it does, the
-ranking is not configurable, and there is no notion of a display that must
-carry no identifiers.
+**Added in this increment.** `ClinicBoard` (`src/workspace/board.ts`): a
+waiting-room view derived from bookings and encounters, a separate
+wall-mounted rendering with no field an identifier could go in, room and
+resource availability with the next free slot, and an attention queue
+carrying the patients nobody could reach. Every row states the reason it is
+where it is. A room with nothing scheduled says so rather than reading as
+free, and `progressKnown` is false on every row because the encounter model
+cannot distinguish "in the waiting room" from "with the clinician".
+
+**Still missing.** Intake status needs item 60. Recently-discharged patients
+and unaccepted handoffs need item 62, and are absent rather than rendered
+empty — an empty panel and a quiet day look the same. Staff workload exists
+as `TaskStore.load()` but is not on the board. The ranking is stated but not
+configurable: a deployment that wanted a different rule would edit the
+source, and governed configuration is its own piece of work.
 
 ## 67. Measuring whether these workflows help — **partial, and one premise is wrong**
 

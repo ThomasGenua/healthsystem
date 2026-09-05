@@ -45,6 +45,7 @@ import { StandardsRegistry } from "../conformance/standards.ts";
 import { ingestFhir } from "../directory/fhir.ts";
 import { ChannelNoticeDispatcher, PatientNotices } from "../patient/notice.ts";
 import { PatientContacts } from "../patient/contacts.ts";
+import { ClinicBoard } from "../workspace/board.ts";
 import { AccessReview } from "../audit/review.ts";
 import { Clinics } from "../schedule/clinics.ts";
 import { ChannelVersions } from "./channel-versions.ts";
@@ -126,6 +127,12 @@ export interface TenantView {
   enrolment: PatientEnrolment;
   scoreGovernance: ScoreGovernance;
   standards: StandardsRegistry;
+  /**
+   * The clinic as it is right now: who is here, which rooms are free, who
+   * has fallen through. A different question from the worklist, which is
+   * what one clinician owes somebody.
+   */
+  board: ClinicBoard;
   /** Notices a patient is owed, published onto a channel. Dispatching is not telling. */
   notices: PatientNotices;
   /**
@@ -380,6 +387,8 @@ export class Engine {
     const contacts = new PatientContacts(db);
     const enrolment = new PatientEnrolment(db, patientAccess, notices);
     const encounters = new Encounters(db);
+    // After encounters, which it reads to tell an arrival from an expectation.
+    const board = new ClinicBoard({ schedule, encounters, tasks });
     // Built here rather than inline in the view because the key store needs it
     // too: issuing a credential for an organization nobody has registered is a
     // typo worth refusing, and only the directory can tell.
@@ -440,6 +449,7 @@ export class Engine {
       standards,
       notices,
       contacts,
+      board,
       registry: new Registry(db),
       migration: new Migration(db, { clinical, meds }),
       consent,
