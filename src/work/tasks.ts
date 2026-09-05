@@ -88,11 +88,33 @@ export interface Actor {
 
 const PRIORITY_RANK: Record<TaskPriority, number> = { stat: 0, urgent: 1, routine: 2 };
 
+/** The slice of the handoff record an inbox needs, so tasks do not depend on all of it. */
+export interface OwnershipRecord {
+  effectiveOwners(
+    subjectKind: string,
+    asOf?: Date
+  ): Map<string, { ownerId: string; via: "transfer" | "coverage"; covering?: string }>;
+}
+
 export class TaskStore {
   private db: Db;
+  private handoffs: OwnershipRecord | undefined;
 
   constructor(db: Db) {
     this.db = db;
+  }
+
+  /**
+   * Tells this store where accountability actually lives.
+   *
+   * Set after construction because the handoff record and this are built in
+   * the same breath and one of them has to come first. Absent, every query
+   * here answers from the owner column exactly as it did before — which is
+   * correct for a deployment with no handoffs, and is what every existing
+   * caller gets.
+   */
+  useOwnershipRecord(handoffs: OwnershipRecord): void {
+    this.handoffs = handoffs;
   }
 
   create(input: {
@@ -268,7 +290,7 @@ export class TaskStore {
    * that did not, which is the mechanism by which a critical result is missed
    * without anyone doing anything wrong.
    */
-  inbox(ownerId: string, opts: { kind?: TaskKind; limit?: number } = {}): TaskRow[] {
+  inbox(ownerId: string, opts: { kind?: TaskKind; limit?: number; asOf?: Date } = {}): TaskRow[] {
     const rows = this.db.sql
       .prepare(
         `SELECT * FROM tasks
@@ -276,7 +298,44 @@ export class TaskStore {
             ${opts.kind ? "AND kind = ?" : ""}`
       )
       .all(...([this.db.tenantId, ownerId, ...(opts.kind ? [opts.kind] : [])] as never[])) as unknown as TaskRow[];
-    return this.rank(rows).slice(0, Math.min(opts.limit ?? 100, 500));
+
+    // The owner column says who this started with. An accepted handoff says
+    // whose list it is on today, and until this consulted it the two could
+    // disagree — which is the failure the handoff record was built to end,
+    // arriving one layer down as an inbox that still shows work somebody
+    // handed away.
+    const overrides = this.handoffs?.effectiveOwners("task", opts.asOf);
+    if (!overrides || overrides.size === 0) {
+      return this.rank(rows).slice(0, Math.min(opts.limit ?? 100, 500));
+    }
+
+    const kept = rows.filter((r) => (overrides.get(r.id)?.ownerId ?? ownerId) === ownerId);
+    const seen = new Set(kept.map((r) => r.id));
+    const incoming: TaskRow[] = [];
+    for (const [subjectId, holder] of overrides) {
+      if (holder.ownerId !== ownerId || seen.has(subjectId)) continue;
+      const row = this.get(subjectId);
+      if (!row || (row.status !== "open" && row.status !== "in-progress")) continue;
+      if (opts.kind && row.kind !== opts.kind) continue;
+      incoming.push(row);
+    }
+    return this.rank([...kept, ...incoming]).slice(0, Math.min(opts.limit ?? 100, 500));
+  }
+
+  /**
+   * Who holds one item right now, and how it came to be them.
+   *
+   * The single answer callers should use rather than reading `owner_id`,
+   * which is only the beginning of the story once a handoff exists.
+   */
+  heldBy(
+    taskId: string,
+    asOf = new Date()
+  ): { ownerId: string | null; via: "original" | "transfer" | "coverage"; covering?: string } {
+    const row = this.require(taskId);
+    const holder = this.handoffs?.effectiveOwners("task", asOf).get(taskId);
+    if (!holder) return { ownerId: row.owner_id, via: "original" };
+    return { ownerId: holder.ownerId, via: holder.via, ...(holder.covering ? { covering: holder.covering } : {}) };
   }
 
   /**

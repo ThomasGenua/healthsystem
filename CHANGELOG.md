@@ -11,6 +11,25 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Routing that reads the handoff record instead of an owner column.** The
+  previous increment could answer who was accountable for anything; nothing
+  asked it. `TaskStore.inbox()` and `Discharges.openFollowUps()` now route
+  through `Handoffs.effectiveOwners()`, so work somebody handed away leaves
+  their list and arrives on the other person's **on acceptance and not
+  before** — the two statements the handoff record exists to separate,
+  arriving one layer down as an inbox that would otherwise still show work
+  that had moved. `TaskStore.heldBy()` and `Discharges.accountableFor()` are
+  the single answer to ask for; `owner_id` is now only who it started with.
+
+  `effectiveOwners()` returns **overrides only**, which is what makes coverage
+  revert by arithmetic: when the window closes the subject stops appearing in
+  the map and the store falls back to the column it always had. Writing the
+  coverer into the owner column on accept would need a sweep to write it back,
+  and a sweep that does not run leaves a locum owning a list they stopped
+  watching in March. Coverage sits on top of whoever holds the work, so a
+  reassignment accepted during a night's cover is what the work goes back to
+  at dawn — not the clinician who gave it away before the cover began.
+
 - **A discharge list taken from the chart, not typed into a form.** A form
   records what somebody remembered at the end of a shift. The four things that
   actually go wrong after a visit — an unacknowledged result, an unfinished
