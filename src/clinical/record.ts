@@ -52,7 +52,10 @@ export type EntryType =
   | "CarePlan"
   | "Consent"
   | "ServiceRequest"
-  | "Task";
+  | "Task"
+  // A patient's own answers, frozen at the moment they submitted them. See
+  // src/patient/intake.ts.
+  | "QuestionnaireResponse";
 
 /**
  * What a version asserted when it was written. Not "amended" — that is a fact

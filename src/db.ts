@@ -65,6 +65,9 @@ export const TENANT_SCOPED_TABLES = [
   "patient_access_log",
   "patient_requests",
   "patient_request_events",
+  "intake_questionnaires",
+  "intake_submissions",
+  "intake_uploads",
   "patient_enrolments",
   "patient_notices",
   "schedule_slots",
@@ -2689,6 +2692,101 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(hash);
 CREATE INDEX IF NOT EXISTS idx_audit_recorded ON audit_events(recorded_at);
 CREATE INDEX IF NOT EXISTS idx_audit_principal ON audit_events(principal_id, recorded_at);
 CREATE INDEX IF NOT EXISTS idx_audit_patient ON audit_events(tenant_id, patient, recorded_at);
+
+-- Item 60: pre-visit intake and patient uploads.
+--
+-- A questionnaire version is never edited once published; a new version is a
+-- new row. That is what lets a submission reference (id, version) rather than
+-- a copy of the questions, and still show, five years later, exactly what was
+-- asked when it names a version this deployment has since changed.
+CREATE TABLE IF NOT EXISTS intake_questionnaires (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  -- [{key, label, type, required, options?}] as published. Immutable: a
+  -- change is a new version, not an edit of this column.
+  questions TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  published_by TEXT NOT NULL,
+  published_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id, version)
+);
+
+-- A submission is a workflow object, not a chart entry: a draft is typed
+-- into over minutes or days and an append-only ledger has no way to take
+-- that back. It lives here, mutable, until submit() freezes it and writes
+-- the one fact that belongs on the chart: what was actually submitted, once.
+CREATE TABLE IF NOT EXISTS intake_submissions (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  appointment_id TEXT,
+  questionnaire_id TEXT,
+  questionnaire_version INTEGER,
+  -- draft | submitted | reviewed
+  status TEXT NOT NULL DEFAULT 'draft',
+  answers TEXT NOT NULL DEFAULT '{}',
+  concern TEXT,
+  -- [{change: started|stopped|changed, description}]. Proposed only — nothing
+  -- here writes to the medication list. A clinician reviewing the submission
+  -- decides whether it belongs in a reconciliation.
+  proposed_meds TEXT,
+  started_by TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  submitted_at TEXT,
+  -- The QuestionnaireResponse this submission became on the chart. NULL
+  -- until submit(); the frozen record from that point on.
+  record_id TEXT,
+  task_id TEXT,
+  reviewed_by TEXT,
+  reviewed_at TEXT,
+  review_outcome TEXT,
+  review_note TEXT,
+  PRIMARY KEY (tenant_id, id)
+);
+-- One open draft per patient, questionnaire and appointment (each treated as
+-- '' when absent, so a concern with no questionnaire still dedupes per
+-- appointment, and a fully general one dedupes globally). Resuming after a
+-- dropped connection continues this row; it does not start a second one.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_intake_open_draft
+  ON intake_submissions(tenant_id, patient_id, COALESCE(questionnaire_id, ''), COALESCE(appointment_id, ''))
+  WHERE status = 'draft';
+CREATE INDEX IF NOT EXISTS idx_intake_patient ON intake_submissions(tenant_id, patient_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_intake_status ON intake_submissions(tenant_id, status, submitted_at);
+
+-- A file a patient sent in. It sits here, quarantined, until something scans
+-- it: receive() never marks a file clean, because a store cannot honestly
+-- vouch for bytes it did not examine. No scanner configured means every
+-- upload stays pending-scan forever, visible as such rather than served —
+-- the same choice src/meds/safety.ts makes about an unconfigured interaction
+-- database: unchecked is reported as unchecked, never quietly as clear.
+CREATE TABLE IF NOT EXISTS intake_uploads (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  submission_id TEXT,
+  filename TEXT NOT NULL,
+  content_type TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  -- base64. Nulled out once infected: a flagged payload is never retrievable
+  -- again through any path, including this table read directly.
+  data TEXT,
+  -- pending-scan | clean | infected
+  status TEXT NOT NULL DEFAULT 'pending-scan',
+  scanned_at TEXT,
+  scanner_note TEXT,
+  -- Set once filed as a chart DocumentReference (source patient-submitted),
+  -- which only happens on a clean verdict.
+  document_record_id TEXT,
+  uploaded_by TEXT NOT NULL,
+  uploaded_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_intake_uploads_patient ON intake_uploads(tenant_id, patient_id, uploaded_at);
+CREATE INDEX IF NOT EXISTS idx_intake_uploads_submission ON intake_uploads(tenant_id, submission_id);
+CREATE INDEX IF NOT EXISTS idx_intake_uploads_pending ON intake_uploads(tenant_id, status, uploaded_at);
 `;
 
 

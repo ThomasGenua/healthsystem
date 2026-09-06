@@ -45,6 +45,7 @@ import { StandardsRegistry } from "../conformance/standards.ts";
 import { ingestFhir } from "../directory/fhir.ts";
 import { ChannelNoticeDispatcher, PatientNotices } from "../patient/notice.ts";
 import { PatientContacts } from "../patient/contacts.ts";
+import { Questionnaires, IntakeSubmissions, Uploads, type MalwareScanner } from "../patient/intake.ts";
 import { ClinicBoard } from "../workspace/board.ts";
 import { Discharges, Handoffs } from "../work/discharge.ts";
 import { AccessReview } from "../audit/review.ts";
@@ -146,6 +147,12 @@ export interface TenantView {
    * checked and a patient consented to, which is what a notice may use.
    */
   contacts: PatientContacts;
+  /** Versioned pre-visit questionnaires, and what a patient answered on one. */
+  questionnaires: Questionnaires;
+  /** Drafts, submissions and the review they raise. Never applies a proposed change itself. */
+  intake: IntakeSubmissions;
+  /** Patient-uploaded files: quarantined until scanned, and never served before then. */
+  uploads: Uploads;
   registry: Registry;
   /** Bulk loads from an incumbent system, and whether they were complete. */
   migration: Migration;
@@ -231,6 +238,14 @@ export interface EngineOptions {
    * deployment in breach without telling it.
    */
   controlledSubstanceAuthority?: string;
+  /**
+   * What scans a patient upload before it can be downloaded or filed onto
+   * the chart. Unset means every upload stays quarantined indefinitely —
+   * visible as pending-scan, never served — which is honest, not broken: a
+   * deployment that wants uploads to clear quarantine has to say what scans
+   * them. See src/patient/intake.ts for why there is no default scanner.
+   */
+  malwareScanner?: MalwareScanner;
 }
 
 export class Engine {
@@ -266,6 +281,8 @@ export class Engine {
   private noticeChannel: string | null;
   /** The channel prescriptions are transmitted on, when one is configured. */
   private pharmacyChannel: string | null;
+  /** What scans a patient upload, when a deployment configures one. */
+  private malwareScanner: MalwareScanner | null;
   /** What authorises transmitting a controlled substance, when anything does. */
   private controlledAuthority: string | null;
   private lockStaleMs: number;
@@ -317,6 +334,7 @@ export class Engine {
     this.noticeChannel = opts.breakGlassNoticeChannel ?? null;
     this.pharmacyChannel = opts.pharmacyChannel ?? null;
     this.controlledAuthority = opts.controlledSubstanceAuthority ?? null;
+    this.malwareScanner = opts.malwareScanner ?? null;
     this.lockStaleMs = opts.lockStaleMs ?? 20_000;
     // Comfortably inside the staleness window, so a slow moment never costs a
     // running engine its own claim.
@@ -388,6 +406,13 @@ export class Engine {
     const labIntake = new LabIntake(db, orders, clinical.patientIndex);
     const referrals = new ReferralStore(db);
     const patientAccess = new PatientAccess(db, orders, tasks);
+    // Pre-visit intake (item 60). Built on documents and tasks, both already
+    // constructed above: a submission files onto the chart the same way a
+    // clinician-recorded document does, and both a submission and a clean
+    // upload raise a portal-submission task rather than landing silently.
+    const questionnaires = new Questionnaires(db);
+    const intake = new IntakeSubmissions(db, questionnaires, clinical, tasks);
+    const uploads = new Uploads(db, documents, { tasks, ...(this.malwareScanner ? { scanner: this.malwareScanner } : {}) });
     const notices = new PatientNotices(db, this.noticeChannel);
     const contacts = new PatientContacts(db);
     const enrolment = new PatientEnrolment(db, patientAccess, notices);
@@ -463,6 +488,9 @@ export class Engine {
       standards,
       notices,
       contacts,
+      questionnaires,
+      intake,
+      uploads,
       board,
       discharges,
       handoffs,

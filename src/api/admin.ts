@@ -979,6 +979,103 @@ async function route(
       );
     }
 
+    // Item 60: pre-visit intake and patient uploads. Everything below goes
+    // through patientPhi() exactly like the rest of this block — a caregiver
+    // with the "intake" permission can draft and submit on the patient's
+    // behalf; one without it cannot, the same as any other section here.
+    if (path === "/patient/questionnaires" && method === "GET") {
+      // Not itself PHI — a list of forms offered, not an answer to one — so
+      // this is available to any authenticated patient-portal subject rather
+      // than gated per patient, the same way /patient/authorities is.
+      return send(res, 200, { questionnaires: tenant.questionnaires.list() });
+    }
+
+    if (path === "/patient/intake" && method === "GET") {
+      const patientId = url.searchParams.get("patient");
+      if (!patientId) return send(res, 400, { error: "patient required" });
+      return patientPhi(patientId, "intake", "QuestionnaireResponse", "view-intake", () => tenant.intake.forPatient(patientId));
+    }
+
+    if (path === "/patient/intake/draft" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        questionnaireId?: string;
+        appointmentId?: string;
+        answers?: Record<string, unknown>;
+        concern?: string;
+        proposedMeds?: { change?: string; description?: string }[];
+      };
+      if (!body.patient) return send(res, 400, { error: "patient required" });
+      return patientPhi(
+        body.patient,
+        "intake",
+        "QuestionnaireResponse",
+        "save-intake-draft",
+        (authority) =>
+          tenant.intake.saveDraft({
+            patientId: body.patient!,
+            ...(body.questionnaireId ? { questionnaireId: body.questionnaireId } : {}),
+            ...(body.appointmentId ? { appointmentId: body.appointmentId } : {}),
+            ...(body.answers ? { answers: body.answers } : {}),
+            ...(body.concern !== undefined ? { concern: body.concern } : {}),
+            ...(body.proposedMeds ? { proposedMeds: body.proposedMeds as { change: "started" | "stopped" | "changed"; description: string }[] } : {}),
+            by: { actorId: subject, actorKind: authority.relationship === "self" ? "patient" : "proxy" },
+          }),
+        201
+      );
+    }
+
+    if (path === "/patient/intake/submit" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      const draft = tenant.intake.get(body.id);
+      return patientPhi(draft.patient_id, "intake", "QuestionnaireResponse", "submit-intake", (authority) =>
+        tenant.intake.submit(body.id!, { actorId: subject, actorKind: authority.relationship === "self" ? "patient" : "proxy" })
+      );
+    }
+
+    if (path === "/patient/uploads" && method === "GET") {
+      const patientId = url.searchParams.get("patient");
+      if (!patientId) return send(res, 400, { error: "patient required" });
+      return patientPhi(patientId, "intake", "DocumentReference", "view-uploads", () => tenant.uploads.forPatient(patientId));
+    }
+
+    if (path === "/patient/upload" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        submissionId?: string;
+        filename?: string;
+        contentType?: string;
+        data?: string;
+      };
+      if (!body.patient || !body.filename || !body.contentType || !body.data) {
+        return send(res, 400, { error: "patient, filename, contentType and data required" });
+      }
+      return patientPhi(
+        body.patient,
+        "intake",
+        "DocumentReference",
+        "upload-document",
+        (authority) =>
+          tenant.uploads.receive({
+            patientId: body.patient!,
+            ...(body.submissionId ? { submissionId: body.submissionId } : {}),
+            filename: body.filename!,
+            contentType: body.contentType!,
+            data: body.data!,
+            by: { actorId: subject, actorKind: authority.relationship === "self" ? "patient" : "proxy" },
+          }),
+        201
+      );
+    }
+
+    if (path === "/patient/upload" && method === "GET") {
+      const id = url.searchParams.get("id");
+      if (!id) return send(res, 400, { error: "id required" });
+      const upload = tenant.uploads.get(id);
+      return patientPhi(upload.patient_id, "intake", "DocumentReference", "download-upload", () => tenant.uploads.download(id));
+    }
+
     return send(res, 404, { error: "not found" });
   }
 
@@ -2203,6 +2300,97 @@ async function route(
         },
         (r) => r.rows.length
       );
+    }
+    // Item 60: the clinician side of pre-visit intake. The patient-facing
+    // routes are under /patient/*, gated by patientPhi() further down; these
+    // are ordinary clinical reads and writes and go through phi()/phiFor()
+    // like any other, because a submission is content about a patient the
+    // same way a note or a vital sign is.
+    if (path === "/api/clinical/intake" && method === "GET") {
+      // Spans patients when nothing narrows it, like the worklist and the
+      // task inbox above — the review queue is a clinic-wide list, not a
+      // per-patient one, until somebody names a patient.
+      return phi(
+        "QuestionnaireResponse",
+        () => (patient ? tenant.intake.forPatient(patient) : tenant.intake.open()),
+        (r) => r.length,
+        ["QuestionnaireResponse"]
+      );
+    }
+    if (path === "/api/clinical/intake-review" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; outcome?: string; note?: string };
+      if (!body.id || !body.outcome || !body.note) return send(res, 400, { error: "id, outcome and note required" });
+      const submission = tenant.intake.get(body.id);
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phiFor(
+        submission.patient_id,
+        "QuestionnaireResponse",
+        () =>
+          tenant.intake.review(body.id!, {
+            outcome: body.outcome as "accepted" | "noted" | "needs-follow-up",
+            note: body.note!,
+            by,
+          }),
+        undefined,
+        ["QuestionnaireResponse"]
+      );
+    }
+    if (path === "/api/clinical/questionnaires" && method === "GET") {
+      return phi("QuestionnaireResponse", () => tenant.questionnaires.list(), (r) => r.length, ["QuestionnaireResponse"]);
+    }
+    if (path === "/api/clinical/questionnaires" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; title?: string; questions?: unknown };
+      if (!body.id || !body.title || !Array.isArray(body.questions)) {
+        return send(res, 400, { error: "id, title and questions[] required" });
+      }
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      try {
+        const published = tenant.questionnaires.publish({
+          id: body.id,
+          title: body.title,
+          questions: body.questions as never,
+          by,
+        });
+        audit({ action: "C", outcome: 0, resourceType: "QuestionnaireResponse", detail: `published ${body.id}/${published.version}` });
+        return send(res, 201, published);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        logFault("questionnaires publish", mapped, err);
+        audit({ action: "C", outcome: mapped.outcome, resourceType: "QuestionnaireResponse", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    if (path === "/api/clinical/uploads" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("DocumentReference", () => tenant.uploads.forPatient(patient), (r) => r.length, ["DocumentReference"]);
+    }
+    if (path === "/api/clinical/upload-scan" && method === "POST") {
+      // scanOne() is async (a real scanner is an external call), and phi()'s
+      // producer is not — so this route does the lookup and the mutation
+      // itself rather than through phi(), the same way any async store call
+      // in this file has to. The verdict returned is clean/infected, not
+      // clinical content, so this does not apply the patient-directive
+      // lockbox the way a read of the filed document later on will.
+      const body = JSON.parse(await readBody(req)) as { id?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      try {
+        const upload = tenant.uploads.get(body.id); // 404s via the catch below if it does not exist
+        const scanned = await tenant.uploads.scanOne(body.id, by);
+        audit({
+          action: "U",
+          outcome: 0,
+          resourceType: "DocumentReference",
+          patient: upload.patient_id,
+          detail: `upload ${body.id} scanned: ${scanned.status}`,
+        });
+        return send(res, 200, scanned);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        logFault("upload scan", mapped, err);
+        audit({ action: "U", outcome: mapped.outcome, resourceType: "DocumentReference", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
     }
     if (path === "/api/clinical/notes" && method === "GET") {
       if (!patient) return send(res, 400, { error: "patient required" });

@@ -31,6 +31,18 @@ async function liveEngine(dir: string, messages = 5): Promise<Engine> {
   const engine = new Engine({ dbPath: join(dir, "northstar.db"), tickMs: 15 });
   engine.registerMapping(MAPPING);
   await engine.start();
+  // SQLite auto-checkpoints WAL back into the main file once it crosses a
+  // page threshold, and the schema alone — every table and index this
+  // deployment has, whether this test touches it or not — already occupies
+  // several hundred WAL pages before a single message is sent. Left on, five
+  // messages can be enough to cross that threshold by accident, at which
+  // point the "naive copy" this test exists to catch is no longer naive: the
+  // auto-checkpoint already did its job first, and the very race this file
+  // is for stops happening — not because the hazard is gone, but because the
+  // schema's size that day happened not to trip it. Off, the property this
+  // test asserts is true by construction rather than by how many tables a
+  // later change happens to add.
+  engine.db.sql.exec("PRAGMA wal_autocheckpoint = 0");
   await engine.addChannel(CHANNEL);
   for (let i = 0; i < messages; i++) engine.ingest("backed-up", ADT, "x-application/hl7-v2+er7", "test");
   await until(() => engine.db.listDeliveries({ channelId: "backed-up", state: "delivered" }).length === messages);

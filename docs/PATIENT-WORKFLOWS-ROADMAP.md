@@ -100,19 +100,86 @@ a code sent to the number — that check would need the sending path that does
 not exist. And there is no per-patient digest or rate limit: ten results
 released at once are ten notices.
 
-## 60. Pre-visit intake and patient uploads — **missing**
+## 60. Pre-visit intake and patient uploads — **done**
 
-**Present.** `PatientDocuments` (`src/clinical/documents.ts`) stores a
-patient-supplied document as a chart fact with a source and a received date,
-refuses HTML, SVG and executables, caps a payload at 256 KiB (`:42`, `:146`),
-and keeps lists metadata-only so a list is never a download.
+**Added in this increment.** `src/patient/intake.ts`: versioned questionnaire
+definitions (`Questionnaires.publish()` always inserts a new version rather
+than editing one, so a submission naming version 1 still finds exactly what
+it answered after version 2 exists); a draft workflow (`IntakeSubmissions`)
+that lives in an ordinary mutable table — not the append-only clinical record,
+which has no update path and no business trying to acquire one for something
+typed into over several sittings — and is deduplicated by (patient,
+questionnaire, appointment) so a dropped connection resumes the same draft
+rather than forking one; `submit()`, which is idempotent (a retried submit
+after a lost reply returns what the first call already produced) and freezes
+the draft into a `QuestionnaireResponse` on the chart, attributed to `patient`
+or `proxy` so testimony is never confused with a clinician's assertion.
 
-**Missing.** Everything the item is about: versioned questionnaires, visit
-concerns, proposed medication updates, drafts that survive an interrupted
-connection, a patient-facing upload route at all, quarantine pending a malware
-scan, and routing a proposed chart change to a clinician. `grep -ril
-questionnaire src/` finds one unrelated hit; `quarantine`, `malware` and
-`virus` find none.
+A proposed medication change is stored as exactly that — patient testimony,
+read by nobody until a clinician opens the review task `submit()` raises.
+Nothing in this module calls `MedicationStore`; reconciling a proposed change
+into the medication list is a clinician's existing tool, not something this
+increment automates on a patient's say-so.
+
+`Uploads`: file type and size validated the same way `PatientDocuments`
+already does (a shared `payloadSize()`, now exported), stored `pending-scan`
+and never marked clean by `receive()` itself — a store cannot honestly vouch
+for bytes it did not examine. No `MalwareScanner` configured means every
+upload stays quarantined indefinitely, which is the same choice
+`src/meds/safety.ts` makes about an unconfigured interaction database:
+unchecked is reported as unchecked, never quietly as clear. A clean verdict
+files the upload as a `PatientDocuments` entry (`source: "patient-submitted"`,
+already an allowed value) and raises a review task unless it is riding a
+submission that will raise its own; an infected verdict deletes the bytes from
+the row on the spot, so no later code path can serve them by forgetting to
+check status. `SyntheticScanner` recognizes exactly the EICAR test string —
+the industry-standard, harmless file antivirus vendors publish for this
+purpose — and is wired only behind `NORTHSTAR_DEV_MALWARE_SCANNER=on`, the
+same explicit, loud, opt-in-only shape as the development identity provider.
+
+A new `"intake"` patient permission (`src/patient/access.ts`) gates six new
+`/patient/*` routes through the same `patientPhi()` boundary as everything
+else — a caregiver's grant either names it or does not, exactly like
+`results` or `messages`. Five clinician-side routes
+(`/api/clinical/intake`, `-review`, `/questionnaires`, `/uploads`,
+`/upload-scan`) go through the ordinary `phi()`/`phiFor()` gateway.
+
+The portal (`src/api/portal.html`) gained an eighth tab, "Before your visit":
+per-questionnaire forms rendered from the published questions, a free-text
+concern box, an add-a-row medication-change list, and a file picker — all in
+both languages, all wired through the existing loading/error/empty and
+double-submit-guard machinery rather than new copies of it.
+
+**Test evidence.** `test/intake.test.ts` (19 tests) covers the store in
+isolation: draft dedup and merge, idempotent submit, required-question
+validation, the quarantine state machine, and that a proposed medication
+change never reaches `meds.current()`. `test/intake-api.test.ts` (8 tests)
+drives the same journey through a real signed token from the development
+identity provider: caregiver scope with and without "intake", revocation
+taking effect on the next request, cross-tenant refusal, and an infected
+upload that never becomes downloadable to the very patient who sent it.
+Twelve mutations against the store and four against the API-layer permission
+wiring, all sixteen caught by a test — four survived the first pass and are
+the reason four of those tests exist. Confirmed against a live server with a
+seeded synthetic patient (`scripts/portal-demo.ts`): sign in, save a draft,
+submit it, and the clinic's worklist shows the routed task; upload a file,
+watch it refuse to download at `pending-scan`, scan it, and download it.
+
+Two scanners this session already relies on had the same gap this increment's
+routes would have slipped through: the `/api/clinical/*` and `/patient/*`
+route-audit tests matched path literals with a character class that admitted
+neither digits nor `/`, so a route nested under a subpath — `/patient/intake/
+draft` and `/patient/intake/submit` here — was invisible to the very check
+that exists to catch an unaudited route. Both regexes are fixed to match what
+the sibling `/api/clinical/*` scanner already had to learn once before.
+
+**Still missing.** A submission is not tied to a specific appointment in the
+portal UI, though the store supports it (`appointmentId` is a real, indexed
+column) — the screen shows one open item per questionnaire rather than one
+per upcoming visit. No resumable or chunked upload: a connection that drops
+mid-transfer is retried from scratch, not resumed byte-for-byte. Reconciling
+a proposed medication change into the medication list is still a manual step
+through the existing reconciliation screens, by design.
 
 ## 61. Structured care plans and after-visit summaries — **partial**
 
@@ -225,11 +292,14 @@ where it is. A room with nothing scheduled says so rather than reading as
 free, and `progressKnown` is false on every row because the encounter model
 cannot distinguish "in the waiting room" from "with the clinician".
 
-**Still missing.** Intake status needs item 60, and is absent rather than
-rendered empty — an empty panel and a quiet day look the same. Staff workload
-exists as `TaskStore.load()` but is not on the board. The ranking is stated but
-not configurable: a deployment that wanted a different rule would edit the
-source, and governed configuration is its own piece of work.
+**Still missing.** An intake-status panel is not on the board. Item 60 built
+the workflow underneath it — `IntakeSubmissions.open()` is exactly the "who
+has submitted, who has not" query a board panel would call — but nothing in
+`src/workspace/board.ts` calls it yet; that wiring, not the underlying
+capability, is what remains. Staff workload exists as `TaskStore.load()` but
+is not on the board. The ranking is stated but not configurable: a deployment
+that wanted a different rule would edit the source, and governed configuration
+is its own piece of work.
 
 *(Recently-discharged patients and unaccepted handoffs were listed here and
 are now on the board, since item 62 built the workflow underneath them.)*

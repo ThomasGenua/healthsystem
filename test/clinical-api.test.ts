@@ -20,6 +20,7 @@ import { Engine } from "../src/core/engine.ts";
 import { startApi } from "../src/api/admin.ts";
 import { AuthGate } from "../src/auth/gate.ts";
 import type { AuditRow } from "../src/audit/store.ts";
+import { SyntheticScanner } from "../src/patient/intake.ts";
 
 const P = "NT123456";
 const GP = { actorId: "dr-tetso", actorKind: "practitioner" };
@@ -31,7 +32,15 @@ async function boot() {
   process.env.NORTHSTAR_SUMMARY_SIGNING_KEY = "a-signing-key-for-the-route-tests";
   // A pharmacy channel, so the prescription routes exercise the transmit path
   // rather than the refusal a deployment without one gets.
-  const engine = new Engine({ dbPath: ":memory:", tickMs: 15, pharmacyChannel: "pharmacy-out" });
+  // A scanner, so upload-scan exercises its own clean/infected logic rather
+  // than the "no scanner configured" refusal every other route test's fixture
+  // upload would otherwise hit.
+  const engine = new Engine({
+    dbPath: ":memory:",
+    tickMs: 15,
+    pharmacyChannel: "pharmacy-out",
+    malwareScanner: new SyntheticScanner(),
+  });
   await engine.start();
   engine.db.upsertChannel(
     "pharmacy-out",
@@ -336,6 +345,23 @@ test("every clinical route leaves an audit row, including ones added later", asy
     // fixture's own critical potassium is used by other cases here, so this is
     // a second one rather than a shared one — a route that only passes because
     // another test has not run yet is not a route anything has driven.
+    // A submitted intake questionnaire for the review route to act on, and a
+    // pending upload for the scan route — both need something real to exist
+    // before their route is exercised, the same as the routes below them.
+    const intakeDraft = s.engine.forTenant("default").intake.saveDraft({
+      patientId: P,
+      concern: "New shortness of breath climbing stairs",
+      by: { actorId: P, actorKind: "patient" },
+    });
+    const intakeToReview = s.engine.forTenant("default").intake.submit(intakeDraft.id, { actorId: P, actorKind: "patient" });
+    const uploadToScan = s.engine.forTenant("default").uploads.receive({
+      patientId: P,
+      filename: "route-test.pdf",
+      contentType: "application/pdf",
+      data: Buffer.from("route test upload").toString("base64"),
+      by: { actorId: P, actorKind: "patient" },
+    });
+
     const forAck = s.engine.forTenant("default").orders.create({
       patientId: P,
       category: "lab",
@@ -709,6 +735,11 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/order-cancel-send": "POST",
       "/api/clinical/referrals": "",
       "/api/clinical/tasks": "?owner=dr-tetso",
+      "/api/clinical/intake": `?patient=${P}`,
+      "/api/clinical/intake-review": "POST",
+      "/api/clinical/questionnaires": "POST",
+      "/api/clinical/uploads": `?patient=${P}`,
+      "/api/clinical/upload-scan": "POST",
       "/api/clinical/notes": `?patient=${P}`,
       "/api/clinical/appointments": `?patient=${P}`,
       "/api/clinical/missed": "",
@@ -1175,6 +1206,17 @@ test("every clinical route leaves an audit row, including ones added later", asy
         region: "ca-central-1",
         status: "active",
       },
+      "/api/clinical/intake-review": {
+        id: intakeToReview.id,
+        outcome: "needs-follow-up",
+        note: "Booked a same-week GP review for the shortness of breath",
+      },
+      "/api/clinical/questionnaires": {
+        id: "route-test-questionnaire",
+        title: "Route test questionnaire",
+        questions: [{ key: "q1", label: "Anything to flag before your visit?", type: "text" }],
+      },
+      "/api/clinical/upload-scan": { id: uploadToScan.id },
     };
 
     const unlisted = paths.filter((p) => !(p in args));

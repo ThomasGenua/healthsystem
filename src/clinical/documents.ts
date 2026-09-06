@@ -109,7 +109,8 @@ function parse(entry: ClinicalEntry, includeData: boolean): PatientDocumentView 
   return view;
 }
 
-function payloadSize(data: string, contentType: string): number {
+/** Shared with src/patient/intake.ts, which validates an upload the same way. */
+export function payloadSize(data: string, contentType: string): number {
   if (contentType.startsWith("text/") || contentType === "application/json") {
     return Buffer.byteLength(data, "utf8");
   }

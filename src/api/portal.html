@@ -161,7 +161,28 @@ const COPY = {
     reported:"Reported", unitless:"no unit recorded", abnormal:"abnormal",
     status:"Status", when:"When", role:"Role", relationship:"Relationship",
     permissionsNote:"Your access covers:",
-    sectionUnavailable:"This section could not be loaded."
+    sectionUnavailable:"This section could not be loaded.",
+    tabIntake:"Before your visit",
+    intakeIntro:"Answer what you can now and save the rest for later — nothing here is sent to your chart until you submit it.",
+    noQuestionnaires:"Your clinic has not asked for anything before a visit right now.",
+    saveDraft:"Save for later", submitIntake:"Submit to the clinic",
+    draftSaved:"Saved. You can come back and finish this later.",
+    intakeSubmitted:"Submitted. Your clinic will see this before your visit.",
+    concernLabel:"Anything you want to raise at your visit?",
+    concernPlaceholder:"For example: new pain, a side effect, a question about a result",
+    medChangeLabel:"Any medication changes to tell your clinic about?",
+    medChangeAdd:"Add a medication change",
+    medChangeKind:"What changed", medChangeStarted:"Started", medChangeStopped:"Stopped", medChangeChanged:"Changed",
+    medChangeWhat:"Which medication, and what happened",
+    required:"required", yes:"Yes", no:"No",
+    draft:"Draft — not yet sent", submitted:"Submitted", reviewed:"Reviewed by your clinic",
+    uploadsTitle:"Documents", uploadLabel:"Send a document (PDF, image, or text file, up to 8 MB)",
+    uploadSend:"Send document",
+    uploadPending:"Being checked before it can be opened",
+    uploadClean:"Received", uploadInfected:"This file could not be accepted",
+    noUploads:"You have not sent any documents.",
+    fileTooBig:"That file is larger than 8 MB and cannot be sent.",
+    pastSubmissions:"What you have sent", noSubmissions:"You have not sent anything yet."
   },
   fr: {
     skip:"Aller au contenu principal", tagline:"Accès patient", langLabel:"Langue",
@@ -204,7 +225,28 @@ const COPY = {
     reported:"Signalé", unitless:"aucune unité inscrite", abnormal:"anormal",
     status:"Statut", when:"Quand", role:"Rôle", relationship:"Lien",
     permissionsNote:"Votre accès couvre :",
-    sectionUnavailable:"Cette section n’a pas pu être chargée."
+    sectionUnavailable:"Cette section n’a pas pu être chargée.",
+    tabIntake:"Avant votre visite",
+    intakeIntro:"Répondez à ce que vous pouvez maintenant et gardez le reste pour plus tard — rien ici n’est envoyé à votre dossier avant que vous ne le soumettiez.",
+    noQuestionnaires:"Votre clinique ne demande rien avant une visite pour le moment.",
+    saveDraft:"Enregistrer pour plus tard", submitIntake:"Soumettre à la clinique",
+    draftSaved:"Enregistré. Vous pouvez revenir terminer cela plus tard.",
+    intakeSubmitted:"Soumis. Votre clinique verra ceci avant votre visite.",
+    concernLabel:"Y a-t-il quelque chose que vous voulez soulever à votre visite?",
+    concernPlaceholder:"Par exemple : une nouvelle douleur, un effet secondaire, une question sur un résultat",
+    medChangeLabel:"Des changements de médicaments à signaler à votre clinique?",
+    medChangeAdd:"Ajouter un changement de médicament",
+    medChangeKind:"Ce qui a changé", medChangeStarted:"Commencé", medChangeStopped:"Arrêté", medChangeChanged:"Modifié",
+    medChangeWhat:"Quel médicament, et ce qui s’est passé",
+    required:"obligatoire", yes:"Oui", no:"Non",
+    draft:"Brouillon — pas encore envoyé", submitted:"Soumis", reviewed:"Revu par votre clinique",
+    uploadsTitle:"Documents", uploadLabel:"Envoyer un document (PDF, image ou texte, jusqu’à 8 Mo)",
+    uploadSend:"Envoyer le document",
+    uploadPending:"Vérification en cours avant de pouvoir être ouvert",
+    uploadClean:"Reçu", uploadInfected:"Ce fichier n’a pas pu être accepté",
+    noUploads:"Vous n’avez envoyé aucun document.",
+    fileTooBig:"Ce fichier dépasse 8 Mo et ne peut pas être envoyé.",
+    pastSubmissions:"Ce que vous avez envoyé", noSubmissions:"Vous n’avez encore rien envoyé."
   }
 };
 let LANG = (navigator.language || "en").toLowerCase().startsWith("fr") ? "fr" : "en";
@@ -393,6 +435,7 @@ const TABS = [
   {id:"appointments", key:"tabAppointments", perm:"appointments"},
   {id:"medications",  key:"tabMedications",  perm:"summary"},
   {id:"messages",     key:"tabMessages",     perm:"messages"},
+  {id:"intake",       key:"tabIntake",       perm:"intake"},
   {id:"team",         key:"tabTeam",         perm:"summary"},
   {id:"access",       key:"tabAccess",       perm:"access-log"},
   {id:"requests",     key:"tabRequests",     perm:"requests"}
@@ -665,9 +708,228 @@ function sendRequest(form){
   });
 }
 
+/*
+  Item 60: pre-visit intake and uploads.
+
+  A draft is saved by id once one exists, so a dropped connection resumes the
+  same row rather than starting over — the server dedupes by (patient,
+  questionnaire) anyway, but carrying the id avoids a second round trip to
+  find that out. Nothing here is tied to a specific appointment; that
+  richness exists in the store (see src/patient/intake.ts) but this screen
+  does not ask which visit a concern belongs to, the same way "Ask a
+  question" does not ask which visit a message is about.
+*/
+function medRow(container, existing){
+  const row = el("div", {},
+    el("label", {text: t("medChangeKind")}),
+    el("select", {"data-role":"kind"},
+      el("option", {value:"started", text: t("medChangeStarted")}),
+      el("option", {value:"stopped", text: t("medChangeStopped")}),
+      el("option", {value:"changed", text: t("medChangeChanged")})),
+    el("label", {text: t("medChangeWhat")}),
+    el("input", {"data-role":"description", style:"width:100%"})
+  );
+  if (existing) {
+    row.querySelector("[data-role=kind]").value = existing.change || "started";
+    row.querySelector("[data-role=description]").value = existing.description || "";
+  }
+  container.appendChild(row);
+}
+
+function readMedRows(container){
+  const rows = [...container.children];
+  return rows
+    .map((row) => ({
+      change: row.querySelector("[data-role=kind]").value,
+      description: row.querySelector("[data-role=description]").value.trim()
+    }))
+    .filter((m) => m.description);
+}
+
+function intakeForm(q, draft){
+  const answers = draft ? JSON.parse(draft.answers || "{}") : {};
+  const meds = draft && draft.proposed_meds ? JSON.parse(draft.proposed_meds) : [];
+  const state = { id: draft ? draft.id : null };
+
+  const kids = [];
+  if (q) kids.push(el("h3", {text: q.title}));
+
+  const fields = [];
+  for (const question of (q ? q.questions : [])) {
+    const fieldId = "q-" + question.key;
+    const labelText = question.label + (question.required ? " (" + t("required") + ")" : "");
+    let input;
+    if (question.type === "boolean") {
+      input = el("select", {id: fieldId},
+        el("option", {value:"", text:"—"}),
+        el("option", {value:"true", text: t("yes")}),
+        el("option", {value:"false", text: t("no")}));
+      input.value = answers[question.key] === true ? "true" : answers[question.key] === false ? "false" : "";
+    } else if (question.type === "choice") {
+      input = el("select", {id: fieldId},
+        el("option", {value:"", text:"—"}),
+        ...(question.options||[]).map((o) => el("option", {value:o, text:o})));
+      input.value = answers[question.key] || "";
+    } else if (question.type === "number") {
+      input = el("input", {id: fieldId, type:"number"});
+      if (answers[question.key] !== undefined) input.value = answers[question.key];
+    } else {
+      input = el("input", {id: fieldId, type:"text", style:"width:100%"});
+      if (answers[question.key] !== undefined) input.value = answers[question.key];
+    }
+    kids.push(el("label", {for: fieldId, text: labelText}), input);
+    fields.push({key: question.key, type: question.type, el: input});
+  }
+
+  const concernField = el("textarea", {id:"intake-concern-" + (q ? q.id : "general"), placeholder: t("concernPlaceholder")});
+  if (draft && draft.concern) concernField.value = draft.concern;
+  kids.push(el("label", {for: concernField.id, text: t("concernLabel")}), concernField);
+
+  const medsBox = el("div", {});
+  for (const m of meds) medRow(medsBox, m);
+  kids.push(
+    el("label", {text: t("medChangeLabel")}),
+    medsBox,
+    el("p", {}, el("button", {type:"button", class:"link", onclick: () => medRow(medsBox), text: "+ " + t("medChangeAdd")}))
+  );
+
+  const readAnswers = () => {
+    const out = {};
+    for (const f of fields) {
+      const raw = f.el.value;
+      if (raw === "") continue;
+      out[f.key] = f.type === "boolean" ? raw === "true" : f.type === "number" ? Number(raw) : raw;
+    }
+    return out;
+  };
+  const readBody = () => ({
+    patient: S.active.patientId,
+    ...(q ? {questionnaireId: q.id} : {}),
+    answers: readAnswers(),
+    concern: concernField.value.trim(),
+    proposedMeds: readMedRows(medsBox)
+  });
+
+  // draft, if given, is always status "draft" — screenIntake only ever looks
+  // one up by that status. A questionnaire already submitted with no new
+  // draft started falls through here too, and correctly renders empty: that
+  // is a fresh form for a new visit, not the old answers reopened.
+  const form = el("form", {onsubmit: (e) => { e.preventDefault(); }}, ...kids);
+  const saveBtn = el("button", {type:"button", class:"act", onclick: () => saveIntakeDraft(form, state, readBody)}, t("saveDraft"));
+  const submitBtn = el("button", {type:"submit", class:"act", onclick: () => submitIntakeForm(form, state, readBody)}, t("submitIntake"));
+  form.appendChild(el("p", {}, saveBtn, " ", submitBtn));
+  return el("div", {class:"card"}, form);
+}
+
+function saveIntakeDraft(form, state, readBody){
+  return submitting(form, async () => {
+    const saved = await api("/patient/intake/draft", {method:"POST", body: JSON.stringify(readBody())});
+    state.id = saved.id;
+    say(t("draftSaved"));
+  });
+}
+
+function submitIntakeForm(form, state, readBody){
+  return submitting(form, async () => {
+    if (!state.id) {
+      const saved = await api("/patient/intake/draft", {method:"POST", body: JSON.stringify(readBody())});
+      state.id = saved.id;
+    }
+    await api("/patient/intake/submit", {method:"POST", body: JSON.stringify({id: state.id})});
+    say(t("intakeSubmitted"));
+    await guard(screenIntake);
+  });
+}
+
+const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+
+function uploadCard(){
+  const fileInput = el("input", {type:"file", id:"upload-file", accept:".pdf,.jpg,.jpeg,.png,.webp,.txt,.csv"});
+  const form = el("form", {onsubmit: (e) => { e.preventDefault(); sendUpload(e.target, fileInput); }},
+    el("h3", {text: t("uploadsTitle")}),
+    el("label", {for:"upload-file", text: t("uploadLabel")}),
+    fileInput,
+    el("p", {}, el("button", {class:"act", type:"submit", text: t("uploadSend")}))
+  );
+  return el("div", {class:"card"}, form);
+}
+
+function sendUpload(form, fileInput){
+  return submitting(form, async () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    if (file.size > MAX_UPLOAD_BYTES) { showError(t("fileTooBig")); return; }
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+    const base64 = String(dataUrl).split(",", 2)[1] || "";
+    await api("/patient/upload", {method:"POST", body: JSON.stringify({
+      patient: S.active.patientId,
+      filename: file.name,
+      contentType: file.type || "application/octet-stream",
+      data: base64
+    })});
+    fileInput.value = "";
+    await guard(screenIntake);
+  });
+}
+
+async function screenIntake(){
+  const [forms, submissions, uploads] = await Promise.all([
+    api("/patient/questionnaires"),
+    api("/patient/intake?patient=" + encodeURIComponent(S.active.patientId)),
+    api("/patient/uploads?patient=" + encodeURIComponent(S.active.patientId))
+  ]);
+  const view = document.getElementById("view");
+  view.replaceChildren(el("h2", {text: t("tabIntake")}), el("p", {class:"meta", text: t("intakeIntro")}));
+
+  const questionnaires = forms.questionnaires || [];
+  const openDraftFor = (qid) => submissions.find((s) => s.status === "draft" && s.questionnaire_id === qid);
+  const generalDraft = submissions.find((s) => s.status === "draft" && !s.questionnaire_id);
+
+  if (!questionnaires.length) {
+    view.appendChild(el("div", {class:"note"}, el("p", {text: t("noQuestionnaires")})));
+    view.appendChild(intakeForm(null, generalDraft));
+  } else {
+    for (const q of questionnaires) view.appendChild(intakeForm(q, openDraftFor(q.id)));
+  }
+
+  view.appendChild(uploadCard());
+
+  const submitted = submissions.filter((s) => s.status !== "draft");
+  const pastCard = card(el("h3", {text: t("pastSubmissions")}));
+  if (!submitted.length) pastCard.appendChild(empty("noSubmissions"));
+  else {
+    const ul = el("ul", {class:"plain"});
+    for (const s of submitted) {
+      ul.appendChild(el("li", {},
+        el("b", {text: s.concern || s.questionnaire_id || t("tabIntake")}),
+        el("div", {class:"meta", text: (s.status === "reviewed" ? t("reviewed") : t("submitted")) + " · " + fmtDate(s.submitted_at)})
+      ));
+    }
+    pastCard.appendChild(ul);
+  }
+  view.appendChild(pastCard);
+
+  const upCard = card(el("h3", {text: t("uploadsTitle")}));
+  if (!uploads.length) upCard.appendChild(empty("noUploads"));
+  else {
+    const ul = el("ul", {class:"plain"});
+    for (const u of uploads) {
+      const statusText = u.status === "clean" ? t("uploadClean") : u.status === "infected" ? t("uploadInfected") : t("uploadPending");
+      ul.appendChild(el("li", {}, el("b", {text: u.filename}), el("div", {class:"meta", text: statusText + " · " + fmtDate(u.uploaded_at)})));
+    }
+    upCard.appendChild(ul);
+  }
+  view.appendChild(upCard);
+}
+
 const SCREENS = {
   results: screenResults, appointments: screenAppointments, medications: screenMedications,
-  messages: screenMessages, team: screenTeam, access: screenAccess, requests: screenRequests
+  messages: screenMessages, intake: screenIntake, team: screenTeam, access: screenAccess, requests: screenRequests
 };
 
 /* --------------------------------------------------------------- routing */

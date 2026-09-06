@@ -11,6 +11,7 @@ import { tlsFromEnv } from "./api/tls.ts";
 import { AuthGate } from "./auth/gate.ts";
 import { DevIdentityProvider, devIdpRefusal } from "./auth/dev-idp.ts";
 import { JwtVerifier } from "./auth/jwt.ts";
+import { SyntheticScanner } from "./patient/intake.ts";
 import type { ChannelConfig, MappingDoc } from "./types.ts";
 
 const PORT = parseInt(readEnv("PORT") ?? "8686", 10);
@@ -226,6 +227,19 @@ async function main(): Promise<void> {
     return n;
   };
 
+  // Uploads stay quarantined forever without a scanner configured, which is
+  // correct and means a deployment cannot demonstrate the clean/infected
+  // paths without one. This is the same shape as the development identity
+  // provider below: an explicit, loud, opt-in-only substitute for a real
+  // integration, never a silent default. See src/patient/intake.ts for why
+  // there is no default scanner otherwise.
+  const devScanner = readEnv("DEV_MALWARE_SCANNER") === "on";
+  if (devScanner) {
+    console.warn(
+      "  WARNING: NORTHSTAR_DEV_MALWARE_SCANNER=on — uploads are scanned by a synthetic " +
+        "pattern match, not a real antivirus engine. Never run this in production."
+    );
+  }
   const engine = new Engine({
     dbPath: dbChoice.path,
     validatePack: readEnv("VALIDATE_PACK"),
@@ -234,6 +248,7 @@ async function main(): Promise<void> {
       redactAfterDays: days(readEnv("REDACT_AFTER_DAYS")),
       purgeAfterDays: days(readEnv("PURGE_AFTER_DAYS")),
     },
+    ...(devScanner ? { malwareScanner: new SyntheticScanner() } : {}),
   });
 
   if (existsSync(MAPPINGS_DIR)) {

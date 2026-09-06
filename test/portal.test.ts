@@ -228,8 +228,11 @@ test("a caregiver reaches only the charts and the parts of them they were given"
     assert.deepEqual(auth.authorities[0].permissions, ["appointments"]);
 
     assert.equal((await s.get(token, `/patient/appointments?patient=${PATIENT}`)).status, 200);
-    // Every capability the grant does not name is refused, not narrowed.
-    for (const path of ["results", "summary", "threads", "access-log", "requests", "delegates"]) {
+    // Every capability the grant does not name is refused, not narrowed. This
+    // list is hand-kept against PATIENT_PERMISSIONS in src/patient/access.ts
+    // — a permission added there without a line here would silently stop
+    // being checked for the narrow-grant case.
+    for (const path of ["results", "summary", "threads", "access-log", "requests", "delegates", "intake", "uploads"]) {
       const res = await s.get(token, `/patient/${path}?patient=${PATIENT}`);
       assert.equal(res.status, 403, `${path} must be refused for a grant that does not include it`);
     }
@@ -459,7 +462,7 @@ test("a token this provider did not sign is not a patient token", async () => {
 const PORTAL = readFileSync(new URL("../src/api/portal.html", import.meta.url), "utf8");
 
 test("every screen the portal draws has a loading, an error and an empty state", () => {
-  const screens = ["Results", "Appointments", "Medications", "Messages", "Team", "Access", "Requests"];
+  const screens = ["Results", "Appointments", "Medications", "Messages", "Intake", "Team", "Access", "Requests"];
   for (const name of screens) {
     assert.match(PORTAL, new RegExp(`async function screen${name}\\(`), `screen${name} is missing`);
   }
@@ -469,7 +472,7 @@ test("every screen the portal draws has a loading, an error and an empty state",
   assert.match(PORTAL, /function showError\(/);
   // Each list screen says something when it has nothing, rather than
   // rendering as though the chart were empty.
-  for (const key of ["noResults", "noAppointments", "noMeds", "noTeam", "noAccessLog", "noMessages", "noRequests"]) {
+  for (const key of ["noResults", "noAppointments", "noMeds", "noTeam", "noAccessLog", "noMessages", "noRequests", "noSubmissions", "noUploads"]) {
     assert.match(PORTAL, new RegExp(`empty\\("${key}"\\)`), `${key} is never shown`);
   }
 });
@@ -514,7 +517,7 @@ test("the portal shows a held result as held, and has no value to show", () => {
 
 test("a submission disables its own button, so a double tap is one question", () => {
   assert.match(PORTAL, /if \(button\.disabled\) return;\s*\n\s*button\.disabled = true;/);
-  for (const fn of ["sendNewThread", "sendReply", "sendRequest"]) {
+  for (const fn of ["sendNewThread", "sendReply", "sendRequest", "saveIntakeDraft", "submitIntakeForm", "sendUpload"]) {
     assert.match(PORTAL, new RegExp(`function ${fn}\\([^)]*\\)\\s*\\{\\s*\\n?\\s*return submitting\\(`), `${fn} does not go through submitting()`);
   }
 });

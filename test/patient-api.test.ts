@@ -385,10 +385,20 @@ test("every patient-scoped route goes through the authority-and-permission helpe
   const start = source.indexOf('if (path === "/patient" || path.startsWith("/patient/"))');
   const end = source.indexOf('if (path === "/api/channels"', start);
   const block = source.slice(start, end);
-  const paths = [...new Set([...block.matchAll(/path === "(\/patient\/[a-z-]+)"/g)].map((m) => m[1]))];
+  // Admits "/" and digits, like the identical fix on the /api/clinical/*
+  // scanner in clinical-api.test.ts: a route nested under a subpath — this
+  // file now has two, /patient/intake/draft and /patient/intake/submit — is
+  // invisible to a character class that stops at a hyphen, and a scanner
+  // that silently matches nothing is worse than no scanner.
+  const paths = [...new Set([...block.matchAll(/path === "(\/patient\/[a-z0-9/-]+)"/g)].map((m) => m[1]))];
   assert.ok(paths.length >= 10, `expected the patient routes, got ${paths.length}`);
 
-  for (const path of paths.filter((p) => p !== "/patient/authorities")) {
+  // Two exceptions, both a list of what is on offer rather than an answer
+  // about one patient: /patient/authorities is which charts this subject may
+  // see, and /patient/questionnaires is which forms exist to fill in. Neither
+  // takes a patientId, so there is no authority for patientPhi() to check.
+  const NOT_PATIENT_SCOPED = new Set(["/patient/authorities", "/patient/questionnaires"]);
+  for (const path of paths.filter((p) => !NOT_PATIENT_SCOPED.has(p))) {
     const at = block.indexOf(`path === "${path}"`);
     const next = block.indexOf('path === "/patient/', at + path.length);
     const body = block.slice(at, next < 0 ? undefined : next);

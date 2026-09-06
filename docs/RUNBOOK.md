@@ -254,6 +254,30 @@ Three things constrain it, and none is a setting:
 | `NORTHSTAR_DEV_IDP_TENANT` | Which custodian's grants the picker lists. Defaults to `default`. |
 | `NORTHSTAR_OIDC_AUDIENCE` | Reused as the audience for synthetic tokens. Defaults to `northstar-development`. |
 
+**Pre-visit intake and uploads (item 60)** need a questionnaire to answer and,
+to see a file leave quarantine, a scanner:
+
+```bash
+node scripts/portal-demo.ts            # also publishes a "pre-visit" questionnaire
+NORTHSTAR_DEV_IDP=on NORTHSTAR_DEV_MALWARE_SCANNER=on npm start
+```
+
+`NORTHSTAR_DEV_MALWARE_SCANNER=on` wires `SyntheticScanner`
+(`src/patient/intake.ts`) in place of a real antivirus integration. It
+recognizes exactly the EICAR test string — the harmless file antivirus
+vendors publish for testing detection pipelines — and nothing else. Without
+it, an uploaded file stays `pending-scan` forever and cannot be downloaded or
+filed onto the chart, which is the correct behaviour for a deployment that
+has not configured a real scanner, not a bug in the demo. **Never set this in
+production.** Unlike `NORTHSTAR_DEV_IDP`, nothing here refuses to start
+alongside a real configuration, because a real scanner has no equivalent
+environment variable to check against — it is wired in code, by passing a
+real `MalwareScanner` to `Engine`. Left on by mistake, the risk is not a
+stuck queue: it is every upload except a literal EICAR test file coming back
+"clean" from a pattern match that examined nothing, which is worse than no
+scanner at all. Configure a real `MalwareScanner` for anything but a
+demonstration.
+
 **What the portal still is not.** There is no identity-proofing and no ONE ID:
 a named clerk at the clinic writes how they checked who somebody is, and that
 is what creates a grant. The page says so in both languages, in its footer,

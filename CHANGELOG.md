@@ -11,6 +11,48 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Pre-visit intake and patient uploads (item 60).** A patient can now answer
+  a versioned questionnaire, raise a concern, and describe a medication
+  change before a visit — saved as a draft that resumes after a dropped
+  connection instead of forking a second one, and submitted exactly once even
+  when the submit request is retried. `src/patient/intake.ts`:
+  `Questionnaires.publish()` never edits a version, only adds one, so an
+  answer from March still shows the question actually asked after April's
+  revision. `IntakeSubmissions.submit()` freezes the draft onto the chart as a
+  `QuestionnaireResponse`, attributed to the patient or their proxy, and
+  raises the same `portal-submission` review task item 58 already built a
+  worklist for.
+
+  **A proposed medication change is testimony, not a chart update.** It is
+  stored on the submission and read by a clinician on the review task;
+  nothing in this module touches `MedicationStore`. Collapsing "the patient
+  mentioned starting this" into "the patient is on this" is exactly the
+  failure a clinician's separate reconciliation exists to prevent.
+
+  **A file stays quarantined until something scans it — including forever.**
+  `Uploads.receive()` never marks a file clean; only a configured
+  `MalwareScanner`'s verdict does, and a deployment with none configured
+  leaves every upload `pending-scan` indefinitely rather than defaulting to
+  safe. An infected verdict deletes the bytes from the row on the spot. The
+  bundled `SyntheticScanner` recognizes the EICAR test string and nothing
+  else, and is wired only behind `NORTHSTAR_DEV_MALWARE_SCANNER=on` — loud,
+  explicit, opt-in, the same shape as the development identity provider.
+
+  The portal gained an eighth tab, "Before your visit," in both languages,
+  through the same loading/error/empty and double-submit machinery every
+  other screen already uses. A new `"intake"` patient permission gates six
+  new `/patient/*` routes through the existing `patientPhi()` boundary, and
+  five clinician routes go through the existing `phi()`/`phiFor()` gateway.
+
+  Along the way, the `/api/clinical/*` and `/patient/*` route-audit scanners
+  both had the same blind spot: a character class that could not match a `/`
+  or a digit, so a route nested under a subpath was invisible to the check
+  built to guarantee every route leaves an audit row. Two of this increment's
+  own routes — `/patient/intake/draft` and `/patient/intake/submit` — would
+  have been exempt on the strength of their own name, the identical failure
+  the `/api/clinical/*` scanner's comments already record having had once.
+  Both are fixed.
+
 - **Routing that reads the handoff record instead of an owner column.** The
   previous increment could answer who was accountable for anything; nothing
   asked it. `TaskStore.inbox()` and `Discharges.openFollowUps()` now route
