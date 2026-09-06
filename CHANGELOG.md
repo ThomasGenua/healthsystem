@@ -11,6 +11,45 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Outreach campaigns behind a governed, versioned eligibility rule, with
+  duplicate outreach prevented by the schema (item 64).**
+  `src/population/eligibility.ts` gives a `CohortRule` + `CareGapRule` pair
+  its own publish-only home — the same insert-a-new-version,
+  never-edit shape `Questionnaires.publish()` already established: a
+  campaign built from version 3 of a rule still means version 3 forever,
+  whatever a clinician later publishes as version 4.
+
+  `src/population/outreach.ts`'s `OutreachCampaigns.create()` snapshots
+  `Registry.gaps()` against a published rule into a campaign and one item
+  per gap member, frozen at that moment rather than a live join. **Two
+  campaigns cannot both call the same patient about the same gap**: a
+  partial unique index on `(tenant, patient, eligibility_rule_id)` while an
+  item is open enforces this at the schema level, so it holds even under
+  concurrent campaign creation — `create()` catches the constraint and
+  quietly moves on to whoever is left. An item's status guards mirror item
+  61's goals/actions: assignment, a contact attempt, a response, a booking
+  and completion each need the item in the right prior state; three
+  unanswered attempts surface it as `unreachable` without trapping it there
+  (a later attempt that connects still moves it forward); **completion
+  needs a booking already on file**, so a care gap cannot read as closed on
+  staff say-so with nothing behind it; exclusion needs a written reason;
+  and every contact attempt is checked against `PatientContacts.reachable()`
+  — the same consent-and-verification honesty item 59 built for a
+  notification, applied here rather than re-decided.
+
+  Fourteen clinician routes, all through the existing `phi()` gateway. No
+  patient route — this is a staff worklist, not a portal screen.
+
+  Twenty-two of twenty-five mutations killed outright; the other three are
+  documented equivalent mutants (a redundant status filter, an
+  unreachable numeric boundary, and a catch-guard SQLite cannot let any
+  reachable input distinguish), not chased with contrived tests.
+
+  **Correction:** an earlier pass at item 67 (below) claimed small-cell
+  suppression did not exist in this codebase. It does —
+  `src/population/release.ts`, already merged — and item 67 will reuse it,
+  as its own text originally asked.
+
 - **A longitudinal timeline and validated trends, that refuse to invent a
   conversion nobody has validated (item 63).** `src/clinical/timeline.ts`
   merges results, vitals, procedures, immunizations, encounters, and
@@ -288,8 +327,12 @@ always forward-compatible and run automatically on open — see
   portal](docs/RUNBOOK.md#the-patient-portal).
 
 - **`docs/PATIENT-WORKFLOWS-ROADMAP.md`** classifies items 58–67 against the
-  repository with file references, including one correction: item 67 assumes
-  small-cell suppression exists to be reused, and it does not.
+  repository with file references. An earlier version of this entry claimed
+  item 67's premise was wrong — that it assumes small-cell suppression
+  exists to be reused, and it does not. That claim was itself wrong: a
+  working `src/population/release.ts` predates this roadmap, found on
+  closer look while starting item 64's routes above. The correction is
+  recorded in full in the roadmap doc's item 64 and item 67 sections.
 
 - **`npm run invariants` checks the database against what it is supposed to be
   true of itself.** The schema declares no foreign keys, so

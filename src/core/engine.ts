@@ -28,6 +28,8 @@ import { CarePlans } from "../clinical/careplans.ts";
 import { Goals, Actions } from "../clinical/goals.ts";
 import { Timeline } from "../clinical/timeline.ts";
 import { Trends } from "../clinical/trends.ts";
+import { EligibilityRules } from "../population/eligibility.ts";
+import { OutreachCampaigns } from "../population/outreach.ts";
 import { AfterVisitSummaries } from "../clinical/avs.ts";
 import { PatientDocuments } from "../clinical/documents.ts";
 import { CareTeam } from "../clinical/careteam.ts";
@@ -167,6 +169,10 @@ export interface TenantView {
   /** Patient-uploaded files: quarantined until scanned, and never served before then. */
   uploads: Uploads;
   registry: Registry;
+  /** Clinical eligibility rules, published and versioned like a questionnaire — never edited in place. */
+  eligibility: EligibilityRules;
+  /** Care-gap cohorts turned into worked outreach lists. */
+  outreach: OutreachCampaigns;
   /** Bulk loads from an incumbent system, and whether they were complete. */
   migration: Migration;
   consent: ConsentDirectives;
@@ -446,6 +452,11 @@ export class Engine {
     // for one result code or vital kind. Built on stores already above.
     const timeline = new Timeline({ orders, vitals, procedures, immunizations, encounters, goals, actions });
     const trends = new Trends({ orders, vitals });
+    const registry = new Registry(db);
+    // Item 64: a published, versioned eligibility rule turned into a worked
+    // outreach list. contacts and schedule are both already built above.
+    const eligibility = new EligibilityRules(db);
+    const outreach = new OutreachCampaigns(db, eligibility, { contacts, schedule });
     // Reads the chart to take its snapshot, so it is built after the stores
     // that hold the four loose ends it looks for.
     const handoffs = new Handoffs(db);
@@ -528,7 +539,9 @@ export class Engine {
       board,
       discharges,
       handoffs,
-      registry: new Registry(db),
+      registry,
+      eligibility,
+      outreach,
       migration: new Migration(db, { clinical, meds }),
       consent,
       privacy,

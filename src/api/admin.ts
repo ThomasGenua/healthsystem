@@ -75,6 +75,7 @@ import type { PublicationStatus } from "../conformance/standards.ts";
 import { buildSummary, emptyReasonFor, type SummarySection } from "../clinical/summary.ts";
 import { news2FromChart, curb65FromChart } from "../clinical/score-from-chart.ts";
 import { VITAL_KINDS } from "../clinical/vitals.ts";
+import { ATTEMPT_OUTCOMES } from "../population/outreach.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
 import { VERSION } from "../version.ts";
@@ -4314,6 +4315,113 @@ async function route(
         return send(res, 400, { error: `unknown vital kind ${kind}; expected one of ${VITAL_KINDS.join(", ")}` });
       }
       return phi("Observation", () => tenant.trends.vitalSeries(patient, kind as (typeof VITAL_KINDS)[number]), (r) => r.points.length);
+    }
+    // Item 64: a care-gap cohort turned into a worked list, behind a
+    // governed, versioned eligibility rule. Duplicate outreach is prevented
+    // by the schema (idx_outreach_open_once), not by anything in this file.
+    if (path === "/api/clinical/eligibility-rules" && method === "GET") {
+      return phi("PlanDefinition", () => tenant.eligibility.list(), (r) => r.length);
+    }
+    if (path === "/api/clinical/eligibility-rules" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; name?: string; cohort?: unknown; gap?: unknown };
+      if (!body.id || !body.name || !body.cohort || !body.gap) {
+        return send(res, 400, { error: "id, name, cohort and gap required" });
+      }
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      try {
+        const published = tenant.eligibility.publish({ id: body.id, name: body.name, cohort: body.cohort as never, gap: body.gap as never, by });
+        audit({ action: "C", outcome: 0, resourceType: "PlanDefinition", detail: `published eligibility rule ${body.id}/${published.version}` });
+        return send(res, 201, published);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        logFault("eligibility rule publish", mapped, err);
+        audit({ action: "C", outcome: mapped.outcome, resourceType: "PlanDefinition", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    if (path === "/api/clinical/outreach-campaigns" && method === "GET") {
+      return phi("Task", () => tenant.outreach.list(), (r) => r.length);
+    }
+    if (path === "/api/clinical/outreach-campaigns" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { eligibilityRuleId?: string; version?: number; name?: string };
+      if (!body.eligibilityRuleId || !body.name) return send(res, 400, { error: "eligibilityRuleId and name required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      try {
+        const created = tenant.outreach.create({ eligibilityRuleId: body.eligibilityRuleId, version: body.version, name: body.name, by });
+        audit({
+          action: "C",
+          outcome: 0,
+          resourceType: "Task",
+          detail: `outreach campaign ${created.campaign.id}: ${created.items.length} item(s)`,
+        });
+        return send(res, 201, created);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        logFault("outreach campaign create", mapped, err);
+        audit({ action: "C", outcome: mapped.outcome, resourceType: "Task", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    if (path === "/api/clinical/outreach-campaigns-close" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phi("Task", () => tenant.outreach.close(body.id!, by));
+    }
+    if (path === "/api/clinical/outreach-items" && method === "GET") {
+      const campaignId = url.searchParams.get("campaign");
+      if (!campaignId) return send(res, 400, { error: "campaign required" });
+      return phi("Task", () => tenant.outreach.forCampaign(campaignId), (r) => r.length);
+    }
+    if (path === "/api/clinical/outreach-items-unreachable" && method === "GET") {
+      const campaignId = url.searchParams.get("campaign");
+      if (!campaignId) return send(res, 400, { error: "campaign required" });
+      return phi("Task", () => tenant.outreach.unreachable(campaignId), (r) => r.length);
+    }
+    if (path === "/api/clinical/outreach-item-recheck" && method === "GET") {
+      const itemId = url.searchParams.get("item");
+      if (!itemId) return send(res, 400, { error: "item required" });
+      return phi("Task", () => tenant.outreach.recheckEligibility(itemId));
+    }
+    if (path === "/api/clinical/outreach-item-assign" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; staffId?: string };
+      if (!body.id || !body.staffId) return send(res, 400, { error: "id and staffId required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phi("Task", () => tenant.outreach.assign(body.id!, body.staffId!, by));
+    }
+    if (path === "/api/clinical/outreach-item-attempt" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; channel?: string; outcome?: string; note?: string };
+      if (!body.id || !body.channel || !body.outcome) return send(res, 400, { error: "id, channel and outcome required" });
+      if (!(ATTEMPT_OUTCOMES as readonly string[]).includes(body.outcome)) {
+        return send(res, 400, { error: `unknown attempt outcome ${body.outcome}; expected one of ${ATTEMPT_OUTCOMES.join(", ")}` });
+      }
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phi("Task", () =>
+        tenant.outreach.recordAttempt(body.id!, { channel: body.channel!, outcome: body.outcome as (typeof ATTEMPT_OUTCOMES)[number], note: body.note, by })
+      );
+    }
+    if (path === "/api/clinical/outreach-item-attempts" && method === "GET") {
+      const itemId = url.searchParams.get("item");
+      if (!itemId) return send(res, 400, { error: "item required" });
+      return phi("Task", () => tenant.outreach.attemptsFor(itemId), (r) => r.length);
+    }
+    if (path === "/api/clinical/outreach-item-book" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; bookingId?: string };
+      if (!body.id || !body.bookingId) return send(res, 400, { error: "id and bookingId required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phi("Task", () => tenant.outreach.linkBooking(body.id!, body.bookingId!, by));
+    }
+    if (path === "/api/clinical/outreach-item-complete" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phi("Task", () => tenant.outreach.complete(body.id!, by));
+    }
+    if (path === "/api/clinical/outreach-item-exclude" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; reason?: string };
+      if (!body.id || !body.reason) return send(res, 400, { error: "id and reason required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phi("Task", () => tenant.outreach.exclude(body.id!, { reason: body.reason!, by }));
     }
     if (path === "/api/clinical/care-plan-complete" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as { id?: string; outcome?: string };

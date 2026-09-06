@@ -491,6 +491,87 @@ test("every clinical route leaves an audit row, including ones added later", asy
       by: GP_AUTHOR,
     });
     const actionToComplete = s.engine.forTenant("default").actions.approve(actionToCompleteFirst.recordId, GP_AUTHOR);
+    // Item 64: outreach campaigns. idx_outreach_open_once means a second open
+    // item for the same patient and rule is refused outright, so — same
+    // reason as the goal/action fixtures above — each state-transition route
+    // gets its own patient rather than sharing one that another route has
+    // already moved.
+    const outreachRule = s.engine.forTenant("default").eligibility.publish({
+      id: "route-test-outreach-rule",
+      name: "Route-test cohort",
+      cohort: { id: "route-test-cohort", name: "Route-test cohort", conditionCodes: ["route-test outreach condition"] },
+      gap: { id: "route-test-gap", name: "Route-test gap", withinDays: 365 },
+      by: GP,
+    });
+    const outreachPatientRecord = (id: string) => {
+      s.engine.forTenant("default").clinical.record({
+        entryType: "Patient",
+        patientId: id,
+        content: { resourceType: "Patient", identifier: [{ value: id }] },
+        authorId: "adt",
+        authorKind: "device",
+      });
+      s.engine.forTenant("default").clinical.record({
+        entryType: "Condition",
+        patientId: id,
+        content: { resourceType: "Condition", code: { text: "route-test outreach condition" } },
+        ...GP_AUTHOR,
+      });
+    };
+    for (const id of ["NT-OUT-ASSIGN", "NT-OUT-ATTEMPT", "NT-OUT-ATTLIST", "NT-OUT-BOOK", "NT-OUT-COMPLETE", "NT-OUT-EXCLUDE"]) {
+      outreachPatientRecord(id);
+    }
+    const outreachCampaign = s.engine.forTenant("default").outreach.create({
+      eligibilityRuleId: outreachRule.id,
+      name: "Route-test campaign",
+      by: GP,
+    });
+    const outreachItem = (patientId: string) => outreachCampaign.items.find((i) => i.patient_id === patientId)!;
+    const itemToAssign = outreachItem("NT-OUT-ASSIGN");
+    const itemToAttempt = outreachItem("NT-OUT-ATTEMPT");
+    const itemForAttemptsList = outreachItem("NT-OUT-ATTLIST");
+    s.engine.forTenant("default").outreach.recordAttempt(itemForAttemptsList.id, { channel: "phone", outcome: "no-answer", by: GP });
+    const itemToBook = outreachItem("NT-OUT-BOOK");
+    const outreachBookSlot = s.engine.forTenant("default").schedule.openSlot({
+      resourceId: "dr-tetso",
+      service: "Outreach follow-up",
+      startsAt: "2026-09-15T10:00:00Z",
+      endsAt: "2026-09-15T10:30:00Z",
+    });
+    const outreachBooking = s.engine.forTenant("default").schedule.book({
+      slotId: outreachBookSlot.id,
+      patientId: "NT-OUT-BOOK",
+      reason: "Outreach follow-up",
+      by: GP,
+    });
+    const itemToComplete = outreachItem("NT-OUT-COMPLETE");
+    const outreachCompleteSlot = s.engine.forTenant("default").schedule.openSlot({
+      resourceId: "dr-tetso",
+      service: "Outreach follow-up",
+      startsAt: "2026-09-16T10:00:00Z",
+      endsAt: "2026-09-16T10:30:00Z",
+    });
+    const outreachCompleteBooking = s.engine.forTenant("default").schedule.book({
+      slotId: outreachCompleteSlot.id,
+      patientId: "NT-OUT-COMPLETE",
+      reason: "Outreach follow-up",
+      by: GP,
+    });
+    s.engine.forTenant("default").outreach.linkBooking(itemToComplete.id, outreachCompleteBooking.id, GP);
+    const itemToExclude = outreachItem("NT-OUT-EXCLUDE");
+    // A campaign already active, pre-built (not through the route under
+    // test), so the live close route has something one-way to close.
+    outreachPatientRecord("NT-OUT-CAMPAIGN-CLOSE");
+    const campaignToClose = s.engine.forTenant("default").outreach.create({
+      eligibilityRuleId: outreachRule.id,
+      name: "Route-test campaign to close",
+      by: GP,
+    }).campaign;
+    // And one more patient, added only now — after every campaign above has
+    // already been built — so the live create-campaign route has exactly one
+    // still-open patient under this rule to pick up, rather than colliding
+    // with everyone the fixtures above already claimed.
+    outreachPatientRecord("NT-OUT-CAMPAIGN-CREATE");
     const docToRead = s.engine.forTenant("default").documents.receive({
       patientId: P,
       title: "Cardiology letter",
@@ -862,6 +943,18 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/timeline": `?patient=${P}`,
       "/api/clinical/result-trend": `?patient=${P}&code=2823-3`,
       "/api/clinical/vital-trend": `?patient=${P}&kind=heart-rate`,
+      "/api/clinical/eligibility-rules": "POST",
+      "/api/clinical/outreach-campaigns": "POST",
+      "/api/clinical/outreach-campaigns-close": "POST",
+      "/api/clinical/outreach-items": `?campaign=${outreachCampaign.campaign.id}`,
+      "/api/clinical/outreach-items-unreachable": `?campaign=${outreachCampaign.campaign.id}`,
+      "/api/clinical/outreach-item-recheck": `?item=${itemToAssign.id}`,
+      "/api/clinical/outreach-item-assign": "POST",
+      "/api/clinical/outreach-item-attempt": "POST",
+      "/api/clinical/outreach-item-attempts": `?item=${itemForAttemptsList.id}`,
+      "/api/clinical/outreach-item-book": "POST",
+      "/api/clinical/outreach-item-complete": "POST",
+      "/api/clinical/outreach-item-exclude": "POST",
       "/api/clinical/patient-document-record": "POST",
       "/api/clinical/care-team-assign": "POST",
       "/api/clinical/care-team-retire": "POST",
@@ -1314,6 +1407,19 @@ test("every clinical route leaves an audit row, including ones added later", asy
         questions: [{ key: "q1", label: "Anything to flag before your visit?", type: "text" }],
       },
       "/api/clinical/upload-scan": { id: uploadToScan.id },
+      "/api/clinical/eligibility-rules": {
+        id: "route-test-published-rule",
+        name: "Route-test published rule",
+        cohort: { id: "route-test-published-cohort", name: "Route-test published cohort", conditionCodes: ["route-test outreach condition"] },
+        gap: { id: "route-test-published-gap", name: "Route-test published gap", withinDays: 180 },
+      },
+      "/api/clinical/outreach-campaigns": { eligibilityRuleId: outreachRule.id, name: "Route-test live-created campaign" },
+      "/api/clinical/outreach-campaigns-close": { id: campaignToClose.id },
+      "/api/clinical/outreach-item-assign": { id: itemToAssign.id, staffId: "clerk-amaruq" },
+      "/api/clinical/outreach-item-attempt": { id: itemToAttempt.id, channel: "phone", outcome: "no-answer" },
+      "/api/clinical/outreach-item-book": { id: itemToBook.id, bookingId: outreachBooking.id },
+      "/api/clinical/outreach-item-complete": { id: itemToComplete.id },
+      "/api/clinical/outreach-item-exclude": { id: itemToExclude.id, reason: "route-test exclusion: patient moved away" },
     };
 
     const unlisted = paths.filter((p) => !(p in args));

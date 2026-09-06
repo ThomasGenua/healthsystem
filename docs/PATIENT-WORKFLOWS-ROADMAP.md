@@ -349,16 +349,104 @@ reading against a lab result for a related analyte — is not attempted for
 the same reason arbitrary lab-to-lab conversion is not: no verified
 equivalence exists in this codebase to reuse.
 
-## 64. Outreach campaigns — **missing**
+## 64. Outreach campaigns — **done**
 
-**Present.** `Registry` (`src/population/registry.ts:119`) computes cohorts,
-care gaps and measures, and every one of them carries the members it could not
-classify rather than dropping them.
+**Present, unchanged.** `Registry` (`src/population/registry.ts:119`)
+computes cohorts, care gaps and measures, and every one of them carries the
+members it could not classify rather than dropping them. This increment adds
+nothing to `Registry` itself — a campaign is built by calling `gaps()`
+exactly as before, once, at one moment.
 
-**Missing.** Everything else. No file mentions `outreach` or `campaign`. There
-is no reviewable list, no eligibility snapshot, no assigned staff member, no
-contact attempt, no response, no exclusion with a reason, and no separation
-between the clinical rule and the campaign that uses it.
+**Added in this increment.** `src/population/eligibility.ts`:
+`EligibilityRules`, a governed, versioned home for a `CohortRule` +
+`CareGapRule` pair — the same publish-only, never-edit shape
+`Questionnaires.publish()` already established in `src/patient/intake.ts`.
+`publish()` always inserts a new version and retires the prior `active` one;
+`get(id, version?)` finds exactly what was published, forever, so a campaign
+built from version 3 still means version 3 after a clinician publishes
+version 4.
+
+`src/population/outreach.ts`: `OutreachCampaigns`. `create()` snapshots
+`Registry.gaps()` against a published rule into an `outreach_campaigns` row
+and one `outreach_items` row per gap member — the eligibility snapshot
+(`eligible_last_done`, `eligible_overdue_days`) frozen at that moment, not a
+live join. Duplicate outreach is prevented by
+`idx_outreach_open_once` — a partial unique index on
+`(tenant, patient, eligibility_rule_id)` while an item is open — enforced by
+the schema itself, not by a check `create()` could get wrong under
+concurrent requests; a second campaign against the same rule simply finds
+those patients already spoken for and moves on to whoever is left.
+
+An item's lifecycle — `pending → attempted/responded → booked → completed`,
+with `excluded` and `unreachable` beside it — is enforced by status guards
+the same shape as `Goals`/`Actions` in item 61: `assign()` needs an open
+item, `recordAttempt()` refuses on a closed one and never moves an item
+backward from `responded`/`booked`/`completed`, three unanswered attempts
+surface it as `unreachable` (not a dead end — a later attempt that connects
+still moves it forward), `linkBooking()` validates the booking exists and
+belongs to this same patient when `Schedule` is wired in, `complete()`
+refuses unless a booking is already on file, and `exclude()` needs a written
+reason. `recordAttempt()` also calls `PatientContacts.reachable()` — the
+same honesty item 59 built for a notification applies here: an attempt
+against a patient with no verified, consented contact is refused, not
+silently allowed because outreach is a different feature. `recheckEligibility()`
+re-asks `Registry.gaps()` fresh, deliberately, rather than trusting the
+stored snapshot — for the moment right before a call is actually made, not
+as something that runs automatically and could make a list look shorter than
+what a staff member was handed.
+
+Fourteen clinician routes (`/api/clinical/eligibility-rules`,
+`/api/clinical/outreach-campaigns[-close]`, `/api/clinical/outreach-items[-unreachable]`,
+and `/api/clinical/outreach-item-{recheck,assign,attempt[s],book,complete,exclude}`)
+go through the existing `phi()` gateway. No patient route: item 64's own text
+describes a staff worklist, not something a patient portal shows — a patient
+experiences the results of outreach (a notification, a booking) through the
+portal surfaces items 58/59 already built, not a new one here.
+
+**Test evidence.** `test/outreach.test.ts` (22 tests): rule versioning and
+retirement, a negative or zero care-gap window refused, a campaign's
+snapshot excluding patients not in the cohort, with a recent result, or
+already on another campaign's open item — and picking them back up once that
+item closes, refusing a campaign built against an unpublished rule, the full
+assign → attempt → respond → book → complete happy path, refusing completion
+without a booking and refusing a booking made for a different patient,
+refusing to reassign or relink a completed item, one-way campaign closure,
+three-unanswered-attempts surfacing as unreachable without trapping the item
+there, a later attempt after a response never reverting it, exclusion
+needing a written reason, `recordAttempt` refusing an unknown outcome and
+refusing when no contact is reachable, `recheckEligibility` reporting a
+closed gap without touching the stored snapshot, and tenant isolation.
+Twenty-five mutations run against `eligibility.ts` and `outreach.ts`
+together; twenty-two killed outright, five test gaps found and closed
+(empty id/name on publish, an empty campaign name, an empty staff id, and
+the state guards on `assign`/`linkBooking`/`close`/`complete`/`exclude` that
+had no fixture exercising their refusal path at all). The remaining three
+survivors are accepted as equivalent mutants and documented as such at the
+call site rather than chased: the `status = 'active'` filter in
+`EligibilityRules.get()`'s default path is provably redundant given the
+invariant `publish()` maintains (the highest version number is always the
+active one); the `<=0`/`<0` boundary on `withinDays` is unreachable because
+the preceding `!input.gap.withinDays` falsy-check already catches zero, and
+every negative number satisfies both variants identically; and
+`create()`'s `String(err).includes("UNIQUE")` catch-guard cannot be
+distinguished by any input reachable through the public API, because SQLite
+reports a primary-key collision with the same "UNIQUE constraint failed"
+text as the partial index this catch exists for, and no other constraint on
+`outreach_items` is reachable from `create()`'s validated inputs.
+
+**Correcting this document.** An earlier pass at item 67, below, claimed
+small-cell suppression did not exist anywhere in this codebase. It does —
+`src/population/release.ts`, merged before this roadmap was first written —
+and the correction is recorded in full under item 67 rather than here.
+
+**Still missing.** No portal or clinic-workspace screen surfaces a campaign
+or worklist visually; the API is complete but, as with item 61's after-visit
+summary, nothing renders it yet. A team is still not modelled for
+`assigned_to`, the same gap items 61 and 62 already have for
+`responsibleId`/handoffs. `channel` on an attempt is a free string, not a
+closed set the way `outcome` is — deliberately, since a clinic's contact
+channels are a deployment fact this codebase should not hardcode, but it
+means the API does not reject a typo the way it rejects an unknown outcome.
 
 ## 65. Northern and travelling-clinic coordination — **partial**
 
@@ -403,7 +491,7 @@ is its own piece of work.
 *(Recently-discharged patients and unaccepted handoffs were listed here and
 are now on the board, since item 62 built the workflow underneath them.)*
 
-## 67. Measuring whether these workflows help — **partial, and one premise is wrong**
+## 67. Measuring whether these workflows help — **partial**
 
 **Present, and it is the hard half.** `MeasureResult`
 (`src/population/registry.ts:91`) already does what the item's third bullet
@@ -413,16 +501,27 @@ a fifth of the cohort is unassessable, and a written `caveat` so a dashboard
 cannot print a bare percentage. "Preserve unknown outcomes rather than treating
 them as success" is the existing design.
 
+**Also present — correcting an earlier version of this document.** An
+earlier draft of this section claimed small-cell suppression did not exist
+in this codebase and would have to be built from scratch, on the strength of
+a grep that should have found it and did not. It exists:
+`src/population/release.ts` (merged in #55, well before this roadmap was
+first written) already implements exactly what the item's closing bullet
+asks for — `releaseMeasure()` and `releaseGaps()` fold any count from 1 to
+`threshold−1` (default 5) to a suppressed cell, protect complementary pairs
+so a published total cannot hand a suppressed count back by subtraction, and
+state the method on the face of the release. Item 67's own text asks to
+"reuse existing aggregate-release and small-cell protections", and that
+premise was correct — it is this document's earlier claim to the contrary
+that was wrong, now struck. The six metrics below reuse the same `cell()` /
+`suppressComplementarily()` shape `releaseMeasure`/`releaseGaps` already use,
+as new metric-shaped wrapper functions in `release.ts` alongside them, the
+same way `releaseGaps` sits next to `releaseMeasure` rather than duplicating
+its suppression logic.
+
 **Missing.** The six metrics themselves — time to clinician review, unresolved
 follow-up, referral completion, notification failures, missed appointments,
 staff task burden — and per-metric declared exclusions and time windows.
-
-**The premise to correct.** The item says to reuse "existing aggregate-release
-and small-cell protections". The aggregate-release honesty exists, as above.
-**Small-cell suppression does not.** `grep -rn 'smallCell\|small-cell\|suppress'`
-over `src/population/` and `src/workspace/` finds nothing: a measure over a
-cohort of three returns a rate computed from three people. Any work on item 67
-has to build that, not reuse it.
 
 ---
 
