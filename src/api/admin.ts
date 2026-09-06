@@ -74,6 +74,7 @@ import type { ScoreId } from "../clinical/score-definitions.ts";
 import type { PublicationStatus } from "../conformance/standards.ts";
 import { buildSummary, emptyReasonFor, type SummarySection } from "../clinical/summary.ts";
 import { news2FromChart, curb65FromChart } from "../clinical/score-from-chart.ts";
+import { VITAL_KINDS } from "../clinical/vitals.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
 import { VERSION } from "../version.ts";
@@ -4287,6 +4288,32 @@ async function route(
       const e = tenant.encounters.get(encounterId);
       if (!e) return send(res, 404, { error: `no encounter ${encounterId}` });
       return phiFor(e.patient_id, "CarePlan", () => tenant.avs.build(encounterId));
+    }
+    // Item 63: one ordered read across every domain, and a validated series
+    // for one result code or vital kind.
+    if (path === "/api/clinical/timeline" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("Observation", () => tenant.timeline.forPatient(patient), (r) => r.length, [
+        "Observation",
+        "Procedure",
+        "Immunization",
+        "Encounter",
+        "Goal",
+        "Task",
+      ]);
+    }
+    if (path === "/api/clinical/result-trend" && method === "GET") {
+      const code = url.searchParams.get("code");
+      if (!patient || !code) return send(res, 400, { error: "patient and code required" });
+      return phi("Observation", () => tenant.trends.resultSeries(patient, code), (r) => r.points.length);
+    }
+    if (path === "/api/clinical/vital-trend" && method === "GET") {
+      const kind = url.searchParams.get("kind");
+      if (!patient || !kind) return send(res, 400, { error: "patient and kind required" });
+      if (!(VITAL_KINDS as readonly string[]).includes(kind)) {
+        return send(res, 400, { error: `unknown vital kind ${kind}; expected one of ${VITAL_KINDS.join(", ")}` });
+      }
+      return phi("Observation", () => tenant.trends.vitalSeries(patient, kind as (typeof VITAL_KINDS)[number]), (r) => r.points.length);
     }
     if (path === "/api/clinical/care-plan-complete" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as { id?: string; outcome?: string };

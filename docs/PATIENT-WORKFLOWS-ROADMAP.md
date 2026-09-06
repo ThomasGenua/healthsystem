@@ -280,22 +280,74 @@ nothing expires a proposal: an offer nobody answers stays proposed forever and
 is visible rather than acted on, which is the safe direction but not the
 finished one.
 
-## 63. A useful longitudinal chart — **partial**
+## 63. A useful longitudinal chart — **done**
 
-**Present, and stronger than the item assumes.** `Workspace.chart()`
-(`src/workspace/summary.ts:324`) assembles every clinical domain with a
-per-section status, so "withheld", "never recorded" and "none" are already
-three different answers rather than one empty array. The UCUM measurement
-contract (`src/clinical/measurement.ts`) is exactly the "compare only
-compatible measurements using validated conversions" requirement: equivalent
-unit labels pass through, a pure change of scale is converted, and a
-comparison needing a molar mass is refused rather than guessed. Provenance
-(`src/fhir/provenance.ts`) links a stored resource to where it came from.
+**Present, unchanged.** `Workspace.chart()` (`src/workspace/summary.ts:324`)
+still assembles every clinical domain with a per-section status, and stays
+the answer for "withheld", "never recorded" and "none" as three different
+things. The UCUM measurement contract (`src/clinical/measurement.ts`) is
+unchanged too — reused, not modified.
 
-**Missing.** The timeline and the trends. No file in `src/` contains the word
-`timeline` or `trend`. Reference ranges, collection times and correction
-markers exist on individual results but are not assembled into a series, and
-nothing links a plotted point back to its source record because nothing plots.
+**Added in this increment.** `src/clinical/timeline.ts`: one chronological
+read across results, vitals, procedures, immunizations, encounters, and
+approved-or-better care-plan goals and actions, each entry carrying
+`sourceRecordId` so it traces back to the record it summarises. A corrected
+result contributes its current version only — `OrderStore.currentResultsFor()`
+(new) excludes anything superseded, the same query shape
+`access.resultsFor()` already used for the patient-facing list, without that
+method's hold-awareness, which does not belong in a clinician's own read. A
+merely `proposed` goal or action is not on the timeline: it is not yet an
+event in the patient's history, only a suggestion.
+
+`src/clinical/trends.ts`: a validated series per result code
+(`OrderStore.resultSeries()`, new — every version of one code for one
+patient, corrections included, each still carrying its own `supersedes`
+pointer) or per vital kind. **Comparability is the one place this deliberately
+falls short of what the item literally asks, on purpose.** measurement.ts
+validates real unit conversion for the handful of quantities the clinical
+scores measure — temperature, heart rate, respiratory rate, blood pressure,
+oxygen saturation — and a vital series reuses that contract directly: two
+readings in different units convert if the contract says they can, and are
+marked not comparable with the contract's own reason if they cannot. A
+laboratory result has no such contract for arbitrary analytes — there is no
+molar-mass table in this codebase for potassium, sodium, or anything else a
+lab might report — and building one would mean asserting a clinical fact
+(a substance's molar mass, a scale's equivalence) nobody here is positioned
+to assert. So a result series calls two points comparable only when their
+unit strings match exactly; two points in genuinely equivalent but
+differently-spelled units read as "not comparable" until that equivalence is
+taught to measurement.ts's own registry, which is a narrower and more
+honest gap than guessing one.
+
+`Trends.staleness()` never defaults an expected interval — how often a given
+measurement should recur is a clinical or programme decision this file may
+not make on a deployment's behalf, so the caller supplies it and an interval
+of zero or less is refused rather than silently treated as "always stale."
+
+Three clinician routes (`/api/clinical/timeline`, `-result-trend`,
+`-vital-trend`) go through the existing `phi()` gateway.
+
+**Test evidence.** `test/trends.test.ts` (10 tests): a correction kept next
+to the value it replaced without duplicating on the timeline, two units
+correctly marked not comparable for a lab result, a genuine Celsius↔Fahrenheit
+conversion succeeding for a vital and a nonsense unit genuinely failing (not
+just assumed to pass), staleness refusing a non-positive interval, an empty
+series answering "not stale" rather than crashing, tenant and patient
+confinement, and a timeline whose sort order is proven against fixtures
+where date order and "the order the code happens to read domains in"
+deliberately disagree. Ten mutations, all ten caught — four survived the
+first pass, each because the original test could not distinguish "did the
+real check run" from "did the answer happen to come out the same anyway,"
+and each fixed by making that distinction actually possible for the test to see.
+
+**Still missing.** No patient-facing route. This item reads as a clinician's
+tool extending `Workspace.chart()`, which is itself clinician-facing; the
+existing `/patient/results` list is where a patient's released values
+already live, and a full patient-facing trends UI is real, separate work
+this item did not include. Cross-source comparison — a home vital-sign
+reading against a lab result for a related analyte — is not attempted for
+the same reason arbitrary lab-to-lab conversion is not: no verified
+equivalence exists in this codebase to reuse.
 
 ## 64. Outreach campaigns — **missing**
 

@@ -26,6 +26,8 @@ import { Vitals } from "../clinical/vitals.ts";
 import { Procedures } from "../clinical/procedures.ts";
 import { CarePlans } from "../clinical/careplans.ts";
 import { Goals, Actions } from "../clinical/goals.ts";
+import { Timeline } from "../clinical/timeline.ts";
+import { Trends } from "../clinical/trends.ts";
 import { AfterVisitSummaries } from "../clinical/avs.ts";
 import { PatientDocuments } from "../clinical/documents.ts";
 import { CareTeam } from "../clinical/careteam.ts";
@@ -118,6 +120,10 @@ export interface TenantView {
   actions: Actions;
   /** Assembled from approved plan content and this visit's own orders. Writes nothing. */
   avs: AfterVisitSummaries;
+  /** One ordered read across every domain, each entry pointing back to its source. */
+  timeline: Timeline;
+  /** A validated series for one result code or vital kind, and whether every point in it is on one scale. */
+  trends: Trends;
   documents: PatientDocuments;
   careTeam: CareTeam;
   coverage: Coverage;
@@ -436,6 +442,10 @@ export class Engine {
       referral: { get: (id: string) => referrals.get(id) },
     });
     const avs = new AfterVisitSummaries({ carePlans, goals, actions, encounters, orders });
+    // Item 63: one ordered read across every domain, and a validated series
+    // for one result code or vital kind. Built on stores already above.
+    const timeline = new Timeline({ orders, vitals, procedures, immunizations, encounters, goals, actions });
+    const trends = new Trends({ orders, vitals });
     // Reads the chart to take its snapshot, so it is built after the stores
     // that hold the four loose ends it looks for.
     const handoffs = new Handoffs(db);
@@ -493,6 +503,8 @@ export class Engine {
       goals,
       actions,
       avs,
+      timeline,
+      trends,
       documents,
       careTeam,
       coverage,

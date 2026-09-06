@@ -11,6 +11,29 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **A longitudinal timeline and validated trends, that refuse to invent a
+  conversion nobody has validated (item 63).** `src/clinical/timeline.ts`
+  merges results, vitals, procedures, immunizations, encounters, and
+  approved-or-better care-plan goals and actions into one chronological
+  read, each entry carrying `sourceRecordId` back to its record. A
+  corrected result contributes its current version only — a new
+  `OrderStore.currentResultsFor()` excludes anything superseded at the SQL
+  level — and a merely-proposed goal or action is not yet an event in a
+  patient's history.
+
+  `src/clinical/trends.ts` builds a series per result code
+  (`OrderStore.resultSeries()`, every version of one code including
+  corrections) or per vital kind. **A vital series reuses the existing
+  validated measurement contract** for real unit conversion; **a result
+  series does not invent one** — there is no molar-mass table in this
+  codebase for arbitrary lab analytes, and asserting an equivalence nobody
+  has verified is exactly the silent rescaling that contract exists to
+  stop. Two points in different units are marked "not comparable" rather
+  than plotted on one guessed scale. `Trends.staleness()` never defaults
+  an expected interval; the caller supplies one or the call is refused.
+
+  Ten mutations, all ten caught by a test.
+
 - **Structured care-plan goals and actions, and an after-visit summary that
   cannot say more than a clinician agreed to (item 61).** `src/clinical/
   goals.ts` gives a care plan `Goal` and `Task` (action) entries of their
