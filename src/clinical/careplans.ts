@@ -34,6 +34,13 @@ export interface CarePlanInput {
   description?: string;
   encounterId?: string;
   sourceMessageId?: string;
+  /**
+   * What to tell the patient to watch for, and when to call rather than
+   * wait — a clinician's own words, or nothing. An after-visit summary
+   * assembled from this plan (src/clinical/avs.ts) either quotes this
+   * verbatim or states plainly that none was provided; it never writes one.
+   */
+  escalationCriteria?: string;
 }
 
 export interface CarePlanView {
@@ -47,6 +54,7 @@ export interface CarePlanView {
   reviewBy: string | null;
   outcome: string | null;
   reason: string | null;
+  escalationCriteria: string | null;
   authorId: string;
   recordedAt: string;
 }
@@ -82,6 +90,7 @@ function parse(entry: ClinicalEntry): CarePlanView {
     reviewBy: typeof c.reviewBy === "string" ? c.reviewBy : null,
     outcome: typeof outcome === "string" ? outcome : null,
     reason: typeof reason === "string" ? reason : null,
+    escalationCriteria: typeof c.escalationCriteria === "string" ? c.escalationCriteria : null,
     authorId: entry.author_id,
     recordedAt: entry.recorded_at,
   };
@@ -98,6 +107,7 @@ function blob(plan: CarePlanView, patch: Record<string, unknown>): Record<string
     ...(plan.reviewBy ? { reviewBy: plan.reviewBy } : {}),
     ...(plan.outcome ? { outcome: { text: plan.outcome } } : {}),
     ...(plan.reason ? { statusReason: { text: plan.reason } } : {}),
+    ...(plan.escalationCriteria ? { escalationCriteria: plan.escalationCriteria } : {}),
     ...patch,
   };
 }
@@ -129,6 +139,7 @@ export class CarePlans {
       ...(input.description?.trim() ? { description: input.description.trim() } : {}),
       goal: goals.map((text) => ({ description: { text } })),
       reviewBy: input.reviewBy.trim(),
+      ...(input.escalationCriteria?.trim() ? { escalationCriteria: input.escalationCriteria.trim() } : {}),
     };
     const entry = this.clinical.record({
       entryType: "CarePlan",

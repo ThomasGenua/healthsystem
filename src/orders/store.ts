@@ -665,6 +665,41 @@ export class OrderStore {
   }
 
   /**
+   * The current results for a patient, one row per analyte — corrections
+   * folded to their latest version, cancelled ones excluded. For the
+   * clinician-facing timeline (src/clinical/timeline.ts); a patient-facing
+   * read goes through PatientAccess.resultsFor() instead, which is
+   * hold-aware and this deliberately is not.
+   */
+  currentResultsFor(patientId: string): ResultRow[] {
+    return this.db.sql
+      .prepare(
+        `SELECT * FROM order_results r
+          WHERE tenant_id = ? AND patient_id = ? AND result_status != 'cancelled'
+            AND NOT EXISTS (SELECT 1 FROM order_results n WHERE n.tenant_id = r.tenant_id AND n.supersedes = r.id)
+          ORDER BY COALESCE(observed_at, reported_at)`
+      )
+      .all(this.db.tenantId, patientId) as unknown as ResultRow[];
+  }
+
+  /**
+   * Every result of one code for one patient, oldest first, corrections
+   * included — the series a trend is built from (see src/clinical/trends.ts).
+   * Cancelled results are excluded; a superseded one is kept and carries its
+   * own `supersedes` pointer, so a caller can show what a value used to be
+   * next to what replaced it, the same way an amended chart entry can.
+   */
+  resultSeries(patientId: string, code: string): ResultRow[] {
+    return this.db.sql
+      .prepare(
+        `SELECT * FROM order_results
+          WHERE tenant_id = ? AND patient_id = ? AND code = ? AND result_status != 'cancelled'
+          ORDER BY COALESCE(observed_at, reported_at), created_at`
+      )
+      .all(this.db.tenantId, patientId, code) as unknown as ResultRow[];
+  }
+
+  /**
    * The orders placed during one visit.
    *
    * Scoped by encounter rather than by a time window around it, which is what

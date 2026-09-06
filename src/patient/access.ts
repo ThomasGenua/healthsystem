@@ -65,6 +65,7 @@ export const PATIENT_PERMISSIONS = [
   "access-log",
   "requests",
   "delegates",
+  "intake",
 ] as const;
 export type PatientPermission = (typeof PATIENT_PERMISSIONS)[number];
 const PROXY_PERMISSIONS = PATIENT_PERMISSIONS.filter((p) => p !== "delegates");
@@ -316,7 +317,7 @@ export class PatientAccess {
     }
     if (authority.relationship === "self") return [...PATIENT_PERMISSIONS];
     const summary: PatientPermission[] = ["summary", "results", "appointments"];
-    return authority.extent === "summary" ? summary : [...summary, "messages", "access-log", "requests"];
+    return authority.extent === "summary" ? summary : [...summary, "messages", "access-log", "requests", "intake"];
   }
 
   /**

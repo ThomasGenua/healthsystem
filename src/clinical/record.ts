@@ -52,7 +52,13 @@ export type EntryType =
   | "CarePlan"
   | "Consent"
   | "ServiceRequest"
-  | "Task";
+  | "Task"
+  // A patient's own answers, frozen at the moment they submitted them. See
+  // src/patient/intake.ts.
+  | "QuestionnaireResponse"
+  // A care-plan goal, structured and versioned like anything else here. See
+  // src/clinical/goals.ts. "Task" above is what an action serving one uses.
+  | "Goal";
 
 /**
  * What a version asserted when it was written. Not "amended" — that is a fact

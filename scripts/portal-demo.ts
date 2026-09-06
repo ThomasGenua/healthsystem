@@ -104,7 +104,9 @@ try {
   // nothing here is identity proofing, and the method text says so.
   t.patientAccess.grantSelf(PATIENT, "urn:demo:sunniva", CLERK);
 
-  // A caregiver, narrowly. Appointments only, and it ends.
+  // A caregiver, narrowly. Appointments only, and it ends. No "intake",
+  // deliberately: the narrower shape for a delegate should be visible on
+  // this tab too, not just on the ones item 58 already showed.
   t.patientAccess.grantProxy({
     patientId: CAREGIVER_OF,
     subjectId: "urn:demo:kiona",
@@ -112,6 +114,19 @@ try {
     expiresAt: in30Days,
     permissions: ["appointments"],
     purpose: "drives Sunniva to appointments",
+    by: CLERK,
+  });
+
+  // Item 60: something to fill in before the visit. Versioned like any other
+  // questionnaire this deployment might later revise — publish() would give
+  // a second one version 2 rather than editing this one in place.
+  t.questionnaires.publish({
+    id: "pre-visit",
+    title: "Before your appointment",
+    questions: [
+      { key: "fasting", label: "Have you fasted for at least 8 hours?", type: "boolean", required: true },
+      { key: "concern", label: "Anything specific you would like addressed?", type: "text" },
+    ],
     by: CLERK,
   });
 
@@ -126,12 +141,19 @@ try {
       "",
       "  Then:",
       "",
-      "    NORTHSTAR_DEV_IDP=on npm start",
+      "    NORTHSTAR_DEV_IDP=on NORTHSTAR_DEV_MALWARE_SCANNER=on npm start",
       `    open ${base}/me`,
       "",
       "  The sign-in page lists exactly those two, because they are who the clinic",
       "  has granted a chart to. Signing in as the caregiver shows one tab; signing",
-      "  in as the patient shows seven, and the held result says why it is held.",
+      "  in as the patient shows eight, and the held result says why it is held.",
+      "",
+      "  The eighth is Before your visit: a fasting question due before the booked",
+      "  appointment, a box for anything else to raise, and a place to send a",
+      "  document. Save it and reload to see the draft resume rather than fork.",
+      "  Sending a file needs the malware-scanner flag above — without it every",
+      "  upload sits \"being checked\" forever, which is the honest answer for a",
+      "  deployment that has not configured a real scanner.",
       "",
       "  Everything above is invented. Do not point this at a real person.",
       "",

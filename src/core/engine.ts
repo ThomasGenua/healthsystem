@@ -25,6 +25,10 @@ import { Immunizations } from "../clinical/immunizations.ts";
 import { Vitals } from "../clinical/vitals.ts";
 import { Procedures } from "../clinical/procedures.ts";
 import { CarePlans } from "../clinical/careplans.ts";
+import { Goals, Actions } from "../clinical/goals.ts";
+import { Timeline } from "../clinical/timeline.ts";
+import { Trends } from "../clinical/trends.ts";
+import { AfterVisitSummaries } from "../clinical/avs.ts";
 import { PatientDocuments } from "../clinical/documents.ts";
 import { CareTeam } from "../clinical/careteam.ts";
 import { Coverage } from "../clinical/coverage.ts";
@@ -45,6 +49,7 @@ import { StandardsRegistry } from "../conformance/standards.ts";
 import { ingestFhir } from "../directory/fhir.ts";
 import { ChannelNoticeDispatcher, PatientNotices } from "../patient/notice.ts";
 import { PatientContacts } from "../patient/contacts.ts";
+import { Questionnaires, IntakeSubmissions, Uploads, type MalwareScanner } from "../patient/intake.ts";
 import { ClinicBoard } from "../workspace/board.ts";
 import { Discharges, Handoffs } from "../work/discharge.ts";
 import { AccessReview } from "../audit/review.ts";
@@ -110,6 +115,15 @@ export interface TenantView {
   vitals: Vitals;
   procedures: Procedures;
   carePlans: CarePlans;
+  /** Structured goals and the actions serving them, versioned like anything else on the chart. */
+  goals: Goals;
+  actions: Actions;
+  /** Assembled from approved plan content and this visit's own orders. Writes nothing. */
+  avs: AfterVisitSummaries;
+  /** One ordered read across every domain, each entry pointing back to its source. */
+  timeline: Timeline;
+  /** A validated series for one result code or vital kind, and whether every point in it is on one scale. */
+  trends: Trends;
   documents: PatientDocuments;
   careTeam: CareTeam;
   coverage: Coverage;
@@ -146,6 +160,12 @@ export interface TenantView {
    * checked and a patient consented to, which is what a notice may use.
    */
   contacts: PatientContacts;
+  /** Versioned pre-visit questionnaires, and what a patient answered on one. */
+  questionnaires: Questionnaires;
+  /** Drafts, submissions and the review they raise. Never applies a proposed change itself. */
+  intake: IntakeSubmissions;
+  /** Patient-uploaded files: quarantined until scanned, and never served before then. */
+  uploads: Uploads;
   registry: Registry;
   /** Bulk loads from an incumbent system, and whether they were complete. */
   migration: Migration;
@@ -231,6 +251,14 @@ export interface EngineOptions {
    * deployment in breach without telling it.
    */
   controlledSubstanceAuthority?: string;
+  /**
+   * What scans a patient upload before it can be downloaded or filed onto
+   * the chart. Unset means every upload stays quarantined indefinitely —
+   * visible as pending-scan, never served — which is honest, not broken: a
+   * deployment that wants uploads to clear quarantine has to say what scans
+   * them. See src/patient/intake.ts for why there is no default scanner.
+   */
+  malwareScanner?: MalwareScanner;
 }
 
 export class Engine {
@@ -266,6 +294,8 @@ export class Engine {
   private noticeChannel: string | null;
   /** The channel prescriptions are transmitted on, when one is configured. */
   private pharmacyChannel: string | null;
+  /** What scans a patient upload, when a deployment configures one. */
+  private malwareScanner: MalwareScanner | null;
   /** What authorises transmitting a controlled substance, when anything does. */
   private controlledAuthority: string | null;
   private lockStaleMs: number;
@@ -317,6 +347,7 @@ export class Engine {
     this.noticeChannel = opts.breakGlassNoticeChannel ?? null;
     this.pharmacyChannel = opts.pharmacyChannel ?? null;
     this.controlledAuthority = opts.controlledSubstanceAuthority ?? null;
+    this.malwareScanner = opts.malwareScanner ?? null;
     this.lockStaleMs = opts.lockStaleMs ?? 20_000;
     // Comfortably inside the staleness window, so a slow moment never costs a
     // running engine its own claim.
@@ -388,10 +419,33 @@ export class Engine {
     const labIntake = new LabIntake(db, orders, clinical.patientIndex);
     const referrals = new ReferralStore(db);
     const patientAccess = new PatientAccess(db, orders, tasks);
+    // Pre-visit intake (item 60). Built on documents and tasks, both already
+    // constructed above: a submission files onto the chart the same way a
+    // clinician-recorded document does, and both a submission and a clean
+    // upload raise a portal-submission task rather than landing silently.
+    const questionnaires = new Questionnaires(db);
+    const intake = new IntakeSubmissions(db, questionnaires, clinical, tasks);
+    const uploads = new Uploads(db, documents, { tasks, ...(this.malwareScanner ? { scanner: this.malwareScanner } : {}) });
     const notices = new PatientNotices(db, this.noticeChannel);
     const contacts = new PatientContacts(db);
     const enrolment = new PatientEnrolment(db, patientAccess, notices);
     const encounters = new Encounters(db);
+    // Item 61: structured goals and actions on a care plan. Built after
+    // schedule, tasks, orders and referrals, which is what an action may
+    // link to — each wrapped in a get()-only adapter so Actions stays as
+    // loosely coupled to them as Discharges is to its own sources.
+    const goals = new Goals(clinical);
+    const actions = new Actions(clinical, {
+      task: { get: (id: string) => tasks.get(id) },
+      appointment: { get: (id: string) => schedule.booking(id) },
+      order: { get: (id: string) => orders.get(id) },
+      referral: { get: (id: string) => referrals.get(id) },
+    });
+    const avs = new AfterVisitSummaries({ carePlans, goals, actions, encounters, orders });
+    // Item 63: one ordered read across every domain, and a validated series
+    // for one result code or vital kind. Built on stores already above.
+    const timeline = new Timeline({ orders, vitals, procedures, immunizations, encounters, goals, actions });
+    const trends = new Trends({ orders, vitals });
     // Reads the chart to take its snapshot, so it is built after the stores
     // that hold the four loose ends it looks for.
     const handoffs = new Handoffs(db);
@@ -446,6 +500,11 @@ export class Engine {
       vitals,
       procedures,
       carePlans,
+      goals,
+      actions,
+      avs,
+      timeline,
+      trends,
       documents,
       careTeam,
       coverage,
@@ -463,6 +522,9 @@ export class Engine {
       standards,
       notices,
       contacts,
+      questionnaires,
+      intake,
+      uploads,
       board,
       discharges,
       handoffs,

@@ -100,34 +100,148 @@ a code sent to the number — that check would need the sending path that does
 not exist. And there is no per-patient digest or rate limit: ten results
 released at once are ten notices.
 
-## 60. Pre-visit intake and patient uploads — **missing**
+## 60. Pre-visit intake and patient uploads — **done**
 
-**Present.** `PatientDocuments` (`src/clinical/documents.ts`) stores a
-patient-supplied document as a chart fact with a source and a received date,
-refuses HTML, SVG and executables, caps a payload at 256 KiB (`:42`, `:146`),
-and keeps lists metadata-only so a list is never a download.
+**Added in this increment.** `src/patient/intake.ts`: versioned questionnaire
+definitions (`Questionnaires.publish()` always inserts a new version rather
+than editing one, so a submission naming version 1 still finds exactly what
+it answered after version 2 exists); a draft workflow (`IntakeSubmissions`)
+that lives in an ordinary mutable table — not the append-only clinical record,
+which has no update path and no business trying to acquire one for something
+typed into over several sittings — and is deduplicated by (patient,
+questionnaire, appointment) so a dropped connection resumes the same draft
+rather than forking one; `submit()`, which is idempotent (a retried submit
+after a lost reply returns what the first call already produced) and freezes
+the draft into a `QuestionnaireResponse` on the chart, attributed to `patient`
+or `proxy` so testimony is never confused with a clinician's assertion.
 
-**Missing.** Everything the item is about: versioned questionnaires, visit
-concerns, proposed medication updates, drafts that survive an interrupted
-connection, a patient-facing upload route at all, quarantine pending a malware
-scan, and routing a proposed chart change to a clinician. `grep -ril
-questionnaire src/` finds one unrelated hit; `quarantine`, `malware` and
-`virus` find none.
+A proposed medication change is stored as exactly that — patient testimony,
+read by nobody until a clinician opens the review task `submit()` raises.
+Nothing in this module calls `MedicationStore`; reconciling a proposed change
+into the medication list is a clinician's existing tool, not something this
+increment automates on a patient's say-so.
 
-## 61. Structured care plans and after-visit summaries — **partial**
+`Uploads`: file type and size validated the same way `PatientDocuments`
+already does (a shared `payloadSize()`, now exported), stored `pending-scan`
+and never marked clean by `receive()` itself — a store cannot honestly vouch
+for bytes it did not examine. No `MalwareScanner` configured means every
+upload stays quarantined indefinitely, which is the same choice
+`src/meds/safety.ts` makes about an unconfigured interaction database:
+unchecked is reported as unchecked, never quietly as clear. A clean verdict
+files the upload as a `PatientDocuments` entry (`source: "patient-submitted"`,
+already an allowed value) and raises a review task unless it is riding a
+submission that will raise its own; an infected verdict deletes the bytes from
+the row on the spot, so no later code path can serve them by forgetting to
+check status. `SyntheticScanner` recognizes exactly the EICAR test string —
+the industry-standard, harmless file antivirus vendors publish for this
+purpose — and is wired only behind `NORTHSTAR_DEV_MALWARE_SCANNER=on`, the
+same explicit, loud, opt-in-only shape as the development identity provider.
 
-**Present.** `CarePlans` (`src/clinical/careplans.ts:105`) writes onto the
-append-only clinical record: a plan needs a goal and a review date, completing
-it needs a written outcome and revoking it needs a written reason, both as
-amendments, so versions are preserved by construction. A plan past its review
-date is a worklist item (`overdue()`, `:171`).
+A new `"intake"` patient permission (`src/patient/access.ts`) gates six new
+`/patient/*` routes through the same `patientPhi()` boundary as everything
+else — a caregiver's grant either names it or does not, exactly like
+`results` or `messages`. Five clinician-side routes
+(`/api/clinical/intake`, `-review`, `/questionnaires`, `/uploads`,
+`/upload-scan`) go through the ordinary `phi()`/`phiFor()` gateway.
 
-**Missing.** Goals and actions as structured entities rather than prose;
-responsible people, due dates and progress; links from an action to the
-existing `tasks`, `schedule_bookings`, `orders` and `referrals` stores; the
-proposed / approved / completed / declined / superseded distinction; and the
-patient-readable after-visit summary. `src/clinical/summary.ts` produces a
-signed IPS-shaped export, which is a different artefact for a different reader.
+The portal (`src/api/portal.html`) gained an eighth tab, "Before your visit":
+per-questionnaire forms rendered from the published questions, a free-text
+concern box, an add-a-row medication-change list, and a file picker — all in
+both languages, all wired through the existing loading/error/empty and
+double-submit-guard machinery rather than new copies of it.
+
+**Test evidence.** `test/intake.test.ts` (19 tests) covers the store in
+isolation: draft dedup and merge, idempotent submit, required-question
+validation, the quarantine state machine, and that a proposed medication
+change never reaches `meds.current()`. `test/intake-api.test.ts` (8 tests)
+drives the same journey through a real signed token from the development
+identity provider: caregiver scope with and without "intake", revocation
+taking effect on the next request, cross-tenant refusal, and an infected
+upload that never becomes downloadable to the very patient who sent it.
+Twelve mutations against the store and four against the API-layer permission
+wiring, all sixteen caught by a test — four survived the first pass and are
+the reason four of those tests exist. Confirmed against a live server with a
+seeded synthetic patient (`scripts/portal-demo.ts`): sign in, save a draft,
+submit it, and the clinic's worklist shows the routed task; upload a file,
+watch it refuse to download at `pending-scan`, scan it, and download it.
+
+Two scanners this session already relies on had the same gap this increment's
+routes would have slipped through: the `/api/clinical/*` and `/patient/*`
+route-audit tests matched path literals with a character class that admitted
+neither digits nor `/`, so a route nested under a subpath — `/patient/intake/
+draft` and `/patient/intake/submit` here — was invisible to the very check
+that exists to catch an unaudited route. Both regexes are fixed to match what
+the sibling `/api/clinical/*` scanner already had to learn once before.
+
+**Still missing.** A submission is not tied to a specific appointment in the
+portal UI, though the store supports it (`appointmentId` is a real, indexed
+column) — the screen shows one open item per questionnaire rather than one
+per upcoming visit. No resumable or chunked upload: a connection that drops
+mid-transfer is retried from scratch, not resumed byte-for-byte. Reconciling
+a proposed medication change into the medication list is still a manual step
+through the existing reconciliation screens, by design.
+
+## 61. Structured care plans and after-visit summaries — **done**
+
+**Present, unchanged.** `CarePlans` (`src/clinical/careplans.ts:105`) still
+writes the plan itself onto the append-only clinical record: a title, a
+review date, completion needing a written outcome, revocation needing a
+written reason. `CarePlanInput` gained one optional field,
+`escalationCriteria` — a clinician's own words on what to watch for and when
+to call, never generated (see below).
+
+**Added in this increment.** `src/clinical/goals.ts`: `Goal` and `Task`
+(reusing an `EntryType` record.ts had declared and nothing had written yet)
+as their own entries on the append-only record, each carrying the five-value
+status this item asks for — `proposed`, `approved`, `completed`, `declined`,
+`superseded` — internal vocabulary chosen to match the item's own words
+rather than FHIR's `Goal.lifecycleStatus` codes, which have no "superseded"
+value and use "accepted"/"rejected" instead. `Goals.revise()` and the
+equivalent on `Actions` supersede rather than edit: the old entry is amended
+to `superseded` with a `supersededBy` pointer, and a new one carries the
+change, so a plan reviewed months later can still see what a goal used to
+say. An action carries `responsibleId`, `dueAt`, `progress`, and an optional
+`link: {kind, id}` to an existing task, appointment, order or referral —
+validated against the real store when one is wired in, recorded as asserted
+when it is not, the same way an unvalidatable `encounterId` already is
+elsewhere.
+
+`src/clinical/avs.ts`: `AfterVisitSummaries.build(encounterId)` assembles a
+patient-readable summary from `approved` and `completed` goals and actions
+only — a `proposed` suggestion nobody agreed to and a `declined` one are
+excluded by construction, not by convention. Escalation criteria are quoted
+verbatim from the plan if a clinician wrote one, and the summary says
+plainly that none was provided if not; nothing here generates one. Orders
+placed during the visit are included because `encounter_id` is a real,
+checkable link; referrals and prescriptions are deliberately not joined in
+by matching on time, because neither carries one, and attributing either to
+a visit it might not belong to would be worse than leaving it out.
+
+Ten clinician routes (`/api/clinical/goals`, `-propose`, `-approve`,
+`-decline`, `-complete`, `-revise` for goals; the equivalent five, minus
+`-revise`, for actions; `/api/clinical/after-visit-summary`) go through the
+existing `phi()`/`phiFor()` gateway. One patient route,
+`/patient/after-visit-summary`, is gated on the existing `"summary"`
+permission rather than a new one — a plan's approved content is exactly the
+kind of thing `/patient/summary` already serves for the same chart.
+
+**Test evidence.** `test/goals.test.ts` (7 tests) and `test/avs.test.ts` (6
+tests): the full proposed → approved → completed / declined lifecycle, that
+a revision supersedes rather than edits and the old text survives
+verbatim, an action link's existence check, overdue actions requiring both
+`approved` status and a passed date, and — the property the whole module
+exists for — that a proposed goal, a declined action, and an unset
+escalation field never reach the summary. Eleven mutations, all eleven
+caught: one survived the first pass (`revise()`'s replacement always being
+`proposed`, regardless of what the original's status was) and needed a
+fresh `get()` read added to the assertion, since the mutation changed the
+persisted row without changing the value the method itself returned.
+
+**Still missing.** No portal screen. The after-visit summary is real,
+permission-gated and fetchable by encounter id, but the portal has no
+visit-history list a patient could find that id from — building one is
+prerequisite work this item did not include. A team is still not modelled
+for `responsibleId`, the same gap item 62 already has for handoffs.
 
 ## 62. Discharge follow-up and team handoffs — **missing**
 
@@ -166,22 +280,74 @@ nothing expires a proposal: an offer nobody answers stays proposed forever and
 is visible rather than acted on, which is the safe direction but not the
 finished one.
 
-## 63. A useful longitudinal chart — **partial**
+## 63. A useful longitudinal chart — **done**
 
-**Present, and stronger than the item assumes.** `Workspace.chart()`
-(`src/workspace/summary.ts:324`) assembles every clinical domain with a
-per-section status, so "withheld", "never recorded" and "none" are already
-three different answers rather than one empty array. The UCUM measurement
-contract (`src/clinical/measurement.ts`) is exactly the "compare only
-compatible measurements using validated conversions" requirement: equivalent
-unit labels pass through, a pure change of scale is converted, and a
-comparison needing a molar mass is refused rather than guessed. Provenance
-(`src/fhir/provenance.ts`) links a stored resource to where it came from.
+**Present, unchanged.** `Workspace.chart()` (`src/workspace/summary.ts:324`)
+still assembles every clinical domain with a per-section status, and stays
+the answer for "withheld", "never recorded" and "none" as three different
+things. The UCUM measurement contract (`src/clinical/measurement.ts`) is
+unchanged too — reused, not modified.
 
-**Missing.** The timeline and the trends. No file in `src/` contains the word
-`timeline` or `trend`. Reference ranges, collection times and correction
-markers exist on individual results but are not assembled into a series, and
-nothing links a plotted point back to its source record because nothing plots.
+**Added in this increment.** `src/clinical/timeline.ts`: one chronological
+read across results, vitals, procedures, immunizations, encounters, and
+approved-or-better care-plan goals and actions, each entry carrying
+`sourceRecordId` so it traces back to the record it summarises. A corrected
+result contributes its current version only — `OrderStore.currentResultsFor()`
+(new) excludes anything superseded, the same query shape
+`access.resultsFor()` already used for the patient-facing list, without that
+method's hold-awareness, which does not belong in a clinician's own read. A
+merely `proposed` goal or action is not on the timeline: it is not yet an
+event in the patient's history, only a suggestion.
+
+`src/clinical/trends.ts`: a validated series per result code
+(`OrderStore.resultSeries()`, new — every version of one code for one
+patient, corrections included, each still carrying its own `supersedes`
+pointer) or per vital kind. **Comparability is the one place this deliberately
+falls short of what the item literally asks, on purpose.** measurement.ts
+validates real unit conversion for the handful of quantities the clinical
+scores measure — temperature, heart rate, respiratory rate, blood pressure,
+oxygen saturation — and a vital series reuses that contract directly: two
+readings in different units convert if the contract says they can, and are
+marked not comparable with the contract's own reason if they cannot. A
+laboratory result has no such contract for arbitrary analytes — there is no
+molar-mass table in this codebase for potassium, sodium, or anything else a
+lab might report — and building one would mean asserting a clinical fact
+(a substance's molar mass, a scale's equivalence) nobody here is positioned
+to assert. So a result series calls two points comparable only when their
+unit strings match exactly; two points in genuinely equivalent but
+differently-spelled units read as "not comparable" until that equivalence is
+taught to measurement.ts's own registry, which is a narrower and more
+honest gap than guessing one.
+
+`Trends.staleness()` never defaults an expected interval — how often a given
+measurement should recur is a clinical or programme decision this file may
+not make on a deployment's behalf, so the caller supplies it and an interval
+of zero or less is refused rather than silently treated as "always stale."
+
+Three clinician routes (`/api/clinical/timeline`, `-result-trend`,
+`-vital-trend`) go through the existing `phi()` gateway.
+
+**Test evidence.** `test/trends.test.ts` (10 tests): a correction kept next
+to the value it replaced without duplicating on the timeline, two units
+correctly marked not comparable for a lab result, a genuine Celsius↔Fahrenheit
+conversion succeeding for a vital and a nonsense unit genuinely failing (not
+just assumed to pass), staleness refusing a non-positive interval, an empty
+series answering "not stale" rather than crashing, tenant and patient
+confinement, and a timeline whose sort order is proven against fixtures
+where date order and "the order the code happens to read domains in"
+deliberately disagree. Ten mutations, all ten caught — four survived the
+first pass, each because the original test could not distinguish "did the
+real check run" from "did the answer happen to come out the same anyway,"
+and each fixed by making that distinction actually possible for the test to see.
+
+**Still missing.** No patient-facing route. This item reads as a clinician's
+tool extending `Workspace.chart()`, which is itself clinician-facing; the
+existing `/patient/results` list is where a patient's released values
+already live, and a full patient-facing trends UI is real, separate work
+this item did not include. Cross-source comparison — a home vital-sign
+reading against a lab result for a related analyte — is not attempted for
+the same reason arbitrary lab-to-lab conversion is not: no verified
+equivalence exists in this codebase to reuse.
 
 ## 64. Outreach campaigns — **missing**
 
@@ -225,11 +391,14 @@ where it is. A room with nothing scheduled says so rather than reading as
 free, and `progressKnown` is false on every row because the encounter model
 cannot distinguish "in the waiting room" from "with the clinician".
 
-**Still missing.** Intake status needs item 60, and is absent rather than
-rendered empty — an empty panel and a quiet day look the same. Staff workload
-exists as `TaskStore.load()` but is not on the board. The ranking is stated but
-not configurable: a deployment that wanted a different rule would edit the
-source, and governed configuration is its own piece of work.
+**Still missing.** An intake-status panel is not on the board. Item 60 built
+the workflow underneath it — `IntakeSubmissions.open()` is exactly the "who
+has submitted, who has not" query a board panel would call — but nothing in
+`src/workspace/board.ts` calls it yet; that wiring, not the underlying
+capability, is what remains. Staff workload exists as `TaskStore.load()` but
+is not on the board. The ranking is stated but not configurable: a deployment
+that wanted a different rule would edit the source, and governed configuration
+is its own piece of work.
 
 *(Recently-discharged patients and unaccepted handoffs were listed here and
 are now on the board, since item 62 built the workflow underneath them.)*
