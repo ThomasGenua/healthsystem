@@ -11,6 +11,33 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Structured care-plan goals and actions, and an after-visit summary that
+  cannot say more than a clinician agreed to (item 61).** `src/clinical/
+  goals.ts` gives a care plan `Goal` and `Task` (action) entries of their
+  own on the append-only record, each carrying five states — proposed,
+  approved, completed, declined, superseded — internal vocabulary matching
+  the item's own words rather than forced into FHIR's `Goal.lifecycleStatus`
+  codes, which have neither "superseded" nor "approved"/"declined".
+  Revising a goal or action supersedes the old entry with a `supersededBy`
+  pointer and writes a new one, rather than editing the original: the old
+  text survives, verbatim, next to what replaced it. An action carries a
+  responsible person, a due date, a progress note, and an optional link to
+  an existing task, appointment, order or referral, validated against the
+  real store when one is wired in.
+
+  **`src/clinical/avs.ts` assembles the after-visit summary from approved and
+  completed content only** — a proposed suggestion nobody agreed to and a
+  declined one are excluded by the same filter for both, not a downstream
+  check somebody could apply to one and forget on the other. Escalation
+  criteria are quoted verbatim from a clinician's own words on the plan, or
+  the summary says plainly that none was provided — nothing here generates
+  a plausible-sounding paragraph to fill a blank field. Orders from the
+  visit are included because `encounter_id` is a real, checkable link;
+  referrals and prescriptions are deliberately left out rather than
+  attributed to a visit by guessing from timing.
+
+  Eleven mutations, all eleven caught by a test.
+
 - **Pre-visit intake and patient uploads (item 60).** A patient can now answer
   a versioned questionnaire, raise a concern, and describe a medication
   change before a visit — saved as a draft that resumes after a dropped

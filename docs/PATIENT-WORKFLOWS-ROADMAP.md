@@ -181,20 +181,67 @@ mid-transfer is retried from scratch, not resumed byte-for-byte. Reconciling
 a proposed medication change into the medication list is still a manual step
 through the existing reconciliation screens, by design.
 
-## 61. Structured care plans and after-visit summaries — **partial**
+## 61. Structured care plans and after-visit summaries — **done**
 
-**Present.** `CarePlans` (`src/clinical/careplans.ts:105`) writes onto the
-append-only clinical record: a plan needs a goal and a review date, completing
-it needs a written outcome and revoking it needs a written reason, both as
-amendments, so versions are preserved by construction. A plan past its review
-date is a worklist item (`overdue()`, `:171`).
+**Present, unchanged.** `CarePlans` (`src/clinical/careplans.ts:105`) still
+writes the plan itself onto the append-only clinical record: a title, a
+review date, completion needing a written outcome, revocation needing a
+written reason. `CarePlanInput` gained one optional field,
+`escalationCriteria` — a clinician's own words on what to watch for and when
+to call, never generated (see below).
 
-**Missing.** Goals and actions as structured entities rather than prose;
-responsible people, due dates and progress; links from an action to the
-existing `tasks`, `schedule_bookings`, `orders` and `referrals` stores; the
-proposed / approved / completed / declined / superseded distinction; and the
-patient-readable after-visit summary. `src/clinical/summary.ts` produces a
-signed IPS-shaped export, which is a different artefact for a different reader.
+**Added in this increment.** `src/clinical/goals.ts`: `Goal` and `Task`
+(reusing an `EntryType` record.ts had declared and nothing had written yet)
+as their own entries on the append-only record, each carrying the five-value
+status this item asks for — `proposed`, `approved`, `completed`, `declined`,
+`superseded` — internal vocabulary chosen to match the item's own words
+rather than FHIR's `Goal.lifecycleStatus` codes, which have no "superseded"
+value and use "accepted"/"rejected" instead. `Goals.revise()` and the
+equivalent on `Actions` supersede rather than edit: the old entry is amended
+to `superseded` with a `supersededBy` pointer, and a new one carries the
+change, so a plan reviewed months later can still see what a goal used to
+say. An action carries `responsibleId`, `dueAt`, `progress`, and an optional
+`link: {kind, id}` to an existing task, appointment, order or referral —
+validated against the real store when one is wired in, recorded as asserted
+when it is not, the same way an unvalidatable `encounterId` already is
+elsewhere.
+
+`src/clinical/avs.ts`: `AfterVisitSummaries.build(encounterId)` assembles a
+patient-readable summary from `approved` and `completed` goals and actions
+only — a `proposed` suggestion nobody agreed to and a `declined` one are
+excluded by construction, not by convention. Escalation criteria are quoted
+verbatim from the plan if a clinician wrote one, and the summary says
+plainly that none was provided if not; nothing here generates one. Orders
+placed during the visit are included because `encounter_id` is a real,
+checkable link; referrals and prescriptions are deliberately not joined in
+by matching on time, because neither carries one, and attributing either to
+a visit it might not belong to would be worse than leaving it out.
+
+Ten clinician routes (`/api/clinical/goals`, `-propose`, `-approve`,
+`-decline`, `-complete`, `-revise` for goals; the equivalent five, minus
+`-revise`, for actions; `/api/clinical/after-visit-summary`) go through the
+existing `phi()`/`phiFor()` gateway. One patient route,
+`/patient/after-visit-summary`, is gated on the existing `"summary"`
+permission rather than a new one — a plan's approved content is exactly the
+kind of thing `/patient/summary` already serves for the same chart.
+
+**Test evidence.** `test/goals.test.ts` (7 tests) and `test/avs.test.ts` (6
+tests): the full proposed → approved → completed / declined lifecycle, that
+a revision supersedes rather than edits and the old text survives
+verbatim, an action link's existence check, overdue actions requiring both
+`approved` status and a passed date, and — the property the whole module
+exists for — that a proposed goal, a declined action, and an unset
+escalation field never reach the summary. Eleven mutations, all eleven
+caught: one survived the first pass (`revise()`'s replacement always being
+`proposed`, regardless of what the original's status was) and needed a
+fresh `get()` read added to the assertion, since the mutation changed the
+persisted row without changing the value the method itself returned.
+
+**Still missing.** No portal screen. The after-visit summary is real,
+permission-gated and fetchable by encounter id, but the portal has no
+visit-history list a patient could find that id from — building one is
+prerequisite work this item did not include. A team is still not modelled
+for `responsibleId`, the same gap item 62 already has for handoffs.
 
 ## 62. Discharge follow-up and team handoffs — **missing**
 

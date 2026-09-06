@@ -837,6 +837,21 @@ async function route(
       return patientPhi(patientId, "results", "DiagnosticReport", "view-results", () => access.resultsFor(patientId));
     }
 
+    if (path === "/patient/after-visit-summary" && method === "GET") {
+      // Gated on "summary", not a new permission: a plan's approved goals
+      // and actions are exactly the kind of content /patient/summary already
+      // serves for the same chart, and a caregiver trusted with one is
+      // trusted with the other.
+      const encounterId = url.searchParams.get("encounter");
+      if (!encounterId) return send(res, 400, { error: "encounter required" });
+      // The encounter's own patient decides whose authority is checked, the
+      // same way /patient/thread reads it from the thread rather than trusting
+      // a caller-supplied id — a query string cannot nominate whose grant applies.
+      const e = tenant.encounters.get(encounterId);
+      if (!e) return send(res, 404, { error: `no encounter ${encounterId}` });
+      return patientPhi(e.patient_id, "summary", "CarePlan", "view-after-visit-summary", () => tenant.avs.build(encounterId));
+    }
+
     if (path === "/patient/appointments" && method === "GET") {
       const patientId = url.searchParams.get("patient");
       if (!patientId) return send(res, 400, { error: "patient required" });
@@ -4078,6 +4093,7 @@ async function route(
         status?: "draft" | "active";
         description?: string;
         encounter?: string;
+        escalationCriteria?: string;
       };
       if (!body.patient || !body.title || !body.reviewBy || !Array.isArray(body.goals)) {
         return send(res, 400, { error: "patient, title, goals and reviewBy required" });
@@ -4093,8 +4109,184 @@ async function route(
           ...(body.status ? { status: body.status } : {}),
           ...(body.description ? { description: body.description } : {}),
           ...(body.encounter ? { encounterId: body.encounter } : {}),
+          ...(body.escalationCriteria ? { escalationCriteria: body.escalationCriteria } : {}),
         })
       );
+    }
+    // Item 61: structured goals and actions on a care plan, and the
+    // after-visit summary assembled from the ones a clinician approved.
+    if (path === "/api/clinical/goals" && method === "GET") {
+      const carePlanId = url.searchParams.get("carePlan");
+      if (!patient && !carePlanId) return send(res, 400, { error: "patient or carePlan required" });
+      return phi(
+        "Goal",
+        () => (carePlanId ? tenant.goals.forPlan(carePlanId) : tenant.goals.forPatient(patient!)),
+        (r) => r.length
+      );
+    }
+    if (path === "/api/clinical/goal-propose" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        carePlan?: string;
+        description?: string;
+        reviewBy?: string;
+      };
+      if (!body.patient || !body.carePlan || !body.description) {
+        return send(res, 400, { error: "patient, carePlan and description required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(
+        body.patient,
+        "Goal",
+        () =>
+          tenant.goals.propose({
+            patientId: body.patient!,
+            carePlanId: body.carePlan!,
+            description: body.description!,
+            ...(body.reviewBy ? { reviewBy: body.reviewBy } : {}),
+            by: { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown" },
+          })
+      );
+    }
+    if (path === "/api/clinical/goal-approve" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      const goal = tenant.goals.get(body.id);
+      if (!goal) return send(res, 404, { error: `no goal ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(goal.patientId, "Goal", () =>
+        tenant.goals.approve(body.id!, { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown" })
+      );
+    }
+    if (path === "/api/clinical/goal-decline" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; reason?: string };
+      if (!body.id || !body.reason) return send(res, 400, { error: "id and reason required" });
+      const goal = tenant.goals.get(body.id);
+      if (!goal) return send(res, 404, { error: `no goal ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(goal.patientId, "Goal", () =>
+        tenant.goals.decline(body.id!, { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown", reason: body.reason! })
+      );
+    }
+    if (path === "/api/clinical/goal-complete" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; outcome?: string };
+      if (!body.id || !body.outcome) return send(res, 400, { error: "id and outcome required" });
+      const goal = tenant.goals.get(body.id);
+      if (!goal) return send(res, 404, { error: `no goal ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(goal.patientId, "Goal", () =>
+        tenant.goals.complete(body.id!, { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown", outcome: body.outcome! })
+      );
+    }
+    if (path === "/api/clinical/goal-revise" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; description?: string; reviewBy?: string; reason?: string };
+      if (!body.id || !body.reason) return send(res, 400, { error: "id and reason required" });
+      const goal = tenant.goals.get(body.id);
+      if (!goal) return send(res, 404, { error: `no goal ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(goal.patientId, "Goal", () =>
+        tenant.goals.revise(body.id!, {
+          ...(body.description ? { description: body.description } : {}),
+          ...(body.reviewBy ? { reviewBy: body.reviewBy } : {}),
+          by: { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown", reason: body.reason! },
+        })
+      );
+    }
+    if (path === "/api/clinical/actions" && method === "GET") {
+      const carePlanId = url.searchParams.get("carePlan");
+      if (!patient && !carePlanId) return send(res, 400, { error: "patient or carePlan required" });
+      return phi(
+        "Task",
+        () => (carePlanId ? tenant.actions.forPlan(carePlanId) : tenant.actions.forPatient(patient!)),
+        (r) => r.length
+      );
+    }
+    if (path === "/api/clinical/action-propose" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        carePlan?: string;
+        goal?: string;
+        description?: string;
+        responsible?: string;
+        dueAt?: string;
+        link?: { kind?: string; id?: string };
+      };
+      if (!body.patient || !body.carePlan || !body.description || !body.responsible) {
+        return send(res, 400, { error: "patient, carePlan, description and responsible required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(
+        body.patient,
+        "Task",
+        () =>
+          tenant.actions.propose({
+            patientId: body.patient!,
+            carePlanId: body.carePlan!,
+            responsibleId: body.responsible!,
+            description: body.description!,
+            ...(body.goal ? { goalId: body.goal } : {}),
+            ...(body.dueAt ? { dueAt: body.dueAt } : {}),
+            ...(body.link && body.link.kind && body.link.id
+              ? { link: { kind: body.link.kind as "task" | "appointment" | "order" | "referral", id: body.link.id } }
+              : {}),
+            by: { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown" },
+          })
+      );
+    }
+    if (path === "/api/clinical/action-approve" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      const action = tenant.actions.get(body.id);
+      if (!action) return send(res, 404, { error: `no action ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(action.patientId, "Task", () =>
+        tenant.actions.approve(body.id!, { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown" })
+      );
+    }
+    if (path === "/api/clinical/action-decline" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; reason?: string };
+      if (!body.id || !body.reason) return send(res, 400, { error: "id and reason required" });
+      const action = tenant.actions.get(body.id);
+      if (!action) return send(res, 404, { error: `no action ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(action.patientId, "Task", () =>
+        tenant.actions.decline(body.id!, { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown", reason: body.reason! })
+      );
+    }
+    if (path === "/api/clinical/action-progress" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; progress?: string };
+      if (!body.id || !body.progress) return send(res, 400, { error: "id and progress required" });
+      const action = tenant.actions.get(body.id);
+      if (!action) return send(res, 404, { error: `no action ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(action.patientId, "Task", () =>
+        tenant.actions.recordProgress(body.id!, {
+          authorId: who,
+          authorKind: auth.ok ? auth.principal.kind : "unknown",
+          progress: body.progress!,
+        })
+      );
+    }
+    if (path === "/api/clinical/action-complete" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; outcome?: string };
+      if (!body.id || !body.outcome) return send(res, 400, { error: "id and outcome required" });
+      const action = tenant.actions.get(body.id);
+      if (!action) return send(res, 404, { error: `no action ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(action.patientId, "Task", () =>
+        tenant.actions.complete(body.id!, {
+          authorId: who,
+          authorKind: auth.ok ? auth.principal.kind : "unknown",
+          outcome: body.outcome!,
+        })
+      );
+    }
+    if (path === "/api/clinical/after-visit-summary" && method === "GET") {
+      const encounterId = url.searchParams.get("encounter");
+      if (!encounterId) return send(res, 400, { error: "encounter required" });
+      const e = tenant.encounters.get(encounterId);
+      if (!e) return send(res, 404, { error: `no encounter ${encounterId}` });
+      return phiFor(e.patient_id, "CarePlan", () => tenant.avs.build(encounterId));
     }
     if (path === "/api/clinical/care-plan-complete" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as { id?: string; outcome?: string };

@@ -308,6 +308,60 @@ test("the patient summary is patient-safe, not the clinician workspace", async (
   }
 });
 
+test("the after-visit summary needs the summary permission and shows only approved content", async () => {
+  const s = await boot();
+  try {
+    const encounter = s.tenant.encounters.open({
+      patientId: P,
+      class: "in-person",
+      reason: "Diabetes follow-up",
+      by: GP,
+      arrived: true,
+    });
+    const plan = s.tenant.carePlans.record({
+      patientId: P,
+      title: "Diabetes management",
+      goals: ["Lower A1C"],
+      reviewBy: "2027-01-01",
+      escalationCriteria: "Call the clinic if you feel dizzy or your blood sugar reads under 4 mmol/L.",
+      by: { authorId: "dr-tetso", authorKind: "practitioner" },
+    });
+    s.tenant.goals.approve(
+      s.tenant.goals.propose({
+        patientId: P,
+        carePlanId: plan.recordId,
+        description: "A1C under 7%",
+        by: { authorId: "dr-tetso", authorKind: "practitioner" },
+      }).recordId,
+      { authorId: "dr-tetso", authorKind: "practitioner" }
+    );
+    s.tenant.goals.propose({
+      patientId: P,
+      carePlanId: plan.recordId,
+      description: "Not yet agreed suggestion",
+      by: { authorId: "dr-tetso", authorKind: "practitioner" },
+    });
+
+    // Self, with full permissions, sees it.
+    const res = await s.request("patient-marie", `/patient/after-visit-summary?encounter=${encounter.id}`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { plans: Array<{ goals: Array<{ description: string }>; escalationCriteria: string }> };
+    assert.deepEqual(
+      body.plans[0].goals.map((g) => g.description),
+      ["A1C under 7%"]
+    );
+    assert.ok(!JSON.stringify(body).includes("Not yet agreed suggestion"));
+    assert.equal(body.plans[0].escalationCriteria, "Call the clinic if you feel dizzy or your blood sugar reads under 4 mmol/L.");
+
+    // A caregiver with only "appointments" cannot reach it.
+    assert.equal((await s.request("proxy-appointments", `/patient/after-visit-summary?encounter=${encounter.id}`)).status, 403);
+    // Somebody else's chart entirely.
+    assert.equal((await s.request("stranger", `/patient/after-visit-summary?encounter=${encounter.id}`)).status, 403);
+  } finally {
+    await s.close();
+  }
+});
+
 test("patient messages derive the speaker from the grant, not the request body", async () => {
   const s = await boot();
   try {

@@ -433,6 +433,64 @@ test("every clinical route leaves an audit row, including ones added later", asy
       status: "draft",
       by: GP_AUTHOR,
     });
+    // Item 61: one fixture per one-way transition — approve, decline and
+    // complete each need a goal or action that has not already made that
+    // trip, the same reason forAck above is not shared with anything else.
+    const goalToApprove = s.engine.forTenant("default").goals.propose({
+      patientId: P,
+      carePlanId: planToComplete.recordId,
+      description: "Walk 30 minutes daily",
+      by: GP_AUTHOR,
+    });
+    const goalToDecline = s.engine.forTenant("default").goals.propose({
+      patientId: P,
+      carePlanId: planToComplete.recordId,
+      description: "Suggested but not clinically indicated",
+      by: GP_AUTHOR,
+    });
+    const goalToCompleteFirst = s.engine.forTenant("default").goals.propose({
+      patientId: P,
+      carePlanId: planToComplete.recordId,
+      description: "Reduce sodium intake",
+      by: GP_AUTHOR,
+    });
+    const goalToComplete = s.engine.forTenant("default").goals.approve(goalToCompleteFirst.recordId, GP_AUTHOR);
+    const goalToRevise = s.engine.forTenant("default").goals.propose({
+      patientId: P,
+      carePlanId: planToComplete.recordId,
+      description: "A1C under 7.5%",
+      by: GP_AUTHOR,
+    });
+    const actionToApprove = s.engine.forTenant("default").actions.propose({
+      patientId: P,
+      carePlanId: planToComplete.recordId,
+      description: "Book a pulmonary function test",
+      responsibleId: P,
+      by: GP_AUTHOR,
+    });
+    const actionToDecline = s.engine.forTenant("default").actions.propose({
+      patientId: P,
+      carePlanId: planToComplete.recordId,
+      description: "Suggested but superseded by another plan",
+      responsibleId: P,
+      by: GP_AUTHOR,
+    });
+    const actionToProgressFirst = s.engine.forTenant("default").actions.propose({
+      patientId: P,
+      carePlanId: planToComplete.recordId,
+      description: "Attend a smoking-cessation group",
+      responsibleId: P,
+      by: GP_AUTHOR,
+    });
+    const actionToProgress = s.engine.forTenant("default").actions.approve(actionToProgressFirst.recordId, GP_AUTHOR);
+    const actionToCompleteFirst = s.engine.forTenant("default").actions.propose({
+      patientId: P,
+      carePlanId: planToComplete.recordId,
+      description: "Book a dietitian follow-up",
+      responsibleId: P,
+      by: GP_AUTHOR,
+    });
+    const actionToComplete = s.engine.forTenant("default").actions.approve(actionToCompleteFirst.recordId, GP_AUTHOR);
     const docToRead = s.engine.forTenant("default").documents.receive({
       patientId: P,
       title: "Cardiology letter",
@@ -788,6 +846,19 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/care-plan-record": "POST",
       "/api/clinical/care-plan-complete": "POST",
       "/api/clinical/care-plan-revoke": "POST",
+      "/api/clinical/goals": `?patient=${P}`,
+      "/api/clinical/goal-propose": "POST",
+      "/api/clinical/goal-approve": "POST",
+      "/api/clinical/goal-decline": "POST",
+      "/api/clinical/goal-complete": "POST",
+      "/api/clinical/goal-revise": "POST",
+      "/api/clinical/actions": `?patient=${P}`,
+      "/api/clinical/action-propose": "POST",
+      "/api/clinical/action-approve": "POST",
+      "/api/clinical/action-decline": "POST",
+      "/api/clinical/action-progress": "POST",
+      "/api/clinical/action-complete": "POST",
+      "/api/clinical/after-visit-summary": `?encounter=${visit.id}`,
       "/api/clinical/patient-document-record": "POST",
       "/api/clinical/care-team-assign": "POST",
       "/api/clinical/care-team-retire": "POST",
@@ -977,6 +1048,29 @@ test("every clinical route leaves an audit row, including ones added later", asy
         id: planToRevoke.recordId,
         reason: "patient moved; care transferred to Fort Smith",
       },
+      "/api/clinical/goal-propose": {
+        patient: P,
+        carePlan: planToComplete.recordId,
+        description: "Attend all scheduled pulmonary follow-ups",
+      },
+      "/api/clinical/goal-approve": { id: goalToApprove.recordId },
+      "/api/clinical/goal-decline": { id: goalToDecline.recordId, reason: "not appropriate given the patient's other conditions" },
+      "/api/clinical/goal-complete": { id: goalToComplete.recordId, outcome: "sodium intake now within target range" },
+      "/api/clinical/goal-revise": {
+        id: goalToRevise.recordId,
+        description: "A1C under 7.0%",
+        reason: "patient is tolerating the new regimen well",
+      },
+      "/api/clinical/action-propose": {
+        patient: P,
+        carePlan: planToComplete.recordId,
+        description: "Refer to respiratory therapy",
+        responsible: "dr-tetso",
+      },
+      "/api/clinical/action-approve": { id: actionToApprove.recordId },
+      "/api/clinical/action-decline": { id: actionToDecline.recordId, reason: "already covered by the pulmonology referral" },
+      "/api/clinical/action-progress": { id: actionToProgress.recordId, progress: "attended first of four sessions" },
+      "/api/clinical/action-complete": { id: actionToComplete.recordId, outcome: "attended; dietitian plan on file" },
       "/api/clinical/patient-document-record": {
         patient: P,
         title: "Advance directive photocopy",

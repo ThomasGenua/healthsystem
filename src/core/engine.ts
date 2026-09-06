@@ -25,6 +25,8 @@ import { Immunizations } from "../clinical/immunizations.ts";
 import { Vitals } from "../clinical/vitals.ts";
 import { Procedures } from "../clinical/procedures.ts";
 import { CarePlans } from "../clinical/careplans.ts";
+import { Goals, Actions } from "../clinical/goals.ts";
+import { AfterVisitSummaries } from "../clinical/avs.ts";
 import { PatientDocuments } from "../clinical/documents.ts";
 import { CareTeam } from "../clinical/careteam.ts";
 import { Coverage } from "../clinical/coverage.ts";
@@ -111,6 +113,11 @@ export interface TenantView {
   vitals: Vitals;
   procedures: Procedures;
   carePlans: CarePlans;
+  /** Structured goals and the actions serving them, versioned like anything else on the chart. */
+  goals: Goals;
+  actions: Actions;
+  /** Assembled from approved plan content and this visit's own orders. Writes nothing. */
+  avs: AfterVisitSummaries;
   documents: PatientDocuments;
   careTeam: CareTeam;
   coverage: Coverage;
@@ -417,6 +424,18 @@ export class Engine {
     const contacts = new PatientContacts(db);
     const enrolment = new PatientEnrolment(db, patientAccess, notices);
     const encounters = new Encounters(db);
+    // Item 61: structured goals and actions on a care plan. Built after
+    // schedule, tasks, orders and referrals, which is what an action may
+    // link to — each wrapped in a get()-only adapter so Actions stays as
+    // loosely coupled to them as Discharges is to its own sources.
+    const goals = new Goals(clinical);
+    const actions = new Actions(clinical, {
+      task: { get: (id: string) => tasks.get(id) },
+      appointment: { get: (id: string) => schedule.booking(id) },
+      order: { get: (id: string) => orders.get(id) },
+      referral: { get: (id: string) => referrals.get(id) },
+    });
+    const avs = new AfterVisitSummaries({ carePlans, goals, actions, encounters, orders });
     // Reads the chart to take its snapshot, so it is built after the stores
     // that hold the four loose ends it looks for.
     const handoffs = new Handoffs(db);
@@ -471,6 +490,9 @@ export class Engine {
       vitals,
       procedures,
       carePlans,
+      goals,
+      actions,
+      avs,
       documents,
       careTeam,
       coverage,
