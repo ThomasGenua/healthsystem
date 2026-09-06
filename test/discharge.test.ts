@@ -579,3 +579,389 @@ test("one custodian's discharges and handoffs are not another's", async () => {
     await engine.stop();
   }
 });
+
+/* ------------------------------------------------- ownership, actually wired */
+
+test("work somebody handed away leaves their inbox and arrives in the other's", async () => {
+  const s = await clinic();
+  try {
+    const task = s.t.tasks.create({
+      kind: "result-review",
+      title: "Potassium 6.9 needs reading",
+      patientId: PATIENT,
+      ownerId: DOCTOR.actorId,
+      by: DOCTOR,
+    });
+    assert.deepEqual(s.t.tasks.inbox(DOCTOR.actorId).map((r) => r.id), [task.id]);
+    assert.deepEqual(s.t.tasks.inbox(NURSE.actorId), []);
+
+    const proposal = s.t.handoffs.propose({
+      kind: "transfer",
+      subjectKind: "task",
+      subjectId: task.id,
+      patientId: PATIENT,
+      fromId: DOCTOR.actorId,
+      toId: NURSE.actorId,
+      reason: "going on leave from Friday",
+      by: DOCTOR,
+    });
+
+    // Proposed and not answered: still on the doctor's list, and that is the
+    // whole point — offering it did not move it.
+    assert.deepEqual(s.t.tasks.inbox(DOCTOR.actorId).map((r) => r.id), [task.id]);
+    assert.deepEqual(s.t.tasks.inbox(NURSE.actorId), []);
+    assert.deepEqual(s.t.tasks.heldBy(task.id), { ownerId: DOCTOR.actorId, via: "original" });
+
+    s.t.handoffs.accept(proposal.id, NURSE);
+
+    // Now it has moved, and the owner column has not been touched: the
+    // handoff record is the authority, not a second copy of the answer.
+    assert.deepEqual(s.t.tasks.inbox(NURSE.actorId).map((r) => r.id), [task.id]);
+    assert.deepEqual(s.t.tasks.inbox(DOCTOR.actorId), []);
+    assert.equal(s.t.tasks.get(task.id)!.owner_id, DOCTOR.actorId, "the column still says who it started with");
+    assert.deepEqual(s.t.tasks.heldBy(task.id), { ownerId: NURSE.actorId, via: "transfer" });
+  } finally {
+    await s.close();
+  }
+});
+
+test("coverage moves an inbox and hands it back with no job having run", async () => {
+  const s = await clinic();
+  try {
+    const task = s.t.tasks.create({
+      kind: "result-review",
+      title: "Potassium 6.9 needs reading",
+      ownerId: DOCTOR.actorId,
+      by: DOCTOR,
+    });
+    const until = new Date(Date.now() + 3600_000).toISOString();
+    const cover = s.t.handoffs.propose({
+      kind: "coverage",
+      subjectKind: "task",
+      subjectId: task.id,
+      fromId: DOCTOR.actorId,
+      toId: LOCUM.actorId,
+      reason: "night shift",
+      coversUntil: until,
+      by: DOCTOR,
+    });
+    s.t.handoffs.accept(cover.id, LOCUM);
+
+    assert.deepEqual(s.t.tasks.inbox(LOCUM.actorId).map((r) => r.id), [task.id]);
+    assert.deepEqual(s.t.tasks.inbox(DOCTOR.actorId), []);
+    assert.deepEqual(s.t.tasks.heldBy(task.id), {
+      ownerId: LOCUM.actorId,
+      via: "coverage",
+      covering: DOCTOR.actorId,
+    });
+
+    // After the window, by arithmetic. Nothing swept, nothing wrote anything
+    // back — which is what makes coverage safe to grant, because a sweep that
+    // does not run leaves the locum holding a list they stopped watching.
+    const later = new Date(Date.parse(until) + 60_000);
+    assert.deepEqual(s.t.tasks.inbox(DOCTOR.actorId, { asOf: later }).map((r) => r.id), [task.id]);
+    assert.deepEqual(s.t.tasks.inbox(LOCUM.actorId, { asOf: later }), []);
+    assert.equal(s.t.tasks.heldBy(task.id, later).via, "original");
+  } finally {
+    await s.close();
+  }
+});
+
+test("a discharge follow-up follows its handoff too", async () => {
+  const s = await clinic();
+  try {
+    unreadResult(s.t);
+    const { discharge } = s.t.discharges.open({
+      encounterId: s.encounter.id,
+      patientId: PATIENT,
+      disposition: "home",
+      accountableId: DOCTOR.actorId,
+      by: DOCTOR,
+    });
+    assert.equal(s.t.discharges.openFollowUps({ accountableId: DOCTOR.actorId }).length, 1);
+    assert.equal(s.t.discharges.openFollowUps({ accountableId: NURSE.actorId }).length, 0);
+
+    const proposal = s.t.handoffs.propose({
+      kind: "transfer",
+      subjectKind: "discharge",
+      subjectId: discharge.id,
+      fromId: DOCTOR.actorId,
+      toId: NURSE.actorId,
+      reason: "going on leave",
+      by: DOCTOR,
+    });
+    // Unanswered: still the doctor's.
+    assert.equal(s.t.discharges.openFollowUps({ accountableId: DOCTOR.actorId }).length, 1);
+    assert.equal(s.t.discharges.accountableFor(discharge.id).ownerId, DOCTOR.actorId);
+
+    s.t.handoffs.accept(proposal.id, NURSE);
+    assert.equal(s.t.discharges.openFollowUps({ accountableId: NURSE.actorId }).length, 1);
+    assert.equal(s.t.discharges.openFollowUps({ accountableId: DOCTOR.actorId }).length, 0);
+    assert.equal(s.t.discharges.accountableFor(discharge.id).ownerId, NURSE.actorId);
+    assert.equal(
+      s.t.discharges.get(discharge.id)!.accountable_id,
+      DOCTOR.actorId,
+      "and the column still says who it started with"
+    );
+  } finally {
+    await s.close();
+  }
+});
+
+test("a handoff about one kind of thing does not move another with the same id", async () => {
+  // subject_kind is part of the key for a reason: a task and a discharge can
+  // hold the same identifier only by accident, and an override that ignored
+  // the kind would move somebody's work on a coincidence.
+  const s = await clinic();
+  try {
+    const task = s.t.tasks.create({ kind: "result-review", title: "Read it", ownerId: DOCTOR.actorId, by: DOCTOR });
+    const proposal = s.t.handoffs.propose({
+      kind: "transfer",
+      subjectKind: "discharge",
+      subjectId: task.id,
+      fromId: DOCTOR.actorId,
+      toId: NURSE.actorId,
+      reason: "a discharge that happens to share an id",
+      by: DOCTOR,
+    });
+    s.t.handoffs.accept(proposal.id, NURSE);
+
+    assert.deepEqual(s.t.tasks.inbox(DOCTOR.actorId).map((r) => r.id), [task.id]);
+    assert.deepEqual(s.t.tasks.inbox(NURSE.actorId), []);
+    assert.deepEqual(s.t.tasks.heldBy(task.id), { ownerId: DOCTOR.actorId, via: "original" });
+  } finally {
+    await s.close();
+  }
+});
+
+test("a closed task does not arrive in a new owner's inbox", async () => {
+  const s = await clinic();
+  try {
+    const task = s.t.tasks.create({ kind: "result-review", title: "Read it", ownerId: DOCTOR.actorId, by: DOCTOR });
+    const proposal = s.t.handoffs.propose({
+      kind: "transfer",
+      subjectKind: "task",
+      subjectId: task.id,
+      fromId: DOCTOR.actorId,
+      toId: NURSE.actorId,
+      reason: "going on leave",
+      by: DOCTOR,
+    });
+    s.t.handoffs.accept(proposal.id, NURSE);
+    assert.equal(s.t.tasks.inbox(NURSE.actorId).length, 1);
+
+    s.t.tasks.complete(task.id, { ...NURSE, evidence: "read and acted on" });
+    // An inbox is live work. A completed item arriving through a handoff
+    // would be a queue that never empties.
+    assert.deepEqual(s.t.tasks.inbox(NURSE.actorId), []);
+    assert.deepEqual(s.t.tasks.inbox(DOCTOR.actorId), []);
+  } finally {
+    await s.close();
+  }
+});
+
+test("coverage hands work back to whoever holds it, not to whoever first gave it away", async () => {
+  const s = await clinic();
+  try {
+    const task = s.t.tasks.create({
+      kind: "result-review",
+      title: "Potassium 6.9 needs reading",
+      ownerId: DOCTOR.actorId,
+      by: DOCTOR,
+    });
+
+    // The doctor hands it to the nurse for good, and it is accepted.
+    const transfer = s.t.handoffs.propose({
+      kind: "transfer",
+      subjectKind: "task",
+      subjectId: task.id,
+      fromId: DOCTOR.actorId,
+      toId: NURSE.actorId,
+      reason: "going on leave",
+      by: DOCTOR,
+    });
+    s.t.handoffs.accept(transfer.id, NURSE);
+
+    // Then the nurse's list is covered overnight.
+    const until = new Date(Date.now() + 3600_000).toISOString();
+    const cover = s.t.handoffs.propose({
+      kind: "coverage",
+      subjectKind: "task",
+      subjectId: task.id,
+      fromId: NURSE.actorId,
+      toId: LOCUM.actorId,
+      reason: "night shift",
+      coversUntil: until,
+      by: NURSE,
+    });
+    s.t.handoffs.accept(cover.id, LOCUM);
+
+    // `covering` is the answer to "who does this go back to", and the doctor
+    // is the wrong answer: they gave it away before the cover began and are
+    // not expecting it. Naming them would send it to somebody who has stopped
+    // looking — the unaccepted-handoff failure arriving by another route.
+    assert.deepEqual(s.t.tasks.heldBy(task.id), {
+      ownerId: LOCUM.actorId,
+      via: "coverage",
+      covering: NURSE.actorId,
+    });
+
+    // And when the cover lapses it does go back to the nurse, not the doctor.
+    const later = new Date(Date.parse(until) + 60_000);
+    assert.deepEqual(s.t.tasks.inbox(NURSE.actorId, { asOf: later }).map((r) => r.id), [task.id]);
+    assert.deepEqual(s.t.tasks.inbox(DOCTOR.actorId, { asOf: later }), []);
+    assert.deepEqual(s.t.tasks.inbox(LOCUM.actorId, { asOf: later }), []);
+  } finally {
+    await s.close();
+  }
+});
+
+test("a filtered inbox stays filtered when the work arrives by handoff", async () => {
+  const s = await clinic();
+  try {
+    const review = s.t.tasks.create({
+      kind: "result-review",
+      title: "Potassium 6.9 needs reading",
+      ownerId: DOCTOR.actorId,
+      by: DOCTOR,
+    });
+    const chase = s.t.tasks.create({
+      kind: "referral",
+      title: "Cardiology referral not acknowledged",
+      ownerId: DOCTOR.actorId,
+      by: DOCTOR,
+    });
+    for (const id of [review.id, chase.id]) {
+      const p = s.t.handoffs.propose({
+        kind: "transfer",
+        subjectKind: "task",
+        subjectId: id,
+        fromId: DOCTOR.actorId,
+        toId: NURSE.actorId,
+        reason: "going on leave",
+        by: DOCTOR,
+      });
+      s.t.handoffs.accept(p.id, NURSE);
+    }
+
+    // Both arrived, so the unfiltered list has two.
+    assert.equal(s.t.tasks.inbox(NURSE.actorId).length, 2);
+
+    // A filter is how somebody works one queue at a time, and work that
+    // arrives by handoff is not exempt from it: a nurse reading results
+    // should not find a referral chase in the middle of them because the
+    // route it took in was different.
+    assert.deepEqual(
+      s.t.tasks.inbox(NURSE.actorId, { kind: "result-review" }).map((r) => r.id),
+      [review.id]
+    );
+    assert.deepEqual(
+      s.t.tasks.inbox(NURSE.actorId, { kind: "referral" }).map((r) => r.id),
+      [chase.id]
+    );
+    assert.deepEqual(s.t.tasks.inbox(NURSE.actorId, { kind: "message" }), []);
+  } finally {
+    await s.close();
+  }
+});
+
+test("coverage arranged for next week does not move anything this week", async () => {
+  const s = await clinic();
+  try {
+    const task = s.t.tasks.create({
+      kind: "result-review",
+      title: "Potassium 6.9 needs reading",
+      ownerId: DOCTOR.actorId,
+      by: DOCTOR,
+    });
+    const from = new Date(Date.now() + 7 * 86_400_000).toISOString();
+    const until = new Date(Date.now() + 14 * 86_400_000).toISOString();
+    const cover = s.t.handoffs.propose({
+      kind: "coverage",
+      subjectKind: "task",
+      subjectId: task.id,
+      fromId: DOCTOR.actorId,
+      toId: LOCUM.actorId,
+      reason: "annual leave, arranged in advance",
+      coversFrom: from,
+      coversUntil: until,
+      by: DOCTOR,
+    });
+    s.t.handoffs.accept(cover.id, LOCUM);
+
+    // Accepted, and still the doctor's until the week it covers. Arranging
+    // cover in advance is the normal case, and a locum who finds next
+    // month's list in their inbox today learns to ignore the inbox.
+    assert.deepEqual(s.t.tasks.inbox(DOCTOR.actorId).map((r) => r.id), [task.id]);
+    assert.deepEqual(s.t.tasks.inbox(LOCUM.actorId), []);
+    assert.equal(s.t.tasks.heldBy(task.id).via, "original");
+
+    const during = new Date(Date.parse(from) + 86_400_000);
+    assert.deepEqual(s.t.tasks.inbox(LOCUM.actorId, { asOf: during }).map((r) => r.id), [task.id]);
+    assert.deepEqual(s.t.tasks.inbox(DOCTOR.actorId, { asOf: during }), []);
+
+    const after = new Date(Date.parse(until) + 60_000);
+    assert.deepEqual(s.t.tasks.inbox(DOCTOR.actorId, { asOf: after }).map((r) => r.id), [task.id]);
+    assert.deepEqual(s.t.tasks.inbox(LOCUM.actorId, { asOf: after }), []);
+  } finally {
+    await s.close();
+  }
+});
+
+test("work reassigned during a night's cover goes to its new owner at dawn", async () => {
+  const s = await clinic();
+  try {
+    const task = s.t.tasks.create({
+      kind: "result-review",
+      title: "Potassium 6.9 needs reading",
+      ownerId: DOCTOR.actorId,
+      by: DOCTOR,
+    });
+
+    // The locum takes the doctor's list overnight.
+    const until = new Date(Date.now() + 3600_000).toISOString();
+    const cover = s.t.handoffs.propose({
+      kind: "coverage",
+      subjectKind: "task",
+      subjectId: task.id,
+      fromId: DOCTOR.actorId,
+      toId: LOCUM.actorId,
+      reason: "night shift",
+      coversUntil: until,
+      by: DOCTOR,
+    });
+    s.t.handoffs.accept(cover.id, LOCUM);
+
+    // During the night the doctor's list is reassigned for good, and the
+    // nurse accepts it. The locum is still covering — a permanent
+    // reassignment underneath does not end tonight's cover.
+    const transfer = s.t.handoffs.propose({
+      kind: "transfer",
+      subjectKind: "task",
+      subjectId: task.id,
+      fromId: DOCTOR.actorId,
+      toId: NURSE.actorId,
+      reason: "the doctor is not coming back on Monday",
+      by: DOCTOR,
+    });
+    s.t.handoffs.accept(transfer.id, NURSE);
+
+    assert.deepEqual(s.t.tasks.inbox(LOCUM.actorId).map((r) => r.id), [task.id]);
+
+    // And `covering` is who it goes back to, which is now the nurse. Saying
+    // the doctor would be the unaccepted-handoff failure in miniature: the
+    // work would read as on loan from somebody who has stopped looking.
+    assert.deepEqual(s.t.tasks.heldBy(task.id), {
+      ownerId: LOCUM.actorId,
+      via: "coverage",
+      covering: NURSE.actorId,
+    });
+
+    const dawn = new Date(Date.parse(until) + 60_000);
+    assert.deepEqual(s.t.tasks.inbox(NURSE.actorId, { asOf: dawn }).map((r) => r.id), [task.id]);
+    assert.deepEqual(s.t.tasks.inbox(DOCTOR.actorId, { asOf: dawn }), []);
+    assert.deepEqual(s.t.tasks.inbox(LOCUM.actorId, { asOf: dawn }), []);
+  } finally {
+    await s.close();
+  }
+});

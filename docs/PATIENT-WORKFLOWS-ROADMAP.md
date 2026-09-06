@@ -141,14 +141,30 @@ proposer accountable until then, one live proposal per subject, and
 kind with a required end date that reverts without anybody acting. Unaccepted
 handoffs and open follow-ups on the clinic board.
 
-**Still missing.** Handoffs are not yet wired into the stores whose work they
-move: `accountableFor()` answers correctly for any subject, but `TaskStore`,
-`ReferralStore` and the discharge follow-up itself still carry their own owner
-columns and nothing consults the handoff record when routing. A team is not
-modelled — `to_id` is a person, and "the diabetes team" would need a directory
-concept that does not exist. And nothing expires a proposal: an offer nobody
-answers stays proposed forever and is visible rather than acted on, which is
-the safe direction but not the finished one.
+**The handoff record is what routing consults.** `TaskStore.inbox()` and
+`Discharges.openFollowUps()` answer through `Handoffs.effectiveOwners()`
+rather than from their own `owner_id` / `accountable_id` columns, and
+`TaskStore.heldBy()` and `Discharges.accountableFor()` give the single answer
+callers should ask for. The column is left alone on accept: it records who the
+work started with, the handoff record decides whose list it is on today, and
+there is one place to look when the two would have disagreed.
+
+`effectiveOwners()` returns overrides only, so a subject no handoff moves is
+absent and its column is still the truth. That absence is what makes coverage
+revert **by arithmetic** — when the window closes the subject stops appearing,
+with no sweep to run and therefore no sweep to fail. Coverage sits on top of
+whoever holds the work, so a transfer accepted underneath it is what the work
+returns to, not whoever first gave it away.
+
+**Still missing.** The wiring is per-store and opt-in: a store that grows an
+owner column later has to call `useOwnershipRecord()` and consult the map, and
+nothing fails if it does not. (Referrals are not in that list because they
+carry no owner of their own — a referral is chased through a task, and those
+now route correctly.) A team is still not modelled — `to_id` is a person, and
+"the diabetes team" would need a directory concept that does not exist. And
+nothing expires a proposal: an offer nobody answers stays proposed forever and
+is visible rather than acted on, which is the safe direction but not the
+finished one.
 
 ## 63. A useful longitudinal chart — **partial**
 

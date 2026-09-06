@@ -135,10 +135,12 @@ const EXPECTS_FOLLOW_UP = new Set(["home", "home-with-follow-up", "discharged"])
 export class Discharges {
   private db: Db;
   private sources: DischargeSources;
+  private handoffs: Handoffs | undefined;
 
-  constructor(db: Db, sources: DischargeSources = {}) {
+  constructor(db: Db, sources: DischargeSources = {}, handoffs?: Handoffs) {
     this.db = db;
     this.sources = sources;
+    this.handoffs = handoffs;
   }
 
   /**
@@ -323,11 +325,23 @@ export class Discharges {
    * ordering is the point: the one nobody has touched since Tuesday is the
    * one at the top.
    */
-  openFollowUps(opts: { accountableId?: string } = {}): DischargeRow[] {
+  openFollowUps(opts: { accountableId?: string; asOf?: Date } = {}): DischargeRow[] {
     const rows = this.db.sql
       .prepare("SELECT * FROM discharges WHERE tenant_id = ? AND status = 'open' ORDER BY opened_at")
       .all(this.db.tenantId) as unknown as DischargeRow[];
-    return opts.accountableId ? rows.filter((r) => r.accountable_id === opts.accountableId) : rows;
+    if (!opts.accountableId) return rows;
+    // Through the handoff record, not the column. accountable_id is who this
+    // started with; an accepted transfer or a running coverage is what
+    // decides whose list it is on today.
+    const overrides = this.handoffs?.effectiveOwners("discharge", opts.asOf) ?? new Map();
+    return rows.filter((r) => (overrides.get(r.id)?.ownerId ?? r.accountable_id) === opts.accountableId);
+  }
+
+  /** Who is answerable for one discharge right now, and how it came to be them. */
+  accountableFor(dischargeId: string, asOf = new Date()) {
+    const row = this.require(dischargeId);
+    if (!this.handoffs) return { ownerId: row.accountable_id, via: "original" as const, handoffId: null };
+    return this.handoffs.accountableFor("discharge", dischargeId, row.accountable_id, asOf);
   }
 
   /** Open follow-ups untouched for longer than a clinic is comfortable with. */
@@ -505,6 +519,57 @@ export class Handoffs {
       return { ownerId: live.to_id, via: "coverage", handoffId: live.id, covering: owner };
     }
     return { ownerId: owner, via, handoffId };
+  }
+
+  /**
+   * Who holds each subject of one kind, where that is not who originally did.
+   *
+   * The bulk form of `accountableFor()`, for a store that has to answer "is
+   * this mine" about a list rather than about one row. It returns only the
+   * subjects a handoff actually moves — a declined offer, a withdrawn one and
+   * a lapsed coverage all contribute nothing, so a subject absent from this
+   * map is one whose owner column is still the truth.
+   *
+   * That absence is what makes coverage revert without a job: when the window
+   * closes the subject simply stops appearing here, and the store falls back
+   * to the column it always had. A design that wrote the coverer into the
+   * owner column on accept would need a sweep to write it back, and a sweep
+   * that does not run leaves a locum owning a list they stopped watching in
+   * March.
+   */
+  effectiveOwners(
+    subjectKind: string,
+    asOf = new Date()
+  ): Map<string, { ownerId: string; via: "transfer" | "coverage"; covering?: string }> {
+    const rows = this.db.sql
+      .prepare(
+        `SELECT * FROM handoffs
+          WHERE tenant_id = ? AND subject_kind = ? AND status = 'accepted'
+          ORDER BY responded_at`
+      )
+      .all(this.db.tenantId, subjectKind) as unknown as HandoffRow[];
+
+    const transferred = new Map<string, string>();
+    for (const row of rows) {
+      if (row.kind === "transfer") transferred.set(row.subject_id, row.to_id);
+    }
+
+    const now = asOf.toISOString();
+    const out = new Map<string, { ownerId: string; via: "transfer" | "coverage"; covering?: string }>();
+    for (const [subjectId, ownerId] of transferred) out.set(subjectId, { ownerId, via: "transfer" });
+    for (const row of rows) {
+      if (row.kind !== "coverage") continue;
+      if (row.covers_from && row.covers_from > now) continue;
+      if (row.covers_until === null || row.covers_until <= now) continue;
+      // On top of whoever holds it, which may be a transferee rather than the
+      // person the coverage names as its source.
+      out.set(row.subject_id, {
+        ownerId: row.to_id,
+        via: "coverage",
+        covering: transferred.get(row.subject_id) ?? row.from_id,
+      });
+    }
+    return out;
   }
 
   /**

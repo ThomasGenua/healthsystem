@@ -394,8 +394,13 @@ export class Engine {
     const encounters = new Encounters(db);
     // Reads the chart to take its snapshot, so it is built after the stores
     // that hold the four loose ends it looks for.
-    const discharges = new Discharges(db, { orders, meds, referrals, schedule });
     const handoffs = new Handoffs(db);
+    const discharges = new Discharges(db, { orders, meds, referrals, schedule }, handoffs);
+    // The inbox answers from the handoff record rather than from its own
+    // owner column, so an item somebody handed away leaves their list and an
+    // accepted one arrives. Set here because the two are built in the same
+    // breath and one of them has to come first.
+    tasks.useOwnershipRecord(handoffs);
     // After encounters, which it reads to tell an arrival from an expectation.
     const board = new ClinicBoard({ schedule, encounters, tasks, discharges, handoffs });
     // Built here rather than inline in the view because the key store needs it
