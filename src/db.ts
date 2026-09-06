@@ -72,6 +72,7 @@ export const TENANT_SCOPED_TABLES = [
   "outreach_campaigns",
   "outreach_items",
   "outreach_attempts",
+  "arrangements",
   "patient_enrolments",
   "patient_notices",
   "schedule_slots",
@@ -2873,6 +2874,30 @@ CREATE TABLE IF NOT EXISTS outreach_attempts (
   PRIMARY KEY (tenant_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_outreach_attempts_item ON outreach_attempts(tenant_id, item_id, attempted_at);
+CREATE TABLE IF NOT EXISTS arrangements (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  visit_id TEXT NOT NULL,
+  patient_id TEXT,
+  kind TEXT NOT NULL,
+  detail TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'needed',
+  owner_id TEXT,
+  external_reference TEXT,
+  confirmation_evidence TEXT,
+  confirmed_at TEXT,
+  confirmed_by TEXT,
+  cancelled_at TEXT,
+  cancelled_by TEXT,
+  cancelled_reason TEXT,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_arrangements_visit ON arrangements(tenant_id, visit_id, status);
+CREATE INDEX IF NOT EXISTS idx_arrangements_patient ON arrangements(tenant_id, patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_arrangements_owner ON arrangements(tenant_id, owner_id, status);
 `;
 
 

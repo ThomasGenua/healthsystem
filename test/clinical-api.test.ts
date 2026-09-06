@@ -21,6 +21,7 @@ import { startApi } from "../src/api/admin.ts";
 import { AuthGate } from "../src/auth/gate.ts";
 import type { AuditRow } from "../src/audit/store.ts";
 import { SyntheticScanner } from "../src/patient/intake.ts";
+import { SyntheticExternalCoordinator } from "../src/schedule/arrangements.ts";
 
 const P = "NT123456";
 const GP = { actorId: "dr-tetso", actorKind: "practitioner" };
@@ -35,11 +36,14 @@ async function boot() {
   // A scanner, so upload-scan exercises its own clean/infected logic rather
   // than the "no scanner configured" refusal every other route test's fixture
   // upload would otherwise hit.
+  // A synthetic external coordinator, so arrangement-request-external
+  // exercises its own logic rather than the "not configured" refusal.
   const engine = new Engine({
     dbPath: ":memory:",
     tickMs: 15,
     pharmacyChannel: "pharmacy-out",
     malwareScanner: new SyntheticScanner(),
+    externalCoordinator: new SyntheticExternalCoordinator(),
   });
   await engine.start();
   engine.db.upsertChannel(
@@ -572,6 +576,42 @@ test("every clinical route leaves an audit row, including ones added later", asy
     // still-open patient under this rule to pick up, rather than colliding
     // with everyone the fixtures above already claimed.
     outreachPatientRecord("NT-OUT-CAMPAIGN-CREATE");
+    // Item 65: arrangements around a travelling-clinic visit. A dedicated
+    // visit, separate from tcRepeat/tcCancel/tcMove below, so an arrangement
+    // fixture here is never touched by a different route's cancellation.
+    const arrangementVisit = s.engine.forTenant("default").clinics.planVisit({
+      resourceId: "dr-tetso",
+      service: "Diabetes follow-up",
+      community: "Fort Smith",
+      days: [{ date: "2027-05-01", from: "09:00", to: "12:00" }],
+      slotMinutes: 30,
+      by: GP,
+    }).visit;
+    const arrangementForAssign = s.engine.forTenant("default").arrangements.request({
+      visitId: arrangementVisit.id,
+      patientId: P,
+      kind: "transport",
+      detail: "van from the airstrip",
+      by: GP,
+    });
+    const arrangementForConfirm = s.engine.forTenant("default").arrangements.request({
+      visitId: arrangementVisit.id,
+      kind: "interpreter",
+      detail: "South Slavey interpreter for the visit",
+      by: GP,
+    });
+    const arrangementForExternal = s.engine.forTenant("default").arrangements.request({
+      visitId: arrangementVisit.id,
+      kind: "accommodation",
+      detail: "one room, night before an early clinic",
+      by: GP,
+    });
+    const arrangementForCancel = s.engine.forTenant("default").arrangements.request({
+      visitId: arrangementVisit.id,
+      kind: "escort",
+      detail: "adult child travelling with an elder patient",
+      by: GP,
+    });
     const docToRead = s.engine.forTenant("default").documents.receive({
       patientId: P,
       title: "Cardiology letter",
@@ -900,6 +940,12 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/visit-repeat": "POST",
       "/api/clinical/visit-cancel": "POST",
       "/api/clinical/visit-reschedule": "POST",
+      "/api/clinical/arrangements": "POST",
+      "/api/clinical/arrangements-unconfirmed": "",
+      "/api/clinical/arrangement-assign": "POST",
+      "/api/clinical/arrangement-confirm": "POST",
+      "/api/clinical/arrangement-request-external": "POST",
+      "/api/clinical/arrangement-cancel": "POST",
       "/api/clinical/waitlist": "?service=TC%20offer",
       "/api/clinical/waitlist-add": "POST",
       "/api/clinical/waitlist-remove": "POST",
@@ -1420,6 +1466,11 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/outreach-item-book": { id: itemToBook.id, bookingId: outreachBooking.id },
       "/api/clinical/outreach-item-complete": { id: itemToComplete.id },
       "/api/clinical/outreach-item-exclude": { id: itemToExclude.id, reason: "route-test exclusion: patient moved away" },
+      "/api/clinical/arrangements": { visit: arrangementVisit.id, kind: "equipment", detail: "portable ultrasound flown in with the clinician" },
+      "/api/clinical/arrangement-assign": { id: arrangementForAssign.id, ownerId: "clerk-amaruq" },
+      "/api/clinical/arrangement-confirm": { id: arrangementForConfirm.id, evidence: "confirmed by phone with the interpreter co-op" },
+      "/api/clinical/arrangement-request-external": { id: arrangementForExternal.id },
+      "/api/clinical/arrangement-cancel": { id: arrangementForCancel.id, reason: "route-test cancellation: patient no longer attending" },
     };
 
     const unlisted = paths.filter((p) => !(p in args));

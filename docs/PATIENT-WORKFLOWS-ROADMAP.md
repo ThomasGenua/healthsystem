@@ -448,19 +448,81 @@ closed set the way `outcome` is — deliberately, since a clinic's contact
 channels are a deployment fact this codebase should not hardcode, but it
 means the API does not reject a typo the way it rejects an unknown outcome.
 
-## 65. Northern and travelling-clinic coordination — **partial**
+## 65. Northern and travelling-clinic coordination — **done**
 
-**Present.** `Clinics` (`src/schedule/clinics.ts:123`) treats a travelling
-clinic visit as one object that generates its slots, can be repeated, cancelled
-or rescheduled, and carries a waitlist whose order is stated policy — priority,
-then waited-longest, then most-bumped — with offers that resolve as accepted,
-declined or unreachable.
+**Present, unchanged.** `Clinics` (`src/schedule/clinics.ts:123`) still
+treats a travelling clinic visit as one object that generates its slots, can
+be repeated, cancelled or rescheduled, and carries a waitlist whose order is
+stated policy. Nothing in this increment touches it — `cancelVisit()` and
+`rescheduleVisit()` know nothing about arrangements, deliberately (see
+below).
 
-**Missing.** The arrangements around the visit: transport, accommodation,
-interpreter, escort, equipment, accessibility. Nobody owns one, nothing is
-confirmed or unconfirmed, and a visit that moves does not identify what it
-broke. The item's last line — do not mark an external booking confirmed
-without evidence — has no code to attach to yet.
+**Added in this increment.** `src/schedule/arrangements.ts`: `Arrangements`,
+covering the six kinds named verbatim in the item's own text — transport,
+accommodation, interpreter, escort, equipment, accessibility. Each
+arrangement names a visit, optionally a patient (unset for a visit-wide
+need like an interpreter for the whole two days), and moves through
+`needed → requested → confirmed`, with `cancelled` beside all three.
+`assign()` records who owns chasing it down.
+
+**Confirmation always needs evidence, never a status somebody picked.**
+Two paths reach `confirmed`, both enforcing this the same way item 59's
+notification-delivery states already do (H-183: sending is not delivering):
+`confirm()` is the manual-coordination path and refuses without a
+non-empty, human-written account of how the arrangement was checked.
+`requestExternally()` is the simulated-external-integration path — an
+`ExternalCoordinator` interface a real integration would implement, with
+`SyntheticExternalCoordinator` as the demonstration stand-in, the same
+shape as `SyntheticScanner` in `src/patient/intake.ts`. It marks confirmed
+only when the external system's own answer says `confirmed: true`, carrying
+that answer's reference as the evidence; anything else — including the
+synthetic coordinator's ordinary answer — becomes `requested`, distinct
+from confirmed, so a request handed to another party is not mistaken for
+that party's agreement.
+
+**A changed visit does not silently strand its arrangements.**
+`reviewAfterVisitChange()` is called from the two routes that are the only
+real callers of `Clinics.cancelVisit()`/`rescheduleVisit()` anywhere in this
+codebase — `/api/clinical/visit-cancel` and `/api/clinical/visit-reschedule`
+— immediately after each, rather than through a hook retrofitted into
+`Clinics` itself. It raises one `arrangement`-kind task (a new `TaskKind` on
+the existing `TaskStore`) per live arrangement on the changed visit, each
+carrying the arrangement's own id as `correlationId` so every task raised
+about one arrangement is traceable. It does not guess which arrangements
+are actually voided by the change — a one-day move might not touch a
+multi-day hotel booking, and this module has no way to know — so it asks a
+person rather than deciding silently either way.
+
+Seven clinician routes (`/api/clinical/arrangements` list/create,
+`/api/clinical/arrangements-unconfirmed`, and `/api/clinical/arrangement-{assign,confirm,request-external,cancel}`),
+through the existing `phi()`/`phiFor()` gateway, plus the two existing visit
+routes extended to report `arrangementTasksRaised`. No new patient route —
+like item 64, this is a staff coordination tool.
+
+**Test evidence.** `test/arrangements.test.ts` (18 tests): a kind outside
+the six refused, an empty detail refused, a visit that does not exist or is
+cancelled refused, assignment needing a real owner, confirmation needing
+non-empty evidence and refusing on an already-confirmed or cancelled
+arrangement, cancellation needing a reason and refusing twice, the full
+`requestExternally()` behaviour (an ordinary answer becomes requested not
+confirmed; the confirm-marker answer becomes confirmed with the external
+reference as evidence; a request left pending can still be confirmed
+manually afterward without losing its reference; an empty reference from a
+misbehaving coordinator is refused rather than treated as evidence),
+`forVisit`/`forPatient`/`unconfirmed` each answering the different question
+they are for, `reviewAfterVisitChange` raising exactly one task per live
+arrangement while excluding cancelled ones and refusing without a reason,
+and tenant isolation. Nineteen mutations, all nineteen caught: one survived
+the first pass (an external coordinator returning an empty reference) and
+needed a test using a custom, deliberately-misbehaving `ExternalCoordinator`
+rather than the synthetic one, since the synthetic coordinator always
+returns a real reference and so could never exercise that refusal.
+
+**Still missing.** No portal or clinic-workspace screen. `unconfirmed()`
+is not wired into the clinic board (item 66) as its own attention queue the
+way item 66's existing `patient-contact` tasks are — a deployment can find
+outstanding arrangements through `TaskStore.openOfKind("arrangement")`
+today, but nothing renders them as a dedicated panel yet.
 
 ## 66. A clinic operations workspace — **partial**
 

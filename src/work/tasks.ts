@@ -44,7 +44,12 @@ export type TaskKind =
   // A patient the clinic could not reach. Its own kind rather than
   // administrative: the work is chasing a person, and burying it among
   // configuration chores is how "nobody could be told" stops being visible.
-  | "patient-contact";
+  | "patient-contact"
+  // Transport, accommodation, interpreter, escort, equipment or accessibility
+  // logistics around a travelling-clinic visit that need a person to look at
+  // them again — raised by src/schedule/arrangements.ts, most often because
+  // the visit they were arranged for just moved or was cancelled.
+  | "arrangement";
 
 export type TaskPriority = "routine" | "urgent" | "stat";
 export type TaskStatus = "open" | "in-progress" | "completed" | "cancelled";

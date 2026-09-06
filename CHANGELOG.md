@@ -11,6 +11,36 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Travelling-clinic arrangements that are never marked confirmed on hope
+  (item 65).** `src/schedule/arrangements.ts`'s `Arrangements` covers the
+  six kinds the item names — transport, accommodation, interpreter, escort,
+  equipment, accessibility — each owned by somebody and moving through
+  `needed → requested → confirmed`, with `cancelled` beside all three.
+
+  **Two paths reach `confirmed`, and both require evidence.** `confirm()`
+  is manual coordination and refuses without a written account of how it
+  was checked. `requestExternally()` talks to a configured
+  `ExternalCoordinator` (a real integration point; `SyntheticExternalCoordinator`
+  is the demonstration stand-in, the same shape as intake.ts's
+  `SyntheticScanner`) and marks confirmed only when the external system's
+  own answer says so — a request merely sent becomes `requested`, never
+  `confirmed`, the same distinction item 59's delivery states already had
+  to draw for a notification handed to a gateway.
+
+  **A changed visit does not silently strand what was arranged.** The two
+  routes that are the only real callers of `Clinics.cancelVisit()` and
+  `rescheduleVisit()` in this codebase now also call
+  `Arrangements.reviewAfterVisitChange()`, which raises one reassignment
+  task per live arrangement on the changed visit — never guessing which
+  ones are actually voided, since that is not a fact this module can know,
+  only asking a person to look.
+
+  Seven clinician routes, all through the existing `phi()`/`phiFor()`
+  gateway. Nineteen of nineteen mutations killed; the one that first
+  survived (an external coordinator answering with no reference) needed a
+  deliberately-misbehaving test double, since the synthetic coordinator
+  always returns a usable one. Hazard log gains H-199 and H-200.
+
 - **Outreach campaigns behind a governed, versioned eligibility rule, with
   duplicate outreach prevented by the schema (item 64).**
   `src/population/eligibility.ts` gives a `CohortRule` + `CareGapRule` pair

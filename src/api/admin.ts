@@ -2671,16 +2671,21 @@ async function route(
         undefined,
         "Appointment",
         () => {
-          const r = tenant.clinics.cancelVisit(body.visit!, {
-            actorId: who,
-            actorKind: auth.ok ? auth.principal.kind : "unknown",
-            reason: body.reason!,
-          });
+          const by = { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" };
+          const r = tenant.clinics.cancelVisit(body.visit!, { ...by, reason: body.reason! });
           const filtered = filterByDirective(
             ["Appointment"],
             r.bumped.map((x) => ({ patient_id: x.booking.patient_id, ...x }))
           );
-          return { visit: r.visit, bumped: filtered.rows, withheldCount: filtered.withheldCount };
+          // Item 65: a cancelled visit does not silently strand what was
+          // arranged around it. One reassignment task per live arrangement —
+          // see Arrangements.reviewAfterVisitChange() for why this does not
+          // guess which ones are actually void.
+          const arrangementTasksRaised = tenant.arrangements.reviewAfterVisitChange(body.visit!, {
+            reason: `visit cancelled: ${body.reason!}`,
+            by,
+          }).length;
+          return { visit: r.visit, bumped: filtered.rows, withheldCount: filtered.withheldCount, arrangementTasksRaised };
         },
         (v) => v.bumped.length
       );
@@ -2695,16 +2700,88 @@ async function route(
         undefined,
         "Appointment",
         () => {
-          const r = tenant.clinics.rescheduleVisit(body.visit!, {
-            toFirstDay: body.toFirstDay!,
-            reason: body.reason!,
-            by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
-          });
+          const by = { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" };
+          const r = tenant.clinics.rescheduleVisit(body.visit!, { toFirstDay: body.toFirstDay!, reason: body.reason!, by });
           const filtered = filterByDirective(["Appointment"], r.toTell);
-          return { visit: r.visit, toTell: filtered.rows, withheldCount: filtered.withheldCount };
+          const arrangementTasksRaised = tenant.arrangements.reviewAfterVisitChange(body.visit!, {
+            reason: `visit rescheduled: ${body.reason!}`,
+            by,
+          }).length;
+          return { visit: r.visit, toTell: filtered.rows, withheldCount: filtered.withheldCount, arrangementTasksRaised };
         },
         (v) => v.toTell.length
       );
+    }
+    // Item 65: transport, accommodation, interpreter, escort, equipment and
+    // accessibility arrangements around a travelling-clinic visit.
+    if (path === "/api/clinical/arrangements" && method === "GET") {
+      const visitId = url.searchParams.get("visit");
+      if (!visitId && !patient) return send(res, 400, { error: "visit or patient required" });
+      if (visitId) {
+        return phiFor(undefined, "Appointment", () => tenant.arrangements.forVisit(visitId), (r) => r.length);
+      }
+      return phi("Appointment", () => tenant.arrangements.forPatient(patient!), (r) => r.length);
+    }
+    if (path === "/api/clinical/arrangements" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { visit?: string; patient?: string; kind?: string; detail?: string };
+      if (!body.visit || !body.kind || !body.detail) return send(res, 400, { error: "visit, kind and detail required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phiFor(
+        body.patient,
+        "Appointment",
+        () =>
+          tenant.arrangements.request({
+            visitId: body.visit!,
+            ...(body.patient ? { patientId: body.patient } : {}),
+            kind: body.kind as never,
+            detail: body.detail!,
+            by,
+          })
+      );
+    }
+    if (path === "/api/clinical/arrangements-unconfirmed" && method === "GET") {
+      return phi("Appointment", () => tenant.arrangements.unconfirmed(), (r) => r.length);
+    }
+    if (path === "/api/clinical/arrangement-assign" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; ownerId?: string };
+      if (!body.id || !body.ownerId) return send(res, 400, { error: "id and ownerId required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phi("Appointment", () => tenant.arrangements.assign(body.id!, body.ownerId!, by));
+    }
+    if (path === "/api/clinical/arrangement-confirm" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; evidence?: string };
+      if (!body.id || !body.evidence) return send(res, 400, { error: "id and evidence required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phi("Appointment", () => tenant.arrangements.confirm(body.id!, { evidence: body.evidence!, by }));
+    }
+    if (path === "/api/clinical/arrangement-request-external" && method === "POST") {
+      // requestExternally() is async (a real integration is a network call),
+      // so — like upload-scan above — this does the lookup and the mutation
+      // itself rather than through phi(), and audits by hand around it.
+      const body = JSON.parse(await readBody(req)) as { id?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      try {
+        const arrangement = await tenant.arrangements.requestExternally(body.id, by);
+        audit({
+          action: "U",
+          outcome: 0,
+          resourceType: "Appointment",
+          detail: `arrangement ${body.id} requested externally: ${arrangement.status}`,
+        });
+        return send(res, 200, arrangement);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        logFault("arrangement request-external", mapped, err);
+        audit({ action: "U", outcome: mapped.outcome, resourceType: "Appointment", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    if (path === "/api/clinical/arrangement-cancel" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; reason?: string };
+      if (!body.id || !body.reason) return send(res, 400, { error: "id and reason required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phi("Appointment", () => tenant.arrangements.cancel(body.id!, { reason: body.reason!, by }));
     }
     if (path === "/api/clinical/waitlist" && method === "GET") {
       const service = url.searchParams.get("service");
