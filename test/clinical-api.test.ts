@@ -21,6 +21,7 @@ import { startApi } from "../src/api/admin.ts";
 import { AuthGate } from "../src/auth/gate.ts";
 import type { AuditRow } from "../src/audit/store.ts";
 import { SyntheticScanner } from "../src/patient/intake.ts";
+import { SyntheticExternalCoordinator } from "../src/schedule/arrangements.ts";
 
 const P = "NT123456";
 const GP = { actorId: "dr-tetso", actorKind: "practitioner" };
@@ -35,11 +36,14 @@ async function boot() {
   // A scanner, so upload-scan exercises its own clean/infected logic rather
   // than the "no scanner configured" refusal every other route test's fixture
   // upload would otherwise hit.
+  // A synthetic external coordinator, so arrangement-request-external
+  // exercises its own logic rather than the "not configured" refusal.
   const engine = new Engine({
     dbPath: ":memory:",
     tickMs: 15,
     pharmacyChannel: "pharmacy-out",
     malwareScanner: new SyntheticScanner(),
+    externalCoordinator: new SyntheticExternalCoordinator(),
   });
   await engine.start();
   engine.db.upsertChannel(
@@ -491,6 +495,123 @@ test("every clinical route leaves an audit row, including ones added later", asy
       by: GP_AUTHOR,
     });
     const actionToComplete = s.engine.forTenant("default").actions.approve(actionToCompleteFirst.recordId, GP_AUTHOR);
+    // Item 64: outreach campaigns. idx_outreach_open_once means a second open
+    // item for the same patient and rule is refused outright, so — same
+    // reason as the goal/action fixtures above — each state-transition route
+    // gets its own patient rather than sharing one that another route has
+    // already moved.
+    const outreachRule = s.engine.forTenant("default").eligibility.publish({
+      id: "route-test-outreach-rule",
+      name: "Route-test cohort",
+      cohort: { id: "route-test-cohort", name: "Route-test cohort", conditionCodes: ["route-test outreach condition"] },
+      gap: { id: "route-test-gap", name: "Route-test gap", withinDays: 365 },
+      by: GP,
+    });
+    const outreachPatientRecord = (id: string) => {
+      s.engine.forTenant("default").clinical.record({
+        entryType: "Patient",
+        patientId: id,
+        content: { resourceType: "Patient", identifier: [{ value: id }] },
+        authorId: "adt",
+        authorKind: "device",
+      });
+      s.engine.forTenant("default").clinical.record({
+        entryType: "Condition",
+        patientId: id,
+        content: { resourceType: "Condition", code: { text: "route-test outreach condition" } },
+        ...GP_AUTHOR,
+      });
+    };
+    for (const id of ["NT-OUT-ASSIGN", "NT-OUT-ATTEMPT", "NT-OUT-ATTLIST", "NT-OUT-BOOK", "NT-OUT-COMPLETE", "NT-OUT-EXCLUDE"]) {
+      outreachPatientRecord(id);
+    }
+    const outreachCampaign = s.engine.forTenant("default").outreach.create({
+      eligibilityRuleId: outreachRule.id,
+      name: "Route-test campaign",
+      by: GP,
+    });
+    const outreachItem = (patientId: string) => outreachCampaign.items.find((i) => i.patient_id === patientId)!;
+    const itemToAssign = outreachItem("NT-OUT-ASSIGN");
+    const itemToAttempt = outreachItem("NT-OUT-ATTEMPT");
+    const itemForAttemptsList = outreachItem("NT-OUT-ATTLIST");
+    s.engine.forTenant("default").outreach.recordAttempt(itemForAttemptsList.id, { channel: "phone", outcome: "no-answer", by: GP });
+    const itemToBook = outreachItem("NT-OUT-BOOK");
+    const outreachBookSlot = s.engine.forTenant("default").schedule.openSlot({
+      resourceId: "dr-tetso",
+      service: "Outreach follow-up",
+      startsAt: "2026-09-15T10:00:00Z",
+      endsAt: "2026-09-15T10:30:00Z",
+    });
+    const outreachBooking = s.engine.forTenant("default").schedule.book({
+      slotId: outreachBookSlot.id,
+      patientId: "NT-OUT-BOOK",
+      reason: "Outreach follow-up",
+      by: GP,
+    });
+    const itemToComplete = outreachItem("NT-OUT-COMPLETE");
+    const outreachCompleteSlot = s.engine.forTenant("default").schedule.openSlot({
+      resourceId: "dr-tetso",
+      service: "Outreach follow-up",
+      startsAt: "2026-09-16T10:00:00Z",
+      endsAt: "2026-09-16T10:30:00Z",
+    });
+    const outreachCompleteBooking = s.engine.forTenant("default").schedule.book({
+      slotId: outreachCompleteSlot.id,
+      patientId: "NT-OUT-COMPLETE",
+      reason: "Outreach follow-up",
+      by: GP,
+    });
+    s.engine.forTenant("default").outreach.linkBooking(itemToComplete.id, outreachCompleteBooking.id, GP);
+    const itemToExclude = outreachItem("NT-OUT-EXCLUDE");
+    // A campaign already active, pre-built (not through the route under
+    // test), so the live close route has something one-way to close.
+    outreachPatientRecord("NT-OUT-CAMPAIGN-CLOSE");
+    const campaignToClose = s.engine.forTenant("default").outreach.create({
+      eligibilityRuleId: outreachRule.id,
+      name: "Route-test campaign to close",
+      by: GP,
+    }).campaign;
+    // And one more patient, added only now — after every campaign above has
+    // already been built — so the live create-campaign route has exactly one
+    // still-open patient under this rule to pick up, rather than colliding
+    // with everyone the fixtures above already claimed.
+    outreachPatientRecord("NT-OUT-CAMPAIGN-CREATE");
+    // Item 65: arrangements around a travelling-clinic visit. A dedicated
+    // visit, separate from tcRepeat/tcCancel/tcMove below, so an arrangement
+    // fixture here is never touched by a different route's cancellation.
+    const arrangementVisit = s.engine.forTenant("default").clinics.planVisit({
+      resourceId: "dr-tetso",
+      service: "Diabetes follow-up",
+      community: "Fort Smith",
+      days: [{ date: "2027-05-01", from: "09:00", to: "12:00" }],
+      slotMinutes: 30,
+      by: GP,
+    }).visit;
+    const arrangementForAssign = s.engine.forTenant("default").arrangements.request({
+      visitId: arrangementVisit.id,
+      patientId: P,
+      kind: "transport",
+      detail: "van from the airstrip",
+      by: GP,
+    });
+    const arrangementForConfirm = s.engine.forTenant("default").arrangements.request({
+      visitId: arrangementVisit.id,
+      kind: "interpreter",
+      detail: "South Slavey interpreter for the visit",
+      by: GP,
+    });
+    const arrangementForExternal = s.engine.forTenant("default").arrangements.request({
+      visitId: arrangementVisit.id,
+      kind: "accommodation",
+      detail: "one room, night before an early clinic",
+      by: GP,
+    });
+    const arrangementForCancel = s.engine.forTenant("default").arrangements.request({
+      visitId: arrangementVisit.id,
+      kind: "escort",
+      detail: "adult child travelling with an elder patient",
+      by: GP,
+    });
     const docToRead = s.engine.forTenant("default").documents.receive({
       patientId: P,
       title: "Cardiology letter",
@@ -811,6 +932,13 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/gaps": "POST",
       "/api/clinical/measure": "POST",
       "/api/clinical/release": "POST",
+      "/api/clinical/effectiveness-review": "POST",
+      "/api/clinical/effectiveness-follow-up": "POST",
+      "/api/clinical/effectiveness-referrals": "POST",
+      "/api/clinical/effectiveness-notifications": "POST",
+      "/api/clinical/effectiveness-missed-appointments": "POST",
+      "/api/clinical/effectiveness-task-burden": "POST",
+      "/api/clinical/effectiveness-release": "POST",
       "/api/clinical/links": `?patient=${P}`,
       "/api/clinical/link": "POST",
       "/api/clinical/unlink": "POST",
@@ -819,6 +947,12 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/visit-repeat": "POST",
       "/api/clinical/visit-cancel": "POST",
       "/api/clinical/visit-reschedule": "POST",
+      "/api/clinical/arrangements": "POST",
+      "/api/clinical/arrangements-unconfirmed": "",
+      "/api/clinical/arrangement-assign": "POST",
+      "/api/clinical/arrangement-confirm": "POST",
+      "/api/clinical/arrangement-request-external": "POST",
+      "/api/clinical/arrangement-cancel": "POST",
       "/api/clinical/waitlist": "?service=TC%20offer",
       "/api/clinical/waitlist-add": "POST",
       "/api/clinical/waitlist-remove": "POST",
@@ -862,6 +996,18 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/timeline": `?patient=${P}`,
       "/api/clinical/result-trend": `?patient=${P}&code=2823-3`,
       "/api/clinical/vital-trend": `?patient=${P}&kind=heart-rate`,
+      "/api/clinical/eligibility-rules": "POST",
+      "/api/clinical/outreach-campaigns": "POST",
+      "/api/clinical/outreach-campaigns-close": "POST",
+      "/api/clinical/outreach-items": `?campaign=${outreachCampaign.campaign.id}`,
+      "/api/clinical/outreach-items-unreachable": `?campaign=${outreachCampaign.campaign.id}`,
+      "/api/clinical/outreach-item-recheck": `?item=${itemToAssign.id}`,
+      "/api/clinical/outreach-item-assign": "POST",
+      "/api/clinical/outreach-item-attempt": "POST",
+      "/api/clinical/outreach-item-attempts": `?item=${itemForAttemptsList.id}`,
+      "/api/clinical/outreach-item-book": "POST",
+      "/api/clinical/outreach-item-complete": "POST",
+      "/api/clinical/outreach-item-exclude": "POST",
       "/api/clinical/patient-document-record": "POST",
       "/api/clinical/care-team-assign": "POST",
       "/api/clinical/care-team-retire": "POST",
@@ -993,6 +1139,20 @@ test("every clinical route leaves an audit row, including ones added later", asy
         measure: { id: "hba1c-8", name: "HbA1c under 8", withinDays: 365, target: { code: "4548-4", below: 8 } },
         recipient: "NWT quality improvement committee",
         purpose: "quarterly diabetes measure review",
+      },
+      "/api/clinical/effectiveness-review": { from: "2000-01-01T00:00:00Z", to: "2030-01-01T00:00:00Z", targetWithinHours: 24 },
+      "/api/clinical/effectiveness-follow-up": { from: "2000-01-01T00:00:00Z", to: "2030-01-01T00:00:00Z" },
+      "/api/clinical/effectiveness-referrals": { from: "2000-01-01T00:00:00Z", to: "2030-01-01T00:00:00Z" },
+      "/api/clinical/effectiveness-notifications": { from: "2000-01-01T00:00:00Z", to: "2030-01-01T00:00:00Z" },
+      "/api/clinical/effectiveness-missed-appointments": { from: "2000-01-01T00:00:00Z", to: "2030-01-01T00:00:00Z", outcomeGraceHours: 24 },
+      "/api/clinical/effectiveness-task-burden": { from: "2000-01-01T00:00:00Z", to: "2030-01-01T00:00:00Z" },
+      "/api/clinical/effectiveness-release": {
+        metric: "missed-appointments",
+        from: "2000-01-01T00:00:00Z",
+        to: "2030-01-01T00:00:00Z",
+        outcomeGraceHours: 24,
+        recipient: "NWT quality improvement committee",
+        purpose: "quarterly workflow-effectiveness review",
       },
       "/api/clinical/link": {
         a: P,
@@ -1314,6 +1474,24 @@ test("every clinical route leaves an audit row, including ones added later", asy
         questions: [{ key: "q1", label: "Anything to flag before your visit?", type: "text" }],
       },
       "/api/clinical/upload-scan": { id: uploadToScan.id },
+      "/api/clinical/eligibility-rules": {
+        id: "route-test-published-rule",
+        name: "Route-test published rule",
+        cohort: { id: "route-test-published-cohort", name: "Route-test published cohort", conditionCodes: ["route-test outreach condition"] },
+        gap: { id: "route-test-published-gap", name: "Route-test published gap", withinDays: 180 },
+      },
+      "/api/clinical/outreach-campaigns": { eligibilityRuleId: outreachRule.id, name: "Route-test live-created campaign" },
+      "/api/clinical/outreach-campaigns-close": { id: campaignToClose.id },
+      "/api/clinical/outreach-item-assign": { id: itemToAssign.id, staffId: "clerk-amaruq" },
+      "/api/clinical/outreach-item-attempt": { id: itemToAttempt.id, channel: "phone", outcome: "no-answer" },
+      "/api/clinical/outreach-item-book": { id: itemToBook.id, bookingId: outreachBooking.id },
+      "/api/clinical/outreach-item-complete": { id: itemToComplete.id },
+      "/api/clinical/outreach-item-exclude": { id: itemToExclude.id, reason: "route-test exclusion: patient moved away" },
+      "/api/clinical/arrangements": { visit: arrangementVisit.id, kind: "equipment", detail: "portable ultrasound flown in with the clinician" },
+      "/api/clinical/arrangement-assign": { id: arrangementForAssign.id, ownerId: "clerk-amaruq" },
+      "/api/clinical/arrangement-confirm": { id: arrangementForConfirm.id, evidence: "confirmed by phone with the interpreter co-op" },
+      "/api/clinical/arrangement-request-external": { id: arrangementForExternal.id },
+      "/api/clinical/arrangement-cancel": { id: arrangementForCancel.id, reason: "route-test cancellation: patient no longer attending" },
     };
 
     const unlisted = paths.filter((p) => !(p in args));

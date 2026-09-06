@@ -68,6 +68,11 @@ export const TENANT_SCOPED_TABLES = [
   "intake_questionnaires",
   "intake_submissions",
   "intake_uploads",
+  "eligibility_rules",
+  "outreach_campaigns",
+  "outreach_items",
+  "outreach_attempts",
+  "arrangements",
   "patient_enrolments",
   "patient_notices",
   "schedule_slots",
@@ -2787,6 +2792,112 @@ CREATE TABLE IF NOT EXISTS intake_uploads (
 CREATE INDEX IF NOT EXISTS idx_intake_uploads_patient ON intake_uploads(tenant_id, patient_id, uploaded_at);
 CREATE INDEX IF NOT EXISTS idx_intake_uploads_submission ON intake_uploads(tenant_id, submission_id);
 CREATE INDEX IF NOT EXISTS idx_intake_uploads_pending ON intake_uploads(tenant_id, status, uploaded_at);
+
+-- Item 64: outreach campaigns.
+--
+-- A clinical eligibility rule is published, never edited, the same way a
+-- questionnaire is: a campaign names an id and a version, and what it meant
+-- when a list was built stays what it meant when somebody reviews the list
+-- next year, whatever the rule reads today.
+CREATE TABLE IF NOT EXISTS eligibility_rules (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  cohort TEXT NOT NULL,
+  gap TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  published_by TEXT NOT NULL,
+  published_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id, version)
+);
+
+CREATE TABLE IF NOT EXISTS outreach_campaigns (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  eligibility_rule_id TEXT NOT NULL,
+  eligibility_rule_version INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  closed_at TEXT,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- One row per patient this campaign has ever named. eligibility_rule_id is
+-- carried here too, denormalised from the campaign, because the duplicate-
+-- outreach guard below has to hold across campaigns, not only within one.
+CREATE TABLE IF NOT EXISTS outreach_items (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  campaign_id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  eligibility_rule_id TEXT NOT NULL,
+  -- What the gap said at list-build time: when it was last done (or never),
+  -- and how overdue. The list a staff member works from, preserved even
+  -- after a recheck says the patient is no longer eligible.
+  eligible_last_done TEXT,
+  eligible_overdue_days INTEGER,
+  -- pending | attempted | responded | booked | completed | excluded | unreachable
+  status TEXT NOT NULL DEFAULT 'pending',
+  assigned_to TEXT,
+  booking_id TEXT,
+  excluded_reason TEXT,
+  excluded_by TEXT,
+  excluded_at TEXT,
+  completed_at TEXT,
+  completed_by TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+-- The duplicate-outreach guard: one open item per patient per eligibility
+-- rule, across every campaign that has ever run it. A second campaign for
+-- the same rule recheck finds the patient already being worked rather than
+-- calling them a second time about the same gap.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_outreach_open_once
+  ON outreach_items(tenant_id, patient_id, eligibility_rule_id)
+  WHERE status NOT IN ('completed', 'excluded');
+CREATE INDEX IF NOT EXISTS idx_outreach_campaign ON outreach_items(tenant_id, campaign_id, status);
+CREATE INDEX IF NOT EXISTS idx_outreach_assigned ON outreach_items(tenant_id, assigned_to, status);
+
+CREATE TABLE IF NOT EXISTS outreach_attempts (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  item_id TEXT NOT NULL,
+  attempted_by TEXT NOT NULL,
+  attempted_at TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  note TEXT,
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_outreach_attempts_item ON outreach_attempts(tenant_id, item_id, attempted_at);
+CREATE TABLE IF NOT EXISTS arrangements (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  visit_id TEXT NOT NULL,
+  patient_id TEXT,
+  kind TEXT NOT NULL,
+  detail TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'needed',
+  owner_id TEXT,
+  external_reference TEXT,
+  confirmation_evidence TEXT,
+  confirmed_at TEXT,
+  confirmed_by TEXT,
+  cancelled_at TEXT,
+  cancelled_by TEXT,
+  cancelled_reason TEXT,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_arrangements_visit ON arrangements(tenant_id, visit_id, status);
+CREATE INDEX IF NOT EXISTS idx_arrangements_patient ON arrangements(tenant_id, patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_arrangements_owner ON arrangements(tenant_id, owner_id, status);
 `;
 
 

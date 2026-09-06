@@ -28,6 +28,8 @@ import { CarePlans } from "../clinical/careplans.ts";
 import { Goals, Actions } from "../clinical/goals.ts";
 import { Timeline } from "../clinical/timeline.ts";
 import { Trends } from "../clinical/trends.ts";
+import { EligibilityRules } from "../population/eligibility.ts";
+import { OutreachCampaigns } from "../population/outreach.ts";
 import { AfterVisitSummaries } from "../clinical/avs.ts";
 import { PatientDocuments } from "../clinical/documents.ts";
 import { CareTeam } from "../clinical/careteam.ts";
@@ -54,6 +56,7 @@ import { ClinicBoard } from "../workspace/board.ts";
 import { Discharges, Handoffs } from "../work/discharge.ts";
 import { AccessReview } from "../audit/review.ts";
 import { Clinics } from "../schedule/clinics.ts";
+import { Arrangements, type ExternalCoordinator } from "../schedule/arrangements.ts";
 import { ChannelVersions } from "./channel-versions.ts";
 import { PatientLinks } from "../clinical/links.ts";
 import { Schedule } from "../schedule/store.ts";
@@ -167,6 +170,10 @@ export interface TenantView {
   /** Patient-uploaded files: quarantined until scanned, and never served before then. */
   uploads: Uploads;
   registry: Registry;
+  /** Clinical eligibility rules, published and versioned like a questionnaire — never edited in place. */
+  eligibility: EligibilityRules;
+  /** Care-gap cohorts turned into worked outreach lists. */
+  outreach: OutreachCampaigns;
   /** Bulk loads from an incumbent system, and whether they were complete. */
   migration: Migration;
   consent: ConsentDirectives;
@@ -182,6 +189,8 @@ export interface TenantView {
   review: AccessReview;
   /** Travelling-clinic visits and the waitlist. */
   clinics: Clinics;
+  /** Transport, accommodation, interpreter, escort, equipment and accessibility logistics for a visit. */
+  arrangements: Arrangements;
   /** Reversible assertions that two charts are one person. */
   links: PatientLinks;
   /** The assembled visit, the encounter-scoped counterpart to `workspace`. */
@@ -259,6 +268,14 @@ export interface EngineOptions {
    * them. See src/patient/intake.ts for why there is no default scanner.
    */
   malwareScanner?: MalwareScanner;
+  /**
+   * What actually books transport, accommodation, an interpreter, an escort
+   * or equipment for a travelling-clinic visit. Unset means arrangements are
+   * tracked and confirmed by a person writing down evidence — see
+   * Arrangements.confirm() in src/schedule/arrangements.ts — which is the
+   * honest default and how most northern clinics coordinate today.
+   */
+  externalCoordinator?: ExternalCoordinator;
 }
 
 export class Engine {
@@ -296,6 +313,8 @@ export class Engine {
   private pharmacyChannel: string | null;
   /** What scans a patient upload, when a deployment configures one. */
   private malwareScanner: MalwareScanner | null;
+  /** What books travelling-clinic logistics externally, when a deployment configures one. */
+  private externalCoordinator: ExternalCoordinator | null;
   /** What authorises transmitting a controlled substance, when anything does. */
   private controlledAuthority: string | null;
   private lockStaleMs: number;
@@ -348,6 +367,7 @@ export class Engine {
     this.pharmacyChannel = opts.pharmacyChannel ?? null;
     this.controlledAuthority = opts.controlledSubstanceAuthority ?? null;
     this.malwareScanner = opts.malwareScanner ?? null;
+    this.externalCoordinator = opts.externalCoordinator ?? null;
     this.lockStaleMs = opts.lockStaleMs ?? 20_000;
     // Comfortably inside the staleness window, so a slow moment never costs a
     // running engine its own claim.
@@ -446,6 +466,16 @@ export class Engine {
     // for one result code or vital kind. Built on stores already above.
     const timeline = new Timeline({ orders, vitals, procedures, immunizations, encounters, goals, actions });
     const trends = new Trends({ orders, vitals });
+    const registry = new Registry(db);
+    // Item 64: a published, versioned eligibility rule turned into a worked
+    // outreach list. contacts and schedule are both already built above.
+    const eligibility = new EligibilityRules(db);
+    const outreach = new OutreachCampaigns(db, eligibility, { contacts, schedule });
+    // Item 65: the logistics around a travelling-clinic visit. Built on
+    // clinics (hoisted out of the view object below, where it used to be
+    // constructed inline, so this can see it) and tasks, both already above.
+    const clinics = new Clinics(db);
+    const arrangements = new Arrangements(db, clinics, tasks, this.externalCoordinator ?? undefined);
     // Reads the chart to take its snapshot, so it is built after the stores
     // that hold the four loose ends it looks for.
     const handoffs = new Handoffs(db);
@@ -528,7 +558,9 @@ export class Engine {
       board,
       discharges,
       handoffs,
-      registry: new Registry(db),
+      registry,
+      eligibility,
+      outreach,
       migration: new Migration(db, { clinical, meds }),
       consent,
       privacy,
@@ -552,7 +584,8 @@ export class Engine {
       encounters,
       directory,
       review: new AccessReview(db),
-      clinics: new Clinics(db),
+      clinics,
+      arrangements,
       links: new PatientLinks(db),
       visits: new VisitView({ encounters, record: clinical, meds, orders }),
     };

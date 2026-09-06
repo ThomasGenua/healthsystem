@@ -17,10 +17,12 @@ import { AuthGate } from "../src/auth/gate.ts";
 import {
   releaseMeasure,
   releaseGaps,
+  releaseWorkflowMeasure,
   DEFAULT_SUPPRESSION_THRESHOLD,
   type MeasureRelease,
 } from "../src/population/release.ts";
 import type { MeasureResult, CareGap } from "../src/population/registry.ts";
+import type { WorkflowMeasureResult } from "../src/population/effectiveness.ts";
 
 const TO = { recipient: "NWT quality improvement committee", purpose: "quarterly review" };
 const AS_OF = "2026-08-26T00:00:00.000Z";
@@ -35,6 +37,26 @@ function measure(denominator: number, numerator: number, unclassified = 0): Meas
     unclassified: Array.from({ length: unclassified }, (_, i) => ({
       patientId: `NT-U-${i}`,
       reason: "no-qualifying-observation" as const,
+    })),
+    complete: unclassified === 0,
+    caveat: null,
+  };
+}
+
+function workflowMeasure(denominator: number, numerator: number, unclassified = 0): WorkflowMeasureResult {
+  return {
+    metricId: "missed-appointments",
+    name: "Missed appointments",
+    from: "2026-08-01T00:00:00.000Z",
+    to: "2026-08-31T00:00:00.000Z",
+    asOf: AS_OF,
+    denominator,
+    numerator,
+    rate: denominator > 0 ? numerator / denominator : null,
+    unclassified: Array.from({ length: unclassified }, (_, i) => ({
+      id: `booking-${i}`,
+      patientId: `NT-U-${i}`,
+      reason: "the appointment time has passed with no attendance outcome recorded",
     })),
     complete: unclassified === 0,
     caveat: null,
@@ -138,6 +160,49 @@ test("a suppressed number does not survive in prose", () => {
 test("a release does not exist without a recipient and a purpose", () => {
   assert.throws(() => releaseMeasure(measure(41, 20), AS_OF, { recipient: " ", purpose: "review" }), /needs a recipient and a purpose/);
   assert.throws(() => releaseMeasure(measure(41, 20), AS_OF, { recipient: "QI", purpose: "" }), /needs a recipient and a purpose/);
+});
+
+// -------------------------------------------------- item 67's workflow metrics
+
+test("a workflow metric is releasable through the same suppression, not a second implementation of it", () => {
+  const small = releaseWorkflowMeasure(workflowMeasure(41, 3), TO);
+  const byLabel = Object.fromEntries(small.cells.map((c) => [c.label, c]));
+  assert.equal(byLabel["counted"].suppressed, true);
+  assert.equal(byLabel["counted"].count, null);
+  assert.equal(byLabel["in scope"].count, 41);
+  assert.equal(small.method.threshold, DEFAULT_SUPPRESSION_THRESHOLD);
+  assert.equal(small.metricId, "missed-appointments");
+});
+
+test("a workflow metric's complement protects the small cell the same way a clinical measure's does", () => {
+  const r = releaseWorkflowMeasure(workflowMeasure(41, 38), TO);
+  const byLabel = Object.fromEntries(r.cells.map((c) => [c.label, c]));
+  assert.equal(byLabel["not counted"].suppressed, true, "the 3 not counted are suppressed for their own size");
+  assert.equal(byLabel["not counted"].reason, "small-cell");
+  assert.equal(byLabel["counted"].suppressed, true, "and the 38 counted for the 3's sake");
+  assert.equal(byLabel["counted"].reason, "complementary");
+});
+
+test("a workflow metric's rate is withheld when publishing it would undo suppression", () => {
+  const r = releaseWorkflowMeasure(workflowMeasure(41, 3), TO);
+  assert.equal(r.rate, null);
+  assert.match(r.caveat ?? "", /rate withheld/);
+});
+
+test("a workflow release still needs a recipient and a purpose", () => {
+  assert.throws(
+    () => releaseWorkflowMeasure(workflowMeasure(41, 20), { recipient: " ", purpose: "review" }),
+    /needs a recipient and a purpose/
+  );
+});
+
+test("an unclassified count suppressed as small does not leak its size through the caveat", () => {
+  const m = workflowMeasure(41, 20, 3);
+  m.caveat = "3 of 41 (7%) could not be classified either way";
+  const r = releaseWorkflowMeasure(m, TO);
+  const byLabel = Object.fromEntries(r.cells.map((c) => [c.label, c]));
+  assert.equal(byLabel["could not be classified"].suppressed, true);
+  assert.ok(!(r.caveat ?? "").includes("3 of 41"), "the caveat must not carry the suppressed count");
 });
 
 test("a threshold below 2 is refused as suppression in name only", () => {

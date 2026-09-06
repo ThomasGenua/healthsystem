@@ -527,6 +527,17 @@ export class PatientNotices {
       .all(this.db.tenantId, noticeId) as unknown as NoticeDeliveryRow[];
   }
 
+  /** Every delivery attempt created in a window, at whatever state it has reached since. */
+  deliveriesBetween(from: string, to: string): NoticeDeliveryRow[] {
+    return this.db.sql
+      .prepare(
+        `SELECT * FROM patient_notice_deliveries
+          WHERE tenant_id = ? AND created_at >= ? AND created_at <= ?
+          ORDER BY created_at`
+      )
+      .all(this.db.tenantId, from, to) as unknown as NoticeDeliveryRow[];
+  }
+
   /**
    * Attempts nobody can currently say arrived.
    *

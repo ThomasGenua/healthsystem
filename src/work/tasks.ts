@@ -44,7 +44,12 @@ export type TaskKind =
   // A patient the clinic could not reach. Its own kind rather than
   // administrative: the work is chasing a person, and burying it among
   // configuration chores is how "nobody could be told" stops being visible.
-  | "patient-contact";
+  | "patient-contact"
+  // Transport, accommodation, interpreter, escort, equipment or accessibility
+  // logistics around a travelling-clinic visit that need a person to look at
+  // them again — raised by src/schedule/arrangements.ts, most often because
+  // the visit they were arranged for just moved or was cancelled.
+  | "arrangement";
 
 export type TaskPriority = "routine" | "urgent" | "stat";
 export type TaskStatus = "open" | "in-progress" | "completed" | "cancelled";
@@ -373,6 +378,13 @@ export class TaskStore {
       )
       .all(this.db.tenantId, kind) as unknown as TaskRow[];
     return this.rank(rows).slice(0, Math.min(opts.limit ?? 100, 500));
+  }
+
+  /** Every task created in a window, at whatever status it has reached since. */
+  createdBetween(from: string, to: string): TaskRow[] {
+    return this.db.sql
+      .prepare("SELECT * FROM tasks WHERE tenant_id = ? AND created_at >= ? AND created_at <= ? ORDER BY created_at")
+      .all(this.db.tenantId, from, to) as unknown as TaskRow[];
   }
 
   /** Open items past their due date, most overdue first. */

@@ -241,6 +241,23 @@ export class Discharges {
     return out;
   }
 
+  /**
+   * Every follow-up item raised in a window, whatever has happened to it
+   * since — resolved, not-needed, or still outstanding. The patient comes
+   * from the discharge it was raised on, since the item itself does not
+   * carry one.
+   */
+  itemsRaisedBetween(from: string, to: string): Array<DischargeItemRow & { patientId: string }> {
+    return this.db.sql
+      .prepare(
+        `SELECT i.*, d.patient_id AS patientId FROM discharge_items i
+           JOIN discharges d ON d.tenant_id = i.tenant_id AND d.id = i.discharge_id
+          WHERE i.tenant_id = ? AND i.created_at >= ? AND i.created_at <= ?
+          ORDER BY i.created_at`
+      )
+      .all(this.db.tenantId, from, to) as unknown as Array<DischargeItemRow & { patientId: string }>;
+  }
+
   /** Marks one loose end dealt with, or deliberately not needed. */
   resolve(itemId: string, input: { status: Exclude<ItemStatus, "outstanding">; resolution: string; by: Actor }): DischargeItemRow {
     const row = this.item(itemId);

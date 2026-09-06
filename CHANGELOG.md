@@ -11,6 +11,118 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Six workflow-effectiveness metrics that preserve "unknown" rather than
+  fold it into success, reusing the release-and-suppression machinery item
+  67's own text asked for and this session had wrongly claimed did not
+  exist (item 67).** `src/population/effectiveness.ts`: time to clinician
+  review, unresolved discharge follow-up, referral completion, notification
+  failures, missed appointments, and staff task burden — each a thin layer
+  over one existing store extended with exactly one new date-range query
+  method (`IntakeSubmissions.submittedBetween()`,
+  `Discharges.itemsRaisedBetween()`, `ReferralStore.sentBetween()`,
+  `PatientNotices.deliveriesBetween()`, `Schedule.bookingsBetween()`,
+  `TaskStore.createdBetween()`), each with its own stated exclusions (a
+  discharge item marked not-needed, a declined or cancelled referral, a
+  cancelled appointment, a cancelled task — a deliberate outcome, not a
+  failure, in every case).
+
+  **Two metrics have a genuine unknown, and it is preserved rather than
+  guessed.** A notification whose delivery state is `unknown` or an
+  unreceipted `provider-accepted` is neither a success nor a failure — the
+  same distinction `notice.ts`'s `DeliveryState` already draws (H-183),
+  reused rather than re-decided. A booking still `booked` well past its
+  appointment time, with no attendance outcome recorded, is the same kind
+  of honest gap. The other four metrics have none: "still open" is a real
+  answer, not an unknown, and correctly weighs the rate down the way a
+  never-done care gap already does in `registry.ts`.
+
+  **Nothing here defaults a target duration.** How long counts as "on time"
+  for a review, or "overdue" for a missing appointment outcome, is a
+  caller-supplied, required argument in both metrics that need one — the
+  same discipline `Trends.staleness()` already holds a clinical interval to
+  in item 63.
+
+  `src/population/release.ts` gains `releaseWorkflowMeasure()`, reusing the
+  same private small-cell and complementary-suppression helpers
+  `releaseMeasure()`/`releaseGaps()` already use rather than a second
+  implementation. Seven clinician routes, reading as POST for the same
+  reason `/api/clinical/gaps` already does. Twenty-one of twenty-one
+  mutations killed. Hazard log gains H-201 and H-202.
+
+  **Corrects this session's own earlier mistake, again:** the item-64 entry
+  above already noted that `src/population/release.ts` predates this
+  roadmap and was wrongly claimed missing; this entry is where that
+  correction's promise — that item 67 would reuse it — is kept.
+
+- **Travelling-clinic arrangements that are never marked confirmed on hope
+  (item 65).** `src/schedule/arrangements.ts`'s `Arrangements` covers the
+  six kinds the item names — transport, accommodation, interpreter, escort,
+  equipment, accessibility — each owned by somebody and moving through
+  `needed → requested → confirmed`, with `cancelled` beside all three.
+
+  **Two paths reach `confirmed`, and both require evidence.** `confirm()`
+  is manual coordination and refuses without a written account of how it
+  was checked. `requestExternally()` talks to a configured
+  `ExternalCoordinator` (a real integration point; `SyntheticExternalCoordinator`
+  is the demonstration stand-in, the same shape as intake.ts's
+  `SyntheticScanner`) and marks confirmed only when the external system's
+  own answer says so — a request merely sent becomes `requested`, never
+  `confirmed`, the same distinction item 59's delivery states already had
+  to draw for a notification handed to a gateway.
+
+  **A changed visit does not silently strand what was arranged.** The two
+  routes that are the only real callers of `Clinics.cancelVisit()` and
+  `rescheduleVisit()` in this codebase now also call
+  `Arrangements.reviewAfterVisitChange()`, which raises one reassignment
+  task per live arrangement on the changed visit — never guessing which
+  ones are actually voided, since that is not a fact this module can know,
+  only asking a person to look.
+
+  Seven clinician routes, all through the existing `phi()`/`phiFor()`
+  gateway. Nineteen of nineteen mutations killed; the one that first
+  survived (an external coordinator answering with no reference) needed a
+  deliberately-misbehaving test double, since the synthetic coordinator
+  always returns a usable one. Hazard log gains H-199 and H-200.
+
+- **Outreach campaigns behind a governed, versioned eligibility rule, with
+  duplicate outreach prevented by the schema (item 64).**
+  `src/population/eligibility.ts` gives a `CohortRule` + `CareGapRule` pair
+  its own publish-only home — the same insert-a-new-version,
+  never-edit shape `Questionnaires.publish()` already established: a
+  campaign built from version 3 of a rule still means version 3 forever,
+  whatever a clinician later publishes as version 4.
+
+  `src/population/outreach.ts`'s `OutreachCampaigns.create()` snapshots
+  `Registry.gaps()` against a published rule into a campaign and one item
+  per gap member, frozen at that moment rather than a live join. **Two
+  campaigns cannot both call the same patient about the same gap**: a
+  partial unique index on `(tenant, patient, eligibility_rule_id)` while an
+  item is open enforces this at the schema level, so it holds even under
+  concurrent campaign creation — `create()` catches the constraint and
+  quietly moves on to whoever is left. An item's status guards mirror item
+  61's goals/actions: assignment, a contact attempt, a response, a booking
+  and completion each need the item in the right prior state; three
+  unanswered attempts surface it as `unreachable` without trapping it there
+  (a later attempt that connects still moves it forward); **completion
+  needs a booking already on file**, so a care gap cannot read as closed on
+  staff say-so with nothing behind it; exclusion needs a written reason;
+  and every contact attempt is checked against `PatientContacts.reachable()`
+  — the same consent-and-verification honesty item 59 built for a
+  notification, applied here rather than re-decided.
+
+  Fourteen clinician routes, all through the existing `phi()` gateway. No
+  patient route — this is a staff worklist, not a portal screen.
+
+  Twenty-two of twenty-five mutations killed outright; the other three are
+  documented equivalent mutants (a redundant status filter, an
+  unreachable numeric boundary, and a catch-guard SQLite cannot let any
+  reachable input distinguish), not chased with contrived tests.
+
+  **Correction:** an earlier pass at item 67 (below) claimed small-cell
+  suppression did not exist in this codebase. It does —
+  `src/population/release.ts`, already merged — and item 67 will reuse it,
+  as its own text originally asked.
+
 - **A longitudinal timeline and validated trends, that refuse to invent a
   conversion nobody has validated (item 63).** `src/clinical/timeline.ts`
   merges results, vitals, procedures, immunizations, encounters, and
@@ -288,8 +400,12 @@ always forward-compatible and run automatically on open — see
   portal](docs/RUNBOOK.md#the-patient-portal).
 
 - **`docs/PATIENT-WORKFLOWS-ROADMAP.md`** classifies items 58–67 against the
-  repository with file references, including one correction: item 67 assumes
-  small-cell suppression exists to be reused, and it does not.
+  repository with file references. An earlier version of this entry claimed
+  item 67's premise was wrong — that it assumes small-cell suppression
+  exists to be reused, and it does not. That claim was itself wrong: a
+  working `src/population/release.ts` predates this roadmap, found on
+  closer look while starting item 64's routes above. The correction is
+  recorded in full in the roadmap doc's item 64 and item 67 sections.
 
 - **`npm run invariants` checks the database against what it is supposed to be
   true of itself.** The schema declares no foreign keys, so

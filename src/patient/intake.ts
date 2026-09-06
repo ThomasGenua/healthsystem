@@ -452,6 +452,22 @@ export class IntakeSubmissions {
       .prepare("SELECT * FROM intake_submissions WHERE tenant_id = ? AND status = 'submitted' ORDER BY submitted_at")
       .all(this.db.tenantId) as unknown as SubmissionRow[];
   }
+
+  /**
+   * Every submission that entered the review queue in a window, whatever has
+   * happened to it since — reviewed, or still waiting. A draft never
+   * submitted has no reviewer waiting on it and is not part of this
+   * question, so it is not here regardless of when it was started.
+   */
+  submittedBetween(from: string, to: string): SubmissionRow[] {
+    return this.db.sql
+      .prepare(
+        `SELECT * FROM intake_submissions
+          WHERE tenant_id = ? AND submitted_at IS NOT NULL AND submitted_at >= ? AND submitted_at <= ?
+          ORDER BY submitted_at`
+      )
+      .all(this.db.tenantId, from, to) as unknown as SubmissionRow[];
+  }
 }
 
 // ---------------------------------------------------------------------- Uploads
