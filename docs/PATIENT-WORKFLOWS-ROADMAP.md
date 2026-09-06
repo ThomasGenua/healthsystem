@@ -553,37 +553,93 @@ is its own piece of work.
 *(Recently-discharged patients and unaccepted handoffs were listed here and
 are now on the board, since item 62 built the workflow underneath them.)*
 
-## 67. Measuring whether these workflows help — **partial**
+## 67. Measuring whether these workflows help — **done**
 
-**Present, and it is the hard half.** `MeasureResult`
-(`src/population/registry.ts:91`) already does what the item's third bullet
+**Present, unchanged, and it was the hard half.** `MeasureResult`
+(`src/population/registry.ts:91`) already did what the item's third bullet
 asks: an explicit numerator and denominator, the members that could not be
 classified carried alongside, `rate: null` rather than a number when more than
 a fifth of the cohort is unassessable, and a written `caveat` so a dashboard
-cannot print a bare percentage. "Preserve unknown outcomes rather than treating
-them as success" is the existing design.
+cannot print a bare percentage. This increment's `WorkflowMeasureResult`
+follows the identical discipline for a different kind of denominator — a
+workflow population rather than a clinical cohort — rather than inventing a
+looser one for operational numbers. `MAX_UNCLASSIFIED_FRACTION` (a fifth) is
+now exported from `registry.ts` and reused directly, not redefined.
 
-**Also present — correcting an earlier version of this document.** An
+**Also present — this document's earlier correction, unchanged.** An
 earlier draft of this section claimed small-cell suppression did not exist
-in this codebase and would have to be built from scratch, on the strength of
-a grep that should have found it and did not. It exists:
-`src/population/release.ts` (merged in #55, well before this roadmap was
-first written) already implements exactly what the item's closing bullet
-asks for — `releaseMeasure()` and `releaseGaps()` fold any count from 1 to
-`threshold−1` (default 5) to a suppressed cell, protect complementary pairs
-so a published total cannot hand a suppressed count back by subtraction, and
-state the method on the face of the release. Item 67's own text asks to
-"reuse existing aggregate-release and small-cell protections", and that
-premise was correct — it is this document's earlier claim to the contrary
-that was wrong, now struck. The six metrics below reuse the same `cell()` /
-`suppressComplementarily()` shape `releaseMeasure`/`releaseGaps` already use,
-as new metric-shaped wrapper functions in `release.ts` alongside them, the
-same way `releaseGaps` sits next to `releaseMeasure` rather than duplicating
-its suppression logic.
+in this codebase. It does: `src/population/release.ts` (merged in #55, well
+before this roadmap was first written) already implements exactly what the
+item's closing bullet asks for. This increment adds `releaseWorkflowMeasure()`
+to that same file, alongside `releaseMeasure()` and `releaseGaps()`, reusing
+their private `cell()` and `suppressComplementarily()` helpers rather than a
+second implementation of either.
 
-**Missing.** The six metrics themselves — time to clinician review, unresolved
-follow-up, referral completion, notification failures, missed appointments,
-staff task burden — and per-metric declared exclusions and time windows.
+**Added in this increment.** `src/population/effectiveness.ts`: six pure
+functions, one per bullet in the item's text, each a thin layer over one
+existing store extended with exactly one new date-range query method —
+`IntakeSubmissions.submittedBetween()`, `Discharges.itemsRaisedBetween()`,
+`ReferralStore.sentBetween()`, `PatientNotices.deliveriesBetween()`,
+`Schedule.bookingsBetween()`, `TaskStore.createdBetween()`. Every existing
+store's return type already satisfies the narrow source interface each
+metric function declares, so no adapter code sits between them.
+
+- `timeToClinicianReview` — pre-visit intake submissions (item 60) reviewed
+  within a caller-supplied target. No unknown: a submission is always draft,
+  submitted or reviewed.
+- `unresolvedFollowUp` — discharge follow-up items (item 62) resolved, with
+  `not-needed` excluded from scope rather than counted either way, since a
+  clinician determining nothing was owed is a different fact from something
+  still owed. No unknown.
+- `referralCompletion` — a referral (section 8) reaching `closed`, with
+  `declined`/`cancelled` excluded as a different, deliberate outcome rather
+  than a failure to complete; `reported` alone does not count, matching
+  `ReferralStore.waitDays()`'s own existing choice to keep a referral's
+  clock running until it is actually closed. No unknown.
+- `notificationFailures` — a delivery attempt (item 59) confirmed `failed`,
+  with `queued` excluded as not yet attempted. **A genuine unknown**: `unknown`
+  and `provider-accepted` are both preserved rather than counted as success,
+  since neither confirms what actually happened — the same distinction
+  `notice.ts`'s own `DeliveryState` doc already draws (H-183).
+- `missedAppointments` — a booking (section 4/schedule) recorded
+  `did-not-attend`, with `cancelled` excluded as a different, deliberate
+  outcome. **A genuine unknown**: still `booked` with the appointment time
+  more than a caller-supplied grace period in the past — nobody recorded
+  what happened.
+- `staffTaskBurden` — a unified-inbox task (section 8) `completed`, with
+  `cancelled` excluded as a decision not to do it rather than a failure to.
+  Optionally scoped to one `ownerId`, since burden is a fact about a person
+  and a tenant-wide average could read as fine while one person carries all
+  of it. No unknown.
+
+**What this deliberately does not invent.** Two of the six need a target
+duration — how long is "on time" for a review, how long is "overdue" for a
+missing outcome — and neither has a default. `timeToClinicianReview`'s
+`target.withinHours` and `missedAppointments`'s `outcomeGraceHours` are
+required arguments, refused if not a positive number, the same discipline
+`Trends.staleness()` already applies to a clinical interval in item 63.
+
+Seven clinician routes (`/api/clinical/effectiveness-{review,follow-up,referrals,notifications,missed-appointments,task-burden}`
+and `/api/clinical/effectiveness-release`), reading as POST for the same
+reason `/api/clinical/gaps` and `/api/clinical/measure` do — structured
+input, not a write — and added to the same `READS_AS_POST` allowlist. The
+release route accepts a `metric` selector and the same `recipient`/
+`purpose`/`threshold` shape `/api/clinical/release` already takes.
+
+**Test evidence.** `test/effectiveness.test.ts` (11 tests) exercises all six
+metrics as pure functions over fixture sources — the boundary between
+"reviewed within target" and "late", the future-dated-review guard, every
+metric's exclusion, and the two genuine unknowns. `test/release.test.ts`
+gains five tests for `releaseWorkflowMeasure()` covering small-cell
+suppression, complementary protection, rate withholding, the recipient/
+purpose requirement and caveat redaction — the same properties already
+proven for `releaseMeasure`, now proven again for its new sibling rather
+than assumed to carry over. Twenty-one mutations across
+`effectiveness.ts` and the `release.ts` addition, all twenty-one caught: five
+survived the first pass, all from the same root cause — a fixture with an
+even split (one row of each kind) that could not distinguish "count A" from
+"count not-A" — fixed by breaking the symmetry, plus one exact-boundary case
+the grace-period comparison needed and did not have.
 
 ---
 

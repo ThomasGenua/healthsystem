@@ -383,6 +383,21 @@ export class ReferralStore {
     return rows.sort((a, b) => (a.expected_by ?? "").localeCompare(b.expected_by ?? ""));
   }
 
+  /**
+   * Every referral actually sent in a window, whatever has happened to it
+   * since. A draft is not here at any date: nobody is waiting on a referral
+   * that never left.
+   */
+  sentBetween(from: string, to: string): ReferralRow[] {
+    return this.db.sql
+      .prepare(
+        `SELECT * FROM referrals
+          WHERE tenant_id = ? AND status != 'draft' AND created_at >= ? AND created_at <= ?
+          ORDER BY created_at`
+      )
+      .all(this.db.tenantId, from, to) as unknown as ReferralRow[];
+  }
+
   /** Everything still in flight, whether or not it is late yet. */
   open(): ReferralRow[] {
     return this.db.sql

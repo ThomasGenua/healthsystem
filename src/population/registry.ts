@@ -114,7 +114,7 @@ export interface MeasureResult {
  * unassessed group can move the true rate by more than any intervention being
  * measured, so the number stops meaning anything.
  */
-const MAX_UNCLASSIFIED_FRACTION = 0.2;
+export const MAX_UNCLASSIFIED_FRACTION = 0.2;
 
 export class Registry {
   private db: Db;

@@ -76,6 +76,16 @@ import { buildSummary, emptyReasonFor, type SummarySection } from "../clinical/s
 import { news2FromChart, curb65FromChart } from "../clinical/score-from-chart.ts";
 import { VITAL_KINDS } from "../clinical/vitals.ts";
 import { ATTEMPT_OUTCOMES } from "../population/outreach.ts";
+import {
+  timeToClinicianReview,
+  unresolvedFollowUp,
+  referralCompletion,
+  notificationFailures,
+  missedAppointments,
+  staffTaskBurden,
+  type WorkflowMeasureResult,
+} from "../population/effectiveness.ts";
+import { releaseWorkflowMeasure } from "../population/release.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
 import { VERSION } from "../version.ts";
@@ -1601,7 +1611,17 @@ async function route(
       // check and the registry queries are reads that arrive as POST because
       // their input is structured, and refusing them would take the allergy
       // check away for exactly the outage it matters most in.
-      const READS_AS_POST = ["/api/clinical/safety-check", "/api/clinical/gaps", "/api/clinical/measure"];
+      const READS_AS_POST = [
+        "/api/clinical/safety-check",
+        "/api/clinical/gaps",
+        "/api/clinical/measure",
+        "/api/clinical/effectiveness-review",
+        "/api/clinical/effectiveness-follow-up",
+        "/api/clinical/effectiveness-referrals",
+        "/api/clinical/effectiveness-notifications",
+        "/api/clinical/effectiveness-missed-appointments",
+        "/api/clinical/effectiveness-task-burden",
+      ];
       if (method !== "GET" && !READS_AS_POST.includes(path)) {
         audit({
           action: verbToAction(method),
@@ -3954,6 +3974,162 @@ async function route(
             opts
           );
         }
+        audit({
+          action: "R",
+          outcome: 0,
+          resourceType: "MeasureReport",
+          detail:
+            `de-identified release to ${body.recipient} for ${body.purpose}: ` +
+            `threshold ${released.method.threshold}, ${released.method.suppressedCells} cell(s) suppressed`,
+        });
+        return send(res, 200, released);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        audit({ action: "R", outcome: mapped.outcome, resourceType: "MeasureReport", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    // Item 67: whether the workflows built for items 58-66 help, over a
+    // stated window. Reads as POST because the input is structured, the
+    // same reason /api/clinical/gaps and /api/clinical/measure are.
+    if (path === "/api/clinical/effectiveness-review" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { from?: string; to?: string; targetWithinHours?: number; asOf?: string };
+      if (!body.from || !body.to || !body.targetWithinHours) {
+        return send(res, 400, { error: "from, to and targetWithinHours required" });
+      }
+      try {
+        const result = timeToClinicianReview(
+          tenant.intake,
+          { from: body.from, to: body.to, target: { withinHours: body.targetWithinHours } },
+          body.asOf
+        );
+        audit({ action: "R", outcome: 0, resourceType: "MeasureReport", detail: `time to clinician review, ${body.from} to ${body.to}` });
+        return send(res, 200, result);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        audit({ action: "R", outcome: mapped.outcome, resourceType: "MeasureReport", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    if (path === "/api/clinical/effectiveness-follow-up" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { from?: string; to?: string; asOf?: string };
+      if (!body.from || !body.to) return send(res, 400, { error: "from and to required" });
+      try {
+        const result = unresolvedFollowUp(tenant.discharges, { from: body.from, to: body.to }, body.asOf);
+        audit({ action: "R", outcome: 0, resourceType: "MeasureReport", detail: `unresolved follow-up, ${body.from} to ${body.to}` });
+        return send(res, 200, result);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        audit({ action: "R", outcome: mapped.outcome, resourceType: "MeasureReport", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    if (path === "/api/clinical/effectiveness-referrals" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { from?: string; to?: string; asOf?: string };
+      if (!body.from || !body.to) return send(res, 400, { error: "from and to required" });
+      try {
+        const result = referralCompletion(tenant.referrals, { from: body.from, to: body.to }, body.asOf);
+        audit({ action: "R", outcome: 0, resourceType: "MeasureReport", detail: `referral completion, ${body.from} to ${body.to}` });
+        return send(res, 200, result);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        audit({ action: "R", outcome: mapped.outcome, resourceType: "MeasureReport", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    if (path === "/api/clinical/effectiveness-notifications" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { from?: string; to?: string; asOf?: string };
+      if (!body.from || !body.to) return send(res, 400, { error: "from and to required" });
+      try {
+        const result = notificationFailures(tenant.notices, { from: body.from, to: body.to }, body.asOf);
+        audit({ action: "R", outcome: 0, resourceType: "MeasureReport", detail: `notification failures, ${body.from} to ${body.to}` });
+        return send(res, 200, result);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        audit({ action: "R", outcome: mapped.outcome, resourceType: "MeasureReport", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    if (path === "/api/clinical/effectiveness-missed-appointments" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { from?: string; to?: string; outcomeGraceHours?: number; asOf?: string };
+      if (!body.from || !body.to || !body.outcomeGraceHours) {
+        return send(res, 400, { error: "from, to and outcomeGraceHours required" });
+      }
+      try {
+        const result = missedAppointments(
+          tenant.schedule,
+          { from: body.from, to: body.to, outcomeGraceHours: body.outcomeGraceHours },
+          body.asOf
+        );
+        audit({ action: "R", outcome: 0, resourceType: "MeasureReport", detail: `missed appointments, ${body.from} to ${body.to}` });
+        return send(res, 200, result);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        audit({ action: "R", outcome: mapped.outcome, resourceType: "MeasureReport", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    if (path === "/api/clinical/effectiveness-task-burden" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { from?: string; to?: string; ownerId?: string; asOf?: string };
+      if (!body.from || !body.to) return send(res, 400, { error: "from and to required" });
+      try {
+        const result = staffTaskBurden(tenant.tasks, { from: body.from, to: body.to, ...(body.ownerId ? { ownerId: body.ownerId } : {}) }, body.asOf);
+        audit({ action: "R", outcome: 0, resourceType: "MeasureReport", detail: `staff task burden, ${body.from} to ${body.to}` });
+        return send(res, 200, result);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        audit({ action: "R", outcome: mapped.outcome, resourceType: "MeasureReport", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    if (path === "/api/clinical/effectiveness-release" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        metric?: "review" | "follow-up" | "referrals" | "notifications" | "missed-appointments" | "task-burden";
+        from?: string;
+        to?: string;
+        targetWithinHours?: number;
+        outcomeGraceHours?: number;
+        ownerId?: string;
+        asOf?: string;
+        recipient?: string;
+        purpose?: string;
+        threshold?: number;
+      };
+      if (!body.metric || !body.from || !body.to) return send(res, 400, { error: "metric, from and to required" });
+      if (!body.recipient || !body.purpose) {
+        return send(res, 400, { error: "a release needs a recipient and a purpose somebody can weigh afterwards" });
+      }
+      try {
+        let result: WorkflowMeasureResult;
+        switch (body.metric) {
+          case "review":
+            if (!body.targetWithinHours) return send(res, 400, { error: "targetWithinHours required for metric=review" });
+            result = timeToClinicianReview(tenant.intake, { from: body.from, to: body.to, target: { withinHours: body.targetWithinHours } }, body.asOf);
+            break;
+          case "follow-up":
+            result = unresolvedFollowUp(tenant.discharges, { from: body.from, to: body.to }, body.asOf);
+            break;
+          case "referrals":
+            result = referralCompletion(tenant.referrals, { from: body.from, to: body.to }, body.asOf);
+            break;
+          case "notifications":
+            result = notificationFailures(tenant.notices, { from: body.from, to: body.to }, body.asOf);
+            break;
+          case "missed-appointments":
+            if (!body.outcomeGraceHours) return send(res, 400, { error: "outcomeGraceHours required for metric=missed-appointments" });
+            result = missedAppointments(tenant.schedule, { from: body.from, to: body.to, outcomeGraceHours: body.outcomeGraceHours }, body.asOf);
+            break;
+          case "task-burden":
+            result = staffTaskBurden(tenant.tasks, { from: body.from, to: body.to, ...(body.ownerId ? { ownerId: body.ownerId } : {}) }, body.asOf);
+            break;
+          default:
+            return send(res, 400, { error: `unknown metric ${body.metric}` });
+        }
+        const released = releaseWorkflowMeasure(result, {
+          recipient: body.recipient,
+          purpose: body.purpose,
+          ...(body.threshold !== undefined ? { threshold: body.threshold } : {}),
+        });
         audit({
           action: "R",
           outcome: 0,

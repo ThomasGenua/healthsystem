@@ -380,6 +380,13 @@ export class TaskStore {
     return this.rank(rows).slice(0, Math.min(opts.limit ?? 100, 500));
   }
 
+  /** Every task created in a window, at whatever status it has reached since. */
+  createdBetween(from: string, to: string): TaskRow[] {
+    return this.db.sql
+      .prepare("SELECT * FROM tasks WHERE tenant_id = ? AND created_at >= ? AND created_at <= ? ORDER BY created_at")
+      .all(this.db.tenantId, from, to) as unknown as TaskRow[];
+  }
+
   /** Open items past their due date, most overdue first. */
   overdue(asOf = new Date().toISOString()): TaskRow[] {
     const rows = this.db.sql

@@ -11,6 +11,49 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **Six workflow-effectiveness metrics that preserve "unknown" rather than
+  fold it into success, reusing the release-and-suppression machinery item
+  67's own text asked for and this session had wrongly claimed did not
+  exist (item 67).** `src/population/effectiveness.ts`: time to clinician
+  review, unresolved discharge follow-up, referral completion, notification
+  failures, missed appointments, and staff task burden — each a thin layer
+  over one existing store extended with exactly one new date-range query
+  method (`IntakeSubmissions.submittedBetween()`,
+  `Discharges.itemsRaisedBetween()`, `ReferralStore.sentBetween()`,
+  `PatientNotices.deliveriesBetween()`, `Schedule.bookingsBetween()`,
+  `TaskStore.createdBetween()`), each with its own stated exclusions (a
+  discharge item marked not-needed, a declined or cancelled referral, a
+  cancelled appointment, a cancelled task — a deliberate outcome, not a
+  failure, in every case).
+
+  **Two metrics have a genuine unknown, and it is preserved rather than
+  guessed.** A notification whose delivery state is `unknown` or an
+  unreceipted `provider-accepted` is neither a success nor a failure — the
+  same distinction `notice.ts`'s `DeliveryState` already draws (H-183),
+  reused rather than re-decided. A booking still `booked` well past its
+  appointment time, with no attendance outcome recorded, is the same kind
+  of honest gap. The other four metrics have none: "still open" is a real
+  answer, not an unknown, and correctly weighs the rate down the way a
+  never-done care gap already does in `registry.ts`.
+
+  **Nothing here defaults a target duration.** How long counts as "on time"
+  for a review, or "overdue" for a missing appointment outcome, is a
+  caller-supplied, required argument in both metrics that need one — the
+  same discipline `Trends.staleness()` already holds a clinical interval to
+  in item 63.
+
+  `src/population/release.ts` gains `releaseWorkflowMeasure()`, reusing the
+  same private small-cell and complementary-suppression helpers
+  `releaseMeasure()`/`releaseGaps()` already use rather than a second
+  implementation. Seven clinician routes, reading as POST for the same
+  reason `/api/clinical/gaps` already does. Twenty-one of twenty-one
+  mutations killed. Hazard log gains H-201 and H-202.
+
+  **Corrects this session's own earlier mistake, again:** the item-64 entry
+  above already noted that `src/population/release.ts` predates this
+  roadmap and was wrongly claimed missing; this entry is where that
+  correction's promise — that item 67 would reuse it — is kept.
+
 - **Travelling-clinic arrangements that are never marked confirmed on hope
   (item 65).** `src/schedule/arrangements.ts`'s `Arrangements` covers the
   six kinds the item names — transport, accommodation, interpreter, escort,

@@ -435,6 +435,25 @@ export class Schedule {
     return slots.map((slot) => ({ slot, bookings: this.liveBookings(slot.id) }));
   }
 
+  /**
+   * Every booking whose appointment falls in a window, across every
+   * resource, cancelled ones included — unlike `diary()` and
+   * `liveBookings()`, which are for showing a worklist rather than for
+   * counting what was cancelled versus what simply never got an outcome
+   * recorded. `startsAt` comes from the slot, which a booking does not
+   * otherwise carry.
+   */
+  bookingsBetween(from: string, to: string): Array<BookingRow & { startsAt: string }> {
+    return this.db.sql
+      .prepare(
+        `SELECT b.*, s.starts_at AS startsAt FROM schedule_bookings b
+           JOIN schedule_slots s ON s.tenant_id = b.tenant_id AND s.id = b.slot_id
+          WHERE b.tenant_id = ? AND s.starts_at >= ? AND s.starts_at < ?
+          ORDER BY s.starts_at`
+      )
+      .all(this.db.tenantId, from, to) as unknown as Array<BookingRow & { startsAt: string }>;
+  }
+
   /** A patient's appointments, newest first. */
   forPatient(patientId: string, opts: { includeCancelled?: boolean } = {}): BookingRow[] {
     return this.db.sql
