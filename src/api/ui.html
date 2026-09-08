@@ -874,7 +874,7 @@ window.doTranslate=async()=>{const p=new URLSearchParams({code:$("#t-code").valu
 async function confTab(m){
   const {data:packs}=await j("/api/conformance/packs");
   m.innerHTML=`<div class="split"><div>
-    <div class="bar"><select id="c-pack">${packs.map(p=>`<option value="${p.id}">${p.id}: ${esc(p.name)}</option>`).join("")}</select>
+    <div class="bar"><select id="c-pack">${packs.map(p=>`<option value="${esc(p.id)}">${esc(p.id)}: ${esc(p.name)}</option>`).join("")}</select>
       <button class="act" onclick="doCap()">capability check</button></div>
     <textarea id="c-res" placeholder='paste a FHIR resource JSON here'></textarea>
     <div class="bar" style="margin-top:8px"><button class="act" onclick="doValidate()">validate</button></div></div>
