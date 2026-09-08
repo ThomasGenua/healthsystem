@@ -141,3 +141,14 @@ discussion, but they will not be treated as advisories:
   their formula version, population, exclusions, units and an explicit
   not-independently-clinically-validated assurance state. Nothing in Northstar
   uses machine learning. No output should be read as though it did.
+- **An `admin`-scoped key can direct the engine's outbound requests anywhere,
+  including a private address.** A channel's HTTP destination is exactly as
+  configurable as an interface engine's destination has to be — an on-premises
+  laboratory or pharmacy system is routinely on a private address, and
+  refusing those would break the integrations this exists to run, so there is
+  no allow-list or private-range check on a destination URL. `admin` is
+  therefore not a scope to hand out for convenience or to a lower-trust tenant
+  administrator: whoever holds one can make the server issue outbound HTTP
+  requests, from the server's own network position, with headers and a body
+  they choose. Treat issuing an `admin` key the same as trusting somebody with
+  the machine itself.
