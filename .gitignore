@@ -1,4 +1,5 @@
 node_modules/
+.pilot-artifacts/
 data/
 *.db
 *.db-wal

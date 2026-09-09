@@ -29,6 +29,8 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+        env:
+          NORTHSTAR_REQUIRE_BROWSER: "1"
       # Last, because it is the only step that needs a second revision and so
       # the only one that can be skipped for want of one. See
       # src/safety/hazard-ids.ts for why a single tree cannot answer this.

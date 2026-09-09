@@ -20,7 +20,7 @@ test is gone.
 
 **Product:** Northstar (this repository).
 **Version this case describes:** v0.8.0.
-**Last reviewed:** 2026-08-28.
+**Last reviewed:** 2026-09-09 (engineering update; independent review outstanding).
 **Reviewer of this draft:** the author of the controls, not an independent
 clinical safety officer. That gap is residual risk R-01.
 
@@ -67,7 +67,7 @@ These are not gaps discovered later. They are scope:
 | Out of scope | Why that is a clinical statement |
 |---|---|
 | A validated clinician application | The console renders the chart and work queues through the ordinary API, but has not had independent clinical-usability, human-factors or accessibility validation. A consumer that ignores `complete === false` reintroduces H-06. |
-| A patient application | `GET /me` is chrome (EN/FR, landmarks, an honest banner) and does not enrol anyone. Clinic attestation binds a subject after a named person writes how they checked; it is not identity-proofing, not ONE ID, not a certified portal. Notices publish fact onto a channel; dispatching is not telling. Accessibility validation is not claimed. Do not call `/me` a portal. |
+| An independently validated patient application | `/me` has patient/caregiver screens and optional server-side OIDC code/PKCE login. Synthetic browser/API tests exercise its behavior; the site's provider, clinical usability and accessibility remain unvalidated. Clerk attestation is not remote identity proofing. |
 | Broad medication decision-support *content* | The check is here; the licensed interaction table is not. An 80% complete table is one prescribers learn to trust. Procedure libraries and care-plan pathways are the same shape of content, and are not here. Deterministic published risk instruments are implemented separately and carry an explicit unreviewed assurance state. |
 | Machine learning | Nothing in this repository uses a learned model. The deterministic risk instruments must not be described as machine learning or as individualized predictions beyond their stated populations. |
 | A certified PSI / Projectathon result | Conformance packs encode published profiles and pass shipped fixtures. |
@@ -415,6 +415,14 @@ makes the control a fact rather than a comment.
 
 ---
 
+### Patient browser sign-in (engineering controls; site review outstanding)
+
+| ID | Hazard | Cause | Effect on a patient | Sev. | Like. | Control | Evidence |
+|---|---|---|---|---|---|---|---|
+| H-203 | Browser login binds a session to an unintended identity | Replayed or substituted authorization response | Disclosure under another person's identity | Major | Low | One-use state bound to a browser cookie, PKCE, signed ID/access tokens with issuer/audience/nonce/subject checks, session rotation | `test/portal-login.test.ts` — "authorization callback is single-use and a successful login rotates the session" |
+| H-204 | Another site submits a patient action using an ambient cookie | Cookie authentication without CSRF protection | Unauthorized message or chart request | Major | Low | Exact Origin and session-bound CSRF token required for patient mutations and logout; cookies never authorize admin/FHIR routes | `test/portal-login.test.ts` — "cookie writes and logout require both the exact origin and session CSRF token" |
+| H-205 | An old browser session retains patient access | Session outlives token or grant, or logout only clears the screen | Disclosure after access should have ended | Major | Low | Idle/absolute expiry, server-side logout and normal live-grant checks on every patient request | `test/portal-login.test.ts` — "idle session expiry is enforced before patient authorization"; `test/portal-login.test.ts` — "absolute session expiry applies even while the patient remains active"; `test/portal-browser.test.ts` — "browser: clinic login, held result, message delivery, scoped caregiver chart, revocation and logout" |
+
 ## 5. Residual risks accepted in the product (not in a deployment)
 
 These remain after every control above. A deploying organisation may reject
@@ -426,7 +434,7 @@ twice.
 |---|---|---|---|
 | R-01 | This case has not been signed by an independent CSO | The repository can write the log; it cannot appoint the clinician | Name a CSO before go-live; treat this file as the manufacturer's draft |
 | R-02 | Clinician console not independently validated | The console makes completeness visible, but repository tests are not a clinical-usability, human-factors or accessibility study | Do not put the console in front of a prescriber until the named deployment validates the workflow and failure states |
-| R-03 | No certified patient portal or identity-proofing | `GET /me` is static chrome and does not enrol anyone; clinic attestation binds a subject after a named person writes how they checked; notices publish fact onto a channel and dispatching is not telling; identity proofing, ONE ID, WCAG/AODA and a certified portal are not | Do not call `/me` a portal; do not treat clinic attestation as remote proofing; review the undelivered and untold queues |
+| R-03 | Patient portal not independently validated; remote proofing absent | UI and OIDC sign-in are tested with synthetic identities, not an actual clinic's provider or assistive technology | Validate the deployed provider and workflows; do not treat clerk attestation as remote proofing; review undelivered notices |
 | R-04 | Decision-support mechanism without content (H-20) | A partial table is more dangerous than a small one | Licence an interaction source, or accept that interactions are unchecked |
 | R-05 | No machine learning | Section 7 asked; nothing here does it | Do not read any output as a prediction |
 | R-06 | MLLP is unauthenticated (H-43) | The protocol has nothing to hook | VPN, private APN, or transport mTLS — not Northstar |

@@ -120,8 +120,14 @@ discussion, but they will not be treated as advisories:
 - **Single node.** One process owns a database file, enforced with a lock.
   There is no clustering, and a hardware failure is an outage until the standby
   is promoted by hand.
-- **No certified patient portal.** `GET /me` is chrome (EN/FR copy, landmarks,
-  an honest banner) and loads no chart. It does not enrol anyone. The
+- **Patient portal assurance remains deployment-specific.** `/me` is an
+  EN/FR application with optional server-side OIDC code/PKCE sign-in. Tokens
+  remain server-side; opaque HttpOnly/Secure cookies authorize only patient
+  routes. Cookie-authenticated writes and logout require the exact public
+  Origin and a session-bound CSRF token. Sessions expire on idle time, token
+  expiry, logout and process restart; logout does not end upstream SSO.
+  Development token entry stores nothing in browser storage.
+  It does not enrol anyone. The
   patient/proxy JSON boundary is mounted at `/patient/*`. Binding a subject
   is clinic-attested enrolment: a named person writes how they checked, and
   a pending row is not a grant. Notices publish fact onto a configured

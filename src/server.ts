@@ -11,7 +11,9 @@ import { tlsFromEnv } from "./api/tls.ts";
 import { AuthGate } from "./auth/gate.ts";
 import { DevIdentityProvider, devIdpRefusal } from "./auth/dev-idp.ts";
 import { JwtVerifier } from "./auth/jwt.ts";
+import { PortalLogin } from "./auth/portal-login.ts";
 import { SyntheticScanner } from "./patient/intake.ts";
+import { ClamAvScanner } from "./patient/clamav.ts";
 import type { ChannelConfig, MappingDoc } from "./types.ts";
 
 const PORT = parseInt(readEnv("PORT") ?? "8686", 10);
@@ -29,6 +31,22 @@ const LABS_DIR = readEnv("LABS") ?? join(process.cwd(), "labs");
  * without leaving the API open to anyone who can reach the port.
  */
 const AUTH_MODE = (readEnv("AUTH_MODE") ?? "apikey").toLowerCase();
+
+function buildPortalLogin(): PortalLogin | undefined {
+  const clientId = readEnv("PORTAL_CLIENT_ID");
+  const origin = readEnv("PUBLIC_ORIGIN");
+  const secretFile = readEnv("PORTAL_CLIENT_SECRET_FILE");
+  if (!clientId && !origin && !secretFile) return undefined;
+  if (!clientId || !origin || !secretFile || !readEnv("OIDC_ISSUER") || !readEnv("OIDC_AUDIENCE") ||
+      !AUTH_MODE.split(/[+,\s]+/).includes("oauth") || readEnv("DEV_IDP") === "on") {
+    throw new Error("Portal login requires oauth auth mode, OIDC issuer/audience, PORTAL_CLIENT_ID, PUBLIC_ORIGIN and PORTAL_CLIENT_SECRET_FILE, with DEV_IDP off");
+  }
+  return new PortalLogin({
+    issuer: readEnv("OIDC_ISSUER")!, audience: readEnv("OIDC_AUDIENCE")!, clientId, origin,
+    clientSecret: readFileSync(secretFile, "utf8").trim(),
+    scopes: readEnv("PORTAL_SCOPES") ?? "openid patient/*.read",
+  });
+}
 
 /**
  * node:sqlite is still flagged experimental below Node 24, and durable
@@ -184,6 +202,8 @@ function buildAuthGate(engine: Engine, dev: { jwt: JwtVerifier } | null): AuthGa
 
 async function main(): Promise<void> {
   warnIfSqliteExperimental();
+  // Validate login settings before opening a database or accepting traffic.
+  const portalLogin = buildPortalLogin();
 
   // Which database this boot is about to open, and under which name. Said
   // before anything else touches it: an engine that silently created an empty
@@ -234,6 +254,14 @@ async function main(): Promise<void> {
   // integration, never a silent default. See src/patient/intake.ts for why
   // there is no default scanner otherwise.
   const devScanner = readEnv("DEV_MALWARE_SCANNER") === "on";
+  const clamdSocket = readEnv("CLAMD_SOCKET");
+  const clamdPort = readEnv("CLAMD_PORT");
+  if (devScanner && (clamdSocket !== undefined || clamdPort !== undefined)) {
+    throw new Error("Synthetic and ClamAV scanners cannot both be configured");
+  }
+  const malwareScanner = clamdSocket !== undefined || clamdPort !== undefined
+    ? new ClamAvScanner({ socketPath: clamdSocket, port: clamdPort === undefined ? undefined : Number(clamdPort) })
+    : devScanner ? new SyntheticScanner() : undefined;
   if (devScanner) {
     console.warn(
       "  WARNING: NORTHSTAR_DEV_MALWARE_SCANNER=on — uploads are scanned by a synthetic " +
@@ -248,7 +276,7 @@ async function main(): Promise<void> {
       redactAfterDays: days(readEnv("REDACT_AFTER_DAYS")),
       purgeAfterDays: days(readEnv("PURGE_AFTER_DAYS")),
     },
-    ...(devScanner ? { malwareScanner: new SyntheticScanner() } : {}),
+    malwareScanner,
   });
 
   if (existsSync(MAPPINGS_DIR)) {
@@ -319,6 +347,7 @@ async function main(): Promise<void> {
   const dev = buildDevIdp(engine, PORT);
   const api = await startApi(engine, PORT, "0.0.0.0", {
     auth: buildAuthGate(engine, dev),
+    portalLogin,
     ...(dev ? { devIdp: dev.idp } : {}),
     tls: tls ?? undefined,
     rateLimit: {
