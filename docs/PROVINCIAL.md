@@ -1,5 +1,10 @@
 # Provincial primary-care platform — what exists and what does not
 
+**2026-09-09 update:** [PILOT-READINESS.md](PILOT-READINESS.md) records the
+current launch gaps and verification. The portal now has optional server-side
+OIDC code/PKCE sign-in and a Chromium regression journey. References below to
+the absence of browser tests describe the earlier assessment, not this increment.
+
 This is a map of the 23-section provincial EMR specification against this
 repository. It is not a bid response and it is not a claim that Northstar is
 that platform. Northstar is a health integration engine with a growing clinical
@@ -24,7 +29,7 @@ though it did.
 | 6 | FHIR integration service | Present (R4 facade, mappings, subscriptions) |
 | 7 | Laboratory and provincial-system sandboxes | **Inbound result bridge present, vendor interfaces absent.** An ORU^R01 closes the order it answers, deduplicates retransmissions, supersedes on correction, ignores stale preliminaries and holds unidentifiable results for a person. Dialects are configuration (`labs/`). **No Dynacare, LifeLabs, OLIS, DHDR, HRM, eConsult or ONE ID interface has exchanged a message**, and none is claimed — that needs a conformance guide, a sandbox, credentials and a signed test result. |
 | 8 | Medication and result management | Present. Pharmacy transmission ([#40](https://github.com/ThomasGenua/healthsystem/issues/40)) is done as a lifecycle: draft / transmitted / acknowledged / handed-out / failed / cancelled, with a refusal on double transmission and chase lists for each way it is lost. **No pharmacy network interface has exchanged a message** — the transmission publishes onto a channel a deployment configures. |
-| 9 | Patient access | **Backend boundary present; clinic-attested enrolment present; `GET /me` is now a working application.** `/patient/*` is OAuth-only; every chart is bound through an active grant with explicit proxy scope, purpose and expiry. Binding a subject requires a named clerk to write how they checked identity (twelve characters); a pending enrolment is not authority. Notices publish fact onto a configured channel; dispatching is not telling. Patient-safe summary, held results, appointments, messages, delegates, access log, access/correction requests. `/me` is a mobile-first EN/FR application over those same routes: sign-in, a caregiver chart switcher with the active chart always visible, and screens for results, appointments, medications, messages, care team, access history and requests, each with loading, error and empty states. A tab the grant does not cover is not drawn. A development identity provider (`NORTHSTAR_DEV_IDP=on`) mints tokens the ordinary verifier validates ordinarily; it refuses to run beside a real issuer and cannot create authority. Still not identity-proofing, not ONE ID, not WCAG/AODA, and no browser-driven test. |
+| 9 | Patient access | **Backend boundary present; clinic-attested enrolment present; `GET /me` is now a working application.** `/patient/*` is OAuth-only; every chart is bound through an active grant with explicit proxy scope, purpose and expiry. Binding a subject requires a named clerk to write how they checked identity (twelve characters); a pending enrolment is not authority. Notices publish fact onto a configured channel; dispatching is not telling. Patient-safe summary, held results, appointments, messages, delegates, access log, access/correction requests. `/me` is a mobile-first EN/FR application over those same routes: sign-in, a caregiver chart switcher with the active chart always visible, and screens for results, appointments, medications, messages, care team, access history and requests, each with loading, error and empty states. A tab the grant does not cover is not drawn. A development identity provider (`NORTHSTAR_DEV_IDP=on`) mints tokens the ordinary verifier validates ordinarily; it refuses to run beside a real issuer and cannot create authority. Still not identity-proofing, not ONE ID, not WCAG/AODA, with synthetic-data browser coverage but no independent accessibility validation. |
 | 10 | Population-health reporting | Partial (cohorts, gaps, measures). Equity, outreach campaigns and burden measures are not. |
 | 11 | Privacy, security and assurance operations | **Privacy office present.** Reviews, flags that cannot be closed by forgetting them, legal holds that skip the retention sweep, incidents that cannot close without saying whether patients were told, access clocks, disclosures, an in-code assurance catalogue (BACKUP-02 stays partial), findings, restore-drill exercises, a subprocessor register that refuses an active vendor with no region. `GET /api/audit/review` joins the trail to a practitioner so an officer can see who looked and whether anything clinical linked them. Directives, break-glass and the audit chain were already here. Not a SIEM, not a PIA tracker, not a signed assurance programme. After-hours is UTC. |
 | 12 | Source-linked AI assistance | **Deliberately later.** |
@@ -123,7 +128,7 @@ appointments, messages, access log, delegate review/revoke and durable
 access/correction requests are mounted. An access/correction request is also
 a privacy task on the clinic's unassigned inbox.
 
-The JSON API is not a patient application. `GET /me` is chrome and does not enrol anyone.
+`GET /me` is a working patient application over the authorized JSON API, with clinic sign-in and a synthetic-data browser regression. It does not itself enrol anyone or establish independent accessibility certification.
 Clinic-attested enrolment is a named clerk writing a method; it is not identity-proofing
 and not ONE ID. Notices publish fact onto a channel; dispatching is not telling.
 Accessibility testing remains.
@@ -140,7 +145,7 @@ appointments) is already on `main`.
 
 - A complete provincial EMR
 - A Dynacare or LifeLabs interface (the ORU bridge exists; no vendor message has ever been exchanged)
-- A **certified** patient portal (`GET /me` is a working application; it is not identity-proofed, not ONE ID, not WCAG-tested, and has no browser-driven test)
+- A **certified** patient portal (`GET /me` is a working application; it is not identity-proofed, not ONE ID, not WCAG-tested, and has synthetic-data browser tests rather than independent accessibility certification)
 - AI drafting or summarization
 - Certified Ontario profiles or ONE ID
 - 99.8% multi-region availability

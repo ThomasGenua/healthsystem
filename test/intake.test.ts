@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Engine } from "../src/core/engine.ts";
-import { SyntheticScanner, EICAR_TEST_STRING, type Question } from "../src/patient/intake.ts";
+import { SyntheticScanner, EICAR_TEST_STRING, type Question, type MalwareScanner, type ScanVerdict } from "../src/patient/intake.ts";
 
 const PATIENT = "NT000001";
 const OTHER_PATIENT = "NT000002";
@@ -23,11 +23,12 @@ const INTAKE_QUESTIONS: Question[] = [
   { key: "notes", label: "Anything else we should know?", type: "text" },
 ];
 
-async function clinic(opts: { scanner?: boolean } = {}) {
+async function clinic(opts: { scanner?: boolean; malwareScanner?: MalwareScanner } = {}) {
   const engine = new Engine({
     dbPath: ":memory:",
     tickMs: 15,
     ...(opts.scanner ? { malwareScanner: new SyntheticScanner() } : {}),
+    ...(opts.malwareScanner ? { malwareScanner: opts.malwareScanner } : {}),
   });
   await engine.start();
   const t = engine.forTenant("default");
@@ -48,6 +49,38 @@ function publish(t: Awaited<ReturnType<typeof clinic>>["t"]) {
 }
 
 // ---------------------------------------------------------------- Questionnaires
+
+test("invalid and unavailable scanners leave content quarantined", async () => {
+  for (const scanner of [
+    { scan: () => ({ verdict: "unknown" } as unknown as ScanVerdict) },
+    { scan: () => { throw new Error("daemon unavailable"); } },
+  ]) {
+    const s = await clinic({ malwareScanner: scanner });
+    try {
+      const up = s.t.uploads.receive({ patientId: PATIENT, filename: "x.txt", contentType: "text/plain", data: Buffer.from("fixture").toString("base64"), by: PATIENT_ACTOR });
+      await assert.rejects(s.t.uploads.scanOne(up.id, CLERK));
+      assert.equal(s.t.uploads.forPatient(PATIENT)[0].status, "pending-scan");
+      assert.throws(() => s.t.uploads.download(up.id), /still being scanned/);
+      assert.equal(s.t.documents.forPatient(PATIENT).length, 0);
+    } finally { await s.close(); }
+  }
+});
+
+test("overlapping clean scans file exactly one document and review task", async () => {
+  const completions: Array<(value: ScanVerdict) => void> = [];
+  const s = await clinic({ malwareScanner: { scan: () => new Promise<ScanVerdict>(resolve => completions.push(resolve)) } });
+  try {
+    const up = s.t.uploads.receive({ patientId: PATIENT, filename: "x.txt", contentType: "text/plain", data: Buffer.from("fixture").toString("base64"), by: PATIENT_ACTOR });
+    const first = s.t.uploads.scanOne(up.id, CLERK);
+    const second = s.t.uploads.scanOne(up.id, CLERK);
+    assert.equal(completions.length, 2);
+    for (const complete of completions) complete({ verdict: "clean" });
+    const [a, b] = await Promise.all([first, second]);
+    assert.equal(a.document_record_id, b.document_record_id);
+    assert.equal(s.t.documents.forPatient(PATIENT).length, 1);
+    assert.equal(s.t.tasks.openOfKind("portal-submission").length, 1);
+  } finally { await s.close(); }
+});
 
 test("publishing again retires the old version without deleting it", async () => {
   const s = await clinic();
