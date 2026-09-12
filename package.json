@@ -9,6 +9,7 @@
     "node": ">=22.18"
   },
   "scripts": {
+    "staging:drill": "node scripts/staging-outage-drill.ts",
     "staging:smoke": "node scripts/staging-smoke.ts",
     "preflight": "node scripts/pilot-preflight.ts",
     "start": "node src/server.ts",

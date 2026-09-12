@@ -1,5 +1,8 @@
 # Local synthetic staging
 
+For local Prometheus/Alertmanager configuration and a synthetic outage/recovery
+drill, see [monitoring](monitoring/README.md). That receiver is not an operator.
+
 This is a local rehearsal package, not a clinical deployment. The app is bound
 to `127.0.0.1:18686`, uses API-key authentication, and starts with an empty
 dedicated named volume. Demo identity, synthetic antivirus, sample outbound
