@@ -97,8 +97,8 @@ test("a copied file is not a backup, but a snapshot of the same database is", as
     let naiveCount: number | null = null;
     try {
       const naiveDb = new Db(naive, { readOnly: true });
-      naiveCount = naiveDb.listMessages({ channelId: "backed-up" }).length;
-      naiveDb.close();
+      try { naiveCount = naiveDb.listMessages({ channelId: "backed-up" }).length; }
+      finally { naiveDb.close(); }
     } catch {
       naiveCount = null;
     }

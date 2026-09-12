@@ -1,5 +1,9 @@
 # Pilot readiness — 2026-09-09
 
+For subsequent operational work and outstanding site evidence, see
+[pilot acceptance](PILOT-ACCEPTANCE.md). PR #97 passed Linux CI on Node 22 and 24
+before merge; the earlier local Windows results below remain a separate limitation.
+
 This assessment starts at main `603d484a97e791b85bba755785f86e0e79121319`.
 It records engineering evidence, not clinical or deployment approval.
 Earlier roadmap tables are historical snapshots; their initial status labels

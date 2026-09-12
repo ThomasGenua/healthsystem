@@ -1,5 +1,14 @@
 # Northstar runbook
 
+## Pilot preflight
+
+Run `npm run preflight` against the service environment. Add `-- --probe-scanner`
+to send a harmless synthetic sample to the local daemon. Output contains check
+IDs and remediation text, never environment values or secret paths. Exit 1 means
+configuration blockers exist; exit 0 does not constitute deployment approval.
+Review items require site evidence, not another environment assertion. This
+command does not contact the identity provider or send notifications.
+
 ## Local upload antivirus
 
 Set `NORTHSTAR_CLAMD_SOCKET` to an absolute local clamd socket path, or
@@ -15,9 +24,16 @@ Maintain ClamAV and its signatures (for example, via FreshClam). Configure
 a 30-second absolute deadline and bounded replies. Errors, unavailable daemons
 and unexpected responses leave uploads pending, never downloadable. The
 authenticated `POST /api/clinical/upload-scan` route accepts `{"id":"upload-id"}`.
-Retry pending uploads through that route after resolving scanner failures;
-no automatic scanning schedule is installed by this configuration. Investigate
-a growing pending backlog.
+The server automatically sweeps up to ten eligible uploads sequentially every
+five seconds, without overlapping sweeps. Failures remain quarantined and use
+persisted exponential retry delays from 30 seconds up to one hour. Restart keeps
+retry timing; suspended tenants are not scanned. Shutdown waits for the active
+scan before closing the database. The manual route remains available.
+`/api/health` reports uploadScanning and degrades when the oldest pending file
+is over 15 minutes old. Alert on `northstar_upload_scan_oldest_age_seconds > 900`,
+and monitor `northstar_uploads_pending_scan`, `northstar_uploads_retrying_scan`
+and `northstar_upload_scanner_configured`. A monitor must be configured at the
+site; adding metrics does not deliver an alert by itself.
 Filenames are not transmitted and raw daemon replies are not stored.
 
 Before enabling uploads at a site, exercise a harmless file, the standard EICAR

@@ -31,8 +31,10 @@ test("a second engine on the same database refuses to start", async () => {
   const { path, cleanup } = tempDb();
   const first = new Engine({ dbPath: path, tickMs: 100_000 });
   await first.start();
+  let refused: Engine | undefined;
   try {
     const second = new Engine({ dbPath: path, tickMs: 100_000 });
+    refused = second;
     await assert.rejects(
       () => second.start(),
       (err: Error) => {
@@ -45,6 +47,7 @@ test("a second engine on the same database refuses to start", async () => {
       }
     );
   } finally {
+    await refused?.stop();
     await first.stop();
     cleanup();
   }

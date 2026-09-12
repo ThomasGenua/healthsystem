@@ -439,6 +439,7 @@ async function route(
       // reported without degrading — the link is up, and the message
       // pipeline already owns that.
       degraded:
+        Boolean(engine.uploadScanWorker?.status().degraded) ||
         stalled.length > 0 ||
         signals.deadLetters > 0 ||
         signals.silentChannels.length > 0 ||
@@ -455,6 +456,7 @@ async function route(
       // configured-and-failed is an incident and already folded into
       // `degraded` above.
       remoteBackup: remoteStatus,
+      uploadScanning: engine.uploadScanWorker?.status() ?? { configured: false },
     });
   }
 
@@ -487,6 +489,13 @@ async function route(
     };
 
     metric("channels", "Configured channels.", "gauge", [["", stats.channels]]);
+    const scans = engine.uploadScanWorker?.status();
+    metric("upload_scanner_configured", "Automatic upload scanning configured.", "gauge", [["", scans ? 1 : 0]]);
+    if (scans) {
+      metric("uploads_pending_scan", "Quarantined uploads awaiting scanning.", "gauge", [["", scans.pending]]);
+      metric("uploads_retrying_scan", "Pending uploads with prior scan attempts.", "gauge", [["", scans.retrying]]);
+      metric("upload_scan_oldest_age_seconds", "Age of oldest quarantined upload.", "gauge", [["", scans.oldestAgeSec]]);
+    }
     metric("messages_total",
       "Messages ingested, by status.",
       "counter",

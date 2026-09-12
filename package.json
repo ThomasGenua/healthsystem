@@ -9,6 +9,7 @@
     "node": ">=22.18"
   },
   "scripts": {
+    "preflight": "node scripts/pilot-preflight.ts",
     "start": "node src/server.ts",
     "test": "node --test --test-force-exit \"test/**/*.test.ts\"",
     "demo": "node demo/run-demo.ts",

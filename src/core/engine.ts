@@ -279,6 +279,7 @@ export interface EngineOptions {
 }
 
 export class Engine {
+  uploadScanWorker?: import("../patient/scan-worker.ts").UploadScanWorker;
   readonly db: Db;
   readonly fhir: FhirStore;
   readonly worker: DeliveryWorker;
@@ -662,6 +663,7 @@ export class Engine {
   }
 
   async stop(): Promise<void> {
+    await this.uploadScanWorker?.stop();
     if (this.lockTimer) clearInterval(this.lockTimer);
     this.lockTimer = null;
     this.orderDispatch.stop();

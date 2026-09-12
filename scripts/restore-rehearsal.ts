@@ -231,6 +231,7 @@ function bootChild(dbPath: string): Promise<string> {
       stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "";
+    let proof: string | undefined;
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
       reject(new Error(`the engine did not come up against the restored database within 60s. Saw: ${out.trim()}`));
@@ -239,19 +240,20 @@ function bootChild(dbPath: string): Promise<string> {
     child.stdout?.on("data", (b: Buffer) => {
       out += b.toString();
       const line = out.split("\n").find((l) => l.startsWith("PROVED "));
-      if (line) {
-        clearTimeout(timer);
+      if (line && proof === undefined) {
+        proof = line.slice("PROVED ".length).trim();
         child.kill("SIGTERM");
-        resolve(line.slice("PROVED ".length).trim());
       }
     });
     child.stderr?.on("data", (b: Buffer) => {
       const s = b.toString();
       if (!s.includes("ExperimentalWarning") && !s.includes("trace-warnings")) process.stderr.write(`    child: ${s}`);
     });
-    child.on("exit", (code) => {
+    child.on("error", error => { clearTimeout(timer); reject(error); });
+    child.on("close", (code) => {
       clearTimeout(timer);
-      if (!out.includes("PROVED ")) {
+      if (proof !== undefined) resolve(proof);
+      else {
         reject(new Error(`the engine exited (${code}) without coming up. Saw: ${out.trim() || "(nothing)"}`));
       }
     });

@@ -71,11 +71,11 @@ test("the Linux detection path is exercised from any host", () => {
     { device: "/dev/sda1", point: "/", fsType: "ext4" },
     { device: "/dev/mapper/northstar-data", point: "/srv", fsType: "ext4" },
   ];
-  const encrypted = encryptionAtRest("/srv", {} as NodeJS.ProcessEnv, mounts, "linux");
+  const encrypted = encryptionAtRest("/srv", {} as NodeJS.ProcessEnv, mounts, "linux", path => path);
   assert.equal(encrypted.state, "encrypted");
   assert.equal(encrypted.device, "/dev/mapper/northstar-data");
 
-  const plain = encryptionAtRest("/", {} as NodeJS.ProcessEnv, mounts, "linux");
+  const plain = encryptionAtRest("/", {} as NodeJS.ProcessEnv, mounts, "linux", path => path);
   assert.equal(plain.state, "not-encrypted");
 });
 
