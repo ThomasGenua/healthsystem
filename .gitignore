@@ -1,4 +1,6 @@
 node_modules/
+deploy/staging/*.env
+deploy/staging/secrets/
 .pilot-artifacts/
 data/
 *.db
