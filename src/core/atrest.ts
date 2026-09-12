@@ -111,7 +111,8 @@ export function encryptionAtRest(
   // Linux-only, so on any other host every test of it asserted the "cannot
   // check" branch instead — the checks passed on Windows by not running.
   // Naming the platform lets both paths be exercised from either.
-  os: string = platform()
+  os: string = platform(),
+  resolvePath: (path: string) => string = realpathSync
 ): AtRestReport {
   const asserted = (readEnv("ENCRYPTED_AT_REST", env) ?? "").toLowerCase();
   if (asserted === "yes" || asserted === "true" || asserted === "1") {
@@ -130,7 +131,7 @@ export function encryptionAtRest(
   }
 
   try {
-    const resolved = realpathSync(dataDir);
+    const resolved = resolvePath(dataDir);
     const mount = mountFor(resolved, mounts ?? parseMounts(readFileSync("/proc/mounts", "utf8")));
     if (!mount) {
       return { state: "unknown", detail: `no mount found covering ${resolved}` };

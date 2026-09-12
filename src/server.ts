@@ -14,6 +14,7 @@ import { JwtVerifier } from "./auth/jwt.ts";
 import { PortalLogin } from "./auth/portal-login.ts";
 import { SyntheticScanner } from "./patient/intake.ts";
 import { ClamAvScanner } from "./patient/clamav.ts";
+import { UploadScanWorker } from "./patient/scan-worker.ts";
 import type { ChannelConfig, MappingDoc } from "./types.ts";
 
 const PORT = parseInt(readEnv("PORT") ?? "8686", 10);
@@ -319,6 +320,10 @@ async function main(): Promise<void> {
   }
 
   await engine.start();
+  if (malwareScanner) {
+    engine.uploadScanWorker = new UploadScanWorker(engine);
+    engine.uploadScanWorker.start();
+  }
 
   if (existsSync(CHANNELS_DIR)) {
     for (const f of readdirSync(CHANNELS_DIR).filter((f) => f.endsWith(".json"))) {

@@ -2782,6 +2782,8 @@ CREATE TABLE IF NOT EXISTS intake_uploads (
   status TEXT NOT NULL DEFAULT 'pending-scan',
   scanned_at TEXT,
   scanner_note TEXT,
+  scan_attempts INTEGER NOT NULL DEFAULT 0,
+  scan_retry_at INTEGER NOT NULL DEFAULT 0,
   -- Set once filed as a chart DocumentReference (source patient-submitted),
   -- which only happens on a clean verdict.
   document_record_id TEXT,
@@ -2927,6 +2929,8 @@ export interface DbOptions {
  * this column existed".
  */
 const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
+  { table: "intake_uploads", column: "scan_attempts", type: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "intake_uploads", column: "scan_retry_at", type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "fhir_resources", column: "patient_id", type: "TEXT" },
   // Reading a notice in the portal, which is a different fact from any
   // provider's opinion about delivery. Null on every existing row, which

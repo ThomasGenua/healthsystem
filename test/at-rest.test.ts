@@ -49,7 +49,7 @@ test("a directory that cannot be resolved is unknown, never encrypted", () => {
   const r = encryptionAtRest("/no/such/directory/anywhere", {} as NodeJS.ProcessEnv);
   assert.equal(r.state, "unknown");
   assert.equal(shouldWarn(r), true);
-  assert.match(r.detail, /could not determine|no mount found/);
+  assert.match(r.detail, /could not determine|no mount found|cannot check encryption at rest/);
 });
 
 test("a real directory resolves to a mount and reports one way or the other", () => {

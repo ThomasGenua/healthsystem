@@ -333,7 +333,7 @@ test("a transmission against an order that does not exist is refused", () => {
   }
 });
 
-test("attempts keep their insertion order even when they land in the same millisecond", () => {
+test("attempts keep their insertion order even when they land in the same millisecond", (t) => {
   // Found as a flake, and it was not a test problem. Ordering by timestamp
   // with a tiebreak on the row id meant two attempts written in the same
   // millisecond — a send and the acknowledgement answering it, which is the
@@ -346,6 +346,7 @@ test("attempts keep their insertion order even when they land in the same millis
   const s = site();
   try {
     const id = s.place();
+    t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
     const written = [];
     for (let i = 0; i < 20; i++) {
       const outcome = i === 19 ? "acknowledged" : "sent";
