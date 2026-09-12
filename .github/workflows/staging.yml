@@ -1,0 +1,23 @@
+name: Staging container
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate configuration
+        run: docker compose -f deploy/staging/compose.yaml config --quiet
+      - name: Build and start isolated staging app
+        run: docker compose -f deploy/staging/compose.yaml up --build -d --wait --wait-timeout 120 app
+      - name: Check authentication boundaries
+        run: docker compose -f deploy/staging/compose.yaml exec -T app node scripts/staging-smoke.ts http://127.0.0.1:8686
+      - name: Restart and check persisted instance can reopen
+        run: |
+          docker compose -f deploy/staging/compose.yaml restart app
+          docker compose -f deploy/staging/compose.yaml up -d --wait --wait-timeout 120 app
+      - name: Stop containers without printing bootstrap credentials
+        if: always()
+        run: docker compose -f deploy/staging/compose.yaml down

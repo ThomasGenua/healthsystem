@@ -1,5 +1,11 @@
 # Northstar runbook
 
+## Local staging package
+
+See [synthetic Docker staging](../deploy/staging/README.md) for a localhost-only
+container setup, pinned images, configuration templates, optional real ClamAV
+and read-only smoke checks. This is separate from a live clinical deployment.
+
 ## Pilot preflight
 
 Run `npm run preflight` against the service environment. Add `-- --probe-scanner`

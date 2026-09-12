@@ -1,0 +1,45 @@
+name: northstar-staging
+services:
+  app:
+    build:
+      context: ../..
+    image: northstar-staging:local
+    init: true
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    ports:
+      - "127.0.0.1:${NORTHSTAR_STAGING_PORT:-18686}:8686"
+    environment:
+      NORTHSTAR_AUTH_MODE: apikey
+      NORTHSTAR_DEV_IDP: "off"
+      NORTHSTAR_DEV_MALWARE_SCANNER: "off"
+      NORTHSTAR_RATE_LIMIT: "on"
+      # Scanner shares this container's network namespace, never a remote endpoint.
+      NORTHSTAR_CLAMD_PORT: "3310"
+    volumes:
+      - staging-data:/var/lib/northstar
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD", "node", "scripts/staging-smoke.ts", "http://127.0.0.1:8686"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
+  scanner:
+    profiles: ["scanner"]
+    image: clamav/clamav:stable@sha256:1fdfd24c6f0a0fb60788481487459a6d4eda8a9b448641594e04db8410d34422
+    network_mode: "service:app"
+    depends_on:
+      app:
+        condition: service_started
+    volumes:
+      - clamav-signatures:/var/lib/clamav
+    # No scanner port is published. Allow room for signature reloads.
+    mem_limit: 4g
+    stop_grace_period: 60s
+volumes:
+  staging-data:
+  clamav-signatures:
