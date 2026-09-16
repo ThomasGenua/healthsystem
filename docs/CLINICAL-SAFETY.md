@@ -19,8 +19,8 @@ still points at a deleted test is a silent failure of this document;
 test is gone.
 
 **Product:** Northstar (this repository).
-**Version this case describes:** v0.8.0.
-**Last reviewed:** 2026-08-28.
+**Version this case describes:** v0.9.0.
+**Last reviewed:** 2026-09-16.
 **Reviewer of this draft:** the author of the controls, not an independent
 clinical safety officer. That gap is residual risk R-01.
 

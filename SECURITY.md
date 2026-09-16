@@ -99,16 +99,15 @@ writing:
 **Out of scope** — the demo fixtures and synthetic data, denial of service by
 brute resource exhaustion against a single-node deployment (it is single-node
 on purpose and documented as such), and anything requiring physical access to a
-machine or an operator's terminal.
+machine or an operator's terminal. Reports generated wholesale by an automated
+scanner with no reproduction attached are unlikely to get a useful response.
 
 This list used to also exclude missing hardening headers on the admin console,
 "where no session or credential is at stake". That was wrong on its own terms —
 the console holds an API key in browser storage and attaches it to every
 request, so script running there runs with that key — and it is no longer true
 of the code either: both pages are served under a Content-Security-Policy whose
-`script-src` is a per-response nonce. Reports about those headers are in scope. Reports generated wholesale by
-an automated scanner with no reproduction attached are unlikely to get a useful
-response.
+`script-src` is a per-response nonce. Reports about those headers are in scope.
 
 ## Supported versions
 
@@ -119,8 +118,8 @@ exists precisely so that upgrading is not the risky part.
 
 | Version | Supported |
 | --- | --- |
-| 0.7.x | yes |
-| < 0.7 | no |
+| 0.9.x | yes |
+| < 0.9 | no |
 
 ## Known limitations, which are not vulnerabilities
 
@@ -131,11 +130,12 @@ discussion, but they will not be treated as advisories:
 - **Single node.** One process owns a database file, enforced with a lock.
   There is no clustering, and a hardware failure is an outage until the standby
   is promoted by hand.
-- **No certified patient portal.** `GET /me` is chrome (EN/FR copy, landmarks,
-  an honest banner) and loads no chart. It does not enrol anyone. The
-  patient/proxy JSON boundary is mounted at `/patient/*`. Binding a subject
-  is clinic-attested enrolment: a named person writes how they checked, and
-  a pending row is not a grant. Notices publish fact onto a configured
+- **No certified patient portal.** `GET /me` is now an application rather than
+  the chrome it was, and does load a chart — but only through OAuth, and only
+  for a chart the reader holds a live, explicitly scoped grant on. It enrols
+  nobody. The patient/proxy JSON boundary is mounted at `/patient/*`. Binding a
+  subject is clinic-attested enrolment: a named person writes how they checked,
+  and a pending row is not a grant. Notices publish fact onto a configured
   channel; dispatching is not telling. None of that is identity-proofing,
   ONE ID, notification that a letter arrived, or an accessibility claim.
   It is OAuth-only; a patient-context token cannot read the general FHIR
