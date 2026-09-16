@@ -94,13 +94,17 @@ svg text{fill:var(--dim);font-size:10px}
 </header>
 <nav id="nav"></nav>
 <main id="main"></main>
-<script>
+<script nonce="{{nonce}}">
 const $=(s,el=document)=>el.querySelector(s);
-/* Escapes apostrophes as well as the usual four. Every id rendered into an
-   onclick sits inside a single-quoted attribute, and today they all happen to
-   be uuids or charset-validated — which is a property of the current callers,
-   not of this function, and not something the next row added here should have
-   to know. */
+/* Escapes apostrophes as well as the usual four, so a value is safe in a
+   single-quoted attribute as much as a double-quoted one.
+
+   That is sufficient because no attribute in this page is JavaScript any more.
+   It was not sufficient when they were, and the comment that used to stand
+   here said it was: an attribute value is HTML-decoded before any script in it
+   is parsed, so `&#39;` reaches the JavaScript parser as the apostrophe it was
+   escaped from, and closes the string literal it was meant to stay inside. See
+   the handler table below for what replaced them. */
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 // The key lives in this browser and is attached to every request. Nothing is
 // sent anywhere else, and the server never returns a stored key.
@@ -137,8 +141,100 @@ const stTag=s=>tag(s,{processed:"ok",delivered:"ok",filtered:"dim",queued:"warn"
 const TABS=["Dashboard","Chart","Worklist","Break-glass","Privacy","History","Audit","Channels","Designer","Mappings","Messages","Deliveries","FHIR","Subscriptions","Terminology","Conformance"];
 let tab="Dashboard",timer=null;
 
-function nav(){$("#nav").innerHTML=TABS.map(t=>`<button class="${t===tab?"on":""}" onclick="go('${t}')">${t}</button>`).join("")}
+function nav(){$("#nav").innerHTML=TABS.map(t=>`<button class="${t===tab?"on":""}" data-act="go" data-tab="${esc(t)}">${t}</button>`).join("")}
 window.go=t=>{tab=t;if(timer){clearInterval(timer);timer=null}nav();render()};
+
+/* Every handler is bound here rather than written into the markup.
+
+   `onclick="openChart('${esc(id)}')"` is two languages in one attribute, and
+   escaping is only ever right for one of them. The browser HTML-decodes an
+   attribute value before parsing the script inside it, so an escaped
+   apostrophe is an apostrophe again by the time it reaches the string literal
+   it was supposed to stay inside — and a patient identifier is whatever PID-3
+   of an unauthenticated MLLP feed said it was. That was an injection into the
+   session of whoever holds an admin key, which is every key this console has.
+   `test/ui-xss.test.ts` drives a real browser and watched it fire.
+
+   A data attribute has no second language. It is read back through `.dataset`
+   as a string and never parsed, so escaping it as an attribute value is the
+   whole of what is needed. It is also what allows the Content-Security-Policy
+   this page is served with to omit 'unsafe-inline': with no script in the
+   markup, there is nothing for an injected value to be parsed as. */
+const call=(table,name,el)=>{if(name!==undefined&&Object.hasOwn(table,name))table[name](el,el.dataset)};
+
+const CLICK={
+  go:(el,d)=>go(d.tab),
+  render:()=>render(),
+  loadChart:()=>loadChart(),
+  findPatient:()=>findPatient(),
+  loadWorklist:()=>loadWorklist(),
+  openPrivacyReview:()=>openPrivacyReview(),
+  openChart:(el,d)=>openChart(d.id),
+  // Opens a chart and switches to it: what the worklist and the privacy
+  // queues link for, and what the trailing `go('Chart')` used to do.
+  chart:(el,d)=>{openChart(d.id);go("Chart")},
+  declareGlass:(el,d)=>declareGlass(d.id),
+  ack:(el,d)=>ack(d.id),
+  told:(el,d)=>told(d.id),
+  reviewed:(el,d)=>reviewed(d.id),
+  chanDetail:(el,d)=>chanDetail(d.id),
+  // The button sits inside a row that opens the channel. `closest` finds the
+  // button first, so the row does not also fire — which is what the
+  // `event.stopPropagation()` in front of this used to be for.
+  verifyChain:(el,d)=>verifyChain(d.id,el),
+  msgDetail:(el,d)=>msgDetail(d.id),
+  delivery:(el,d)=>act(d.id,d.op),
+  readRes:(el,d)=>readRes(d.type,d.id),
+  delSub:(el,d)=>delSub(d.id),
+  dstepAdd:()=>dstepAdd(),
+  dstepDel:(el,d)=>dstepDel(Number(d.i)),
+  ddestAdd:()=>ddestAdd(),
+  ddestDel:(el,d)=>ddestDel(Number(d.i)),
+  dsave:()=>dsave(),
+  dload:()=>dload(),
+  dloadPick:()=>dloadPick(),
+  mpRun:()=>mpRun(),
+  mkSub:()=>mkSub(),
+  doLookup:()=>doLookup(),
+  doExpand:()=>doExpand(),
+  doTranslate:()=>doTranslate(),
+  doCap:()=>doCap(),
+  doValidate:()=>doValidate(),
+};
+const CHANGED={
+  dsource:el=>dsource(el.value),
+  ddestOrdered:(el,d)=>ddestOrdered(Number(d.i),el.checked),
+  mpLoad:()=>mpLoad(),
+  mpFixture:()=>mpFixture(),
+};
+const TYPED={
+  dset:(el,d)=>dset(d.k,el.value),
+  dsrc:(el,d)=>dsrc(d.k,el.value),
+  dstep:(el,d)=>dstep(Number(d.i),d.k,el.value),
+  ddest:(el,d)=>ddest(Number(d.i),d.k,el.value),
+};
+
+document.addEventListener("click",e=>{
+  const el=e.target.closest("[data-act]");
+  if(!el)return;
+  // These sit on <a href="#"> and on table rows, where the handler is the
+  // whole of what the click is for. This is the `return false` that used to
+  // end each one.
+  e.preventDefault();
+  call(CLICK,el.dataset.act,el);
+});
+document.addEventListener("input",e=>{call(TYPED,e.target.dataset.fn,e.target)});
+document.addEventListener("change",e=>{
+  const el=e.target;
+  const key=el.dataset.set;
+  if(key!==undefined){
+    // A checkbox reports a flag; everything else reports its text.
+    $("#main").dataset[key]=el.dataset.bool!==undefined?(el.checked?"1":""):el.value;
+    render();
+    return;
+  }
+  call(CHANGED,el.dataset.change,el);
+});
 
 async function render(){
   const m=$("#main");
@@ -217,9 +313,9 @@ async function chartTab(m){
   const q=store(sessionStorage,"patient")||"";
   m.innerHTML=`<div class="bar">
     <input id="pt" placeholder="patient identifier, e.g. NT123456" style="width:260px" value="${esc(q)}">
-    <button class="act" onclick="loadChart()">open chart</button>
+    <button class="act" data-act="loadChart">open chart</button>
     <input id="ptname" placeholder="or search by family name" style="width:200px">
-    <button class="act" onclick="findPatient()">search</button></div>
+    <button class="act" data-act="findPatient">search</button></div>
     <div id="chart"></div>`;
   if(q)await loadChart();
 }
@@ -233,7 +329,7 @@ window.findPatient=async()=>{
     const rows=(data.rows||[]);
     out.innerHTML=`${data.withheldCount?`<div class="banner"><b>${data.withheldCount} match(es) withheld</b> by a patient directive. A short list that looks complete is the thing this system refuses, so it says so rather than quietly returning fewer.</div>`:""}
       <table><tr><th>identifier</th><th>name</th><th>born</th></tr>
-      ${rows.map(r=>`<tr class="row" onclick="openChart('${esc(r.patient_id)}')"><td>${esc(r.patient_id)}</td>
+      ${rows.map(r=>`<tr class="row" data-act="openChart" data-id="${esc(r.patient_id)}"><td>${esc(r.patient_id)}</td>
         <td>${esc(r.family||"")}, ${esc(r.given||"")}</td><td>${esc(r.birthDate||r.birth_date||"")}</td></tr>`).join("")
       ||`<tr><td colspan="3" class="none">no match</td></tr>`}</table>`;
   }catch(e){out.innerHTML=`<p class="err">${esc(e.message||e)}</p>`}
@@ -263,7 +359,7 @@ window.loadChart=async()=>{
       out.innerHTML=`<div class="banner bad"><b>This record is withheld by a patient directive.</b>
         <p>The patient has asked that this record not be shown. If the clinical situation warrants overriding that, declare it — the declaration is recorded, the patient is told, and somebody reviews it.</p>${linkedNote}
         <div class="bar"><input id="bg-reason" placeholder="why you need it, and why now" style="width:420px">
-        <button class="act" onclick="declareGlass('${esc(target)}')">break glass</button></div>
+        <button class="act" data-act="declareGlass" data-id="${esc(target)}">break glass</button></div>
         <p class="none">A one-word reason is refused. This row is what a privacy office reads when the patient asks who opened their record.</p>
         <div id="bg-out"></div></div>`;
       return;
@@ -331,7 +427,7 @@ window.declareGlass=async(patient)=>{
 async function worklistTab(m){
   const who=store(localStorage,"clinician")||"";
   m.innerHTML=`<div class="bar"><input id="cl" placeholder="clinician id, e.g. dr-tetso" style="width:220px" value="${esc(who)}">
-    <button class="act" onclick="loadWorklist()">open worklist</button></div><div id="wl"></div>`;
+    <button class="act" data-act="loadWorklist">open worklist</button></div><div id="wl"></div>`;
   if(who)await loadWorklist();
 }
 
@@ -347,36 +443,36 @@ window.loadWorklist=async()=>{
       ${w.complete?"":`<div class="banner"><b>This worklist is not complete.</b>
         <p>Something owed to you may not be on it.</p><ul>${(w.omissions||[]).map(o=>`<li>${esc(o)}</li>`).join("")}</ul></div>`}
       ${panel("Today's appointments",w.today,x=>`<li>${when(x.slot&&x.slot.starts_at)} ${esc(x.slot&&x.slot.service||"")}
-        <a href="#" onclick="openChart('${esc(x.booking.patient_id)}');go('Chart');return false">${esc(x.booking.patient_id)}</a>
+        <a href="#" data-act="chart" data-id="${esc(x.booking.patient_id)}">${esc(x.booking.patient_id)}</a>
         ${stTag(x.booking.status)} <span class="none">${esc(x.booking.reason||"")}</span></li>`)}
       ${panel("Messages you owe a reply",w.awaitingMessages,x=>`<li>${esc(x.subject)}
-        <a href="#" onclick="openChart('${esc(x.patient_id)}');go('Chart');return false">${esc(x.patient_id)}</a>
+        <a href="#" data-act="chart" data-id="${esc(x.patient_id)}">${esc(x.patient_id)}</a>
         ${stTag(x.priority)} ${stTag(x.status)}</li>`)}
       ${panel("Messages nobody owns",w.unassignedMessages,x=>`<li>${esc(x.subject)}
-        <a href="#" onclick="openChart('${esc(x.patient_id)}');go('Chart');return false">${esc(x.patient_id)}</a>
+        <a href="#" data-act="chart" data-id="${esc(x.patient_id)}">${esc(x.patient_id)}</a>
         ${stTag(x.priority)}</li>`)}
       ${res.withheldCount?`<div class="banner"><b>${res.withheldCount} result(s) withheld</b> by a patient directive.
         <p>A result withheld from the clinician responsible for reading it is a result now owed to nobody. Who they are is not shown, which is what the directive asked for — but somebody has to pick these up.</p></div>`:""}
       ${panel("Results you have not acknowledged",w.unacknowledgedResults,r=>`<li>
         ${esc(r.display)}: <b class="${r.abnormal_flag&&r.abnormal_flag.includes("critical")?"crit":""}">${esc(r.value)}</b>
         ${r.abnormal_flag?tag(r.abnormal_flag,r.abnormal_flag.includes("critical")?"bad":"warn"):""}
-        <a href="#" onclick="openChart('${esc(r.patient_id)}');go('Chart');return false">${esc(r.patient_id)}</a>
+        <a href="#" data-act="chart" data-id="${esc(r.patient_id)}">${esc(r.patient_id)}</a>
         <span class="none">${when(r.reported_at)}</span>
         <div class="bar" style="margin:6px 0 0"><input id="ack-${esc(r.id)}" placeholder="what you did about it" style="width:320px">
-        <button class="act mini" onclick="ack('${esc(r.id)}')">acknowledge</button></div>
+        <button class="act mini" data-act="ack" data-id="${esc(r.id)}">acknowledge</button></div>
         <div id="ackout-${esc(r.id)}"></div></li>`)}
       ${panel("Referrals that have gone quiet",w.stalledReferrals,r=>`<li>${esc(r.to_service)} for
-        <a href="#" onclick="openChart('${esc(r.patient_id)}');go('Chart');return false">${esc(r.patient_id)}</a>
+        <a href="#" data-act="chart" data-id="${esc(r.patient_id)}">${esc(r.patient_id)}</a>
         ${stTag(r.status)} ${due("due",r.expected_by)}</li>`)}
       ${panel("Care plans past their review date",w.overdueCarePlans,x=>`<li>${esc(x.title)} for
-        <a href="#" onclick="openChart('${esc(x.patientId)}');go('Chart');return false">${esc(x.patientId)}</a>
+        <a href="#" data-act="chart" data-id="${esc(x.patientId)}">${esc(x.patientId)}</a>
         ${stTag(x.status)} ${due("review by",x.reviewBy)}</li>`)}
       ${panel("Orders with no result back",w.ordersAwaitingResult,o=>`<li>${esc(o.display)} for
-        <a href="#" onclick="openChart('${esc(o.patient_id)}');go('Chart');return false">${esc(o.patient_id)}</a>
+        <a href="#" data-act="chart" data-id="${esc(o.patient_id)}">${esc(o.patient_id)}</a>
         ${due("expected",o.expected_by)}</li>`)}
       ${panel("Tasks",w.tasks,t=>`<li>${esc(t.title)} ${stTag(t.status)}</li>`)}
       ${panel("Medication reconciliations left open",w.incompleteReconciliations,r=>`<li>${esc(r.transition)} for
-        <a href="#" onclick="openChart('${esc(r.patient_id)}');go('Chart');return false">${esc(r.patient_id)}</a>
+        <a href="#" data-act="chart" data-id="${esc(r.patient_id)}">${esc(r.patient_id)}</a>
         <span class="none">started ${when(r.started_at)}</span></li>`)}`;
   }catch(e){out.innerHTML=`<p class="err">${esc(e.message||e)}</p>`}
 };
@@ -404,7 +500,7 @@ async function glassTab(m){
     // through here would mean building HTML for a button out of a string in
     // two places. The row itself is identical in both.
     const rows=(list,empty)=>list.length?`<table><tr><th>patient</th><th>who</th><th>declared</th><th>reason</th><th></th></tr>
-      ${list.map(o=>`<tr><td><a href="#" onclick="openChart('${esc(o.patient_id)}');go('Chart');return false">${esc(o.patient_id)}</a></td>
+      ${list.map(o=>`<tr><td><a href="#" data-act="chart" data-id="${esc(o.patient_id)}">${esc(o.patient_id)}</a></td>
         <td>${esc(o.subject_id)}</td><td>${when(o.declared_at)}</td><td>${esc(o.reason)}</td>
         <td></td></tr>`).join("")}</table>`:`<p class="none">${esc(empty)}</p>`;
     m.innerHTML=`
@@ -423,8 +519,8 @@ async function glassTab(m){
         const o=queue[r-1];if(!o)return;
         const cell=tr.lastElementChild;
         cell.innerHTML=i===0
-          ?`<button class="act mini" onclick="told('${esc(o.id)}')">record that they were told</button>`
-          :`<input id="rv-${esc(o.id)}" placeholder="what you made of it" style="width:210px"><button class="act mini" onclick="reviewed('${esc(o.id)}')">record</button>`;
+          ?`<button class="act mini" data-act="told" data-id="${esc(o.id)}">record that they were told</button>`
+          :`<input id="rv-${esc(o.id)}" placeholder="what you made of it" style="width:210px"><button class="act mini" data-act="reviewed" data-id="${esc(o.id)}">record</button>`;
       });
     });
   }catch(e){m.innerHTML=`<p class="err">${esc(e.message||e)}</p>`}
@@ -466,14 +562,14 @@ async function privacyTab(m){
       <div class="banner"><b>Privacy office.</b>
         <p>Queues, clocks and holds. A pending enrolment is not authority. Dispatching a notice is not the patient being told. After-hours uses UTC clinic hours, not local time.</p></div>
       <div class="panel ${glass.length?"warn":""}"><h3>Unreviewed break-glass ${tag(String(glass.length),glass.length?"warn":"ok")}</h3>
-        ${list(glass,"nothing waiting for review",o=>`<li><a href="#" onclick="openChart('${esc(o.patient_id)}');go('Chart');return false">${esc(o.patient_id)}</a>
+        ${list(glass,"nothing waiting for review",o=>`<li><a href="#" data-act="chart" data-id="${esc(o.patient_id)}">${esc(o.patient_id)}</a>
           ${esc(o.subject_id)} — ${esc(o.reason)}</li>`)}</div>
       <div class="panel ${access.length?"warn":""}"><h3>Access and correction requests ${tag(String(access.length),access.length?"warn":"ok")}</h3>
         ${list(access,"no pending requests",r=>`<li>${esc(r.kind)} for ${esc(r.patientId)} due ${esc(r.dueAt)}
           ${r.overdue?tag("overdue","bad"):""}${r.completedWithoutDisclosure?tag("completed without disclosure","warn"):""}</li>`)}</div>
       <div class="panel ${pendingEnrol.length?"warn":""}"><h3>Pending enrolments ${tag(String(pendingEnrol.length),pendingEnrol.length?"warn":"ok")}</h3>
         <p class="why">A named clerk still has to write how they checked. Until then the subject cannot read the chart.</p>
-        ${list(pendingEnrol,"no pending enrolments",e=>`<li><a href="#" onclick="openChart('${esc(e.patient_id)}');go('Chart');return false">${esc(e.patient_id)}</a>
+        ${list(pendingEnrol,"no pending enrolments",e=>`<li><a href="#" data-act="chart" data-id="${esc(e.patient_id)}">${esc(e.patient_id)}</a>
           ${esc(e.subject_id)} ${esc(e.relationship)} — requested by ${esc(e.requested_by)}</li>`)}</div>
       <div class="panel ${failedNotices.length||untoldNotices.length?"warn":""}"><h3>Patient notices ${tag(String(untoldNotices.length),untoldNotices.length?"warn":"ok")}</h3>
         <p class="why">Dispatching hands the fact to a channel. Recording that the patient was told is a separate act.</p>
@@ -488,7 +584,7 @@ async function privacyTab(m){
         ${list(incidents,"no open incidents",i=>`<li>${esc(i.id)} ${esc(i.whatHappened)}</li>`)}</div>
       <div class="panel ${findings.length?"warn":""}"><h3>Open assurance findings ${tag(String(findings.length),findings.length?"warn":"ok")}</h3>
         ${list(findings,"no open findings",f=>`<li>${esc(f.controlId)} — ${esc(f.title)}: ${esc(f.detail)}</li>`)}</div>
-      <div class="bar"><button class="act" onclick="openPrivacyReview()">open a review of the last 24 hours</button></div>
+      <div class="bar"><button class="act" data-act="openPrivacyReview">open a review of the last 24 hours</button></div>
       <div id="prv-out"></div>`;
   }catch(e){m.innerHTML=`<p class="err">${esc(e.message||e)}</p>`}
 }
@@ -571,9 +667,9 @@ async function history(m){
 
   const sum=s=>s.reduce((a,x)=>a+x.values.reduce((b,v)=>b+v,0),0);
   m.innerHTML=`<div class="bar">
-      <select onchange="$('#main').dataset.hours=this.value;render()">${["6","24","72","168"].map(h=>`<option value="${h}" ${h===hours?"selected":""}>last ${h}h</option>`).join("")}</select>
-      <select onchange="$('#main').dataset.bucket=this.value;render()">${["hour","day"].map(b=>`<option ${b===bucket?"selected":""}>${b}</option>`).join("")}</select>
-      <button class="act mini" onclick="render()">refresh</button></div>
+      <select data-set="hours">${["6","24","72","168"].map(h=>`<option value="${h}" ${h===hours?"selected":""}>last ${h}h</option>`).join("")}</select>
+      <select data-set="bucket">${["hour","day"].map(b=>`<option ${b===bucket?"selected":""}>${b}</option>`).join("")}</select>
+      <button class="act mini" data-act="render">refresh</button></div>
     <div class="cards"><div class="card"><div class="n">${sum(msgSeries)}</div><div class="l">messages received</div></div>
       <div class="card"><div class="n">${sum(delSeries)}</div><div class="l">deliveries completed</div></div></div>
     <h2>messages received, by status</h2>${barChart(keys,msgSeries)}${msgSeries.length?legend(msgSeries):""}
@@ -597,12 +693,12 @@ async function auditTab(m){
   const denied=rows.filter(r=>r.outcome>0).length;
   m.innerHTML=`<div class="bar">
       <input placeholder="patient identifier" value="${esc(q.patient)}" style="width:220px"
-        onchange="$('#main').dataset.apat=this.value;render()">
+        data-set="apat">
       <input placeholder="principal id" value="${esc(q.principal)}" style="width:280px"
-        onchange="$('#main').dataset.aprin=this.value;render()">
+        data-set="aprin">
       <label class="sub" style="color:var(--dim)"><input type="checkbox" ${q.failures?"checked":""}
-        onchange="$('#main').dataset.afail=this.checked?'1':'';render()"> refusals only</label>
-      <button class="act mini" onclick="render()">refresh</button></div>
+        data-set="afail" data-bool="1"> refusals only</label>
+      <button class="act mini" data-act="render">refresh</button></div>
     <div class="cards">
       <div class="card"><div class="n">${rows.length}</div><div class="l">events shown</div></div>
       <div class="card"><div class="n"><span class="${denied?"err":""}">${denied}</span></div><div class="l">refusals</div></div>
@@ -652,9 +748,9 @@ const COMMON_DEST=[["maxAttempts","number","8"],["backoffBaseMs","number","1000"
 
 let design={id:"",name:"",sourceType:"mllp",source:{},steps:[],dests:[{type:"fhirstore",fields:{},ordered:true}]};
 
-const fieldRow=(defs,bag,onchange)=>defs.map(([k,type,ph])=>
+const fieldRow=(defs,bag,fn)=>defs.map(([k,type,ph])=>
   `<label class="sub" style="color:var(--dim)">${k}</label>
-   <input type="${type}" placeholder="${esc(ph)}" value="${esc(bag[k]??"")}" oninput="${onchange}('${k}',this.value)">`).join("");
+   <input type="${type}" placeholder="${esc(ph)}" value="${esc(bag[k]??"")}" data-fn="${esc(fn)}" data-k="${esc(k)}">`).join("");
 
 function buildConfig(){
   const cfg={id:design.id,name:design.name||design.id,source:{type:design.sourceType}};
@@ -687,27 +783,27 @@ async function designer(m){
   m.innerHTML=`<div class="split"><div>
     <h2>channel</h2>
     <div class="grid3" style="grid-template-columns:110px 1fr">
-      <label class="sub" style="color:var(--dim)">id</label><input placeholder="adt-to-fhir-patient" value="${esc(design.id)}" oninput="dset('id',this.value)">
-      <label class="sub" style="color:var(--dim)">name</label><input placeholder="ADT feed to FHIR Patient" value="${esc(design.name)}" oninput="dset('name',this.value)">
+      <label class="sub" style="color:var(--dim)">id</label><input placeholder="adt-to-fhir-patient" value="${esc(design.id)}" data-fn="dset" data-k="id">
+      <label class="sub" style="color:var(--dim)">name</label><input placeholder="ADT feed to FHIR Patient" value="${esc(design.name)}" data-fn="dset" data-k="name">
     </div>
     <h2>source</h2>
-    <div class="bar"><select onchange="dsource(this.value)">${Object.keys(SOURCES).map(s=>`<option ${s===design.sourceType?"selected":""}>${s}</option>`).join("")}</select></div>
+    <div class="bar"><select data-change="dsource">${Object.keys(SOURCES).map(s=>`<option ${s===design.sourceType?"selected":""}>${s}</option>`).join("")}</select></div>
     <div class="grid3" style="grid-template-columns:130px 1fr">${fieldRow(SOURCES[design.sourceType],design.source,"dsrc")}</div>
     <h2>pipeline</h2>
     <div class="rowlist" id="steps">${design.steps.map((s,i)=>`<div class="item"><b>${esc(s.type)}</b>
-        ${(STEPS[s.type]||[]).map(([k,,ph])=>`<input placeholder="${esc(k)}: ${esc(ph)}" value="${esc(s.fields[k]??"")}" oninput="dstep(${i},'${k}',this.value)">`).join("")}
-        <button class="act mini" onclick="dstepDel(${i})">remove</button></div>`).join("")||'<span class="sub" style="color:var(--dim)">no steps: messages pass through unchanged</span>'}</div>
+        ${(STEPS[s.type]||[]).map(([k,,ph])=>`<input placeholder="${esc(k)}: ${esc(ph)}" value="${esc(s.fields[k]??"")}" data-fn="dstep" data-i="${i}" data-k="${esc(k)}">`).join("")}
+        <button class="act mini" data-act="dstepDel" data-i="${i}">remove</button></div>`).join("")||'<span class="sub" style="color:var(--dim)">no steps: messages pass through unchanged</span>'}</div>
     <div class="bar" style="margin-top:8px"><select id="new-step">${Object.keys(STEPS).map(s=>`<option>${s}</option>`).join("")}</select>
-      <button class="act mini" onclick="dstepAdd()">add step</button></div>
+      <button class="act mini" data-act="dstepAdd">add step</button></div>
     <h2>destinations</h2>
     <div class="rowlist">${design.dests.map((d,i)=>`<div class="item"><b>${esc(d.type)}</b>
-        <label class="sub" style="color:var(--dim)"><input type="checkbox" ${d.ordered?"checked":""} onchange="ddestOrdered(${i},this.checked)"> ordered</label>
-        ${[...(DESTS[d.type]||[]),...COMMON_DEST].map(([k,,ph])=>`<input placeholder="${esc(k)}: ${esc(ph)}" value="${esc(d.fields[k]??"")}" oninput="ddest(${i},'${k}',this.value)">`).join("")}
-        <button class="act mini" onclick="ddestDel(${i})">remove</button></div>`).join("")}</div>
+        <label class="sub" style="color:var(--dim)"><input type="checkbox" ${d.ordered?"checked":""} data-change="ddestOrdered" data-i="${i}"> ordered</label>
+        ${[...(DESTS[d.type]||[]),...COMMON_DEST].map(([k,,ph])=>`<input placeholder="${esc(k)}: ${esc(ph)}" value="${esc(d.fields[k]??"")}" data-fn="ddest" data-i="${i}" data-k="${esc(k)}">`).join("")}
+        <button class="act mini" data-act="ddestDel" data-i="${i}">remove</button></div>`).join("")}</div>
     <div class="bar" style="margin-top:8px"><select id="new-dest">${Object.keys(DESTS).map(s=>`<option>${s}</option>`).join("")}</select>
-      <button class="act mini" onclick="ddestAdd()">add destination</button></div>
-    <div class="bar" style="margin-top:14px"><button class="act" onclick="dsave()">create or replace channel</button>
-      <button class="act mini" onclick="dload()">load existing…</button></div>
+      <button class="act mini" data-act="ddestAdd">add destination</button></div>
+    <div class="bar" style="margin-top:14px"><button class="act" data-act="dsave">create or replace channel</button>
+      <button class="act mini" data-act="dload">load existing…</button></div>
     <div id="d-out"></div>
   </div><div><h2>channel json</h2><pre id="d-json">${esc(JSON.stringify(buildConfig(),null,2))}</pre></div></div>`;
 }
@@ -733,7 +829,7 @@ window.dsave=async()=>{
 window.dload=async()=>{
   const {data}=await j("/api/channels");
   $("#d-out").innerHTML=`<div class="bar"><select id="d-pick">${data.map(c=>`<option>${esc(c.id)}</option>`).join("")}</select>
-    <button class="act mini" onclick="dloadPick()">load</button></div>`;
+    <button class="act mini" data-act="dloadPick">load</button></div>`;
 };
 window.dloadPick=async()=>{
   const {data:cfg}=await j("/api/channels/"+$("#d-pick").value);
@@ -752,9 +848,9 @@ window.dloadPick=async()=>{
 async function mapEditor(m){
   const [{data:maps},{data:fixtures}]=await Promise.all([j("/api/mappings"),j("/api/fixtures")]);
   m.innerHTML=`<div class="bar">
-      <select id="mp-pick" onchange="mpLoad()"><option value="">— start from a registered mapping —</option>${maps.map(d=>`<option>${esc(d.id)}</option>`).join("")}</select>
-      <select id="mp-fix" onchange="mpFixture()"><option value="">— load a sample message —</option>${fixtures.map(f=>`<option>${esc(f.name)}</option>`).join("")}</select>
-      <button class="act" onclick="mpRun()">preview</button>
+      <select id="mp-pick" data-change="mpLoad"><option value="">— start from a registered mapping —</option>${maps.map(d=>`<option>${esc(d.id)}</option>`).join("")}</select>
+      <select id="mp-fix" data-change="mpFixture"><option value="">— load a sample message —</option>${fixtures.map(f=>`<option>${esc(f.name)}</option>`).join("")}</select>
+      <button class="act" data-act="mpRun">preview</button>
       <span class="sub" style="color:var(--dim)">nothing is stored: the preview runs the mapper alone</span></div>
     <div class="split">
       <div><h2>mapping document</h2><textarea id="mp-doc" spellcheck="false" style="min-height:300px" placeholder='{"id":"my-map","input":"hl7","ops":[{"set":"name[0].family","from":"PID-5.1"}]}'></textarea>
@@ -783,9 +879,9 @@ window.mpRun=async()=>{
 async function channels(m){
   const {data}=await j("/api/channels");
   m.innerHTML=`<table><tr><th>id</th><th>name</th><th>source</th><th>state</th><th>chain</th></tr>
-    ${data.map(c=>`<tr class="row" onclick="chanDetail('${esc(c.id)}')"><td>${esc(c.id)}</td><td>${esc(c.name)}</td><td>${esc(c.source)}${c.mllpPort?` :${c.mllpPort}`:""}</td>
+    ${data.map(c=>`<tr class="row" data-act="chanDetail" data-id="${esc(c.id)}"><td>${esc(c.id)}</td><td>${esc(c.name)}</td><td>${esc(c.source)}${c.mllpPort?` :${c.mllpPort}`:""}</td>
       <td>${c.running?tag("running","ok"):c.enabled?tag("stopped","warn"):tag("disabled","dim")}</td>
-      <td><button class="act mini" onclick="event.stopPropagation();verifyChain('${esc(c.id)}',this)">verify</button></td></tr>`).join("")}
+      <td><button class="act mini" data-act="verifyChain" data-id="${esc(c.id)}">verify</button></td></tr>`).join("")}
   </table><div id="detail"></div>`;
 }
 window.chanDetail=async id=>{const {data}=await j("/api/channels/"+id);$("#detail").innerHTML=`<h2>${esc(id)}</h2><pre>${esc(JSON.stringify(data,null,2))}</pre>`};
@@ -796,11 +892,11 @@ async function messages(m){
   const cur={ch:m.dataset.ch||"",st:m.dataset.st||""};
   const {data}=await j(`/api/messages?limit=50${cur.ch?"&channel_id="+cur.ch:""}${cur.st?"&status="+cur.st:""}`);
   m.innerHTML=`<div class="bar">
-    <select onchange="$('#main').dataset.ch=this.value;render()"><option value="">all channels</option>${chans.map(c=>`<option ${c.id===cur.ch?"selected":""}>${esc(c.id)}</option>`).join("")}</select>
-    <select onchange="$('#main').dataset.st=this.value;render()"><option value="">all statuses</option>${["processed","filtered","error"].map(s=>`<option ${s===cur.st?"selected":""}>${s}</option>`).join("")}</select>
-    <button class="act mini" onclick="render()">refresh</button></div>
+    <select data-set="ch"><option value="">all channels</option>${chans.map(c=>`<option ${c.id===cur.ch?"selected":""}>${esc(c.id)}</option>`).join("")}</select>
+    <select data-set="st"><option value="">all statuses</option>${["processed","filtered","error"].map(s=>`<option ${s===cur.st?"selected":""}>${s}</option>`).join("")}</select>
+    <button class="act mini" data-act="render">refresh</button></div>
   <table><tr><th>seq</th><th>channel</th><th>received</th><th>source</th><th>status</th></tr>
-    ${data.map(r=>`<tr class="row" onclick="msgDetail('${esc(r.id)}')"><td>${r.seq}</td><td>${esc(r.channel_id)}</td><td>${esc(r.received_at)}</td><td>${esc(r.source_type)}</td><td>${stTag(r.status)}${r.error?` <span class="err">${esc(r.error)}</span>`:""}</td></tr>`).join("")}
+    ${data.map(r=>`<tr class="row" data-act="msgDetail" data-id="${esc(r.id)}"><td>${r.seq}</td><td>${esc(r.channel_id)}</td><td>${esc(r.received_at)}</td><td>${esc(r.source_type)}</td><td>${stTag(r.status)}${r.error?` <span class="err">${esc(r.error)}</span>`:""}</td></tr>`).join("")}
   </table><div id="detail"></div>`;
 }
 window.msgDetail=async id=>{
@@ -813,12 +909,12 @@ window.msgDetail=async id=>{
 async function deliveries(m){
   const cur=m.dataset.state||"";
   const {data}=await j(`/api/deliveries?limit=50${cur?"&state="+cur:""}`);
-  m.innerHTML=`<div class="bar"><select onchange="$('#main').dataset.state=this.value;render()">
+  m.innerHTML=`<div class="bar"><select data-set="state">
       <option value="">all states</option>${["queued","retrying","inflight","delivered","dead","discarded"].map(s=>`<option ${s===cur?"selected":""}>${s}</option>`).join("")}</select>
-    <button class="act mini" onclick="render()">refresh</button></div>
+    <button class="act mini" data-act="render">refresh</button></div>
   <table><tr><th>channel</th><th>destination</th><th>seq</th><th>state</th><th>attempts</th><th>next attempt</th><th>last error</th><th></th></tr>
     ${data.map(d=>`<tr><td>${esc(d.channel_id)}</td><td>${esc(d.destination_id)}</td><td>${d.seq}</td><td>${stTag(d.state)}</td><td>${d.attempts}/${d.max_attempts}</td><td>${esc(d.next_attempt_at??"")}</td><td class="err">${esc((d.last_error??"").slice(0,80))}</td>
-      <td>${d.state==="dead"?`<button class="act mini" onclick="act('${esc(d.id)}','replay')">replay</button> <button class="act mini" onclick="act('${esc(d.id)}','discard')">discard</button>`:""}</td></tr>`).join("")}
+      <td>${d.state==="dead"?`<button class="act mini" data-act="delivery" data-id="${esc(d.id)}" data-op="replay">replay</button> <button class="act mini" data-act="delivery" data-id="${esc(d.id)}" data-op="discard">discard</button>`:""}</td></tr>`).join("")}
   </table>`;
 }
 window.act=async(id,what)=>{await j(`/api/deliveries/${id}/${what}`,{method:"POST"});render()};
@@ -828,12 +924,12 @@ async function fhirTab(m){
   const types=(cap.rest?.[0]?.resource||[]).map(r=>r.type);
   const cur={t:m.dataset.t||types[0]||"Patient",q:m.dataset.q||""};
   m.innerHTML=`<div class="bar">
-    <select onchange="$('#main').dataset.t=this.value;render()">${types.map(t=>`<option ${t===cur.t?"selected":""}>${t}</option>`).join("")}</select>
-    <input placeholder="identifier token (value or system|value)" value="${esc(cur.q)}" style="width:340px" onchange="$('#main').dataset.q=this.value;render()">
-    <button class="act mini" onclick="render()">search</button></div><div id="list"></div><div id="detail"></div>`;
+    <select data-set="t">${types.map(t=>`<option ${t===cur.t?"selected":""}>${t}</option>`).join("")}</select>
+    <input placeholder="identifier token (value or system|value)" value="${esc(cur.q)}" style="width:340px" data-set="q">
+    <button class="act mini" data-act="render">search</button></div><div id="list"></div><div id="detail"></div>`;
   const {data}=await j(`/fhir/${cur.t}?_count=25${cur.q?"&identifier="+encodeURIComponent(cur.q):""}`);
   $("#list").innerHTML=`<p class="sub" style="color:var(--dim)">${data.total??0} match(es)</p><table><tr><th>id</th><th>version</th><th>updated</th></tr>
-    ${(data.entry||[]).map(e=>`<tr class="row" onclick="readRes('${esc(cur.t)}','${esc(e.resource.id)}')"><td>${esc(e.resource.id)}</td><td>${esc(e.resource.meta?.versionId??"")}</td><td>${esc(e.resource.meta?.lastUpdated??"")}</td></tr>`).join("")}</table>`;
+    ${(data.entry||[]).map(e=>`<tr class="row" data-act="readRes" data-type="${esc(cur.t)}" data-id="${esc(e.resource.id)}"><td>${esc(e.resource.id)}</td><td>${esc(e.resource.meta?.versionId??"")}</td><td>${esc(e.resource.meta?.lastUpdated??"")}</td></tr>`).join("")}</table>`;
 }
 window.readRes=async(t,id)=>{const {data}=await j(`/fhir/${t}/${id}`);$("#detail").innerHTML=`<h2>${t}/${esc(id)}</h2><pre>${esc(JSON.stringify(data,null,2))}</pre>`};
 
@@ -841,12 +937,12 @@ async function subsTab(m){
   const {data}=await j("/fhir/Subscription");
   m.innerHTML=`<table><tr><th>id</th><th>status</th><th>criteria</th><th>endpoint</th><th></th></tr>
     ${(data.entry||[]).map(e=>{const r=e.resource;return`<tr><td>${esc(r.id)}</td><td>${stTag(r.status)}</td><td>${esc(r.criteria)}</td><td>${esc(r.channel?.endpoint)}</td>
-      <td><button class="act mini" onclick="delSub('${esc(r.id)}')">delete</button></td></tr>`}).join("")}
+      <td><button class="act mini" data-act="delSub" data-id="${esc(r.id)}">delete</button></td></tr>`}).join("")}
   </table>
   <h2>create rest-hook subscription</h2>
   <div class="bar"><input id="s-crit" placeholder='criteria, e.g. Patient or Observation?identifier=NT123456' style="width:340px">
     <input id="s-end" placeholder="endpoint, e.g. https://host/hook" style="width:300px">
-    <button class="act" onclick="mkSub()">create</button></div><div id="s-out"></div>`;
+    <button class="act" data-act="mkSub">create</button></div><div id="s-out"></div>`;
 }
 window.delSub=async id=>{await j("/fhir/Subscription/"+id,{method:"DELETE"});render()};
 window.mkSub=async()=>{
@@ -861,9 +957,9 @@ async function termTab(m){
     <div class="card"><div class="n">${s.valueSets}</div><div class="l">value sets</div></div>
     <div class="card"><div class="n">${s.maps}</div><div class="l">concept maps</div></div></div>
   <div class="split">
-    <div><h2>lookup</h2><div class="bar"><input id="l-sys" placeholder="system" style="width:250px"><input id="l-code" placeholder="code"><button class="act" onclick="doLookup()">go</button></div>
-      <h2>expand</h2><div class="bar"><input id="e-vs" placeholder="valueset id, e.g. lab-codes-demo" style="width:250px"><button class="act" onclick="doExpand()">go</button></div>
-      <h2>translate</h2><div class="bar"><input id="t-code" placeholder="code"><input id="t-map" placeholder="map (optional)"><input id="t-target" placeholder="target system (optional)" style="width:220px"><button class="act" onclick="doTranslate()">go</button></div></div>
+    <div><h2>lookup</h2><div class="bar"><input id="l-sys" placeholder="system" style="width:250px"><input id="l-code" placeholder="code"><button class="act" data-act="doLookup">go</button></div>
+      <h2>expand</h2><div class="bar"><input id="e-vs" placeholder="valueset id, e.g. lab-codes-demo" style="width:250px"><button class="act" data-act="doExpand">go</button></div>
+      <h2>translate</h2><div class="bar"><input id="t-code" placeholder="code"><input id="t-map" placeholder="map (optional)"><input id="t-target" placeholder="target system (optional)" style="width:220px"><button class="act" data-act="doTranslate">go</button></div></div>
     <div><h2>result</h2><pre id="t-out">-</pre></div></div>`;
 }
 const out=d=>{$("#t-out").textContent=JSON.stringify(d,null,2)};
@@ -875,9 +971,9 @@ async function confTab(m){
   const {data:packs}=await j("/api/conformance/packs");
   m.innerHTML=`<div class="split"><div>
     <div class="bar"><select id="c-pack">${packs.map(p=>`<option value="${esc(p.id)}">${esc(p.id)}: ${esc(p.name)}</option>`).join("")}</select>
-      <button class="act" onclick="doCap()">capability check</button></div>
+      <button class="act" data-act="doCap">capability check</button></div>
     <textarea id="c-res" placeholder='paste a FHIR resource JSON here'></textarea>
-    <div class="bar" style="margin-top:8px"><button class="act" onclick="doValidate()">validate</button></div></div>
+    <div class="bar" style="margin-top:8px"><button class="act" data-act="doValidate">validate</button></div></div>
     <div><h2>result</h2><pre id="c-out">-</pre></div></div>`;
 }
 window.doValidate=async()=>{

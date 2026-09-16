@@ -49,6 +49,7 @@
  * Patient shell: GET /me (EN/FR chrome; not a certified portal; does not enrol)
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { randomBytes } from "node:crypto";
 import { encryptionAtRest } from "../core/atrest.ts";
 import { createServer as createSecureServer } from "node:https";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -127,6 +128,59 @@ function patientHtml(): string {
   return PATIENT_HTML;
 }
 
+/* The policy the two HTML pages are served under.
+
+   `default-src 'none'`, and then only what the page genuinely needs: its own
+   single inline script, carrying the nonce minted for this one response; its
+   own API, on its own origin; and the `data:` favicon. No external script, no
+   frame, no form post, no base rewrite.
+
+   Because `script-src` names only a nonce and never 'unsafe-inline', the
+   browser refuses an injected `<script>` and an injected handler attribute
+   alike. That is the second line rather than the first — the first is that
+   neither page interpolates anything into script any more, which is what the
+   handler table in `ui.html` is for — but the two fail independently, and a
+   policy earns its keep on the day the escaping does not.
+
+   `style-src 'unsafe-inline'` is deliberate. Both pages style elements with a
+   `style` attribute, a nonce cannot cover those, and `style-src-attr` is not
+   carried by every browser this has to run in. It costs little here: with
+   `img-src` limited to `data:` and `default-src 'none'`, injected CSS has no
+   URL to send anything to. */
+const pageCsp = (nonce: string): string =>
+  [
+    "default-src 'none'",
+    `script-src 'nonce-${nonce}'`,
+    "style-src 'unsafe-inline'",
+    "connect-src 'self'",
+    "img-src data:",
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+  ].join("; ");
+
+/* Everything that is not one of those two pages: JSON, the metrics text, an
+   error body. None of it is a document, so the empty policy is the right one.
+   It costs nothing and it is what keeps a response from being framed, or
+   rendered as a page, if a content type is ever wrong. */
+const API_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'";
+
+/** Serves one of the two pages under a nonce minted for this response. */
+function sendHtml(res: ServerResponse, page: string): void {
+  // Sixteen bytes, freshly per response. A nonce that repeats across
+  // responses, or that a caller can predict, is one an injected script can
+  // carry — which would leave the policy reading as enforcement while
+  // enforcing nothing.
+  const nonce = randomBytes(16).toString("base64");
+  const html = page.replaceAll("{{nonce}}", nonce);
+  res.writeHead(200, {
+    "content-type": "text/html; charset=utf-8",
+    "content-length": Buffer.byteLength(html),
+    "content-security-policy": pageCsp(nonce),
+  });
+  res.end(html);
+}
+
 const MAX_BODY = 25 * 1024 * 1024;
 
 export interface ApiHandle {
@@ -181,6 +235,12 @@ export function startApi(engine: Engine, port: number, host = "0.0.0.0", options
   const limiter = new RateLimiter(options.rateLimit);
   const remote = options.remote;
   const handler = (req: IncomingMessage, res: ServerResponse): void => {
+    // Set before routing, so they hold for every answer including the ones the
+    // catch below writes. A route serving a document replaces the policy with
+    // its own; nothing replaces the other two.
+    res.setHeader("content-security-policy", API_CSP);
+    res.setHeader("x-content-type-options", "nosniff");
+    res.setHeader("referrer-policy", "no-referrer");
     void route(engine, req, res, gate, limiter, remote, options.station, options.devIdp).catch((err) => {
       // The net under the router, for a throw no route caught. It used to
       // send the exception message to the caller, which made it the one
@@ -346,18 +406,14 @@ async function route(
   }
 
   if (method === "GET" && (path === "/" || path === "/ui")) {
-    const html = uiHtml();
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(html) });
-    res.end(html);
+    sendHtml(res, uiHtml());
     return;
   }
 
   // Static chrome, no PHI. Chart access is /patient/* plus OAuth. Unauthenticated
   // GETs must not be audited as a reach for a patient record.
   if (method === "GET" && path === "/me") {
-    const html = patientHtml();
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(html) });
-    res.end(html);
+    sendHtml(res, patientHtml());
     return;
   }
 

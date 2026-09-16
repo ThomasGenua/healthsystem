@@ -90,12 +90,23 @@ writing:
 - a durability claim that does not hold — acknowledged and lost, or replayed
   out of order
 - recovering redacted or purged content from a database file or a backup
+- running script in the admin console or the patient page. Neither puts a value
+  into an attribute that holds JavaScript, and both are served under a policy
+  whose `script-src` is a per-response nonce — so an injected handler or
+  `<script>` has to get past both. A message arriving on an unauthenticated
+  MLLP port reaching either is the shape this matters in
 
 **Out of scope** — the demo fixtures and synthetic data, denial of service by
 brute resource exhaustion against a single-node deployment (it is single-node
-on purpose and documented as such), missing hardening headers on the admin UI
-where no session or credential is at stake, and anything requiring physical
-access to a machine or an operator's terminal. Reports generated wholesale by
+on purpose and documented as such), and anything requiring physical access to a
+machine or an operator's terminal.
+
+This list used to also exclude missing hardening headers on the admin console,
+"where no session or credential is at stake". That was wrong on its own terms —
+the console holds an API key in browser storage and attaches it to every
+request, so script running there runs with that key — and it is no longer true
+of the code either: both pages are served under a Content-Security-Policy whose
+`script-src` is a per-response nonce. Reports about those headers are in scope. Reports generated wholesale by
 an automated scanner with no reproduction attached are unlikely to get a useful
 response.
 
