@@ -1,5 +1,11 @@
 name: CI
 
+# Third-party actions are pinned to a commit, with the release they were taken
+# from in the comment beside them. A tag is a moving pointer its owner can
+# repoint, and these steps hold a checkout of this repository and a token — so
+# a repointed tag is an unreviewed change running with that access. The comment
+# is what makes the pin readable and updatable; the hex is what is enforced.
+
 on:
   push:
     branches: ["**"]
@@ -16,13 +22,13 @@ jobs:
         node: ["22.x", "24.x"]
     name: node ${{ matrix.node }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The hazard-identifier check compares this revision against the
           # base branch and the point they diverged, so it needs history
           # rather than the default single commit.
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
           cache: npm
