@@ -7,9 +7,75 @@ Northstar is pre-1.0: minor versions may change interfaces. Database upgrades ar
 always forward-compatible and run automatically on open — see
 [Upgrading](docs/RUNBOOK.md#upgrading).
 
-## Unreleased
+## 0.9.0 — 2026-09-16
+
+A release about the work between visits, and about the console that shows it.
+
+Items 58 to 67 are here: a patient and caregiver application at `/me` rather
+than chrome, pre-visit intake with a quarantine that means it, structured care
+plans and an after-visit summary, a longitudinal chart that refuses to draw a
+trend across units it cannot compare, discharge lists taken from the chart
+instead of typed into a form, handoffs that are not complete until somebody
+accepts them, a clinic board, notices sent to an address somebody checked, and
+outreach that cannot contact the same person twice. Then six measures of
+whether any of it helped — which keep "unknown" out of the numerator rather
+than counting it as success, because a rate that folds the unconfirmed into
+the good news is the one number that makes a struggling clinic look fine.
+
+And a security fix that reads as pedantry until you watch it run. The console
+put patient identifiers inside JavaScript, escaped them, and was wrong to
+think that was enough: an attribute holding script is HTML-decoded before the
+script is parsed, so an escaped apostrophe is an apostrophe again by the time
+it reaches the string it was supposed to stay inside. A patient identifier is
+whatever PID-3 of an unauthenticated message said it was. Neither page puts a
+value anywhere it will be parsed any more, and both are now served under a
+policy that refuses inline script outright — two controls that would have to
+fail together.
+
+Alongside it, the first work aimed at running this somewhere rather than
+testing it: sign-in for the portal that keeps the tokens on the server,
+upload scanning that fails closed, a preflight that checks a node against the
+pilot readiness list, and a staging deployment with alert rules and an outage
+drill that verifies recovery instead of assuming it.
 
 **Added**
+
+- **Clinic portal sign-in, with the tokens kept server-side.** `/me` gains
+  optional OIDC code/PKCE sign-in handled by the server: the browser holds an
+  opaque HttpOnly/Secure cookie that authorizes only patient routes, never a
+  token. A cookie-authenticated write or a logout requires both the exact
+  public origin and a session-bound CSRF token, and a session ends on idle
+  time, token expiry, logout or a process restart — logging out here does not
+  end the upstream SSO session, which is said rather than implied. Hazards
+  H-203, H-204 and H-205, and a real-browser journey in
+  `test/portal-browser.test.ts`.
+
+- **Patient uploads are scanned, and the scan fails closed.** A quarantined
+  upload is passed to ClamAV by a background worker and stays quarantined
+  unless the scanner returns clean — an unreachable or erroring scanner leaves
+  the file quarantined rather than releasing it.
+
+- **A pilot preflight, a reproducible localhost staging deployment, and local
+  alert monitoring.** `scripts/pilot-preflight.ts` checks a node against
+  `docs/PILOT-READINESS.md` before anybody relies on it; `deploy/staging/`
+  carries a Dockerfile and compose files that stand the thing up with smoke
+  checks; and the monitoring compose adds Prometheus alert rules with their
+  own rule tests, plus a scripted outage drill that verifies recovery rather
+  than assuming it.
+
+- **Both pages are served under a Content-Security-Policy (item 16).**
+  `default-src 'none'`, and a `script-src` naming a sixteen-byte nonce minted
+  per response and never `'unsafe-inline'` — so an injected `<script>` or
+  handler attribute is refused by the browser even if a later interpolation
+  puts one back. Deliberately the second line rather than the first: the first
+  is that neither page interpolates into script at all now, and the two fail
+  independently. Everything that is not one of those two pages — JSON, the
+  metrics text, an error body written from the router's catch — carries the
+  empty policy, `nosniff` and `no-referrer`, set before routing so the error
+  paths are covered too. `style-src` keeps `'unsafe-inline'`: both pages style
+  elements with a `style` attribute, a nonce cannot cover those, and with
+  `img-src` limited to `data:` there is no URL for injected CSS to reach.
+  1495 tests.
 
 - **Six workflow-effectiveness metrics that preserve "unknown" rather than
   fold it into success, reusing the release-and-suppression machinery item
@@ -1321,6 +1387,39 @@ always forward-compatible and run automatically on open — see
   tiebreak on id, so it is specified rather than incidental.
 
 **Security**
+
+- **An identifier the admin console rendered could execute as script in the
+  browser of whoever opened the page.** Every id was interpolated into a
+  single-quoted `onclick`, and `esc()` escaping an apostrophe to `&#39;` does
+  not help there: an attribute value is HTML-decoded before the JavaScript in
+  it is parsed, so the entity is an apostrophe again by the time it reaches
+  the string literal it was meant to stay inside. The comment above `esc()`
+  reasoned that its callers were "uuids or charset-validated"; a patient
+  identifier is neither. It is whatever PID-3 of the message said, nothing
+  validates its charset, and an MLLP source has nothing to authenticate with —
+  so anyone able to reach a channel port could run script carrying the API key
+  that console keeps in browser storage and attaches to every request.
+
+  `test/ui-xss.test.ts` already drove a real browser against hostile message
+  content, and already carried the payloads for this. What it had never done
+  was put one in an identifier, so it proved that names and reasons escaped
+  and said nothing about the forty-odd handlers. It does now, and the canary
+  fired three times before the fix.
+
+  The fix is structural rather than more escaping. All 65 inline handlers are
+  gone: a handler is named in a `data-` attribute and bound through one
+  delegated listener per event kind, so an identifier is read back through
+  `.dataset` as a string and is never parsed. `esc()` stays exactly right for
+  what is left, which is attribute values and text. `SECURITY.md` also
+  withdraws its claim that hardening headers on the console were out of scope
+  "where no session or credential is at stake" — one always was. Hazard H-206.
+
+- **CI actions are pinned to a commit rather than a tag (item 20).** A tag is
+  a pointer its owner can move, and these steps hold a checkout of this
+  repository and a token, so a repointed tag would be an unreviewed change
+  running with that access. This also moves off `actions/checkout@v4` and
+  `actions/setup-node@v4`, which every run was reporting as targeting the
+  deprecated Node 20 runtime.
 
 - **`NORTHSTAR_OIDC_AUDIENCE` is now required when OAuth is enabled, and a
   site without it will not boot.** It was optional, and an absent audience

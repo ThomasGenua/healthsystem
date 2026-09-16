@@ -296,7 +296,7 @@ to activate it in production. See `43` below.
 
 ## 55. Independent conformance laboratory
 
-- **Current capability** — 1068 tests, typecheck, and resilience workflows,
+- **Current capability** — 1495 tests, typecheck, and resilience workflows,
   all run by this project on Ubuntu only.
 - **Target standard** — Runs the official HL7 validator; version pinned once
   the artifact can be fetched.

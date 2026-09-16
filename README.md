@@ -86,7 +86,7 @@ v0.7.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Documents, procedures and care plans as chart facts rather than notes**, so their absence is visible and structured rather than a gap in prose.
 - **Enrolment attested by a named clerk** who records how they checked, rather than inferred from a token.
 
-1172 tests. Backend first, then the interface that makes the backend's honesty visible.
+1495 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -142,7 +142,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 1172 tests
+npm test          # 1495 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -827,7 +827,7 @@ A chart that is short says so at the top, above the panels: *"This is not the wh
 
 **Privacy.** The queues a privacy officer actually runs: unreviewed break-glass, overdue access requests, pending enrolments, undelivered and untold patient notices, open reviews, active holds, incidents and assurance findings. Opening a review of the last 24 hours is a button; closing one with flags still open is not. After-hours uses UTC clinic hours, not local time.
 
-Hostile content in this console runs in the browser session of the person holding an admin key, so `test/ui-xss.test.ts` drives the operational tabs in a real Chromium against genuinely hostile input — a patient's name from an ADT feed, and the free text a clerk types into a referral, a task or a break-glass reason — and asserts both that nothing executed and that the payloads actually reached the DOM. The Privacy tab is driven too; its honesty check is the inbox tests, because an empty queue would pass an XSS check having rendered nothing.
+Hostile content in this console runs in the browser session of the person holding an admin key, so `test/ui-xss.test.ts` drives the operational tabs in a real Chromium against genuinely hostile input — a patient's name from an ADT feed, the free text a clerk types into a referral, a task or a break-glass reason, and a patient *identifier*, which is the one that caught something — and asserts both that nothing executed and that the payloads actually reached the DOM. No attribute in this page holds JavaScript, and the page is served under a policy whose `script-src` is a per-response nonce; the identifier case is why both are true rather than one. The Privacy tab is driven too; its honesty check is the inbox tests, because an empty queue would pass an XSS check having rendered nothing.
 
 ### What is deliberately not on the clinical API
 
