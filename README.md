@@ -1,5 +1,11 @@
 # Northstar
 
+**Pilot readiness:** see [the current engineering assessment](docs/PILOT-READINESS.md)
+and [clinic sign-in setup](docs/RUNBOOK.md#the-patient-portal). The patient portal
+now supports server-side OIDC code/PKCE sign-in and a real-browser regression
+journey. Earlier roadmap snapshots and shell-only descriptions below predate
+these changes; they are not a current release-readiness verdict.
+
 A health integration engine built for northern operating conditions. HL7 v2 in and out over MLLP, FHIR R4 over HTTP, declarative transformation, durable store-and-forward with ordered replay, and hash-chained message lineage. No build step: Node runs the TypeScript directly and persistence is node:sqlite.
 
 The design targets the interoperability posture Canadian jurisdictions are converging on through Canada Health Infoway: PS-CA patient summaries, CA:FeX FHIR exchange, and CA:eReC eReferral and eConsult, operated over networks where a 5 Mbps satellite tail and a multi-hour outage are normal conditions rather than incidents. Every acknowledgement means the message is durably queued, not merely seen, and an ordered channel resumes exactly where it stopped.
@@ -65,7 +71,7 @@ v0.7.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Migration that cannot report success over a gap.** Completeness is declared and checked, not inferred from the absence of errors; rejects keep their payloads; a trial rolls back by retraction and a cutover with clinical activity refuses to.
 - **A laboratory result bridge that closes the order loop**, not just a mapping onto the facade: a resend writes nothing, a correction supersedes and arrives unacknowledged, a stale preliminary is ignored, and a result whose patient cannot be identified is held for a person rather than filed against a guess. No vendor interface is claimed — see [docs/PROVINCIAL.md](docs/PROVINCIAL.md).
 - **A privacy office a privacy officer can actually run.** Reviews cannot close with unaddressed flags. A legal hold skips the message-log retention sweep. An incident cannot close without saying whether patients were told. Access clocks queue; they do not hard-stop. Completing an access request without a disclosure is flagged, not blocked. The assurance catalogue cannot close a finding by forgetting the residual risk. `BACKUP-02` stays partial.
-- **A patient HTML shell at `GET /me`.** Language, landmarks, an honest banner. Not a certified portal: no identity-proofing, no ONE ID, no WCAG claim, and this page does not enrol anyone. Clinic attestation is a named clerk writing how they checked. Chart access is `/patient/*` plus OAuth.
+- **A patient application at `GET /me`.** Clinic sign-in, authorized chart views, messaging and scoped caregiver access. See [pilot readiness](docs/PILOT-READINESS.md) for verification and remaining deployment work. No identity-proofing, ONE ID or accessibility certification is claimed.
 - **An access review of the trail.** `GET /api/audit/review?patient=` joins who looked to whether anything clinical linked them, with flags a person can dismiss with a reason. Complementary to the operational office: this one reads the trail; that one runs the queues.
 - **Travelling clinics and a waitlist whose ordering is stated policy.** A visit is planned, repeated, moved and cancelled as one thing. Cancelling it puts every booked patient on a waitlist: priority, then waited-longest, then most-bumped. An offer resolves as accepted, declined or unreachable.
 - **Channel configuration as a ledger.** Every change is a version with who, when and why. Export and import go through the same store; a dry run writes nothing; every message records which configuration processed it.
@@ -80,7 +86,7 @@ v0.7.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Documents, procedures and care plans as chart facts rather than notes**, so their absence is visible and structured rather than a gap in prose.
 - **Enrolment attested by a named clerk** who records how they checked, rather than inferred from a token.
 
-1442 tests. Backend first, then the interface that makes the backend's honesty visible.
+1495 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -92,7 +98,7 @@ Honest limits, so nobody discovers them in production:
 - **The database file is not encrypted.** `node:sqlite` cannot encrypt, so the control that fits a single-file store is an encrypted volume underneath it. Northstar does not assume one is there: it checks at boot and on `/api/health`, and says so loudly when it cannot find one. See [Encryption at rest](#encryption-at-rest).
 - **The conformance packs are not certified.** They encode the published profiles as data and pass the shipped fixtures, but no projectathon has scored them.
 - **The clinician interface is thin, and most of the platform is API-only.** The admin UI now carries a chart, a worklist, break-glass and the privacy inbox, and there is a patient access page in English and French. Everything else described below — medications, orders, referrals, scheduling, registries, procedures, care plans, documents, enrolment — is a store and an HTTP API with tests and no screen. This is deliberate ordering, not an oversight, but "a clinician can run their day in this" is not a claim being made. It has also not had independent clinical-usability, human-factors or accessibility validation, so "a clinician can safely use this in production today" is not a claim being made either.
-- **No certified patient portal.** `GET /me` is chrome: English/French copy, a skip link, landmarks, and a banner that says what this page is not. It does not enrol anyone. The JSON patient/proxy boundary is mounted at `/patient/*`; it is OAuth-only and checks a live, explicitly scoped authority grant on every chart. Binding a subject is clinic-attested enrolment — a named person writes how they checked — not identity-proofing and not ONE ID. Notices publish fact onto a configured channel; dispatching is not telling. There is no WCAG or AODA claim. A shell people can open is not a portal people can use.
+- **No certified patient portal.** The working EN/FR application uses clinic OIDC sign-in and live patient grants. Synthetic-data browser tests cover core journeys, not identity-proofing, ONE ID, independent accessibility validation or real notification delivery.
 - **No broad medication decision-support content.** The medication safety mechanism is here — the check, the severities, the override with its record — and ships a deliberately small cross-reactivity set covering the classes with the clearest consensus. Drug interactions come from a licensed database through the `InteractionSource` seam. An interaction table that is 80% complete is one prescribers learn to trust, and the missing 20% is then invisible. Ten deterministic published risk instruments are implemented separately; each response names its source, formula version, intended population, units and unreviewed assurance state. They are implementation-tested, not independently clinically validated.
 - **Nothing here uses machine learning.** Section 7 of the requirements asks for it; nothing in this repository does anything of the sort, and no output should be read as though it did.
 
@@ -136,7 +142,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 1442 tests
+npm test          # 1495 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -821,7 +827,7 @@ A chart that is short says so at the top, above the panels: *"This is not the wh
 
 **Privacy.** The queues a privacy officer actually runs: unreviewed break-glass, overdue access requests, pending enrolments, undelivered and untold patient notices, open reviews, active holds, incidents and assurance findings. Opening a review of the last 24 hours is a button; closing one with flags still open is not. After-hours uses UTC clinic hours, not local time.
 
-Hostile content in this console runs in the browser session of the person holding an admin key, so `test/ui-xss.test.ts` drives the operational tabs in a real Chromium against genuinely hostile input — a patient's name from an ADT feed, and the free text a clerk types into a referral, a task or a break-glass reason — and asserts both that nothing executed and that the payloads actually reached the DOM. The Privacy tab is driven too; its honesty check is the inbox tests, because an empty queue would pass an XSS check having rendered nothing.
+Hostile content in this console runs in the browser session of the person holding an admin key, so `test/ui-xss.test.ts` drives the operational tabs in a real Chromium against genuinely hostile input — a patient's name from an ADT feed, the free text a clerk types into a referral, a task or a break-glass reason, and a patient *identifier*, which is the one that caught something — and asserts both that nothing executed and that the payloads actually reached the DOM. No attribute in this page holds JavaScript, and the page is served under a policy whose `script-src` is a per-response nonce; the identifier case is why both are true rather than one. The Privacy tab is driven too; its honesty check is the inbox tests, because an empty queue would pass an XSS check having rendered nothing.
 
 ### What is deliberately not on the clinical API
 
@@ -831,8 +837,8 @@ token, then binds that token's subject to a live `patient_authority` grant on
 every request. A patient scope cannot read `/fhir/*`; an admin scope does not
 imply patient; an API key cannot be issued patient scope.
 
-`GET /me` is a static English/French shell with landmarks and an honest banner.
-It loads no chart and does not enrol anyone. Clinic attestation is a named
+`GET /me` is a working English/French patient application with clinic sign-in.
+It loads only authorized charts and does not enrol anyone. Clinic attestation is a named
 clerk writing a method; it is not identity-proofing. Notices publish fact onto
 a channel; dispatching is not telling. There is still no WCAG or AODA claim.
 
@@ -1707,7 +1713,7 @@ All of these are engine sources, so everything downstream — pipeline, lineage,
 
 `GET /` serves a single-file, no-build UI over the public API: a dashboard with live counts, history charts, an access audit view, channels with hash-chain verification, a channel designer, a mapping editor with live fixtures, a message browser with per-step lineage, the delivery queue with dead-letter replay and discard, a FHIR facade browser, subscription management, terminology lookups, a conformance validator, and a **Privacy** tab over the office queues. It is deliberately thin; anything it does, curl does.
 
-`GET /me` is a separate file: English/French chrome, a skip link, landmarks, and a banner that says this is not a certified portal and that the page does not enrol anyone. It does not load a chart.
+`GET /me` is a separate English/French patient application. Its public document contains no patient records; chart data is fetched only through authorized patient APIs. It is not a certified portal and does not itself enrol anyone.
 
 Paste an API key into the box in the header and it is attached to every request; it is held in browser local storage and sent nowhere else.
 
@@ -1792,7 +1798,7 @@ a scope-narrowed directive withholds its section rather than the chart around it
 [#35](https://github.com/ThomasGenua/healthsystem/issues/35) is done in two complementary pieces. A privacy officer can open a review of the last 24 hours, address flags with a written reason, place a legal hold that skips the retention sweep, record a disclosure when fulfilling an access request, and close an incident only after saying whether patients were told. The assurance catalogue cannot close a finding by forgetting it. Separately, `GET /api/audit/review?patient=` answers who looked, whether anything clinical linked them to the patient, and what to look at first — with each flag saying why it fired, dismissible with a reason that is kept, and the chain's verification attached to the report. Credentials carry a practitioner to make that join possible. It is not a SIEM, not a PIA product, and after-hours is UTC.
 
 - [#23 Validate the conformance packs against the published Projectathon scripts](https://github.com/ThomasGenua/healthsystem/issues/23) — the packs validate against this project's reading of the specifications, which is not the same as conforming to them.
-- [#24 The patient-facing surface, and its separate identity boundary](https://github.com/ThomasGenua/healthsystem/issues/24) — the backend boundary is done, clinic-attested enrolment binds a subject after a named clerk writes how they checked, and notices publish fact onto a channel (dispatching is not telling). `GET /me` is chrome and does not enrol anyone. What remains is identity-proofing / ONE ID, delivery to a phone or inbox the patient owns, and accessibility validation. Do not call `/me` a portal.
+- [#24 The patient-facing surface, and its separate identity boundary](https://github.com/ThomasGenua/healthsystem/issues/24) — the backend boundary is done, clinic-attested enrolment binds a subject after a named clerk writes how they checked, and notices publish fact onto a channel (dispatching is not telling). `GET /me` is a working application; it does not itself enrol anyone. What remains is identity-proofing / ONE ID, delivery to a phone or inbox the patient owns, and accessibility validation. See the current pilot-readiness report for remaining requirements.
 [#40](https://github.com/ThomasGenua/healthsystem/issues/40) is done: a prescription has a transmission lifecycle, a second transmission is refused because a pharmacy may dispense twice, and each way one is lost — never sent, sent and unacknowledged, failed, cancelled without telling the pharmacy — is a chase list. No pharmacy network has received a message.
 
 **Built for where it actually runs.**

@@ -1,5 +1,56 @@
 # Northstar runbook
 
+## Local staging package
+
+See [synthetic Docker staging](../deploy/staging/README.md) for a localhost-only
+container setup, pinned images, configuration templates, optional real ClamAV
+and read-only smoke checks. This is separate from a live clinical deployment.
+
+## Pilot preflight
+
+Run `npm run preflight` against the service environment. Add `-- --probe-scanner`
+to send a harmless synthetic sample to the local daemon. Output contains check
+IDs and remediation text, never environment values or secret paths. Exit 1 means
+configuration blockers exist; exit 0 does not constitute deployment approval.
+Review items require site evidence, not another environment assertion. This
+command does not contact the identity provider or send notifications.
+
+## Local upload antivirus
+
+Set `NORTHSTAR_CLAMD_SOCKET` to an absolute local clamd socket path, or
+`NORTHSTAR_CLAMD_PORT=3310` for TCP restricted by the client to `127.0.0.1`.
+Configure exactly one, with `NORTHSTAR_DEV_MALWARE_SCANNER` off. On Windows,
+use loopback TCP; UNC and named-pipe paths are refused. Without a scanner,
+uploads remain quarantined. Do not expose clamd to the public network;
+INSTREAM has no authentication or encryption. Restrict daemon socket access to
+the service account and bind TCP only to loopback if using TCP.
+
+Maintain ClamAV and its signatures (for example, via FreshClam). Configure
+`StreamMaxLength` to at least 8 MiB, the application's upload limit. Scans have
+a 30-second absolute deadline and bounded replies. Errors, unavailable daemons
+and unexpected responses leave uploads pending, never downloadable. The
+authenticated `POST /api/clinical/upload-scan` route accepts `{"id":"upload-id"}`.
+The server automatically sweeps up to ten eligible uploads sequentially every
+five seconds, without overlapping sweeps. Failures remain quarantined and use
+persisted exponential retry delays from 30 seconds up to one hour. Restart keeps
+retry timing; suspended tenants are not scanned. Shutdown waits for the active
+scan before closing the database. The manual route remains available.
+`/api/health` reports uploadScanning and degrades when the oldest pending file
+is over 15 minutes old. Alert on `northstar_upload_scan_oldest_age_seconds > 900`,
+and monitor `northstar_uploads_pending_scan`, `northstar_uploads_retrying_scan`
+and `northstar_upload_scanner_configured`. A monitor must be configured at the
+site; adding metrics does not deliver an alert by itself.
+Filenames are not transmitted and raw daemon replies are not stored.
+
+Before enabling uploads at a site, exercise a harmless file, the standard EICAR
+test fixture and a stopped daemon using synthetic patients. Confirm clean files
+are filed once, flagged bytes are removed, and unavailable scanning leaves
+content quarantined. Automated protocol tests do not establish signature
+freshness or actual detection performance. Antivirus does not guarantee safe
+documents; retain the application's content-type and download protections.
+
+Protocol: [official ClamAV INSTREAM documentation](https://docs.clamav.net/manual/Usage/ClamdProtocol.html).
+
 For the person holding the pager. Deployment steps first, then the failures
 worth having written down before they happen.
 
@@ -209,18 +260,49 @@ break a rule loudly, it just evaluates against a series that no longer exists.
 file, loads nothing from anywhere else, and talks only to `/patient/*` — the
 OAuth surface that was already there. Nothing about it can widen a grant.
 
-**In production**, point it at your identity provider and there is nothing
-else to configure:
+**Clinic sign-in**, using the server-side authorization-code client:
 
 ```bash
 NORTHSTAR_AUTH_MODE=apikey+oauth
 NORTHSTAR_OIDC_ISSUER=https://login.example.ca/realms/clinic
 NORTHSTAR_OIDC_AUDIENCE=northstar-prod     # required; the engine refuses to start without it
+NORTHSTAR_PUBLIC_ORIGIN=https://patients.example.ca
+NORTHSTAR_PORTAL_CLIENT_ID=northstar-patient-portal
+NORTHSTAR_PORTAL_CLIENT_SECRET_FILE=/run/secrets/northstar-portal-client
+NORTHSTAR_PORTAL_SCOPES='openid patient/*.read'
 ```
 
-A person signs in at that provider, arrives holding a token, and the portal
-uses it. Northstar validates it and does not issue it, which is why there is
-no login form here to configure.
+Register the exact redirect URI `https://patients.example.ca/auth/portal/callback`
+at the identity provider. It must publish OIDC discovery with S256 PKCE,
+support `client_secret_basic`, and issue signed JWT access tokens for the
+configured API audience and ID tokens for the portal client. Both tokens
+must identify the same subject. Configure patient scopes and the tenant claim
+at the provider; sign-in does not create patient grants. Protect the secret
+file with OS permissions and manage rotation at the provider.
+
+The patient selects **Sign in with your clinic**, authenticates at that
+provider, and returns to `/me`. The server exchanges the code and validates
+issuer, audience, signature, nonce, subject and expiry. Tokens stay in memory;
+the browser receives an opaque Secure/HttpOnly host-only cookie. Patient writes
+and logout require the exact public Origin and a session-bound CSRF token.
+Cookies cannot authorize admin or FHIR routes. Bearer API clients keep their
+existing authorization path.
+
+Sessions end after 15 minutes without a patient API request, at token expiry,
+after at most eight hours, on logout, or when this process restarts. There is
+no refresh-token storage or silent renewal. Logout ends the Northstar session,
+not the provider's SSO session. Pending logins expire after five minutes.
+Pending logins and active sessions are each bounded to 1,000 entries.
+
+Terminate TLS at the configured public origin, protect the backend listener,
+and preserve the browser's Origin header. Forwarded host headers never decide
+the redirect URL. Origin must contain no path or trailing slash. All login
+settings are required together; invalid or insecure configuration fails boot.
+Without a login client the portal explains that clinic sign-in is unavailable.
+Manual token entry is available only with the development issuer.
+Use `node --test --test-force-exit test/portal-login.test.ts test/portal-browser.test.ts`
+for a synthetic rehearsal; set `NORTHSTAR_REQUIRE_BROWSER=1` to refuse a skipped
+browser test. A real provider still needs a site-specific acceptance run.
 
 **In development**, where you have no provider yet:
 

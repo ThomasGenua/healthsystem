@@ -100,6 +100,7 @@ import type { ChannelDocument } from "../core/channel-versions.ts";
 import { validateChannel } from "../core/engine.ts";
 import { Refusal } from "../core/refusal.ts";
 import type { DevIdentityProvider } from "../auth/dev-idp.ts";
+import type { PortalLogin } from "../auth/portal-login.ts";
 import { readEnv } from "../core/naming.ts";
 import { sendOrder, sendOrderCancellation } from "../orders/send.ts";
 import type { SpecimenDetail } from "../orders/outbound.ts";
@@ -225,6 +226,8 @@ export interface ApiOptions {
    * JWKS fetch; there is no branch anywhere in the gate for it.
    */
   devIdp?: DevIdentityProvider;
+  /** Optional server-side OIDC client; cookie credentials are confined to /patient/*. */
+  portalLogin?: PortalLogin;
 }
 
 export function startApi(engine: Engine, port: number, host = "0.0.0.0", options: ApiOptions = {}): Promise<ApiHandle> {
@@ -241,7 +244,7 @@ export function startApi(engine: Engine, port: number, host = "0.0.0.0", options
     res.setHeader("content-security-policy", API_CSP);
     res.setHeader("x-content-type-options", "nosniff");
     res.setHeader("referrer-policy", "no-referrer");
-    void route(engine, req, res, gate, limiter, remote, options.station, options.devIdp).catch((err) => {
+    void route(engine, req, res, gate, limiter, remote, options.station, options.devIdp, options.portalLogin).catch((err) => {
       // The net under the router, for a throw no route caught. It used to
       // send the exception message to the caller, which made it the one
       // path where a fault from any store — including the ones that name a
@@ -315,7 +318,8 @@ async function route(
   limiter: RateLimiter,
   remote?: RemoteBackup,
   station?: ReadingStation,
-  devIdp?: DevIdentityProvider
+  devIdp?: DevIdentityProvider,
+  portalLogin?: PortalLogin
 ): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname.replace(/\/+$/, "") || "/";
@@ -324,7 +328,15 @@ async function route(
   // One gate, ahead of every route. The router below is a flat if-chain with
   // no middleware layer, so this is the only place a check cannot be
   // forgotten when a route is added.
-  const auth = await gate.check(method, path, req.headers);
+  if (path.startsWith("/patient/") || path.startsWith("/auth/portal") || path === "/me") {
+    res.setHeader("cache-control", "no-store");
+    res.setHeader("referrer-policy", "no-referrer");
+  }
+  const sessionRefusal = portalLogin?.attach(req, path);
+  const authenticated = await gate.check(method, path, req.headers);
+  const auth = sessionRefusal && authenticated.ok
+    ? { ...sessionRefusal, principal: authenticated.principal }
+    : authenticated;
 
   // Every store this request touches comes from the caller's tenant, resolved
   // from the credential and never from anything on the request itself — a
@@ -405,6 +417,9 @@ async function route(
     return send(res, auth.status, { error: auth.error });
   }
 
+  if (portalLogin && await portalLogin.handle(req, res, path, url)) return;
+  if (method === "GET" && path === "/auth/portal") return send(res, 200, { enabled: false, authenticated: false });
+
   if (method === "GET" && (path === "/" || path === "/ui")) {
     sendHtml(res, uiHtml());
     return;
@@ -480,6 +495,7 @@ async function route(
       // reported without degrading — the link is up, and the message
       // pipeline already owns that.
       degraded:
+        Boolean(engine.uploadScanWorker?.status().degraded) ||
         stalled.length > 0 ||
         signals.deadLetters > 0 ||
         signals.silentChannels.length > 0 ||
@@ -496,6 +512,7 @@ async function route(
       // configured-and-failed is an incident and already folded into
       // `degraded` above.
       remoteBackup: remoteStatus,
+      uploadScanning: engine.uploadScanWorker?.status() ?? { configured: false },
     });
   }
 
@@ -528,6 +545,13 @@ async function route(
     };
 
     metric("channels", "Configured channels.", "gauge", [["", stats.channels]]);
+    const scans = engine.uploadScanWorker?.status();
+    metric("upload_scanner_configured", "Automatic upload scanning configured.", "gauge", [["", scans ? 1 : 0]]);
+    if (scans) {
+      metric("uploads_pending_scan", "Quarantined uploads awaiting scanning.", "gauge", [["", scans.pending]]);
+      metric("uploads_retrying_scan", "Pending uploads with prior scan attempts.", "gauge", [["", scans.retrying]]);
+      metric("upload_scan_oldest_age_seconds", "Age of oldest quarantined upload.", "gauge", [["", scans.oldestAgeSec]]);
+    }
     metric("messages_total",
       "Messages ingested, by status.",
       "counter",

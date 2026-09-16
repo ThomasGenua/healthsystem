@@ -32,7 +32,36 @@ value anywhere it will be parsed any more, and both are now served under a
 policy that refuses inline script outright — two controls that would have to
 fail together.
 
+Alongside it, the first work aimed at running this somewhere rather than
+testing it: sign-in for the portal that keeps the tokens on the server,
+upload scanning that fails closed, a preflight that checks a node against the
+pilot readiness list, and a staging deployment with alert rules and an outage
+drill that verifies recovery instead of assuming it.
+
 **Added**
+
+- **Clinic portal sign-in, with the tokens kept server-side.** `/me` gains
+  optional OIDC code/PKCE sign-in handled by the server: the browser holds an
+  opaque HttpOnly/Secure cookie that authorizes only patient routes, never a
+  token. A cookie-authenticated write or a logout requires both the exact
+  public origin and a session-bound CSRF token, and a session ends on idle
+  time, token expiry, logout or a process restart — logging out here does not
+  end the upstream SSO session, which is said rather than implied. Hazards
+  H-203, H-204 and H-205, and a real-browser journey in
+  `test/portal-browser.test.ts`.
+
+- **Patient uploads are scanned, and the scan fails closed.** A quarantined
+  upload is passed to ClamAV by a background worker and stays quarantined
+  unless the scanner returns clean — an unreachable or erroring scanner leaves
+  the file quarantined rather than releasing it.
+
+- **A pilot preflight, a reproducible localhost staging deployment, and local
+  alert monitoring.** `scripts/pilot-preflight.ts` checks a node against
+  `docs/PILOT-READINESS.md` before anybody relies on it; `deploy/staging/`
+  carries a Dockerfile and compose files that stand the thing up with smoke
+  checks; and the monitoring compose adds Prometheus alert rules with their
+  own rule tests, plus a scripted outage drill that verifies recovery rather
+  than assuming it.
 
 - **Both pages are served under a Content-Security-Policy (item 16).**
   `default-src 'none'`, and a `script-src` naming a sixteen-byte nonce minted
@@ -46,7 +75,7 @@ fail together.
   paths are covered too. `style-src` keeps `'unsafe-inline'`: both pages style
   elements with a `style` attribute, a nonce cannot cover those, and with
   `img-src` limited to `data:` there is no URL for injected CSS to reach.
-  1442 tests.
+  1495 tests.
 
 - **Six workflow-effectiveness metrics that preserve "unknown" rather than
   fold it into success, reusing the release-and-suppression machinery item
@@ -1383,7 +1412,7 @@ fail together.
   `.dataset` as a string and is never parsed. `esc()` stays exactly right for
   what is left, which is attribute values and text. `SECURITY.md` also
   withdraws its claim that hardening headers on the console were out of scope
-  "where no session or credential is at stake" — one always was. Hazard H-203.
+  "where no session or credential is at stake" — one always was. Hazard H-206.
 
 - **CI actions are pinned to a commit rather than a tag (item 20).** A tag is
   a pointer its owner can move, and these steps hold a checkout of this

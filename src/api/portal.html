@@ -125,7 +125,7 @@ const COPY = {
     skip:"Skip to main content", tagline:"Patient access", langLabel:"Language",
     viewing:"Viewing", switchChart:"Switch chart", signOut:"Sign out",
     footer:"This is not a certified patient portal. There is no identity-proofing and no ONE ID, and this page does not enrol anyone: a named clerk at your clinic writes how they checked who you are before any access is granted. Nothing here is a claim of WCAG or AODA conformance. Your chart is reached only through a live grant your clinic issued.",
-    signInTitle:"Sign in", loading:"Loading…", retry:"Try again",
+    signInTitle:"Sign in", clinicSignIn:"Sign in with your clinic", loginUnavailable:"Your clinic has not enabled sign-in here yet. Please contact the clinic.", loginFailed:"Sign-in could not be completed. Please try again.", loading:"Loading…", retry:"Try again",
     offline:"That did not reach the clinic. Your connection may have dropped.",
     expired:"Your session has ended. Sign in again.",
     noAccess:"This chart is no longer shared with you. If that is unexpected, contact the clinic.",
@@ -188,7 +188,7 @@ const COPY = {
     skip:"Aller au contenu principal", tagline:"Accès patient", langLabel:"Langue",
     viewing:"Dossier consulté", switchChart:"Changer de dossier", signOut:"Se déconnecter",
     footer:"Ceci n’est pas un portail patient certifié. Il n’y a ni preuve d’identité ni ONE ID, et cette page n’inscrit personne : un commis nommé de votre clinique décrit par écrit comment il a vérifié votre identité avant qu’un accès soit accordé. Rien ici ne constitue une revendication de conformité WCAG ou AODA. Votre dossier n’est accessible que par une autorisation en vigueur délivrée par votre clinique.",
-    signInTitle:"Connexion", loading:"Chargement…", retry:"Réessayer",
+    signInTitle:"Connexion", clinicSignIn:"Se connecter avec votre clinique", loginUnavailable:"Votre clinique n’a pas encore activé la connexion ici. Veuillez la contacter.", loginFailed:"La connexion n’a pas pu être effectuée. Veuillez réessayer.", loading:"Chargement…", retry:"Réessayer",
     offline:"La demande n’est pas parvenue à la clinique. Votre connexion s’est peut-être interrompue.",
     expired:"Votre session est terminée. Reconnectez-vous.",
     noAccess:"Ce dossier ne vous est plus partagé. Si cela vous surprend, communiquez avec la clinique.",
@@ -253,16 +253,14 @@ let LANG = (navigator.language || "en").toLowerCase().startsWith("fr") ? "fr" : 
 const t = (k) => (COPY[LANG] && COPY[LANG][k]) || k;
 
 /* ----------------------------------------------------------------- state */
-const S = { token:null, authorities:[], active:null, tab:"results", busy:false };
+const S = { token:null, session:false, csrf:null, authorities:[], active:null, tab:"results", busy:false, epoch:0 };
 
-/* Session storage, not local: closing the tab ends the session. A bearer
-   token in browser storage is the ordinary compromise for a page with no
-   server session, and it is the reason this is not a certified portal —
-   a deployment that needs one puts a confidential client in front. */
-try { S.token = sessionStorage.getItem("ns.token"); } catch { /* private mode */ }
+/* Production tokens stay on the server. Development tokens live only in memory.
+   Remove credentials left by the older token-paste interface. */
+try { sessionStorage.removeItem("ns.token"); } catch { /* private mode */ }
 function setToken(v){
   S.token = v;
-  try { v ? sessionStorage.setItem("ns.token", v) : sessionStorage.removeItem("ns.token"); } catch {}
+  S.epoch++;
 }
 
 const el = (tag, attrs, ...kids) => {
@@ -292,6 +290,7 @@ class ApiError extends Error {
   constructor(kind, message){ super(message); this.kind = kind; }
 }
 async function api(path, opts){
+  const epoch = S.epoch;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 20000);
   let res;
@@ -300,7 +299,8 @@ async function api(path, opts){
       ...(opts||{}),
       signal: controller.signal,
       headers: {
-        "authorization": "Bearer " + S.token,
+        ...(S.token ? {"authorization": "Bearer " + S.token} : {}),
+        ...(S.session && S.csrf ? {"x-northstar-csrf": S.csrf} : {}),
         ...(opts && opts.body ? {"content-type":"application/json"} : {}),
         ...((opts||{}).headers||{})
       }
@@ -312,6 +312,7 @@ async function api(path, opts){
   } finally {
     clearTimeout(timer);
   }
+  if (epoch !== S.epoch) throw new ApiError("stale", "");
   if (res.status === 401) throw new ApiError("expired", t("expired"));
   if (res.status === 403) throw new ApiError("forbidden", t("noAccess"));
   if (!res.ok) {
@@ -319,7 +320,9 @@ async function api(path, opts){
     try { detail = (await res.json()).error || ""; } catch {}
     throw new ApiError("error", detail || (res.status + ""));
   }
-  return res.json();
+  const body = await res.json();
+  if (epoch !== S.epoch) throw new ApiError("stale", "");
+  return body;
 }
 
 /* --------------------------------------------------------------- sign-in */
@@ -332,12 +335,30 @@ async function devSubjects(){
 }
 
 async function renderSignIn(){
+  const epoch = ++S.epoch;
   const view = document.getElementById("view");
   view.replaceChildren(el("h2", {text: t("signInTitle")}));
   document.getElementById("who").hidden = true;
   document.getElementById("nav").hidden = true;
 
+  let login;
+  try {
+    const response = await fetch("/auth/portal", {cache:"no-store", signal:AbortSignal.timeout(10000)});
+    if (!response.ok) throw new Error("login unavailable");
+    login = await response.json();
+  } catch { return showError(t("offline"), renderSignIn); }
+  if (epoch !== S.epoch) return;
+  if (new URL(location.href).searchParams.has("signin")) {
+    view.appendChild(el("p", {class:"err", text:t("loginFailed")}));
+    history.replaceState(null, "", "/me");
+  }
+  if (login.enabled) {
+    view.appendChild(el("a", {class:"act", href:"/auth/portal/login", text:t("clinicSignIn")}));
+    return;
+  }
+
   const dev = await devSubjects();
+  if (epoch !== S.epoch) return;
   if (dev) {
     view.appendChild(el("div", {class:"note"},
       el("h3", {text: t("devTitle")}), el("p", {text: t("devBody")})));
@@ -356,8 +377,8 @@ async function renderSignIn(){
     }
   }
 
-  // Always offered, dev provider or not: a real deployment signs in at its
-  // own identity provider and arrives here holding a token.
+  if (!dev) { view.appendChild(el("p", {class:"note", text:t("loginUnavailable")})); return; }
+  // Token entry is confined to the explicitly enabled development provider.
   const form = el("form", {onsubmit: (e) => { e.preventDefault(); manualSignIn(); }},
     el("h3", {text: t("tokenTitle")}),
     el("p", {class:"meta", text: t("tokenBody")}),
@@ -390,8 +411,18 @@ function manualSignIn(){
   start();
 }
 
-function signOut(){
+async function signOut(){
+  S.epoch++;
+  S.authorities = []; S.active = null; S.busy = false;
+  showLoading();
+  if (S.session) {
+    try {
+      const response = await fetch("/auth/portal/logout", {method:"POST", headers:{"x-northstar-csrf":S.csrf || ""}, signal:AbortSignal.timeout(10000)});
+      if (!response.ok) throw new Error("logout failed");
+    } catch { return showError(t("offline"), signOut); }
+  }
   setToken(null);
+  S.session = false; S.csrf = null;
   S.authorities = []; S.active = null;
   location.hash = "";
   renderSignIn();
@@ -412,13 +443,15 @@ function showLoading(){
 
 /** Every screen funnels its failures here, so no failure ends as a blank page. */
 async function guard(fn, retry){
+  const epoch = S.epoch;
   if (S.busy) return;
   S.busy = true;
   showLoading();
   try {
     await fn();
   } catch (err) {
-    if (err instanceof ApiError && err.kind === "expired") { signOut(); showError(t("expired")); }
+    if (err instanceof ApiError && err.kind === "stale") return;
+    if (err instanceof ApiError && err.kind === "expired") { await signOut(); }
     else if (err instanceof ApiError && err.kind === "forbidden") {
       // The grant went away underneath us. Re-read the list rather than
       // leaving a chart on screen that is no longer shared.
@@ -426,7 +459,7 @@ async function guard(fn, retry){
     }
     else showError(err instanceof Error ? err.message : String(err), retry);
   } finally {
-    S.busy = false;
+    if (epoch === S.epoch) S.busy = false;
   }
 }
 
@@ -641,6 +674,7 @@ async function submitting(form, fn){
   button.disabled = true;
   try { await fn(); }
   catch (err) {
+    if (err instanceof ApiError && err.kind === "stale") return;
     if (err instanceof ApiError && err.kind === "expired") return signOut();
     showError(err instanceof Error ? err.message : String(err), () => guard(screenMessages));
   }
@@ -953,7 +987,8 @@ function chartPicker(){
 }
 
 function route(){
-  if (!S.token) return renderSignIn();
+  S.epoch++; S.busy = false;
+  if (!S.token && !S.session) return renderSignIn();
   if (!S.active) return chartPicker();
   const want = (location.hash || "").replace(/^#\//, "") || "results";
   const tab = TABS.find((x) => x.id === want && S.active.permissions.includes(x.perm));
@@ -964,13 +999,24 @@ function route(){
 }
 
 async function start(){
-  if (!S.token) return renderSignIn();
+  const epoch = ++S.epoch;
+  if (!S.token) {
+    try {
+      const response = await fetch("/auth/portal", {cache:"no-store", signal:AbortSignal.timeout(10000)});
+      if (!response.ok) throw new Error("login unavailable");
+      const login = await response.json();
+      if (epoch !== S.epoch) return;
+      S.session = login.authenticated; S.csrf = login.csrf || null;
+    } catch { return showError(t("offline"), start); }
+  }
+  if (!S.token && !S.session) return renderSignIn();
   showLoading();
   try {
     const body = await api("/patient/authorities");
     S.authorities = body.authorities || [];
   } catch (err) {
-    if (err instanceof ApiError && err.kind === "expired") { setToken(null); return renderSignIn(); }
+    if (err instanceof ApiError && err.kind === "stale") return;
+    if (err instanceof ApiError && err.kind === "expired") { setToken(null); S.session = false; S.csrf = null; return renderSignIn(); }
     return showError(err instanceof Error ? err.message : String(err), start);
   }
   // A grant that disappeared while the tab was open must not leave a stale
@@ -993,6 +1039,7 @@ document.getElementById("lang").addEventListener("change", (e) => { LANG = e.tar
 document.getElementById("signout").addEventListener("click", signOut);
 document.getElementById("switch").addEventListener("click", () => { S.active = null; location.hash = ""; route(); });
 window.addEventListener("hashchange", route);
+window.addEventListener("pageshow", (e) => { if (e.persisted) { S.active = null; S.authorities = []; showLoading(); start(); } });
 
 applyLanguage();
 start();

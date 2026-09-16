@@ -105,6 +105,8 @@ export function scopesFromSmart(raw: Iterable<string>): Set<Scope> {
  * authenticate against everything else.
  */
 export function requiredScope(method: string, path: string): Scope | null {
+  if (method === "GET" && ["/auth/portal", "/auth/portal/login", "/auth/portal/callback"].includes(path)) return null;
+  if (method === "POST" && path === "/auth/portal/logout") return null;
   if (method === "GET" && (path === "/" || path === "/ui" || path === "/me")) return null;
   if (method === "GET" && path === "/api/health") return null;
   // Metrics carry counters, ages and channel ids — no patient data — and a

@@ -619,9 +619,15 @@ export class Uploads {
     if (row.data === null) refuse(`upload ${id} has no content to scan`);
 
     const result = await this.scanner.scan(Buffer.from(row.data, "base64"), row.filename);
+    if (!result || (result.verdict !== "clean" && result.verdict !== "infected")) {
+      refuse("invalid malware scanner verdict; upload remains quarantined");
+    }
     const now = new Date().toISOString();
 
     return this.db.transaction(() => {
+      // Another scan may have completed while this one awaited the daemon.
+      const current = this.require(id);
+      if (current.status !== "pending-scan") return current;
       if (result.verdict === "infected") {
         this.db.sql
           .prepare(
