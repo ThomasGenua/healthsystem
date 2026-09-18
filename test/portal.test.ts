@@ -102,7 +102,7 @@ async function boot(opts: { tenants?: string[] } = {}) {
   };
 }
 
-/** A chart with a released result, a held one, and an appointment. */
+/** A chart with a released result and a held one. */
 function seed(engine: Engine, tenantId = "default", patientId = PATIENT) {
   const t = engine.forTenant(tenantId);
   t.clinical.record({
@@ -562,6 +562,132 @@ test("the published key set carries the public half and nothing else", async () 
     const priv = s.idp as unknown as { privateKey: { export(o: unknown): Record<string, string> } };
     const full = priv.privateKey.export({ format: "jwk" });
     assert.ok(!raw.includes(full.d), "the private exponent is in the published key set");
+  } finally {
+    await s.close();
+  }
+});
+
+/**
+ * What the appointments screen actually renders.
+ *
+ * `/patient/appointments` served the store's `{ booking, slot }` pairs and
+ * `screenAppointments` reads `startsAt`, `service`, `resourceId` and
+ * `status` off the row. All four were undefined, so `fmtDate(undefined)`
+ * gave the card heading `"—"` and the meta line filtered down to nothing:
+ * every appointment rendered as an em-dash and an empty line. A patient
+ * could see that they had appointments and not when, where, with whom, or
+ * whether one had been cancelled.
+ *
+ * Nothing caught it because every test on this route asserted a status code.
+ * 200 is what a broken payload returns too, so these assert what the screen
+ * puts in front of somebody instead of what the schema happens to be.
+ */
+
+/** Books one appointment on the seeded chart, and answers with its id. */
+function bookAppointment(engine: Engine, patientId = PATIENT): string {
+  const t = engine.forTenant("default");
+  const slot = t.schedule.openSlot({
+    resourceId: "dr-okpik",
+    resourceKind: "practitioner",
+    service: "Family practice",
+    startsAt: new Date(Date.now() + 86_400_000).toISOString(),
+    endsAt: new Date(Date.now() + 86_400_000 + 1_800_000).toISOString(),
+  });
+  return t.schedule.book({
+    slotId: slot.id,
+    patientId,
+    reason: "Follow-up",
+    by: { actorId: "clerk", actorKind: "staff" },
+  }).id;
+}
+
+/** `fmtDate` from src/api/portal.html, which is where "—" comes from. */
+const portalDate = (iso: unknown): string => {
+  if (!iso) return "—";
+  const d = new Date(iso as string);
+  return Number.isNaN(d.getTime()) ? String(iso) : d.toISOString();
+};
+
+test("an appointment card says when, and not just an em-dash", async () => {
+  const s = await boot();
+  try {
+    seed(s.engine);
+    bookAppointment(s.engine);
+    s.engine
+      .forTenant("default")
+      .patientAccess.grantSelf(PATIENT, "urn:dev:tara", { actorId: "clerk", actorKind: "practitioner" });
+    const token = await s.signIn("urn:dev:tara");
+    const rows = (await (await s.get(token, `/patient/appointments?patient=${PATIENT}`)).json()) as Array<
+      Record<string, unknown>
+    >;
+    assert.ok(rows.length > 0, "the chart was seeded with an appointment");
+
+    // Exactly the two expressions screenAppointments builds.
+    const heading = portalDate(rows[0].startsAt ?? rows[0].starts_at);
+    const meta = [rows[0].service, rows[0].resourceId ?? rows[0].resource_id, rows[0].status]
+      .filter(Boolean)
+      .join(" · ");
+
+    assert.notEqual(heading, "—", "the heading is the date, not the placeholder for not having one");
+    assert.ok(meta.length > 0, `the meta line is empty: ${JSON.stringify(rows[0])}`);
+    assert.match(meta, /booked|attended|cancelled|did-not-attend/, "and it says where the booking stands");
+  } finally {
+    await s.close();
+  }
+});
+
+test("an appointment carries its own id, so something can be attached to it", async () => {
+  // The portal needs this to say which visit an intake form is for; the
+  // board needs it to ask who is expected today. A row with no id can be
+  // rendered and nothing else.
+  const s = await boot();
+  try {
+    seed(s.engine);
+    bookAppointment(s.engine);
+    s.engine
+      .forTenant("default")
+      .patientAccess.grantSelf(PATIENT, "urn:dev:tara", { actorId: "clerk", actorKind: "practitioner" });
+    const token = await s.signIn("urn:dev:tara");
+    const rows = (await (await s.get(token, `/patient/appointments?patient=${PATIENT}`)).json()) as Array<{
+      id?: string;
+    }>;
+    assert.equal(typeof rows[0].id, "string");
+    assert.ok(rows[0].id!.length > 0);
+  } finally {
+    await s.close();
+  }
+});
+
+test("a patient's appointment does not carry the clinic's bookkeeping", async () => {
+  // The pair the store returns has every column of both rows in it. Serving
+  // it whole handed a patient the staff member who booked them, the
+  // referral it came from and the correlation id it was matched on -- none
+  // of which they asked for, and one of which names somebody else.
+  const s = await boot();
+  try {
+    seed(s.engine);
+    bookAppointment(s.engine);
+    s.engine
+      .forTenant("default")
+      .patientAccess.grantSelf(PATIENT, "urn:dev:tara", { actorId: "clerk", actorKind: "practitioner" });
+    const token = await s.signIn("urn:dev:tara");
+    const rows = (await (await s.get(token, `/patient/appointments?patient=${PATIENT}`)).json()) as Array<
+      Record<string, unknown>
+    >;
+    // Every key at every depth. The first version of this looked only at the
+    // top level, and the shape it was written against hid the leak one level
+    // down under `booking` -- so it passed against the very payload it exists
+    // to reject. Two scanners in this repository have already been found too
+    // narrow; this is the third and it was caught by running it against the
+    // old shape rather than by reading it.
+    const keysDeep = (v: unknown): string[] =>
+      v && typeof v === "object"
+        ? Object.entries(v as Record<string, unknown>).flatMap(([k, inner]) => [k, ...keysDeep(inner)])
+        : [];
+    const present = new Set(keysDeep(rows[0]));
+    for (const leaked of ["booked_by", "bookedBy", "correlation_id", "referral_id", "cancelled_by", "tenant_id", "seat"]) {
+      assert.equal(present.has(leaked), false, `${leaked} is the clinic's, not the patient's`);
+    }
   } finally {
     await s.close();
   }

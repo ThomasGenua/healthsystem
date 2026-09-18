@@ -985,10 +985,35 @@ async function route(
     if (path === "/patient/appointments" && method === "GET") {
       const patientId = url.searchParams.get("patient");
       if (!patientId) return send(res, 400, { error: "patient required" });
+      // Flattened, because the store returns { booking, slot } pairs and the
+      // only caller -- the portal's appointments screen -- reads `startsAt`,
+      // `service`, `resourceId` and `status` off the row. It read them off
+      // the pair and got undefined for all four, so every card rendered an
+      // em-dash and an empty line: a patient could see that they had
+      // appointments and not when, where, with whom, or whether one had been
+      // cancelled.
+      //
+      // Narrowed at the same time. The pair carries every column of both
+      // rows, so the old shape handed a patient `booked_by`,
+      // `correlation_id`, `referral_id` and `cancelled_by` -- staff
+      // identifiers and internal bookkeeping they never asked for. What is
+      // here is what the screen shows, plus what somebody needs to act on it.
       return patientPhi(patientId, "appointments", "Appointment", "view-appointments", () =>
-        tenant.schedule.appointmentsForPatient(patientId, {
-          includeCancelled: url.searchParams.get("cancelled") === "true",
-        })
+        tenant.schedule
+          .appointmentsForPatient(patientId, {
+            includeCancelled: url.searchParams.get("cancelled") === "true",
+          })
+          .map(({ booking, slot }) => ({
+            id: booking.id,
+            startsAt: slot.starts_at,
+            endsAt: slot.ends_at,
+            service: slot.service,
+            resourceId: slot.resource_id,
+            resourceKind: slot.resource_kind,
+            status: booking.status,
+            reason: booking.reason,
+            ...(booking.cancelled_at ? { cancelledAt: booking.cancelled_at } : {}),
+          }))
       );
     }
 
