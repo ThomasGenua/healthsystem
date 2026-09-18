@@ -11,6 +11,29 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **A patient's intake form now says which visit it is for, and the board
+  can ask who is coming in unprepared.** Two halves of one thing.
+
+  The portal's intake screen asks once which upcoming appointment the forms
+  are for — soonest first, cancelled and past ones excluded, preselected
+  only when there is a single choice to get wrong — and a draft is keyed to
+  the visit it prepares for, so the same questionnaire answered for Thursday
+  and for next month are two forms rather than one overwriting the other.
+
+  `ClinicBoard.expectedWithoutIntake()` then answers what #106 deliberately
+  left out: who is expected today with nothing sent in to read. A clinician
+  meets somebody without the medication list and history they would have
+  had, and where this visit is the only one for months that is the
+  difference between a consultation and a guess.
+
+  It is asked **per visit**. A form submitted before the last appointment
+  says nothing about this one, and counting it would tell a clinician they
+  had a current medication list when they do not. A form attached to no
+  visit covers no visit — null is not a wildcard here, for the reason it is
+  not one in a patient-scoped search: a visit showing as unprepared when a
+  form exists somewhere is recoverable; one showing as ready when nothing
+  was sent for it is not.
+
 - **Intake submissions nobody has read, and how much work is open, are on the
   clinic board.** Both queries existed and no screen called either, so the
   capability was there and nothing surfaced it. `attention()` now carries

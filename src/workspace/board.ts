@@ -124,6 +124,8 @@ export interface BoardSources {
   intake?: {
     /** Submitted and not yet reviewed — see IntakeSubmissions.open. */
     open(): IntakeSubmissionRow[];
+    /** Which of these appointments already have one — see submittedForAppointments. */
+    submittedForAppointments(appointmentIds: string[]): Set<string>;
   };
   discharges: {
     openFollowUps(opts?: { accountableId?: string }): DischargeRow[];
@@ -360,6 +362,38 @@ export class ClinicBoard {
             },
           }
         : {}),
+    };
+  }
+
+  /**
+   * Who is coming in today and has sent nothing to prepare with.
+   *
+   * The other half of the intake question, and the half that is about the
+   * visit rather than the queue. A clinician meets somebody without the
+   * medication list and history they would have had, and at a clinic where
+   * this visit is the only one for months that is the difference between a
+   * consultation and a guess.
+   *
+   * Asked per appointment rather than per patient, because an intake is
+   * preparation for a visit: a form submitted before the last one says
+   * nothing about this one. That is only answerable because the portal now
+   * records which appointment a form is for; before it did, every
+   * submission was attached to nothing and this panel would have named
+   * every patient every day.
+   *
+   * Absent, not empty, when intake is not wired — the rule the rest of this
+   * board works under.
+   */
+  expectedWithoutIntake(
+    resourceIds: string[],
+    asOf = new Date()
+  ): { rows: WaitingRow[]; because: string } | undefined {
+    if (!this.sources.intake) return undefined;
+    const expected = this.waiting(resourceIds, asOf).filter((r) => r.state === "expected" || r.state === "arrived");
+    const have = this.sources.intake.submittedForAppointments(expected.map((r) => r.bookingId));
+    return {
+      rows: expected.filter((r) => !have.has(r.bookingId)),
+      because: "expected today, and nothing was sent in before the visit to read",
     };
   }
 

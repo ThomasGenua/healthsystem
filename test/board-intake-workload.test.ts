@@ -155,3 +155,114 @@ test("a board whose task source cannot count says nothing rather than zero", () 
     }
   });
 });
+
+// --- the half #106 could not build --------------------------------------
+
+/**
+ * Who is coming in today with nothing sent in.
+ *
+ * #106 left this out on purpose. `appointment_id` existed on an intake row
+ * and the portal never set one, so every submission was attached to nothing
+ * and a panel built on it would have named every expected patient every
+ * day. The portal records the visit now, so the question is answerable —
+ * and it is asked per appointment, because a form submitted before the last
+ * visit says nothing about this one.
+ */
+const RESOURCE = "dr-okpik";
+
+async function clinicDay() {
+  const s = await clinic();
+  const t = s.t;
+  const book = (patientId: string, hour: number) => {
+    const slot = t.schedule.openSlot({
+      resourceId: RESOURCE,
+      resourceKind: "practitioner",
+      service: "Family practice",
+      startsAt: `2026-03-04T${String(hour).padStart(2, "0")}:00:00.000Z`,
+      endsAt: `2026-03-04T${String(hour).padStart(2, "0")}:30:00.000Z`,
+    });
+    return t.schedule.book({ slotId: slot.id, patientId, reason: "Follow-up", by: CLERK }).id;
+  };
+  const submitFor = (patientId: string, appointmentId?: string) => {
+    const draft = t.intake.saveDraft({
+      patientId,
+      questionnaireId: "pre-visit",
+      answers: { fasting: true },
+      ...(appointmentId ? { appointmentId } : {}),
+      by: { actorId: patientId, actorKind: "patient" },
+    });
+    return t.intake.submit(draft.id, { actorId: patientId, actorKind: "patient" });
+  };
+  // Mid-morning on the booked day, so both appointments are still expected.
+  const asOf = new Date("2026-03-04T08:30:00.000Z");
+  return { ...s, book, submitFor, asOf };
+}
+
+test("somebody expected today with nothing sent in is on the board", async () => {
+  const s = await clinicDay();
+  try {
+    const prepared = s.book(PATIENT, 9);
+    s.book(OTHER, 10);
+    s.submitFor(PATIENT, prepared);
+
+    const panel = s.t.board.expectedWithoutIntake([RESOURCE], s.asOf);
+    assert.ok(panel);
+    assert.deepEqual(panel.rows.map((r) => r.patientId), [OTHER]);
+    assert.match(panel.because, /nothing was sent in before the visit/);
+  } finally {
+    await s.close();
+  }
+});
+
+test("a form sent in for a different visit does not cover this one", async () => {
+  // The reason this is asked per appointment. Counting any submission ever
+  // would tell a clinician they had a current medication list because the
+  // patient filled one in last year.
+  const s = await clinicDay();
+  try {
+    const lastYear = s.book(PATIENT, 8);
+    const today = s.book(PATIENT, 11);
+    s.submitFor(PATIENT, lastYear);
+
+    const rows = s.t.board.expectedWithoutIntake([RESOURCE], s.asOf)!.rows;
+    assert.ok(
+      rows.some((r) => r.bookingId === today),
+      "the 11:00 visit has nothing of its own and must still be listed"
+    );
+  } finally {
+    await s.close();
+  }
+});
+
+test("a form attached to no visit covers no visit", async () => {
+  // Null is not a wildcard, for the reason it is not one in a
+  // patient-scoped search: a visit showing as unprepared when a form exists
+  // somewhere is recoverable; one showing as ready when nothing was sent
+  // for it is what puts a clinician in the room without a history.
+  const s = await clinicDay();
+  try {
+    const today = s.book(PATIENT, 9);
+    s.submitFor(PATIENT);
+
+    assert.deepEqual(
+      s.t.board.expectedWithoutIntake([RESOURCE], s.asOf)!.rows.map((r) => r.bookingId),
+      [today]
+    );
+  } finally {
+    await s.close();
+  }
+});
+
+test("a deployment with no intake gets no panel here either", async () => {
+  const s = await clinicDay();
+  try {
+    s.book(PATIENT, 9);
+    const withoutIntake = new ClinicBoard({
+      schedule: s.t.schedule, encounters: s.t.encounters, tasks: s.t.tasks,
+      discharges: s.t.discharges, handoffs: s.t.handoffs,
+    });
+    assert.equal(withoutIntake.expectedWithoutIntake([RESOURCE], s.asOf), undefined);
+  } finally {
+    await s.close();
+  }
+});
