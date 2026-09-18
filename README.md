@@ -86,7 +86,7 @@ v0.7.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Documents, procedures and care plans as chart facts rather than notes**, so their absence is visible and structured rather than a gap in prose.
 - **Enrolment attested by a named clerk** who records how they checked, rather than inferred from a token.
 
-1495 tests. Backend first, then the interface that makes the backend's honesty visible.
+1498 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -142,7 +142,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 1495 tests
+npm test          # 1498 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -261,6 +261,7 @@ A refusal returns `429` with `Retry-After`. Counters are in memory, matching the
 | `NORTHSTAR_OIDC_ISSUER` / `_AUDIENCE` / `_JWKS` | — | OAuth 2.0 configuration |
 | `NORTHSTAR_TLS_CERT` / `_KEY` | — | serve over TLS |
 | `NORTHSTAR_TLS_CLIENT_CA` | — | require a client certificate signed by this CA |
+| `NORTHSTAR_HSTS_MAX_AGE` | `31536000` | HSTS duration, sent only when this node terminates TLS itself; `0` sends no header |
 | `NORTHSTAR_VALIDATE_PACK` / `_MODE` | — | conformance pack enforced on every facade write |
 | `NORTHSTAR_REDACT_AFTER_DAYS` | — | replace stored payloads older than this with a tombstone |
 | `NORTHSTAR_PURGE_AFTER_DAYS` | — | delete messages older than this outright |

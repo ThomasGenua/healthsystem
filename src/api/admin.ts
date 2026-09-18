@@ -166,6 +166,39 @@ const pageCsp = (nonce: string): string =>
    rendered as a page, if a content type is ever wrong. */
 const API_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'";
 
+/**
+ * The HSTS header for a node that terminates TLS itself, or null for one that
+ * does not.
+ *
+ * Sent only when this process holds the certificate, because that is the only
+ * case where it knows the response actually travelled over TLS. Behind a proxy
+ * that terminates TLS the requests arrive here as plain HTTP, and the only
+ * evidence to the contrary would be an `X-Forwarded-Proto` header that anyone
+ * who can reach the port can write. Trusting that to decide a header which
+ * tells browsers to refuse HTTP for a year is the wrong way round — so a
+ * proxied deployment sets HSTS at the proxy, which is where the TLS it is
+ * asserting actually ends. `docs/RUNBOOK.md` says so.
+ *
+ * No `includeSubDomains` and no `preload`, neither of them configurable here.
+ * Both reach hostnames this deployment may not own — a sibling on the same
+ * parent domain, serving something else over HTTP, goes dark — and `preload`
+ * is close to irreversible once a browser ships the list. A site that wants
+ * either is making a decision about a whole domain, not about this process,
+ * and should make it at the edge where the rest of that domain is configured.
+ */
+export function hstsHeader(env: NodeJS.ProcessEnv = process.env): string | null {
+  const configured = readEnv("HSTS_MAX_AGE", env);
+  // A year, the conventional value and what any later preload submission
+  // would require. Browsers remember it: a site that may need to serve plain
+  // HTTP again should lower this before it ships, not after.
+  if (configured === undefined) return "max-age=31536000";
+  if (!/^\d+$/.test(configured.trim())) {
+    throw new Error(`NORTHSTAR_HSTS_MAX_AGE must be a whole number of seconds, or 0 to send no header; got "${configured}"`);
+  }
+  const seconds = Number(configured.trim());
+  return seconds === 0 ? null : `max-age=${seconds}`;
+}
+
 /** Serves one of the two pages under a nonce minted for this response. */
 function sendHtml(res: ServerResponse, page: string): void {
   // Sixteen bytes, freshly per response. A nonce that repeats across
@@ -237,6 +270,10 @@ export function startApi(engine: Engine, port: number, host = "0.0.0.0", options
   // independent.
   const limiter = new RateLimiter(options.rateLimit);
   const remote = options.remote;
+  // Computed once, and only for a node holding its own certificate. Reading
+  // the environment here rather than per request also means a malformed value
+  // stops the node at boot instead of on the first call.
+  const hsts = options.tls ? hstsHeader() : null;
   const handler = (req: IncomingMessage, res: ServerResponse): void => {
     // Set before routing, so they hold for every answer including the ones the
     // catch below writes. A route serving a document replaces the policy with
@@ -244,6 +281,7 @@ export function startApi(engine: Engine, port: number, host = "0.0.0.0", options
     res.setHeader("content-security-policy", API_CSP);
     res.setHeader("x-content-type-options", "nosniff");
     res.setHeader("referrer-policy", "no-referrer");
+    if (hsts) res.setHeader("strict-transport-security", hsts);
     void route(engine, req, res, gate, limiter, remote, options.station, options.devIdp, options.portalLogin).catch((err) => {
       // The net under the router, for a throw no route caught. It used to
       // send the exception message to the caller, which made it the one

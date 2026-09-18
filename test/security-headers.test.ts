@@ -22,9 +22,26 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { request as httpsRequest } from "node:https";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Engine } from "../src/core/engine.ts";
-import { startApi } from "../src/api/admin.ts";
+import { hstsHeader, startApi } from "../src/api/admin.ts";
+import { tlsFromEnv } from "../src/api/tls.ts";
+
+const CERT_SCRIPT = fileURLToPath(new URL("../scripts/gen-dev-certs.sh", import.meta.url));
+
+function haveOpenssl(): boolean {
+  try {
+    execFileSync("openssl", ["version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 async function boot() {
   const engine = new Engine({ dbPath: ":memory:", tickMs: 15 });
@@ -126,6 +143,77 @@ test("a response that is not a document carries the empty policy", async () => {
     }
   } finally {
     await close();
+  }
+});
+
+test("a node that does not terminate TLS sends no HSTS", async () => {
+  const { base, close } = await boot();
+  try {
+    // Not an omission: over plain HTTP the header is meaningless to a browser,
+    // and a node behind a TLS-terminating proxy cannot tell the difference
+    // from here except by trusting a forwarded header anyone reaching the port
+    // could write. The proxy sends it instead.
+    for (const path of ["/", "/api/health"]) {
+      assert.equal((await fetch(base + path)).headers.get("strict-transport-security"), null, path);
+    }
+  } finally {
+    await close();
+  }
+});
+
+test("a node holding its own certificate sends HSTS, without reaching other hostnames", { skip: !haveOpenssl() }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "northstar-hsts-"));
+  const engine = new Engine({ dbPath: ":memory:", tickMs: 15 });
+  await engine.start();
+  let api: Awaited<ReturnType<typeof startApi>> | undefined;
+  try {
+    execFileSync(CERT_SCRIPT, [dir], { stdio: "ignore" });
+    const tls = tlsFromEnv({ certPath: join(dir, "server.crt"), keyPath: join(dir, "server.key") });
+    assert.ok(tls, "the dev certificates did not produce a TLS config");
+    api = await startApi(engine, 0, "127.0.0.1", { tls });
+    assert.equal(api.tls, true);
+
+    const header = await new Promise<string | undefined>((resolve, reject) => {
+      const req = httpsRequest(
+        {
+          host: "localhost",
+          port: api!.port,
+          path: "/api/health",
+          method: "GET",
+          ca: readFileSync(join(dir, "ca.crt")),
+        },
+        (res) => {
+          res.resume();
+          res.on("end", () => resolve(res.headers["strict-transport-security"] as string | undefined));
+        }
+      );
+      req.on("error", reject);
+      req.end();
+    });
+
+    assert.equal(header, "max-age=31536000");
+    // The two directives deliberately never sent. `includeSubDomains` takes
+    // down a sibling hostname serving something else over HTTP, and `preload`
+    // is close to irreversible once a browser ships the list — neither is this
+    // process's decision to make about a whole domain.
+    assert.ok(!/includeSubDomains/i.test(header ?? ""), "HSTS reached hostnames this node does not own");
+    assert.ok(!/preload/i.test(header ?? ""), "HSTS asked to be preloaded");
+  } finally {
+    if (api) await api.close();
+    await engine.stop();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the HSTS duration is the deployment's to set, and a bad one stops the node", () => {
+  // A site that may have to serve plain HTTP again has to lower this before it
+  // ships, because browsers remember the last value they were given.
+  assert.equal(hstsHeader({}), "max-age=31536000");
+  assert.equal(hstsHeader({ NORTHSTAR_HSTS_MAX_AGE: "600" }), "max-age=600");
+  // Zero is how a deployment turns it off, which is different from a typo.
+  assert.equal(hstsHeader({ NORTHSTAR_HSTS_MAX_AGE: "0" }), null);
+  for (const bad of ["forever", "-1", "1e6", "31536000s", " "]) {
+    assert.throws(() => hstsHeader({ NORTHSTAR_HSTS_MAX_AGE: bad }), /whole number of seconds/, bad);
   }
 });
 

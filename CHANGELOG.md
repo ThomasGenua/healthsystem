@@ -7,6 +7,25 @@ Northstar is pre-1.0: minor versions may change interfaces. Database upgrades ar
 always forward-compatible and run automatically on open — see
 [Upgrading](docs/RUNBOOK.md#upgrading).
 
+## Unreleased
+
+**Added**
+
+- **`Strict-Transport-Security`, on the nodes that can honestly send it
+  (item 16).** A node holding its own certificate sends it with every
+  response, a year by default and `NORTHSTAR_HSTS_MAX_AGE` to change or
+  disable it. A node behind a TLS-terminating proxy sends nothing: the
+  requests arrive as plain HTTP, and the only evidence otherwise would be a
+  forwarded header anyone who can reach the port is able to write — which is
+  the wrong thing to decide a year of refused HTTP on. That deployment sets
+  HSTS at the proxy, where the TLS it is asserting actually ends.
+
+  Never `includeSubDomains`, never `preload`, and neither configurable. Both
+  reach hostnames this deployment may not own — a sibling serving something
+  else over HTTP goes dark — and `preload` is close to irreversible once a
+  browser ships the list. A site that wants either is deciding about a whole
+  domain rather than about this process.
+
 ## 0.9.0 — 2026-09-16
 
 A release about the work between visits, and about the console that shows it.

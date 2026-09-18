@@ -140,6 +140,19 @@ Then, before any real feed is pointed at it:
    not in a shell history. See [API keys](../README.md#api-keys).
 3. **Turn on TLS** (`NORTHSTAR_TLS_CERT` / `_KEY`), and mutual TLS if the
    destinations support it (`NORTHSTAR_TLS_CLIENT_CA`).
+
+   A node holding its own certificate sends `Strict-Transport-Security` with
+   it, for a year by default (`NORTHSTAR_HSTS_MAX_AGE`, `0` to send none).
+   **If you terminate TLS at a proxy instead, set HSTS there** — requests
+   arrive here as plain HTTP and the engine will not send it, because the only
+   evidence to the contrary would be a forwarded header anyone who can reach
+   the port could write, and that is not a thing to decide a year of
+   HTTP refusal on.
+
+   Note it is a year *that browsers remember*. Lower it before shipping if this
+   hostname may ever have to serve plain HTTP again. The engine never sends
+   `includeSubDomains` or `preload`: both reach hostnames this deployment may
+   not own, and belong at the edge where the rest of the domain is configured.
 4. **Set `NORTHSTAR_BACKUP_DIR`** to something on a different physical device
    than `NORTHSTAR_DATA`, and **set `NORTHSTAR_BACKUP_REMOTE`** to a destination
    that is not this machine (`s3://bucket/prefix` or `sftp://user@host/path`)
