@@ -86,7 +86,7 @@ v0.7.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Documents, procedures and care plans as chart facts rather than notes**, so their absence is visible and structured rather than a gap in prose.
 - **Enrolment attested by a named clerk** who records how they checked, rather than inferred from a token.
 
-1498 tests. Backend first, then the interface that makes the backend's honesty visible.
+1500 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -104,7 +104,7 @@ Honest limits, so nobody discovers them in production:
 
 ## Requirements
 
-Node 22.18 or later; Node 24+ recommended in production (see above). No required runtime dependencies.
+Node 22.18 or later; Node 24+ recommended in production (see above). No required runtime dependencies — but "required" is doing work in that sentence, and the SBOM says so plainly. The drivers for the `sqlpoll` and `sftp` sources are optional dependencies, imported lazily and only by a channel that uses one, so nothing loads them otherwise; `npm ci` still installs them and their transitive tree by default. A site that polls no database and collects from no SFTP server can install with `npm ci --omit=optional` and have an empty one. `npm run --silent sbom > sbom.cdx.json` writes the CycloneDX document for whichever of the two you have.
 
 Optional, and only if you use the source that needs it: `pg` for a Postgres poller, `mysql2` for MySQL, `ssh2-sftp-client` for SFTP. They are declared as `optionalDependencies` and imported lazily, so an operator who never polls Postgres never installs it. `npm install` also fetches the dev-time type checker.
 
@@ -142,7 +142,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 1498 tests
+npm test          # 1500 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```

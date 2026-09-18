@@ -13,3 +13,7 @@ certs/
 *.pem
 *.key
 *.crt
+
+# Supply-chain artifacts; CI regenerates and uploads these per run.
+sbom.cdx.json
+*.tgz

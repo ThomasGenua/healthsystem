@@ -296,7 +296,7 @@ to activate it in production. See `43` below.
 
 ## 55. Independent conformance laboratory
 
-- **Current capability** — 1498 tests, typecheck, and resilience workflows,
+- **Current capability** — 1500 tests, typecheck, and resilience workflows,
   all run by this project on Ubuntu only.
 - **Target standard** — Runs the official HL7 validator; version pinned once
   the artifact can be fetched.
@@ -308,19 +308,42 @@ to activate it in production. See `43` below.
 
 ## 56. Verifiable software supply chain
 
-- **Current capability** — Two runtime dependencies, optional drivers, and no
-  SBOM, signing or build provenance. CI actions are not pinned by digest.
+- **Current capability** — A CycloneDX SBOM per CI run, from `npm sbom`, over
+  the tree an ordinary `npm ci` produces; the packed tarball beside it; both
+  uploaded as build artifacts; and, on the default branch only, a build
+  provenance attestation over both. CI actions are pinned by commit.
 - **Target standard** — SPDX or CycloneDX SBOM; SLSA build provenance —
   **the version named in the specification given to this project ("1.2") could
   not be verified**, and `slsa.dev` is blocked from this environment. The
   version this project knows as published is `1.0`. No version is pinned here
   until one is confirmed against the canonical source. NIST SSDF `SP 800-218`
   `[unverified]`.
-- **Status** — `NOT_IMPLEMENTED`
-- **Evidence** — None yet.
+- **Status** — `SELF_TESTED` for the SBOM; `IMPLEMENTED` for the attestation;
+  `NOT_IMPLEMENTED` for reproducibility.
+
+  The attestation is not `SELF_TESTED` because nothing in this repository
+  exercises it: it is produced by `actions/attest-build-provenance` on a
+  GitHub runner, and the only evidence it works is a run of that workflow.
+  **What SLSA level it reaches is not asserted here.** The action emits a
+  provenance predicate, but the definition that would say what level that
+  meets could not be fetched from this environment, and a level claimed from
+  memory is exactly the kind of unverified conformance statement this document
+  exists to refuse. It records the builder, the commit and the workflow; read
+  it as that and nothing more.
+- **Evidence** — `test/supply-chain.test.ts`: the SBOM's root component names
+  the version `src/version.ts` reports and `package.json` declares, so a
+  release that bumps one and not the others fails rather than shipping two
+  documents that disagree about which build a site is running; and every
+  optional driver a default install takes is listed, because "no required
+  runtime dependency" is not the same claim as an empty install and the
+  document is what tells them apart.
+- **Known gap** — Nothing here makes the build reproducible: two runs produce
+  two tarballs, and no one has checked they are identical. The attestation
+  says where an artifact came from, not that anyone else can produce it.
 - **External validation required** — Independent verification of build
   reproducibility and provenance.
-- **Risk and rollback** — Low to medium. Mostly additive CI.
+- **Risk and rollback** — Low. Additive CI and one npm script; rolling back is
+  deleting the job.
 
 ## 57. Accessibility and human-factors evidence
 
