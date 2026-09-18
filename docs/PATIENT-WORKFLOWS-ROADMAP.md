@@ -285,6 +285,15 @@ filtered `owner_id`, so they kept every reply they owed a patient. Both now
 answer through the record. (Referrals are not in that list because they carry
 no owner of their own — a referral is chased through a task.)
 
+**An offer now has a lifetime.** A proposal lapses a week after it was made
+and cannot be accepted after that; the refusal says how old it is and to
+offer it again. Lapsing is computed from `proposed_at` rather than written,
+so like coverage there is no sweep whose failure would leave March's offer
+live in November, and it narrows what can be accepted without moving
+anything: accountability stays with the proposer. Declining and withdrawing
+still work on a lapsed offer, because accepting is the only answer that moves
+work. Hazard H-208.
+
 **Still missing.** A team is still not modelled — `to_id` is a person, and
 "the diabetes team" would need a directory concept that does not exist. And
 nothing expires a proposal: an offer nobody answers stays proposed forever and

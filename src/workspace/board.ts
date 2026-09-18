@@ -118,7 +118,11 @@ export interface BoardSources {
     items(dischargeId: string): DischargeItemRow[];
   };
   handoffs: {
-    unaccepted(opts?: { olderThanHours?: number }, asOf?: Date): HandoffRow[];
+    // Carries `lapsed`, so a board can distinguish an offer still waiting on
+    // an answer from one that can no longer be accepted. Dropping it here
+    // would leave the field present at runtime and invisible to every typed
+    // caller, which is the same as not having added it.
+    unaccepted(opts?: { olderThanHours?: number }, asOf?: Date): Array<HandoffRow & { lapsed: boolean }>;
     activeCoverage(asOf?: Date): HandoffRow[];
   };
 }
@@ -294,7 +298,7 @@ export class ClinicBoard {
    */
   attention(opts: { staleAfterHours?: number } = {}, asOf = new Date()): {
     unreachablePatients: { rows: TaskRow[]; because: string };
-    unacceptedHandoffs: { rows: HandoffRow[]; because: string };
+    unacceptedHandoffs: { rows: Array<HandoffRow & { lapsed: boolean }>; because: string };
     openFollowUps: { rows: Array<DischargeRow & { outstanding: number }>; because: string };
     coveringNow: { rows: HandoffRow[]; because: string };
   } {
