@@ -376,11 +376,38 @@ export class Discharges {
  * — anything one person can be accountable for is something they can try to
  * hand to somebody else.
  */
+/**
+ * How long an unanswered offer can still be accepted.
+ *
+ * A handoff is answered in a shift or two; a week is already generous. What
+ * makes a default safe here — where coverage refuses one — is that lapsing
+ * changes nothing about who is accountable. Coverage with no end *extends*
+ * somebody's responsibility, so the system makes a human name the date. A
+ * lapsed proposal only narrows what can still be accepted, and the work stays
+ * exactly where it has been all along: with the person who offered it.
+ */
+export const PROPOSAL_LIFE_HOURS = 168;
+
 export class Handoffs {
   private db: Db;
+  private proposalLifeHours: number;
 
-  constructor(db: Db) {
+  constructor(db: Db, opts: { proposalLifeHours?: number } = {}) {
     this.db = db;
+    this.proposalLifeHours = opts.proposalLifeHours ?? PROPOSAL_LIFE_HOURS;
+  }
+
+  /**
+   * Whether an offer is too old to still be accepted.
+   *
+   * Computed from `proposed_at` rather than written by a sweep, for the
+   * reason coverage reverts the same way: a state that has to be written is
+   * a job that can fail, and a job that fails here leaves an offer from
+   * March acceptable in November. Arithmetic cannot fail to run.
+   */
+  lapsed(row: HandoffRow, asOf = new Date()): boolean {
+    if (row.status !== "proposed") return false;
+    return Date.parse(row.proposed_at) + this.proposalLifeHours * 3600_000 <= asOf.getTime();
   }
 
   /**
@@ -457,11 +484,24 @@ export class Handoffs {
   }
 
   /** Taking it on. Only the person it was offered to may. */
-  accept(id: string, by: Actor): HandoffRow {
+  accept(id: string, by: Actor, asOf = new Date()): HandoffRow {
     const row = this.require(id);
     if (row.status !== "proposed") refuse(`that handoff is already ${row.status}`, 409);
     if (by.actorId !== row.to_id) {
       refuse("only the person a handoff was offered to can accept it", 403);
+    }
+    // The one answer that moves work is the one an old offer must not give.
+    // Somebody who offered a follow-up in March and heard nothing has long
+    // since dealt with it themselves; an accept in November would take it
+    // off their list and put it on the list of a person with no memory of
+    // it, and nothing about that is visible to either of them.
+    if (this.lapsed(row, asOf)) {
+      const days = Math.floor((asOf.getTime() - Date.parse(row.proposed_at)) / 86_400_000);
+      refuse(
+        `this handoff was offered ${days} day(s) ago and has lapsed, so accepting it now would move work ` +
+          `whoever offered it has had to deal with since. Ask them to offer it again if it still stands.`,
+        409
+      );
     }
     return this.respond(id, "accepted", by, null);
   }
@@ -474,6 +514,10 @@ export class Handoffs {
    * the alternative is somebody accepting a list they cannot cover.
    */
   decline(id: string, by: Actor & { reason: string }): HandoffRow {
+    // Deliberately allowed on a lapsed offer. Declining and withdrawing only
+    // end an offer; accepting is the one that moves work, and that is the
+    // only one lapsing blocks. Closing a stale offer is tidying, and a
+    // system that refused it would leave the board carrying it forever.
     const row = this.require(id);
     if (row.status !== "proposed") refuse(`that handoff is already ${row.status}`, 409);
     if (by.actorId !== row.to_id) refuse("only the person a handoff was offered to can decline it", 403);
@@ -595,13 +639,22 @@ export class Handoffs {
    * The queue an operations board shows. Every row here is work two people
    * may each believe the other has.
    */
-  unaccepted(opts: { olderThanHours?: number } = {}, asOf = new Date()): HandoffRow[] {
+  unaccepted(
+    opts: { olderThanHours?: number } = {},
+    asOf = new Date()
+  ): Array<HandoffRow & { lapsed: boolean }> {
     const rows = this.db.sql
       .prepare("SELECT * FROM handoffs WHERE tenant_id = ? AND status = 'proposed' ORDER BY proposed_at")
       .all(this.db.tenantId) as unknown as HandoffRow[];
-    if (opts.olderThanHours === undefined) return rows;
+    // A lapsed offer stays on this list, and needs reading more rather than
+    // less: it is the case where one person tried to hand something over and
+    // nobody ever answered. What changes is that it can no longer be
+    // accepted, and a board that did not say so would offer a button that
+    // refuses.
+    const withState = rows.map((r) => ({ ...r, lapsed: this.lapsed(r, asOf) }));
+    if (opts.olderThanHours === undefined) return withState;
     const cutoff = new Date(asOf.getTime() - opts.olderThanHours * 3600_000).toISOString();
-    return rows.filter((r) => r.proposed_at <= cutoff);
+    return withState.filter((r) => r.proposed_at <= cutoff);
   }
 
   /** Coverage that is running right now, so a board can say who is standing in. */

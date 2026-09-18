@@ -1078,6 +1078,29 @@ drill that verifies recovery instead of assuming it.
 
 **Fixed**
 
+- **An offer nobody answered could be accepted months later, and the work
+  vanished from both lists.** A handoff proposal had no lifetime: `accept`
+  checked only that the status was still `proposed`. So a clinician offers a
+  follow-up, hears nothing, sees it sitting unaccepted and deals with the
+  patient themselves — and months later the other clinician clears an old
+  notification, accepts, and the item leaves the proposer's list for somebody
+  with no memory of the offer. Neither of them is watching it after that.
+  Measured on an offer backdated 245 days: accepted cleanly, owner moved,
+  proposer's inbox emptied. Hazard H-208.
+
+  A proposal now lapses a week after it was made, and the refusal says how
+  old it is and to offer it again. Lapsing is computed from `proposed_at` and
+  never written, so as with coverage there is no sweep whose failure would
+  leave March's offer live in November.
+
+  It narrows what can be accepted and nothing else: accountability stays with
+  the proposer, which is where it has been all along — and that is what makes
+  a default window safe here where coverage refuses one. Coverage with no end
+  *extends* somebody's responsibility, so a human has to name the date.
+  Declining and withdrawing still work on a lapsed offer, because accepting
+  is the only answer that moves work, and a system that would not let anybody
+  close a stale offer leaves the board carrying it forever.
+
 - **A clinician on leave kept the results nobody was watching.** The handoff
   record decides whose worklist an item is on, but each store has to consult
   it, and nothing failed when one did not. `TaskStore.inbox` consulted it;
