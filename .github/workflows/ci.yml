@@ -42,3 +42,48 @@ jobs:
       # src/safety/hazard-ids.ts for why a single tree cannot answer this.
       - name: hazard identifiers
         run: npm run hazardcheck -- origin/${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
+
+  # What was installed, and — on the default branch — signed evidence of where
+  # it was built. Separate from the matrix above because it describes one tree
+  # rather than one runtime, and running it twice would produce two documents
+  # differing only in which Node wrote them.
+  supply-chain:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Both needed by the attestation below, and by nothing else here. They
+      # are declared on this job alone so the test matrix keeps the read-only
+      # token it has always had.
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.x"
+          cache: npm
+      # Not `--omit=optional`: the point of the document is what an ordinary
+      # install puts on disk, and an ordinary install takes the drivers.
+      - run: npm ci
+      - name: bill of materials
+        run: npm run --silent sbom > sbom.cdx.json
+      - name: the tarball a site would install
+        run: npm pack --pack-destination .
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: supply-chain
+          path: |
+            sbom.cdx.json
+            *.tgz
+          if-no-files-found: error
+      # Only on the default branch. An attestation says this artifact was built
+      # by this workflow from this commit; minting one for every push to every
+      # branch would fill the store with claims about trees nobody released,
+      # and say nothing more about the ones they did.
+      - name: build provenance
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            sbom.cdx.json
+            *.tgz

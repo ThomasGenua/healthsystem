@@ -26,7 +26,8 @@
     "typecheck": "tsc --noEmit",
     "hazardcheck": "node scripts/check-hazard-ids.ts",
     "invariants": "node scripts/invariants.ts",
-    "portal:demo": "node scripts/portal-demo.ts"
+    "portal:demo": "node scripts/portal-demo.ts",
+    "sbom": "npm sbom --sbom-format cyclonedx"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
