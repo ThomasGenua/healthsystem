@@ -494,7 +494,7 @@ export class Engine {
     // guard rather than by hand, which is the point of having one.
     messaging.useOwnershipRecord(handoffs);
     // After encounters, which it reads to tell an arrival from an expectation.
-    const board = new ClinicBoard({ schedule, encounters, tasks, discharges, handoffs });
+    const board = new ClinicBoard({ schedule, encounters, tasks, discharges, handoffs, intake });
     // Built here rather than inline in the view because the key store needs it
     // too: issuing a credential for an organization nobody has registered is a
     // typo worth refusing, and only the directory can tell.
