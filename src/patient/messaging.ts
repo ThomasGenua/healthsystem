@@ -94,7 +94,17 @@ export interface ThreadEvent {
   detail: string | null;
 }
 
+import type { OwnershipRecord } from "../work/tasks.ts";
+
 export class PatientMessaging {
+  /** Where accountability actually lives, once a handoff exists. */
+  private handoffs: OwnershipRecord | undefined;
+
+  /** @see TaskStore.useOwnershipRecord — the same wiring, for the same reason. */
+  useOwnershipRecord(handoffs: OwnershipRecord): void {
+    this.handoffs = handoffs;
+  }
+
   private db: Db;
   private careTeam: CareTeam;
 
@@ -288,14 +298,30 @@ export class PatientMessaging {
    * chronological inbox is how a renewal request is buried under the day's
    * "thank you" notes.
    */
-  inbox(ownerId: string): ThreadRow[] {
+  inbox(ownerId: string, asOf?: Date): ThreadRow[] {
     const rows = this.db.sql
       .prepare(
         `SELECT * FROM patient_threads
           WHERE tenant_id = ? AND owner_id = ? AND status = 'awaiting-clinic'`
       )
       .all(this.db.tenantId, ownerId) as unknown as ThreadRow[];
-    return this.rank(rows);
+
+    // Through the handoff record, for the reason tasks and orders are: a
+    // reply somebody owes does not stop being owed because they handed their
+    // work over, it becomes owed by whoever accepted it. A patient waiting
+    // on an answer is the one who notices when it does not.
+    const overrides = this.handoffs?.effectiveOwners("thread", asOf);
+    if (!overrides || overrides.size === 0) return this.rank(rows);
+
+    const kept = rows.filter((r) => (overrides.get(r.id)?.ownerId ?? ownerId) === ownerId);
+    const seen = new Set(kept.map((r) => r.id));
+    const incoming: ThreadRow[] = [];
+    for (const [subjectId, holder] of overrides) {
+      if (holder.ownerId !== ownerId || seen.has(subjectId)) continue;
+      const row = this.get(subjectId);
+      if (row && row.status === "awaiting-clinic") incoming.push(row);
+    }
+    return this.rank([...kept, ...incoming]);
   }
 
   /** Patient messages that arrived and belong to nobody. */

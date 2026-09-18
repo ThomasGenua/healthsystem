@@ -1078,6 +1078,34 @@ drill that verifies recovery instead of assuming it.
 
 **Fixed**
 
+- **A clinician on leave kept the results nobody was watching.** The handoff
+  record decides whose worklist an item is on, but each store has to consult
+  it, and nothing failed when one did not. `TaskStore.inbox` consulted it;
+  `OrderStore.unacknowledged` and `PatientMessaging.inbox` filtered their own
+  owner column directly.
+
+  So a clinician who transferred their patients and went on leave kept every
+  outstanding result on their orders, and every reply they owed a patient,
+  while the colleague who had accepted accountability saw none of it.
+  Measured before the fix, with one transfer accepted and a potassium of
+  7.1 reported: `unacknowledged` returned **1 for the clinician on leave and
+  0 for the one who was there**. The result is not lost, unacknowledged or
+  overdue in any report — it is addressed to somebody who is not coming in.
+  Hazard H-207.
+
+  Both now answer through the record, and the owner column is left recording
+  who the work started with. `responsibleFor()` joins `heldBy()` and
+  `accountableFor()` as the single answer callers should ask for.
+
+  The second of those two was found by the guard rather than by hand.
+  `src/work/ownership.ts` names every owner column in the schema as routed or
+  excused with a written reason, and `test/ownership-routing.test.ts` checks
+  all three claims against the schema and the source: an unlisted column
+  fails, a claim to route that nothing consults fails, and an excuse fails the
+  moment a SELECT filters a worklist by that column. That last check failed on
+  its first run against `PatientMessaging.inbox` — which this change had
+  already excused, in writing, with a reason that was not true.
+
 - **The first operator key is issued under the development identity provider
   too.** It was issued only on the `apikey` path, so a demo came up with a
   working portal and no way into the clinic side of it — which is half the

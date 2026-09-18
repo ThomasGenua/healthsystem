@@ -50,6 +50,8 @@ export type OrderPriority = "routine" | "urgent" | "stat";
  * laboratory telephones through because waiting for someone to check a queue
  * is not safe.
  */
+import type { OwnershipRecord } from "../work/tasks.ts";
+
 export type AbnormalFlag = "normal" | "low" | "high" | "critical-low" | "critical-high" | "abnormal";
 
 export type ResultStatus = "preliminary" | "final" | "corrected" | "cancelled";
@@ -244,6 +246,59 @@ function orderMovedOn(id: string, expected: string): never {
 }
 
 export class OrderStore {
+  /**
+   * Where accountability actually lives, once a handoff exists.
+   *
+   * Absent, every query here answers from `responsible_id` exactly as before,
+   * which is correct for a deployment with no handoffs.
+   */
+  private handoffs: OwnershipRecord | undefined;
+
+  /** @see TaskStore.useOwnershipRecord — the same wiring, for the same reason. */
+  useOwnershipRecord(handoffs: OwnershipRecord): void {
+    this.handoffs = handoffs;
+  }
+
+  /**
+   * The orders one person is answerable for right now.
+   *
+   * `responsible_id` says who the order started with. An accepted handoff
+   * says whose it is today, and a result is chased by whoever holds the order
+   * — not by whoever placed it and has since gone on leave.
+   */
+  private ordersHeldBy(responsibleId: string, asOf?: Date): string[] {
+    const own = (
+      this.db.sql
+        .prepare("SELECT id FROM orders WHERE tenant_id = ? AND responsible_id = ?")
+        .all(this.db.tenantId, responsibleId) as Array<{ id: string }>
+    ).map((r) => r.id);
+
+    const overrides = this.handoffs?.effectiveOwners("order", asOf);
+    if (!overrides || overrides.size === 0) return own;
+
+    // Theirs unless handed away, plus anything handed to them.
+    const ids = new Set(own.filter((id) => (overrides.get(id)?.ownerId ?? responsibleId) === responsibleId));
+    for (const [subjectId, holder] of overrides) if (holder.ownerId === responsibleId) ids.add(subjectId);
+    return [...ids];
+  }
+
+  /**
+   * Who is answerable for one order right now, and how it came to be them.
+   *
+   * The single answer callers should use rather than reading
+   * `responsible_id`, which is only the beginning of the story once a handoff
+   * exists.
+   */
+  responsibleFor(
+    orderId: string,
+    asOf = new Date()
+  ): { responsibleId: string | null; via: "original" | "transfer" | "coverage"; covering?: string } {
+    const row = this.require(orderId);
+    const holder = this.handoffs?.effectiveOwners("order", asOf).get(orderId);
+    if (!holder) return { responsibleId: row.responsible_id, via: "original" };
+    return { responsibleId: holder.ownerId, via: holder.via, ...(holder.covering ? { covering: holder.covering } : {}) };
+  }
+
   private db: Db;
   private encounters: Encounters;
 
@@ -565,7 +620,7 @@ export class OrderStore {
    * queue buries the critical potassium under forty normal ones — which is the
    * mechanism by which a result is missed with nobody doing anything wrong.
    */
-  unacknowledged(opts: { responsibleId?: string; overdueAsOf?: string; limit?: number } = {}): ResultRow[] {
+  unacknowledged(opts: { responsibleId?: string; overdueAsOf?: string; limit?: number; asOf?: Date } = {}): ResultRow[] {
     const args: unknown[] = [this.db.tenantId, this.db.tenantId];
     let sql = `SELECT r.* FROM order_results r
                 WHERE r.tenant_id = ? AND r.acknowledged_at IS NULL
@@ -575,8 +630,15 @@ export class OrderStore {
                      WHERE n.tenant_id = ? AND n.supersedes = r.id
                   )`;
     if (opts.responsibleId) {
-      sql += ` AND r.order_id IN (SELECT id FROM orders WHERE tenant_id = ? AND responsible_id = ?)`;
-      args.push(this.db.tenantId, opts.responsibleId);
+      // Through the handoff record rather than straight at the column. Until
+      // this consulted it, a clinician who handed their patients over and
+      // went on leave kept every outstanding result, and the colleague who
+      // accepted them saw none -- which is this module's whole subject
+      // arriving one layer down.
+      const held = this.ordersHeldBy(opts.responsibleId, opts.asOf);
+      if (held.length === 0) return [];
+      sql += ` AND r.order_id IN (${held.map(() => "?").join(", ")})`;
+      args.push(...held);
     }
     if (opts.overdueAsOf) {
       sql += " AND r.ack_due_by IS NOT NULL AND r.ack_due_by < ?";
