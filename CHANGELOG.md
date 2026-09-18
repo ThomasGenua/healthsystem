@@ -1102,6 +1102,33 @@ drill that verifies recovery instead of assuming it.
 
 **Fixed**
 
+- **The portal's appointments screen showed an em-dash and nothing else.**
+  `GET /patient/appointments` served the store's `{ booking, slot }` pairs,
+  and `screenAppointments` reads `startsAt`, `service`, `resourceId` and
+  `status` off the row. All four were `undefined`, so `fmtDate(undefined)`
+  made every card heading `"—"` and the meta line filtered down to empty.
+
+  A patient could see *that* they had appointments and not when, where, with
+  whom, or whether one had been cancelled — on the screen whose only job is
+  to say when to come in, and at a clinic where the answer may be "the plane
+  on Thursday". It rendered cards rather than an empty state, so it did not
+  look broken either.
+
+  The payload is now flattened to what the screen reads, and narrowed while
+  it was being written. The pair carried every column of both rows, so a
+  patient was also being handed `booked_by`, `correlation_id`, `referral_id`
+  and `cancelled_by` — staff identifiers and internal bookkeeping they never
+  asked for.
+
+  Nothing caught this because every test on the route asserted a status
+  code, and 200 is what a broken payload returns too. The tests added here
+  assert what the screen puts in front of somebody: that the heading is a
+  date and not the placeholder for not having one, that a row carries an id
+  something can be attached to, and that no bookkeeping key appears at any
+  depth. The fixture is part of the story — its docstring said "and an
+  appointment" and it booked none, so there was never an appointment to
+  assert about.
+
 - **An offer nobody answered could be accepted months later, and the work
   vanished from both lists.** A handoff proposal had no lifetime: `accept`
   checked only that the status was still `proposed`. So a clinician offers a

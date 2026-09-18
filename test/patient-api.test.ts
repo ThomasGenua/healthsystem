@@ -247,8 +247,8 @@ test("a proxy permission stays narrow", async () => {
   try {
     const appointments = await s.request("proxy-appointments", `/patient/appointments?patient=${P}`);
     assert.equal(appointments.status, 200);
-    const rows = (await appointments.json()) as Array<{ slot: { service: string } }>;
-    assert.equal(rows[0].slot.service, "Results review");
+    const rows = (await appointments.json()) as Array<{ service: string }>;
+    assert.equal(rows[0].service, "Results review");
 
     assert.equal((await s.request("proxy-appointments", `/patient/results?patient=${P}`)).status, 403);
     assert.equal((await s.request("proxy-appointments", `/patient/summary?patient=${P}`)).status, 403);
