@@ -243,7 +243,7 @@ visit-history list a patient could find that id from — building one is
 prerequisite work this item did not include. A team is still not modelled
 for `responsibleId`, the same gap item 62 already has for handoffs.
 
-## 62. Discharge follow-up and team handoffs — **missing**
+## 62. Discharge follow-up and team handoffs — **partial**
 
 **Added in this increment.** `src/work/discharge.ts`: a discharge snapshot
 computed from the chart at the moment a visit closes, covering unacknowledged
@@ -270,11 +270,22 @@ with no sweep to run and therefore no sweep to fail. Coverage sits on top of
 whoever holds the work, so a transfer accepted underneath it is what the work
 returns to, not whoever first gave it away.
 
-**Still missing.** The wiring is per-store and opt-in: a store that grows an
-owner column later has to call `useOwnershipRecord()` and consult the map, and
-nothing fails if it does not. (Referrals are not in that list because they
-carry no owner of their own — a referral is chased through a task, and those
-now route correctly.) A team is still not modelled — `to_id` is a person, and
+**The opt-in wiring is now checked.** It is still per-store — a store consults
+the map or it does not — but no longer silent about it. `src/work/ownership.ts`
+names every owner column in the schema as routed or excused with a reason, and
+`test/ownership-routing.test.ts` reads the schema and the source to check it:
+an unlisted column fails, a claim to route that nothing consults fails, and an
+excuse fails the moment a SELECT filters a worklist by that column.
+
+Writing that guard found two more stores doing what `TaskStore.inbox` had been
+fixed for. `OrderStore.unacknowledged` filtered `responsible_id` directly, so a
+clinician who handed their patients over and went on leave kept every
+outstanding result including the critical ones; `PatientMessaging.inbox`
+filtered `owner_id`, so they kept every reply they owed a patient. Both now
+answer through the record. (Referrals are not in that list because they carry
+no owner of their own — a referral is chased through a task.)
+
+**Still missing.** A team is still not modelled — `to_id` is a person, and
 "the diabetes team" would need a directory concept that does not exist. And
 nothing expires a proposal: an offer nobody answers stays proposed forever and
 is visible rather than acted on, which is the safe direction but not the

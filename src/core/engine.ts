@@ -486,6 +486,13 @@ export class Engine {
     // accepted one arrives. Set here because the two are built in the same
     // breath and one of them has to come first.
     tasks.useOwnershipRecord(handoffs);
+    // And the same for the results a clinician is chasing. An order's
+    // responsible_id says who placed it; who answers for it today is a
+    // question only the handoff record can answer.
+    orders.useOwnershipRecord(handoffs);
+    // And the replies a clinician owes a patient. Found by the routing
+    // guard rather than by hand, which is the point of having one.
+    messaging.useOwnershipRecord(handoffs);
     // After encounters, which it reads to tell an arrival from an expectation.
     const board = new ClinicBoard({ schedule, encounters, tasks, discharges, handoffs });
     // Built here rather than inline in the view because the key store needs it
