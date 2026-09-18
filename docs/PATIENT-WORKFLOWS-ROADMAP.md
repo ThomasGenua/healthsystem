@@ -561,14 +561,34 @@ where it is. A room with nothing scheduled says so rather than reading as
 free, and `progressKnown` is false on every row because the encounter model
 cannot distinguish "in the waiting room" from "with the clinician".
 
-**Still missing.** An intake-status panel is not on the board. Item 60 built
-the workflow underneath it — `IntakeSubmissions.open()` is exactly the "who
-has submitted, who has not" query a board panel would call — but nothing in
-`src/workspace/board.ts` calls it yet; that wiring, not the underlying
-capability, is what remains. Staff workload exists as `TaskStore.load()` but
-is not on the board. The ranking is stated but not configurable: a deployment
-that wanted a different rule would edit the source, and governed configuration
-is its own piece of work.
+**Intake and workload are now on the board.** `attention()` carries
+`intakeAwaitingReview` from `IntakeSubmissions.open()`, and `workload()`
+answers from `TaskStore.load()`. Both were wiring, as this said.
+
+**One half of the intake question was not wiring, and is still missing.**
+`IntakeSubmissions.open()` is *not* the "who has submitted, who has not"
+query this section called it: it returns submissions that were sent and not
+yet reviewed, which is the clinic's side of the exchange. The other side —
+somebody expected today who has not sent anything — cannot be asked yet, and
+the blocker is not a missing query.
+
+An intake row carries `appointment_id`, so "no intake **for this visit**" is
+the right question and the schema supports it. But the only client that
+creates submissions is the portal, and the portal does not send one: every
+submission in an ordinary deployment has `appointment_id` null. A panel built
+on that today would name every expected patient, every day, which is how a
+panel stops being read.
+
+Answering it means the portal recording which appointment an intake is for,
+which is a change to the patient's flow rather than to a query. Deciding it
+from `submitted_at` against the previous encounter instead — "an intake is
+current if it postdates your last visit" — was considered and rejected: that
+is a clinical rule nobody here has agreed, and inventing one is what
+`labs/README.md` and the score governance both exist to refuse.
+
+The ranking is stated but not configurable: a deployment that wanted a
+different rule would edit the source, and governed configuration is its own
+piece of work.
 
 *(Recently-discharged patients and unaccepted handoffs were listed here and
 are now on the board, since item 62 built the workflow underneath them.)*

@@ -100,6 +100,8 @@ export interface ResourceRow {
   because: string;
 }
 
+import type { SubmissionRow as IntakeSubmissionRow } from "../patient/intake.ts";
+
 export interface BoardSources {
   schedule: {
     diary(resourceId: string, from: string, to: string): Array<{ slot: SlotRow; bookings: BookingRow[] }>;
@@ -111,6 +113,17 @@ export interface BoardSources {
   tasks: {
     /** Every live task of one kind, owned or not — see TaskStore.openOfKind. */
     openOfKind(kind: "patient-contact", opts?: { limit?: number }): TaskRow[];
+    /** Counts across the whole queue — see TaskStore.load. */
+    load?(): { open: number; unassigned: number; overdue: number; byKind: Record<string, number> };
+  };
+  /**
+   * Optional, like `resourcesWithSlots`: a deployment that has not wired
+   * intake gets no intake panel rather than an empty one, for the reason
+   * stated on `attention()` — an empty panel and a quiet day look the same.
+   */
+  intake?: {
+    /** Submitted and not yet reviewed — see IntakeSubmissions.open. */
+    open(): IntakeSubmissionRow[];
   };
   discharges: {
     openFollowUps(opts?: { accountableId?: string }): DischargeRow[];
@@ -290,14 +303,16 @@ export class ClinicBoard {
    * be told is a piece of work rather than a silence, and a board is where a
    * clinic looks.
    *
-   * The other three views an operations workspace owes — recently
-   * discharged, unaccepted handoffs, overdue follow-up — need a discharge and
-   * handoff workflow this repository does not have. They are absent rather
-   * than rendered empty, because an empty panel and a quiet day look the
-   * same, and only one of them is true.
+   * Unaccepted handoffs, open follow-ups and who is covering arrived with
+   * the discharge and handoff workflow, and intake submissions nobody has
+   * read arrived with intake. The rule they were written under still holds
+   * and is why the intake panel is conditional: a deployment that has not
+   * wired a source gets no panel rather than an empty one, because an empty
+   * panel and a quiet day look the same, and only one of them is true.
    */
   attention(opts: { staleAfterHours?: number } = {}, asOf = new Date()): {
     unreachablePatients: { rows: TaskRow[]; because: string };
+    intakeAwaitingReview?: { rows: IntakeSubmissionRow[]; because: string };
     unacceptedHandoffs: { rows: Array<HandoffRow & { lapsed: boolean }>; because: string };
     openFollowUps: { rows: Array<DischargeRow & { outstanding: number }>; because: string };
     coveringNow: { rows: HandoffRow[]; because: string };
@@ -331,6 +346,36 @@ export class ClinicBoard {
         rows: this.sources.handoffs.activeCoverage(asOf),
         because: "standing in for somebody, until the date they agreed",
       },
+      ...(this.sources.intake
+        ? {
+            intakeAwaitingReview: {
+              // The patient did their part. Somebody sat down before their
+              // visit and wrote out what they are taking and what has
+              // changed, and until a clinician reads it the visit proceeds
+              // on what the chart said last time. Oldest first, because a
+              // submission that has waited through the appointment it was
+              // for has stopped being preparation.
+              rows: this.sources.intake.open(),
+              because: "the patient submitted this before their visit and nobody has read it yet",
+            },
+          }
+        : {}),
+    };
+  }
+
+  /**
+   * How much work is outstanding, and how much of it belongs to nobody.
+   *
+   * Counts rather than rows: this answers "is the clinic keeping up" for a
+   * board header, and the queues themselves are what you open when it says
+   * no. `unassigned` is the number worth reading first — an unowned task is
+   * not somebody's backlog, it is work nobody has picked up.
+   */
+  workload(): { open: number; unassigned: number; overdue: number; byKind: Record<string, number>; because: string } | undefined {
+    if (!this.sources.tasks.load) return undefined;
+    return {
+      ...this.sources.tasks.load(),
+      because: "open work across the clinic; unassigned is the count nobody has picked up",
     };
   }
 
