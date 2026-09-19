@@ -447,6 +447,33 @@ export class IntakeSubmissions {
   }
 
   /** Submitted and waiting — the queue behind the review tasks, for a screen that wants the rows directly. */
+  /**
+   * Which of these appointments already have a submitted intake.
+   *
+   * Answers the board's half of the question — who is expected and has not
+   * sent anything — and answers it per *visit*, because that is what an
+   * intake is preparation for. A form submitted before last year's visit
+   * says nothing about this one, and counting it would tell a clinician
+   * they had a current medication list when they do not.
+   *
+   * A submission attached to no appointment covers no appointment. Null is
+   * not a wildcard here for the same reason it is not one in a
+   * patient-scoped search: the conservative direction is a visit that shows
+   * as unprepared when a form exists somewhere, not a visit that shows as
+   * ready when nothing was sent for it.
+   */
+  submittedForAppointments(appointmentIds: string[]): Set<string> {
+    if (appointmentIds.length === 0) return new Set();
+    const rows = this.db.sql
+      .prepare(
+        `SELECT DISTINCT appointment_id FROM intake_submissions
+          WHERE tenant_id = ? AND submitted_at IS NOT NULL
+            AND appointment_id IN (${appointmentIds.map(() => "?").join(", ")})`
+      )
+      .all(this.db.tenantId, ...appointmentIds) as Array<{ appointment_id: string }>;
+    return new Set(rows.map((r) => r.appointment_id));
+  }
+
   open(): SubmissionRow[] {
     return this.db.sql
       .prepare("SELECT * FROM intake_submissions WHERE tenant_id = ? AND status = 'submitted' ORDER BY submitted_at")

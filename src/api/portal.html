@@ -164,6 +164,9 @@ const COPY = {
     sectionUnavailable:"This section could not be loaded.",
     tabIntake:"Before your visit",
     intakeIntro:"Answer what you can now and save the rest for later — nothing here is sent to your chart until you submit it.",
+    intakeForVisit:"These forms are for:",
+    intakeNoVisit:"Not for a particular visit",
+    intakeNoVisitNote:"Your clinic will see this, but it will not be attached to an appointment.",
     noQuestionnaires:"Your clinic has not asked for anything before a visit right now.",
     saveDraft:"Save for later", submitIntake:"Submit to the clinic",
     draftSaved:"Saved. You can come back and finish this later.",
@@ -228,6 +231,9 @@ const COPY = {
     sectionUnavailable:"Cette section n’a pas pu être chargée.",
     tabIntake:"Avant votre visite",
     intakeIntro:"Répondez à ce que vous pouvez maintenant et gardez le reste pour plus tard — rien ici n’est envoyé à votre dossier avant que vous ne le soumettiez.",
+    intakeForVisit:"Ces formulaires sont pour :",
+    intakeNoVisit:"Pas pour une visite en particulier",
+    intakeNoVisitNote:"Votre clinique le verra, mais il ne sera rattaché à aucun rendez-vous.",
     noQuestionnaires:"Votre clinique ne demande rien avant une visite pour le moment.",
     saveDraft:"Enregistrer pour plus tard", submitIntake:"Soumettre à la clinique",
     draftSaved:"Enregistré. Vous pouvez revenir terminer cela plus tard.",
@@ -253,7 +259,10 @@ let LANG = (navigator.language || "en").toLowerCase().startsWith("fr") ? "fr" : 
 const t = (k) => (COPY[LANG] && COPY[LANG][k]) || k;
 
 /* ----------------------------------------------------------------- state */
-const S = { token:null, session:false, csrf:null, authorities:[], active:null, tab:"results", busy:false, epoch:0 };
+const S = { token:null, session:false, csrf:null, authorities:[], active:null, tab:"results", busy:false, epoch:0,
+  /* Which appointment the intake forms on screen are for. Keyed by patient so
+     a caregiver switching charts does not carry one chart's visit to another. */
+  intakeVisit:null };
 
 /* Production tokens stay on the server. Development tokens live only in memory.
    Remove credentials left by the older token-paste interface. */
@@ -780,7 +789,7 @@ function readMedRows(container){
     .filter((m) => m.description);
 }
 
-function intakeForm(q, draft){
+function intakeForm(q, draft, appointmentId){
   const answers = draft ? JSON.parse(draft.answers || "{}") : {};
   const meds = draft && draft.proposed_meds ? JSON.parse(draft.proposed_meds) : [];
   const state = { id: draft ? draft.id : null };
@@ -839,6 +848,10 @@ function intakeForm(q, draft){
   const readBody = () => ({
     patient: S.active.patientId,
     ...(q ? {questionnaireId: q.id} : {}),
+    // Which visit this is preparation for. Without it the clinic can see the
+    // form and not that it answers Thursday's appointment, so nobody can ask
+    // who is coming in on Thursday without one.
+    ...(appointmentId ? {appointmentId} : {}),
     answers: readAnswers(),
     concern: concernField.value.trim(),
     proposedMeds: readMedRows(medsBox)
@@ -912,23 +925,71 @@ function sendUpload(form, fileInput){
 }
 
 async function screenIntake(){
-  const [forms, submissions, uploads] = await Promise.all([
+  const [forms, submissions, uploads, appointments] = await Promise.all([
     api("/patient/questionnaires"),
     api("/patient/intake?patient=" + encodeURIComponent(S.active.patientId)),
-    api("/patient/uploads?patient=" + encodeURIComponent(S.active.patientId))
+    api("/patient/uploads?patient=" + encodeURIComponent(S.active.patientId)),
+    api("/patient/appointments?patient=" + encodeURIComponent(S.active.patientId))
   ]);
   const view = document.getElementById("view");
   view.replaceChildren(el("h2", {text: t("tabIntake")}), el("p", {class:"meta", text: t("intakeIntro")}));
 
+  // Still to come, soonest first. A form is preparation for a visit that has
+  // not happened; offering to attach one to last month's appointment would
+  // let somebody file preparation for something already over.
+  const now = Date.now();
+  const upcoming = (appointments || [])
+    .filter((a) => a.status !== "cancelled" && a.status !== "did-not-attend" && Date.parse(a.startsAt) > now)
+    .sort((a, b) => String(a.startsAt).localeCompare(String(b.startsAt)));
+
+  // One visit for the whole screen rather than one per form: a patient fills
+  // in "my forms for Thursday", not a different visit per questionnaire.
+  if (!S.intakeVisit || S.intakeVisit.patientId !== S.active.patientId) {
+    S.intakeVisit = {
+      patientId: S.active.patientId,
+      // Preselected only when there is no choice to get wrong.
+      appointmentId: upcoming.length === 1 ? upcoming[0].id : null,
+    };
+  }
+  if (S.intakeVisit.appointmentId && !upcoming.some((a) => a.id === S.intakeVisit.appointmentId)) {
+    S.intakeVisit.appointmentId = null;   // the visit happened, or was cancelled
+  }
+  const chosen = S.intakeVisit.appointmentId;
+
+  if (upcoming.length) {
+    const pick = el("select", {id:"intake-visit", onchange: (e) => {
+      S.intakeVisit.appointmentId = e.target.value || null;
+      guard(screenIntake);
+    }});
+    pick.appendChild(el("option", {value:"", text: t("intakeNoVisit")}));
+    for (const a of upcoming) {
+      pick.appendChild(el("option", {
+        value: a.id,
+        text: fmtDate(a.startsAt) + (a.service ? " · " + a.service : ""),
+      }));
+    }
+    pick.value = chosen || "";
+    view.appendChild(el("div", {class:"note"},
+      el("label", {for:"intake-visit", text: t("intakeForVisit")}),
+      pick,
+      chosen ? null : el("p", {class:"meta", text: t("intakeNoVisitNote")})
+    ));
+  }
+
   const questionnaires = forms.questionnaires || [];
-  const openDraftFor = (qid) => submissions.find((s) => s.status === "draft" && s.questionnaire_id === qid);
-  const generalDraft = submissions.find((s) => s.status === "draft" && !s.questionnaire_id);
+  // Matched on the visit too, because a draft is a draft *for* a visit: the
+  // same questionnaire answered for Thursday and for next month are two
+  // forms, and saveDraft already keys them that way.
+  const sameVisit = (row) => (row.appointment_id || null) === (chosen || null);
+  const openDraftFor = (qid) =>
+    submissions.find((s) => s.status === "draft" && s.questionnaire_id === qid && sameVisit(s));
+  const generalDraft = submissions.find((s) => s.status === "draft" && !s.questionnaire_id && sameVisit(s));
 
   if (!questionnaires.length) {
     view.appendChild(el("div", {class:"note"}, el("p", {text: t("noQuestionnaires")})));
-    view.appendChild(intakeForm(null, generalDraft));
+    view.appendChild(intakeForm(null, generalDraft, chosen));
   } else {
-    for (const q of questionnaires) view.appendChild(intakeForm(q, openDraftFor(q.id)));
+    for (const q of questionnaires) view.appendChild(intakeForm(q, openDraftFor(q.id), chosen));
   }
 
   view.appendChild(uploadCard());

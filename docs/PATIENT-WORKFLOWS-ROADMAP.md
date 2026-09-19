@@ -565,26 +565,31 @@ cannot distinguish "in the waiting room" from "with the clinician".
 `intakeAwaitingReview` from `IntakeSubmissions.open()`, and `workload()`
 answers from `TaskStore.load()`. Both were wiring, as this said.
 
-**One half of the intake question was not wiring, and is still missing.**
-`IntakeSubmissions.open()` is *not* the "who has submitted, who has not"
-query this section called it: it returns submissions that were sent and not
-yet reviewed, which is the clinic's side of the exchange. The other side —
-somebody expected today who has not sent anything — cannot be asked yet, and
-the blocker is not a missing query.
+**Both halves of the intake question are now on the board.** `attention()`
+carries `intakeAwaitingReview`; `expectedWithoutIntake(resourceIds, asOf)`
+answers the other side — who is coming in today with nothing sent in to read.
 
-An intake row carries `appointment_id`, so "no intake **for this visit**" is
-the right question and the schema supports it. But the only client that
-creates submissions is the portal, and the portal does not send one: every
-submission in an ordinary deployment has `appointment_id` null. A panel built
-on that today would name every expected patient, every day, which is how a
-panel stops being read.
+The second needed the data before it needed a query. `IntakeSubmissions.open()`
+was never the "who has submitted, who has not" query this section called it:
+it returns what was sent and not yet reviewed, which is the clinic's side.
+Asking the patient's side means asking per *visit*, and while an intake row
+carried `appointment_id`, the portal never set one — so every submission was
+attached to nothing and a panel built on it would have named every expected
+patient every day.
 
-Answering it means the portal recording which appointment an intake is for,
-which is a change to the patient's flow rather than to a query. Deciding it
-from `submitted_at` against the previous encounter instead — "an intake is
-current if it postdates your last visit" — was considered and rejected: that
-is a clinical rule nobody here has agreed, and inventing one is what
-`labs/README.md` and the score governance both exist to refuse.
+The portal records it now: the intake screen asks once which upcoming visit
+the forms are for, preselecting only when there is a single choice to get
+wrong, and a draft is keyed to the visit it prepares for. A form attached to
+no visit covers no visit, because null is not a wildcard here for the reason
+it is not one in a patient-scoped search: a visit showing as unprepared when
+a form exists somewhere is recoverable, and one showing as ready when nothing
+was sent for it puts a clinician in the room without a history.
+
+Deciding currency from `submitted_at` against the previous encounter instead
+— "an intake is current if it postdates your last visit" — was considered and
+rejected before the portal change made it unnecessary: that is a clinical
+rule nobody here has agreed, and inventing one is what `labs/README.md` and
+the score governance both exist to refuse.
 
 The ranking is stated but not configurable: a deployment that wanted a
 different rule would edit the source, and governed configuration is its own
