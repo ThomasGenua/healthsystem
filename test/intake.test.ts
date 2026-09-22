@@ -41,7 +41,25 @@ async function clinic(opts: { scanner?: boolean; malwareScanner?: MalwareScanner
       authorKind: "device",
     });
   }
-  return { engine, t, close: () => engine.stop() };
+  /**
+   * A real appointment for a real patient.
+   *
+   * These used to be string literals like "appt-1". They cannot be any more:
+   * `saveDraft` checks that a named visit is this patient's, because the
+   * clinic board reads `appointment_id` as "somebody sent a form in for this
+   * appointment" and a caller-supplied id put that claim on the caller's
+   * word. Booking one here costs two lines and makes every draft test run
+   * against the shape the portal actually sends.
+   */
+  const book = (patientId: string, hour: number) => {
+    const slot = t.schedule.openSlot({
+      resourceId: "dr-okpik", resourceKind: "practitioner", service: "Family practice",
+      startsAt: `2026-03-04T${String(hour).padStart(2, "0")}:00:00.000Z`,
+      endsAt: `2026-03-04T${String(hour).padStart(2, "0")}:30:00.000Z`,
+    });
+    return t.schedule.book({ slotId: slot.id, patientId, reason: "Follow-up", by: CLERK }).id;
+  };
+  return { engine, t, book, close: () => engine.stop() };
 }
 
 function publish(t: Awaited<ReturnType<typeof clinic>>["t"]) {
@@ -146,10 +164,11 @@ test("saving a draft twice for the same patient, questionnaire and appointment c
   const s = await clinic();
   try {
     publish(s.t);
+    const visit = s.book(PATIENT, 9);
     const first = s.t.intake.saveDraft({
       patientId: PATIENT,
       questionnaireId: "pre-visit",
-      appointmentId: "appt-1",
+      appointmentId: visit,
       answers: { fasting: true },
       by: PATIENT_ACTOR,
     });
@@ -159,7 +178,7 @@ test("saving a draft twice for the same patient, questionnaire and appointment c
     const second = s.t.intake.saveDraft({
       patientId: PATIENT,
       questionnaireId: "pre-visit",
-      appointmentId: "appt-1",
+      appointmentId: visit,
       answers: { notes: "no allergies" },
       by: PATIENT_ACTOR,
     });
@@ -176,8 +195,8 @@ test("a different appointment is a separate draft, not a collision", async () =>
   const s = await clinic();
   try {
     publish(s.t);
-    const a = s.t.intake.saveDraft({ patientId: PATIENT, questionnaireId: "pre-visit", appointmentId: "appt-1", by: PATIENT_ACTOR });
-    const b = s.t.intake.saveDraft({ patientId: PATIENT, questionnaireId: "pre-visit", appointmentId: "appt-2", by: PATIENT_ACTOR });
+    const a = s.t.intake.saveDraft({ patientId: PATIENT, questionnaireId: "pre-visit", appointmentId: s.book(PATIENT, 9), by: PATIENT_ACTOR });
+    const b = s.t.intake.saveDraft({ patientId: PATIENT, questionnaireId: "pre-visit", appointmentId: s.book(PATIENT, 11), by: PATIENT_ACTOR });
     assert.notEqual(a.id, b.id);
     assert.equal(s.t.intake.forPatient(PATIENT).length, 2);
   } finally {
@@ -194,7 +213,7 @@ test("submitting refuses while a required question is unanswered", async () => {
     const draft = s.t.intake.saveDraft({
       patientId: PATIENT,
       questionnaireId: "pre-visit",
-      appointmentId: "appt-1",
+      appointmentId: s.book(PATIENT, 9),
       answers: { notes: "left the fasting question blank" },
       by: PATIENT_ACTOR,
     });
@@ -221,7 +240,7 @@ test("submitting writes one QuestionnaireResponse and raises one review task", a
     const draft = s.t.intake.saveDraft({
       patientId: PATIENT,
       questionnaireId: "pre-visit",
-      appointmentId: "appt-1",
+      appointmentId: s.book(PATIENT, 9),
       answers: { fasting: true },
       by: PATIENT_ACTOR,
     });
@@ -242,6 +261,43 @@ test("submitting writes one QuestionnaireResponse and raises one review task", a
   }
 });
 
+test("a draft left open from before the one-form-per-visit rule still cannot become a second chart document", async () => {
+  // saveDraft() now refuses to open a second draft for a visit that already
+  // has a form on file, so this state can no longer be created through the
+  // store. It can exist: a patient with a draft open and a form already sent
+  // for the same visit on the day that rule shipped. Written directly here,
+  // because that is the only way it arises, and because the chart document
+  // is written in submit() -- which is where the invariant has to hold.
+  const s = await clinic();
+  try {
+    publish(s.t);
+    const visit = s.book(PATIENT, 9);
+    const sent = s.t.intake.saveDraft({
+      patientId: PATIENT, questionnaireId: "pre-visit", appointmentId: visit,
+      answers: { fasting: true }, by: PATIENT_ACTOR,
+    });
+    s.t.intake.submit(sent.id, PATIENT_ACTOR);
+
+    const legacyId = "legacy-draft-from-a-second-tab";
+    s.t.db.sql
+      .prepare(
+        `INSERT INTO intake_submissions
+           (tenant_id, id, patient_id, appointment_id, questionnaire_id, questionnaire_version, status,
+            answers, concern, proposed_meds, started_by, started_at, updated_at)
+         VALUES (?, ?, ?, ?, 'pre-visit', 1, 'draft', ?, NULL, NULL, ?, ?, ?)`
+      )
+      .run(s.t.db.tenantId, legacyId, PATIENT, visit, JSON.stringify({ fasting: false }),
+        PATIENT_ACTOR.actorId, new Date().toISOString(), new Date().toISOString());
+
+    assert.throws(() => s.t.intake.submit(legacyId, PATIENT_ACTOR), /already sent in/);
+    assert.equal(s.t.clinical.chart(PATIENT, { entryType: "QuestionnaireResponse" }).length, 1,
+      "one account of the visit on the chart, not two that disagree");
+    assert.equal(s.t.intake.get(legacyId).status, "draft", "the refused draft is left as it was, not half-submitted");
+  } finally {
+    await s.close();
+  }
+});
+
 test("submitting twice produces one QuestionnaireResponse and one task, not two", async () => {
   const s = await clinic();
   try {
@@ -249,7 +305,7 @@ test("submitting twice produces one QuestionnaireResponse and one task, not two"
     const draft = s.t.intake.saveDraft({
       patientId: PATIENT,
       questionnaireId: "pre-visit",
-      appointmentId: "appt-1",
+      appointmentId: s.book(PATIENT, 9),
       answers: { fasting: false },
       by: PATIENT_ACTOR,
     });

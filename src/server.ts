@@ -278,6 +278,12 @@ async function main(): Promise<void> {
       purgeAfterDays: days(readEnv("PURGE_AFTER_DAYS")),
     },
     malwareScanner,
+    // Which appointments are "today" on the clinic board. Unset is UTC,
+    // which is wrong for part of every day at any site west of it -- see
+    // BoardOptions.timezoneOffset in src/workspace/board.ts. Passed
+    // through rather than defaulted here, so a site that has not said where
+    // it is keeps exactly the behaviour it had.
+    ...(readEnv("CLINIC_UTC_OFFSET") ? { clinicTimezoneOffset: readEnv("CLINIC_UTC_OFFSET")! } : {}),
   });
 
   if (existsSync(MAPPINGS_DIR)) {

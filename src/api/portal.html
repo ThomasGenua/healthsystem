@@ -167,6 +167,7 @@ const COPY = {
     intakeForVisit:"These forms are for:",
     intakeNoVisit:"Not for a particular visit",
     intakeNoVisitNote:"Your clinic will see this, but it will not be attached to an appointment.",
+    intakeDiscardUnsaved:"You have answers here that are not saved. Switch visit and lose them? Choose Cancel, then Save for later, to keep them.",
     noQuestionnaires:"Your clinic has not asked for anything before a visit right now.",
     saveDraft:"Save for later", submitIntake:"Submit to the clinic",
     draftSaved:"Saved. You can come back and finish this later.",
@@ -234,6 +235,7 @@ const COPY = {
     intakeForVisit:"Ces formulaires sont pour :",
     intakeNoVisit:"Pas pour une visite en particulier",
     intakeNoVisitNote:"Votre clinique le verra, mais il ne sera rattaché à aucun rendez-vous.",
+    intakeDiscardUnsaved:"Certaines réponses ici ne sont pas enregistrées. Changer de visite et les perdre? Choisissez Annuler, puis Enregistrer pour plus tard, pour les garder.",
     noQuestionnaires:"Votre clinique ne demande rien avant une visite pour le moment.",
     saveDraft:"Enregistrer pour plus tard", submitIntake:"Soumettre à la clinique",
     draftSaved:"Enregistré. Vous pouvez revenir terminer cela plus tard.",
@@ -677,15 +679,47 @@ async function openThread(id){
   A double tap on a slow link would otherwise open two threads asking the
   same question, and the clinic would answer a duplicate in their worklist.
 */
+/**
+ * A failure while sending a form, shown without destroying the form.
+ *
+ * showError() replaces the whole view, which is right for a screen that
+ * could not load and catastrophic for one somebody has been typing into:
+ * a patient on a satellite link -- exactly who pre-visit intake exists for
+ * -- would hit Save, lose the connection, and find every answer gone,
+ * replaced by an error box. The retry button it offered went to Messages
+ * from whichever screen you were on, which is its own small betrayal.
+ *
+ * So a form failure is reported inside the form, above the buttons, and
+ * nothing else on the screen moves. role="alert" so it is announced rather
+ * than only seen -- and only that: writing it to the polite #live region as
+ * well would read it out twice. It replaces the previous attempt's message
+ * instead of stacking.
+ */
+function showFormError(form, message){
+  let box = form.querySelector(".err[data-form-error]");
+  if (!box) {
+    box = el("div", {class:"err", role:"alert", "data-form-error":"1"});
+    const buttons = form.querySelector("p:last-of-type");
+    if (buttons) form.insertBefore(box, buttons); else form.appendChild(box);
+  }
+  box.replaceChildren(el("p", {text: message}));
+}
+
+function clearFormError(form){
+  const box = form.querySelector(".err[data-form-error]");
+  if (box) box.remove();
+}
+
 async function submitting(form, fn){
   const button = form.querySelector("button[type=submit]");
   if (button.disabled) return;
   button.disabled = true;
+  clearFormError(form);
   try { await fn(); }
   catch (err) {
     if (err instanceof ApiError && err.kind === "stale") return;
     if (err instanceof ApiError && err.kind === "expired") return signOut();
-    showError(err instanceof Error ? err.message : String(err), () => guard(screenMessages));
+    showFormError(form, err instanceof Error ? err.message : String(err));
   }
   finally { button.disabled = false; }
 }
@@ -861,7 +895,13 @@ function intakeForm(q, draft, appointmentId){
   // one up by that status. A questionnaire already submitted with no new
   // draft started falls through here too, and correctly renders empty: that
   // is a fresh form for a new visit, not the old answers reopened.
-  const form = el("form", {onsubmit: (e) => { e.preventDefault(); }}, ...kids);
+  // Marked on any edit and cleared on a successful save, so the visit
+  // selector can tell a form somebody has typed into from one they have not.
+  // `input` bubbles from every field, including medication rows added later.
+  const form = el("form", {
+    onsubmit: (e) => { e.preventDefault(); },
+    oninput: (e) => { e.currentTarget.dataset.dirty = "1"; }
+  }, ...kids);
   const saveBtn = el("button", {type:"button", class:"act", onclick: () => saveIntakeDraft(form, state, readBody)}, t("saveDraft"));
   const submitBtn = el("button", {type:"submit", class:"act", onclick: () => submitIntakeForm(form, state, readBody)}, t("submitIntake"));
   form.appendChild(el("p", {}, saveBtn, " ", submitBtn));
@@ -872,6 +912,7 @@ function saveIntakeDraft(form, state, readBody){
   return submitting(form, async () => {
     const saved = await api("/patient/intake/draft", {method:"POST", body: JSON.stringify(readBody())});
     state.id = saved.id;
+    delete form.dataset.dirty;
     say(t("draftSaved"));
   });
 }
@@ -905,7 +946,11 @@ function sendUpload(form, fileInput){
   return submitting(form, async () => {
     const file = fileInput.files && fileInput.files[0];
     if (!file) return;
-    if (file.size > MAX_UPLOAD_BYTES) { showError(t("fileTooBig")); return; }
+    // In the form, not over the screen: the upload card shares the intake
+    // screen, so showError() here also destroyed any questionnaire answers
+    // typed above it and not yet saved -- a patient who picked a nine
+    // megabyte photo lost their medication list for it.
+    if (file.size > MAX_UPLOAD_BYTES) { showFormError(form, t("fileTooBig")); return; }
     const dataUrl = await new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result);
@@ -958,6 +1003,18 @@ async function screenIntake(){
 
   if (upcoming.length) {
     const pick = el("select", {id:"intake-visit", onchange: (e) => {
+      // Switching visit re-renders every form from what is saved for the
+      // visit chosen, which used to throw away anything typed and not yet
+      // saved, silently. The two ways to avoid that both decide something on
+      // the patient's behalf -- saving the answers to the visit they are
+      // leaving, or carrying them to the one they chose -- and which is
+      // right depends on whether they picked the wrong visit or are
+      // preparing two. So this only asks, and on Cancel leaves everything,
+      // including the selector, exactly as it was.
+      if (document.querySelector("#view form[data-dirty]") && !confirm(t("intakeDiscardUnsaved"))) {
+        e.target.value = S.intakeVisit.appointmentId || "";
+        return;
+      }
       S.intakeVisit.appointmentId = e.target.value || null;
       guard(screenIntake);
     }});

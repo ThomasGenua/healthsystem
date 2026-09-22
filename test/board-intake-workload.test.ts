@@ -266,3 +266,154 @@ test("a deployment with no intake gets no panel here either", async () => {
     await s.close();
   }
 });
+
+// ------------------------------------------------------------- the day line
+
+/**
+ * Which appointments are "today".
+ *
+ * Everything on this board is scoped to a day, and the day was the UTC
+ * calendar day wherever the clinic actually is. For a site west of UTC --
+ * which is every site this was written for -- that is the wrong day for part
+ * of every day, and it is the afternoon that goes missing.
+ */
+test("a clinic west of UTC sees its own evening, and an unset offset changes nothing", async () => {
+  const s = await clinicDay();
+  try {
+    // 2026-03-04 at UTC-07:00: 09:00 local is 16:00Z, 18:00 local is 01:00Z
+    // the following day. Both are the same Wednesday to everybody in the room.
+    const morning = s.t.schedule.book({
+      slotId: s.t.schedule.openSlot({ resourceId: RESOURCE, resourceKind: "practitioner", service: "Family practice",
+        startsAt: "2026-03-04T16:00:00.000Z", endsAt: "2026-03-04T16:30:00.000Z" }).id,
+      patientId: PATIENT, reason: "Follow-up", by: CLERK,
+    }).id;
+    const evening = s.t.schedule.book({
+      slotId: s.t.schedule.openSlot({ resourceId: RESOURCE, resourceKind: "practitioner", service: "Family practice",
+        startsAt: "2026-03-05T01:00:00.000Z", endsAt: "2026-03-05T01:30:00.000Z" }).id,
+      patientId: OTHER, reason: "Follow-up", by: CLERK,
+    }).id;
+    // The board is opened at 13:00 local, which is 20:00Z the same Wednesday.
+    const atOneInTheAfternoon = new Date("2026-03-04T20:00:00.000Z");
+    const sources = {
+      schedule: s.t.schedule, encounters: s.t.encounters, tasks: s.t.tasks,
+      discharges: s.t.discharges, handoffs: s.t.handoffs, intake: s.t.intake,
+    };
+
+    const local = new ClinicBoard(sources, { timezoneOffset: "-07:00" });
+    assert.deepEqual(
+      local.waiting([RESOURCE], atOneInTheAfternoon).map((r) => r.bookingId).sort(),
+      [morning, evening].sort(),
+      "both halves of the clinic's own Wednesday"
+    );
+    // And the question that hangs off it: nobody can be asked about a visit
+    // the board never returned.
+    assert.equal(local.expectedWithoutIntake([RESOURCE], atOneInTheAfternoon)!.rows.length, 2);
+
+    // Unset is exactly what it was: the UTC day, and the evening list gone.
+    const utc = new ClinicBoard(sources);
+    assert.deepEqual(utc.waiting([RESOURCE], atOneInTheAfternoon).map((r) => r.bookingId), [morning]);
+  } finally {
+    await s.close();
+  }
+});
+
+test("a malformed clinic offset is refused where somebody can still fix it", async () => {
+  const s = await clinicDay();
+  try {
+    const sources = {
+      schedule: s.t.schedule, encounters: s.t.encounters, tasks: s.t.tasks,
+      discharges: s.t.discharges, handoffs: s.t.handoffs, intake: s.t.intake,
+    };
+    // At construction rather than on the first read: a typo in deployment
+    // configuration should stop the boot, not produce a board that is
+    // quietly a few hours out.
+    assert.throws(() => new ClinicBoard(sources, { timezoneOffset: "MST" }), /must look like -07:00/);
+    assert.throws(() => new ClinicBoard(sources, { timezoneOffset: "-7" }), /must look like -07:00/);
+    assert.throws(() => new ClinicBoard(sources, { timezoneOffset: "-07:75" }), /out of range/);
+    assert.throws(() => new ClinicBoard(sources, { timezoneOffset: "-19:00" }), /out of range/);
+    // The spellings a deployment would reasonably write.
+    for (const ok of ["-07:00", "-0700", "+05:45", "+00:00"]) {
+      assert.doesNotThrow(() => new ClinicBoard(sources, { timezoneOffset: ok }), ok);
+    }
+  } finally {
+    await s.close();
+  }
+});
+
+test("a deployment that mistypes its offset is stopped at boot, not at the first board", async () => {
+  // forTenant() is lazy, so validating only where the board is built would
+  // leave a typo sitting quiet until somebody opened one -- a worse moment
+  // to find out than start-up, and one where the failure looks like the
+  // board being broken rather than the configuration being wrong.
+  // Synchronously, in the constructor: before a database is opened, before
+  // a port is bound, before anything has to be unwound.
+  assert.throws(
+    () => new Engine({ dbPath: ":memory:", tickMs: 15, clinicTimezoneOffset: "MST" }),
+    /must look like -07:00/
+  );
+  const ok = new Engine({ dbPath: ":memory:", tickMs: 15, clinicTimezoneOffset: "-07:00" });
+  await ok.start();
+  await ok.stop();
+});
+
+test("a cancelled visit is neither expected nor asked whether it was prepared for", async () => {
+  const s = await clinicDay();
+  try {
+    const keeping = s.book(PATIENT, 9);
+    const cancelled = s.book(OTHER, 10);
+    s.t.schedule.cancel(cancelled, { ...CLERK, reason: "patient rebooked" });
+
+    assert.deepEqual(s.t.board.waiting([RESOURCE], s.asOf).map((r) => r.bookingId), [keeping]);
+    assert.deepEqual(
+      s.t.board.expectedWithoutIntake([RESOURCE], s.asOf)!.rows.map((r) => r.bookingId),
+      [keeping],
+      "a visit that is not happening cannot be unprepared for"
+    );
+  } finally {
+    await s.close();
+  }
+});
+
+test("nothing outstanding and nothing to read are different answers", async () => {
+  // The distinction the whole panel rests on. A deployment with no intake
+  // wired gets `undefined` -- no panel at all -- and a clinic where everybody
+  // sent something in gets a panel with no rows. Collapsing the two would put
+  // "nobody is coming in unprepared" on a board that cannot tell.
+  const s = await clinicDay();
+  try {
+    const visit = s.book(PATIENT, 9);
+    s.submitFor(PATIENT, visit);
+
+    const answered = s.t.board.expectedWithoutIntake([RESOURCE], s.asOf);
+    assert.ok(answered, "the question was asked");
+    assert.deepEqual(answered.rows, [], "and the answer is nobody");
+
+    const cannotTell = new ClinicBoard({
+      schedule: s.t.schedule, encounters: s.t.encounters, tasks: s.t.tasks,
+      discharges: s.t.discharges, handoffs: s.t.handoffs,
+    });
+    assert.equal(cannotTell.expectedWithoutIntake([RESOURCE], s.asOf), undefined,
+      "a board that cannot answer says so by having no panel, not by showing an empty one");
+  } finally {
+    await s.close();
+  }
+});
+
+test("preparation is decided per appointment, not per patient, across a day boundary", async () => {
+  const s = await clinicDay();
+  try {
+    // Two visits for one person on the same day. Sending a form for the
+    // morning says nothing about the afternoon.
+    const morning = s.book(PATIENT, 9);
+    const afternoon = s.book(PATIENT, 14);
+    s.submitFor(PATIENT, morning);
+
+    assert.deepEqual(
+      s.t.board.expectedWithoutIntake([RESOURCE], s.asOf)!.rows.map((r) => r.bookingId),
+      [afternoon]
+    );
+    assert.deepEqual([...s.t.intake.submittedForAppointments([morning, afternoon])], [morning]);
+  } finally {
+    await s.close();
+  }
+});

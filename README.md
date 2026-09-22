@@ -272,6 +272,7 @@ A refusal returns `429` with `Retry-After`. Counters are in memory, matching the
 | `NORTHSTAR_BACKUP_REMOTE_KEEP` | — | how many remote snapshots to keep; independent of local `_KEEP`. Unset means do not prune. |
 | `NORTHSTAR_BACKUP_S3_ENDPOINT` / `_REGION` / `_ACCESS_KEY` / `_SECRET_KEY` | — | S3-compatible API. HTTPS required except on loopback. Falls back to `AWS_*`. |
 | `NORTHSTAR_BACKUP_SFTP_PASSWORD` / `_KEY` / `_PASSPHRASE` | — | SFTP credentials when the destination is `sftp://` |
+| `NORTHSTAR_CLINIC_UTC_OFFSET` | — | where this clinic is, as `-07:00`, for deciding which appointments are "today" on the clinic board. Unset means the UTC day, which is the wrong day for part of every day at any site west of UTC. A fixed offset does not follow daylight saving. |
 
 ## Encryption at rest
 
