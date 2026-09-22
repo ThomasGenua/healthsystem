@@ -16,11 +16,28 @@
 # introduced by a change that looked unrelated to durability.
 name: Resilience
 
+# ---------------------------------------------------------------------------
+# CI IS DISABLED. Requested by the repository owner on 2026-09-22, so that
+# changes are reviewed and promoted by hand rather than gated by an automatic
+# run. This workflow no longer starts on its nightly schedule.
+#
+# Nothing here has been weakened. Every job, step, action pin and assertion
+# below is exactly what it was while CI was running, and none of them has been
+# made to pass, skip or swallow a failure. What changed is the `on:` block
+# below: the nightly `schedule:` is gone, so the workflow runs when somebody
+# deliberately starts it from the Actions tab and at no other time.
+#
+# This one is the most worth starting by hand before a release, because what
+# it catches is drift rather than a bad commit — see the note above. The four
+# checks it runs are also runnable locally: `npm run crashtest`,
+# `npm run diskfulltest -- --dir <a size-capped filesystem>`,
+# `npm run restoretest` and `npm run loadtest`.
+#
+# To turn it back on, restore the trigger block recorded for this file in
+# docs/CI-DISABLED.md.
+# ---------------------------------------------------------------------------
 on:
-  schedule:
-    # 08:00 UTC is roughly 01:00 in Yellowknife, so a failure is waiting in the
-    # morning rather than interrupting the day.
-    - cron: "0 8 * * *"
+  # Manual only. See the note above.
   workflow_dispatch:
     inputs:
       messages:

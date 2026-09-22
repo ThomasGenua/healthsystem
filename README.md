@@ -1771,9 +1771,16 @@ one:
 - **A suspected vulnerability is not an issue.** It goes through private
   disclosure — see [SECURITY.md](SECURITY.md).
 
-`npm run typecheck && npm test` is what CI runs on every push; the crash,
-disk-full, restore and load tests run nightly and can be triggered by hand
-from the Actions tab.
+`npm run typecheck && npm test` is what to run before you open one, along
+with `npm run hazardcheck -- origin/main` if you touched the hazard log.
+
+**Continuous integration is currently disabled** — no workflow starts on a
+push, a pull request or a schedule, so nothing will check this for you. The
+workflows are intact and can still be started by hand from the Actions tab;
+the crash, disk-full, restore and load rehearsals are there too, and run
+locally as `npm run crashtest`, `diskfulltest`, `restoretest` and `loadtest`.
+See [docs/CI-DISABLED.md](docs/CI-DISABLED.md) for what was switched off, what
+deliberately was not, and how to turn it back on.
 
 ## Roadmap
 

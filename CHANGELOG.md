@@ -103,6 +103,40 @@ always forward-compatible and run automatically on open — see
   browser ships the list. A site that wants either is deciding about a whole
   domain rather than about this process.
 
+**Changed**
+
+- **Continuous integration is disabled, at the repository owner's request.**
+  All four workflows — `ci.yml`, `monitoring.yml`, `resilience.yml`,
+  `staging.yml` — keep every job, step, action pin and assertion they had.
+  What was removed is their automatic triggers: `push`, `pull_request`, and
+  the nightly `schedule` on the resilience rehearsals. `workflow_dispatch`
+  stays on all four, so any of them can still be started deliberately from
+  the Actions tab.
+
+  Nothing was weakened to achieve it. No `continue-on-error`, no `if: false`,
+  no swallowed exit code, no skipped or deleted test, no deleted workflow
+  file. Started by hand today, each workflow runs what it always ran and
+  fails on what it always failed on. CI was green when it was switched off —
+  the last automatic run of every workflow on `main` concluded `success` —
+  so this disables a passing pipeline rather than burying a failing one.
+
+  The consequence worth naming: `ci.yml`'s `supply-chain` job minted a
+  CycloneDX SBOM, the packed tarball, and a signed build provenance
+  attestation over both on the default branch. While CI is off, **no new
+  attestations are minted**. Existing ones stay valid for the commits they
+  cover; a release cut during this period should start `CI` by hand on the
+  release commit. `docs/CI-DISABLED.md` is the record — what was switched
+  off, what deliberately was not, what now has to be run by hand, and the
+  exact trigger blocks to paste back.
+
+  Two sentences that said CI runs these checks were corrected rather than
+  left standing: the **Contributing** note in `README.md`, and
+  `docs/CLINICAL-SAFETY.md` §4 on the hazard-identifier check. The second is
+  the one that matters — that check is the only coordination between
+  branches allocating hazard identifiers, and with nothing running it,
+  two branches cut from the same revision will both claim the next number
+  and each look correct alone.
+
 ## 0.9.0 — 2026-09-16
 
 A release about the work between visits, and about the console that shows it.

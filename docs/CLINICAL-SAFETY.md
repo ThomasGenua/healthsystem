@@ -158,7 +158,9 @@ which is a counter with nobody holding it: two branches taken from the same
 revision allocate the same number, and each is perfectly consistent on its
 own. `npm run hazardcheck` compares a revision against the branch it will
 merge into and refuses one that spends an identifier the other has already
-spent, or that drops one they both had. CI runs it on every pull request.
+spent, or that drops one they both had. CI ran it on every pull request, and
+[continuous integration is currently disabled](CI-DISABLED.md) — so run it by
+hand on any branch that adds a hazard. Nothing else checks this.
 
 A hazard's cause, control and evidence are expected to be refined in place —
 that is what a live safety case does. Its **name is its identity**: changing
