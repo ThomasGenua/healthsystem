@@ -1,5 +1,22 @@
 name: Staging container
-on: [push, pull_request]
+on:
+  # Manual only. See the note below.
+  workflow_dispatch:
+# ---------------------------------------------------------------------------
+# CI IS DISABLED. Requested by the repository owner on 2026-09-22, so that
+# changes are reviewed and promoted by hand rather than gated by an automatic
+# run. This workflow no longer starts on a push or a pull request.
+#
+# Nothing here has been weakened. Every job, step, action pin and assertion
+# below is exactly what it was while CI was running, and none of them has been
+# made to pass, skip or swallow a failure. What changed is the `on:` block
+# above this comment: only `workflow_dispatch` remains, so the workflow runs
+# when somebody deliberately starts it from the Actions tab and at no other
+# time.
+#
+# To turn it back on, restore the trigger block recorded for this file in
+# docs/CI-DISABLED.md.
+# ---------------------------------------------------------------------------
 permissions:
   contents: read
 jobs:
