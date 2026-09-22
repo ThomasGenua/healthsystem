@@ -52,7 +52,8 @@ import { ingestFhir } from "../directory/fhir.ts";
 import { ChannelNoticeDispatcher, PatientNotices } from "../patient/notice.ts";
 import { PatientContacts } from "../patient/contacts.ts";
 import { Questionnaires, IntakeSubmissions, Uploads, type MalwareScanner } from "../patient/intake.ts";
-import { ClinicBoard, dayOffsetMs } from "../workspace/board.ts";
+import { ClinicBoard } from "../workspace/board.ts";
+import { ClinicDay } from "../schedule/clinic-day.ts";
 import { Discharges, Handoffs } from "../work/discharge.ts";
 import { AccessReview } from "../audit/review.ts";
 import { Clinics } from "../schedule/clinics.ts";
@@ -269,14 +270,15 @@ export interface EngineOptions {
    */
   malwareScanner?: MalwareScanner;
   /**
-   * Where this clinic is, as an offset from UTC like `-07:00`, for the one
-   * question that needs it: which appointments are "today" on the clinic
-   * board. Unset means UTC, which is what it has always been. See
-   * `BoardOptions.timezoneOffset` in src/workspace/board.ts for why this is
-   * configured rather than read off the host clock, and why it is a fixed
-   * offset rather than a zone name.
+   * Where the clinic is: a place like `America/Yellowknife`, which follows
+   * daylight saving, or a fixed offset like `-07:00`. It decides what
+   * "today" means on the clinic board and a clinician's worklist, and which
+   * hours the privacy review counts as after hours. Unset means UTC, which is
+   * what all three have always used. Not read off the host clock: a server's
+   * time zone is a property of where it is racked. See
+   * src/schedule/clinic-day.ts.
    */
-  clinicTimezoneOffset?: string;
+  clinicTimeZone?: string;
   /**
    * What actually books transport, accommodation, an interpreter, an escort
    * or equipment for a travelling-clinic visit. Unset means arrangements are
@@ -323,7 +325,12 @@ export class Engine {
   private pharmacyChannel: string | null;
   /** What scans a patient upload, when a deployment configures one. */
   private malwareScanner: MalwareScanner | null;
-  private clinicTimezoneOffset: string | undefined;
+  /**
+   * The clinic's calendar, shared by the board, the worklist and the privacy
+   * review so they cannot disagree about what today is. Public so the boot
+   * log can say what it resolved to.
+   */
+  readonly clinicDay: ClinicDay;
   /** What books travelling-clinic logistics externally, when a deployment configures one. */
   private externalCoordinator: ExternalCoordinator | null;
   /** What authorises transmitting a controlled substance, when anything does. */
@@ -378,12 +385,10 @@ export class Engine {
     this.pharmacyChannel = opts.pharmacyChannel ?? null;
     this.controlledAuthority = opts.controlledSubstanceAuthority ?? null;
     this.malwareScanner = opts.malwareScanner ?? null;
-    // Validated here and not only where the board is built, because
-    // `forTenant()` is lazy: a typo would otherwise sit quiet until the
-    // first person opened a board, which is a worse moment to find out than
-    // boot. The value itself is used by the board.
-    dayOffsetMs(opts.clinicTimezoneOffset);
-    this.clinicTimezoneOffset = opts.clinicTimezoneOffset;
+    // Parsed here and not where the board is built, because `forTenant()`
+    // is lazy: a typo would otherwise sit quiet until the first person opened
+    // a board, which is a worse moment to find out than boot.
+    this.clinicDay = ClinicDay.parse(opts.clinicTimeZone);
     this.externalCoordinator = opts.externalCoordinator ?? null;
     this.lockStaleMs = opts.lockStaleMs ?? 20_000;
     // Comfortably inside the staleness window, so a slow moment never costs a
@@ -436,7 +441,7 @@ export class Engine {
     const documents = new PatientDocuments(clinical);
     const careTeam = new CareTeam(db);
     const coverage = new Coverage(db);
-    const schedule = new Schedule(db);
+    const schedule = new Schedule(db, { clinicDay: this.clinicDay });
     const messaging = new PatientMessaging(db);
     // No interaction database unless a deployment supplies one. The safety
     // check reports interactions as unchecked rather than clear, which is the
@@ -520,7 +525,7 @@ export class Engine {
     // After encounters, which it reads to tell an arrival from an expectation.
     const board = new ClinicBoard(
       { schedule, encounters, tasks, discharges, handoffs, intake },
-      { timezoneOffset: this.clinicTimezoneOffset }
+      { clinicDay: this.clinicDay }
     );
     // Built here rather than inline in the view because the key store needs it
     // too: issuing a credential for an organization nobody has registered is a
@@ -551,7 +556,7 @@ export class Engine {
     const consent = new ConsentDirectives(db, {
       ...(this.noticeChannel ? { dispatcher: new ChannelNoticeDispatcher(db, this.noticeChannel) } : {}),
     });
-    const privacy = new PrivacyOffice({ db, consent, patientAccess, careTeam, tasks });
+    const privacy = new PrivacyOffice({ db, consent, patientAccess, careTeam, tasks, clinicDay: this.clinicDay });
     const view: TenantView = {
       tenantId,
       db,

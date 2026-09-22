@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import { readEnv } from "./naming.ts";
 import { ClamAvScanner } from "../patient/clamav.ts";
+import { ClinicDay, resolveClinicTimeZone } from "../schedule/clinic-day.ts";
 
 export interface PreflightCheck { id: string; status: "pass" | "blocker" | "review"; detail: string }
 /** Configuration evidence, not certification. Never emit env values or secret paths. */
@@ -18,6 +19,27 @@ export async function pilotPreflight(env: NodeJS.ProcessEnv, probeScanner = fals
   check("rate-limits", get("RATE_LIMIT") !== "off", "Rate limiting must remain enabled.");
   checks.push({ id: "transport", status: file("TLS_CERT") && file("TLS_KEY") ? "pass" : "review", detail: "Verify direct TLS or the site's trusted HTTPS proxy; file presence does not verify certificates." });
   check("backup", !!get("BACKUP_REMOTE") && file("BACKUP_KEY_FILE"), "Remote backup destination and nonempty encryption-key file must be configured.");
+  // A review rather than a pass when set: configuration can say which rules
+  // the runtime will apply, not that they are the clinic's. The value itself
+  // is not echoed, per the rule above; what it resolves to now is evidence.
+  try {
+    const zone = resolveClinicTimeZone(env);
+    if (zone === undefined) {
+      check("clinic-timezone", false, "Set NORTHSTAR_CLINIC_TIMEZONE to where the clinic is; unset, the board and worklist use the UTC day and the privacy review reads after hours on UTC clocks.");
+    } else {
+      const day = ClinicDay.parse(zone);
+      checks.push({
+        id: "clinic-timezone",
+        status: "review",
+        detail: day.kind === "offset"
+          ? "A fixed offset, the same all year: correct only where the clinic does not observe daylight saving."
+          : `A place name, resolved against this runtime's time-zone data (tzdata ${process.versions.tz ?? "unknown"}). ` +
+            `Confirm the offset it gives matches the clinic's clocks, and again after any Node upgrade: ${day.now()}.`,
+      });
+    }
+  } catch {
+    check("clinic-timezone", false, "NORTHSTAR_CLINIC_TIMEZONE is not a place or offset this runtime accepts, or a retired name is set; boot refuses it.");
+  }
   let scanner: ClamAvScanner | undefined;
   try {
     scanner = new ClamAvScanner({ socketPath: get("CLAMD_SOCKET"), port: get("CLAMD_PORT") === undefined ? undefined : Number(get("CLAMD_PORT")), timeoutMs: 3000 });

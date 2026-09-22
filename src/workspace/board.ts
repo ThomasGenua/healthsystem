@@ -40,6 +40,7 @@
  * same reason and are now here, because the workflow underneath them exists.
  */
 import type { BookingRow, SlotRow } from "../schedule/store.ts";
+import { ClinicDay } from "../schedule/clinic-day.ts";
 import type { EncounterRow } from "../clinical/encounters.ts";
 import type { TaskRow } from "../work/tasks.ts";
 import type { DischargeItemRow, DischargeRow, HandoffRow } from "../work/discharge.ts";
@@ -171,78 +172,24 @@ export function visitToken(bookingId: string): string {
   return out;
 }
 
-/**
- * How far this clinic's civil day is from UTC, as `-07:00`.
- *
- * Same spelling and same validation as a laboratory profile's
- * `timezoneOffset` in orders/hl7.ts, because it is the same kind of fact:
- * something the deployment knows and the code must not guess.
- */
-export function dayOffsetMs(offset: string | undefined): number {
-  if (offset === undefined) return 0;
-  const m = /^([+-])(\d{2}):?(\d{2})$/.exec(offset.trim());
-  if (!m) throw new Error(`clinic timezone offset must look like -07:00, got ${JSON.stringify(offset)}`);
-  const minutes = Number(m[2]) * 60 + Number(m[3]);
-  if (Number(m[3]) > 59 || minutes > 14 * 60) throw new Error(`clinic timezone offset out of range: ${offset}`);
-  return (m[1] === "-" ? -minutes : minutes) * 60_000;
-}
-
 export interface BoardOptions {
   /**
-   * The clinic's offset from UTC, as `-07:00`. Absent means UTC.
-   *
-   * Everything on this board is scoped to "today", and until this existed
-   * "today" was the UTC calendar day wherever the clinic actually is. For a
-   * site west of UTC — which is every site this was written for — that is
-   * the wrong day for part of every day. In Yellowknife in winter (UTC-07:00)
-   * the UTC day ends at 17:00 local. Before then, every appointment from
-   * 17:00 on is already in tomorrow's window and simply absent, and
-   * `expectedWithoutIntake()` never asks whether those patients sent
-   * anything in, because it only asks about visits `waiting()` returned.
-   * After 17:00 the board flips: the morning's patients vanish and
-   * tomorrow's appear as today's, expected and unprepared.
-   *
-   * It is not derived from the host clock. A server's timezone is a property
-   * of where it is racked, and for a hosted deployment that is not where the
-   * clinic is; guessing from it would make the board quietly wrong in a way
-   * nobody could see. Unset keeps the previous behaviour exactly.
-   *
-   * A fixed offset rather than an IANA zone, deliberately and with a cost:
-   * it does not follow daylight saving, so a site that observes it has to
-   * change this twice a year. Reading tzdata to do better is a real change
-   * with a real dependency, and shipping a half-right zone database is worse
-   * than an honest number somebody sets. Recorded in docs/CLINICAL-SAFETY.md
-   * as H-211.
+   * Which instants are "today" at the clinic. Absent means UTC, which is what
+   * it was before a clinic could say where it is. See schedule/clinic-day.ts
+   * and H-211: for a clinic west of UTC the UTC day is the wrong day for part
+   * of every day, and it is the same calendar the worklist uses, so the two
+   * cannot disagree about who is expected.
    */
-  timezoneOffset?: string;
+  clinicDay?: ClinicDay;
 }
 
 export class ClinicBoard {
   private sources: BoardSources;
-  private dayOffsetMs: number;
+  private clinicDay: ClinicDay;
 
   constructor(sources: BoardSources, options: BoardOptions = {}) {
     this.sources = sources;
-    // Validated here rather than per call: a malformed offset is a
-    // deployment mistake, and the moment to fail on it is boot, not the
-    // first time somebody opens the board.
-    this.dayOffsetMs = dayOffsetMs(options.timezoneOffset);
-  }
-
-  /**
-   * The clinic's civil day containing `asOf`, as a UTC half-open interval.
-   *
-   * Shifting into local time, truncating there, and shifting back is the
-   * whole trick: the boundary moves to local midnight instead of sitting at
-   * 00:00Z. With no offset configured this is exactly the UTC day it always
-   * was.
-   */
-  private dayWindow(asOf: Date): { from: string; to: string } {
-    const local = new Date(asOf.getTime() + this.dayOffsetMs);
-    const startLocal = Date.parse(`${local.toISOString().slice(0, 10)}T00:00:00.000Z`);
-    const from = new Date(startLocal - this.dayOffsetMs);
-    const to = new Date(from.getTime() + 86_400_000);
-    return { from: from.toISOString(), to: to.toISOString() };
+    this.clinicDay = options.clinicDay ?? ClinicDay.utc();
   }
 
   /**
@@ -254,7 +201,7 @@ export class ClinicBoard {
    * alone rewards a clinic for running late on the people who arrived early.
    */
   waiting(resourceIds: string[], asOf = new Date()): WaitingRow[] {
-    const { from, to } = this.dayWindow(asOf);
+    const { from, to } = this.clinicDay.window(asOf);
 
     const rows: WaitingRow[] = [];
     for (const resourceId of resourceIds) {
@@ -316,11 +263,10 @@ export class ClinicBoard {
 
   /** Rooms and people, how much of today is spoken for, and when the next gap is. */
   resources(resourceIds: string[], asOf = new Date()): ResourceRow[] {
-    const day = asOf.toISOString().slice(0, 10);
-    const from = `${day}T00:00:00.000Z`;
-    const next = new Date(from);
-    next.setUTCDate(next.getUTCDate() + 1);
-    const to = next.toISOString();
+    // The same day waiting() uses. It was still the UTC day after the list
+    // beside it learned the clinic's, so one board could show an 18:00
+    // patient as expected and not count their slot as spoken for.
+    const { from, to } = this.clinicDay.window(asOf);
 
     const out: ResourceRow[] = [];
     for (const resourceId of resourceIds) {

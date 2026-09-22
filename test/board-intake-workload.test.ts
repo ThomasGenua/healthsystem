@@ -15,6 +15,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Engine } from "../src/core/engine.ts";
 import { ClinicBoard } from "../src/workspace/board.ts";
+import { ClinicDay } from "../src/schedule/clinic-day.ts";
 import type { Question } from "../src/patient/intake.ts";
 
 const PATIENT = "NT000001";
@@ -299,7 +300,7 @@ test("a clinic west of UTC sees its own evening, and an unset offset changes not
       discharges: s.t.discharges, handoffs: s.t.handoffs, intake: s.t.intake,
     };
 
-    const local = new ClinicBoard(sources, { timezoneOffset: "-07:00" });
+    const local = new ClinicBoard(sources, { clinicDay: ClinicDay.parse("-07:00") });
     assert.deepEqual(
       local.waiting([RESOURCE], atOneInTheAfternoon).map((r) => r.bookingId).sort(),
       [morning, evening].sort(),
@@ -317,30 +318,34 @@ test("a clinic west of UTC sees its own evening, and an unset offset changes not
   }
 });
 
-test("a malformed clinic offset is refused where somebody can still fix it", async () => {
+test("the capacity panel counts the same day the list beside it shows", async () => {
+  // #110 moved waiting() onto the clinic's day and left resources() -- the
+  // "how much of today is spoken for" panel on the same board -- on the UTC
+  // one. At 13:00 in a UTC-07:00 clinic the list showed the 18:00 patient as
+  // expected and the panel did not count their slot.
   const s = await clinicDay();
   try {
-    const sources = {
+    for (const [patientId, startsAt] of [[PATIENT, "2026-03-04T16:00:00.000Z"], [OTHER, "2026-03-05T01:00:00.000Z"]] as const) {
+      const slot = s.t.schedule.openSlot({ resourceId: RESOURCE, resourceKind: "practitioner", service: "Family practice",
+        startsAt, endsAt: new Date(Date.parse(startsAt) + 1800_000).toISOString() });
+      s.t.schedule.book({ slotId: slot.id, patientId, reason: "Follow-up", by: CLERK });
+    }
+    const board = new ClinicBoard({
       schedule: s.t.schedule, encounters: s.t.encounters, tasks: s.t.tasks,
       discharges: s.t.discharges, handoffs: s.t.handoffs, intake: s.t.intake,
-    };
-    // At construction rather than on the first read: a typo in deployment
-    // configuration should stop the boot, not produce a board that is
-    // quietly a few hours out.
-    assert.throws(() => new ClinicBoard(sources, { timezoneOffset: "MST" }), /must look like -07:00/);
-    assert.throws(() => new ClinicBoard(sources, { timezoneOffset: "-7" }), /must look like -07:00/);
-    assert.throws(() => new ClinicBoard(sources, { timezoneOffset: "-07:75" }), /out of range/);
-    assert.throws(() => new ClinicBoard(sources, { timezoneOffset: "-19:00" }), /out of range/);
-    // The spellings a deployment would reasonably write.
-    for (const ok of ["-07:00", "-0700", "+05:45", "+00:00"]) {
-      assert.doesNotThrow(() => new ClinicBoard(sources, { timezoneOffset: ok }), ok);
-    }
+    }, { clinicDay: ClinicDay.parse("-07:00") });
+    const atOneInTheAfternoon = new Date("2026-03-04T20:00:00.000Z");
+
+    const listed = board.waiting([RESOURCE], atOneInTheAfternoon).length;
+    const [panel] = board.resources([RESOURCE], atOneInTheAfternoon);
+    assert.equal(listed, 2, "both of the clinic's Wednesday patients are on the list");
+    assert.equal(panel!.booked, listed, "and the panel counts the same two, not the one the UTC day still holds");
   } finally {
     await s.close();
   }
 });
 
-test("a deployment that mistypes its offset is stopped at boot, not at the first board", async () => {
+test("a deployment that mistypes its clinic time zone is stopped at boot, not at the first board", async () => {
   // forTenant() is lazy, so validating only where the board is built would
   // leave a typo sitting quiet until somebody opened one -- a worse moment
   // to find out than start-up, and one where the failure looks like the
@@ -348,12 +353,18 @@ test("a deployment that mistypes its offset is stopped at boot, not at the first
   // Synchronously, in the constructor: before a database is opened, before
   // a port is bound, before anything has to be unwound.
   assert.throws(
-    () => new Engine({ dbPath: ":memory:", tickMs: 15, clinicTimezoneOffset: "MST" }),
-    /must look like -07:00/
+    () => new Engine({ dbPath: ":memory:", tickMs: 15, clinicTimeZone: "MST" }),
+    /a place like America\/Yellowknife or an offset like -07:00/
   );
-  const ok = new Engine({ dbPath: ":memory:", tickMs: 15, clinicTimezoneOffset: "-07:00" });
-  await ok.start();
-  await ok.stop();
+  assert.throws(
+    () => new Engine({ dbPath: ":memory:", tickMs: 15, clinicTimeZone: "America/Yelowknife" }),
+    /not in this runtime's time-zone data/
+  );
+  for (const good of ["-07:00", "America/Edmonton"]) {
+    const ok = new Engine({ dbPath: ":memory:", tickMs: 15, clinicTimeZone: good });
+    await ok.start();
+    await ok.stop();
+  }
 });
 
 test("a cancelled visit is neither expected nor asked whether it was prepared for", async () => {

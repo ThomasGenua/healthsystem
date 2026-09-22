@@ -82,15 +82,37 @@ always forward-compatible and run automatically on open — see
   the board returned. After it, the board flipped: the morning's patients
   vanished and tomorrow's appeared as today's, expected and unprepared.
 
-  `NORTHSTAR_CLINIC_UTC_OFFSET` (spelled and validated like a laboratory
-  profile's `timezoneOffset`) sets where the clinic is, and the day is
-  truncated in local time. Unset is UTC, exactly as before, so no deployment
-  changes behaviour without saying where it is. Not read from the host clock:
-  a server's timezone is a property of where it is racked. A fixed offset
-  rather than a zone name, which does not follow daylight saving and is an
-  honest number somebody sets rather than a half-right zone database. A
-  malformed value stops the engine at construction rather than producing a
-  board a few hours out. H-211.
+  `NORTHSTAR_CLINIC_TIMEZONE` says where the clinic is — a place like
+  `America/Yellowknife`, which follows daylight saving, or a fixed offset
+  like `-07:00`. One calendar, in `src/schedule/clinic-day.ts`, now answers
+  "what is today" for everything that asks: the board's list, its capacity
+  panel (which had been left on the UTC day beside a list that was not, so
+  one screen counted a different day than it showed), a clinician's worklist
+  and the wall display. Days that are 23 and 25 hours long are, and where
+  clocks change at midnight the day starts when the calendar first reads it.
+  Unset is UTC, exactly as before. Not read from the host clock: a server's
+  time zone is a property of where it is racked. A malformed or unknown value,
+  an abbreviation like `MST` that says nothing reliable about daylight
+  saving, and `Etc/GMT+7` with its inverted sign are all refused when the
+  engine is built. H-211.
+
+  A place name is resolved with the time-zone data compiled into Node — no
+  dependency, but a dependence. Copies differ: Node 24.21 (tzdata 2026c)
+  treats `America/Yellowknife` as `America/Edmonton` and keeps it on
+  UTC-06:00 from November 2026, where Node 22.22 (tzdata 2025c) falls back to
+  UTC-07:00. So the boot log says what the name resolved to, which copy of
+  the rules said so, and what the clinic's clocks read now, and the pilot
+  preflight asks a person to confirm it. The exposure is an hour at the edge
+  of the day — midnight becomes 23:00 or 01:00 — not the seven hours the UTC
+  day was out. H-214.
+
+- **The privacy review read "after hours" on UTC clocks.** Default clinic
+  hours are 07:00–19:00, and at UTC-07:00 that meant midnight to noon
+  locally: a 14:00 read was flagged and a 03:00 one was not, the opposite of
+  the point. With a clinic time zone set, the hour of each read is taken on
+  the clinic's clock — still from the read's own timestamp, never from when
+  the review runs (H-76) — and the finding says whose clock it used. R-19
+  narrows to what remains: one zone per deployment.
 
 **Added**
 
