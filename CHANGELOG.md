@@ -9,6 +9,89 @@ always forward-compatible and run automatically on open — see
 
 ## Unreleased
 
+**Fixed**
+
+- **A patient's intake form could claim somebody else's appointment, and that
+  patient then read as prepared.** `appointment_id` is what the clinic board
+  answers "did anything arrive for this visit" from, and it arrived as a
+  field on the request. The portal only ever offers a patient their own
+  upcoming visits — but a screen that offers the right choices is a
+  presentation, not an authorisation boundary. An authenticated patient
+  attaching their own form to another patient's booking was answered 201, and
+  that booking left the "coming in with nothing sent in" panel.
+
+  A named visit is now resolved against the schedule in this tenant and has
+  to be that patient's live booking. "No such appointment" and "somebody
+  else's appointment" are refused in the same words, so the boundary cannot
+  be asked which identifiers exist. An appointment whose start time has
+  passed is deliberately still accepted: somebody filling the form in the
+  waiting room at 09:05 for a 09:00 appointment is the ordinary case, and a
+  clock that close to the line is the wrong thing to refuse a medication list
+  over. H-209.
+
+- **A patient could not complete a questionnaire at all.**
+  `/patient/questionnaires` served the stored row, whose `questions` column
+  is a JSON string, and the screen does `for (const question of
+  q.questions)` — which over a string iterates characters. A two-question
+  form rendered as a hundred and sixty-four nameless text boxes, every one
+  `id="q-undefined"`, the questions never shown, and the answers came back
+  keyed `undefined` so the required-question check refused every submission.
+
+  Nothing caught it because every test on that route asserted a status code,
+  and 200 is what a broken payload returns too — the same gap #107 closed one
+  route along, in the same week, for the same reason. The payload is parsed
+  and narrowed now, and a real browser asserts the controls that render.
+  H-212.
+
+- **Two browser tabs turned one account of a visit into two, the later one
+  older.** `submit()` is idempotent for the same draft, which covers the
+  retry a dropped connection produces. It did not cover a second tab: that
+  tab was painted before the first submitted, holds no draft id, opens a new
+  draft and submits it — two QuestionnaireResponses and two review tasks for
+  one appointment, and the one written second carried the answers the patient
+  typed first. Opening a second draft for a visit that already has a form on
+  file is refused, naming when the first was sent — and the same rule is held
+  again in `submit()`, where the chart document is actually written, so a
+  draft opened before this shipped cannot produce the duplicate either.
+  Scoped to submissions that name a visit: two general concerns with no
+  appointment between them are two things somebody wanted to say. H-210.
+
+- **What a patient typed could disappear without their say-so, three ways.**
+  Every form failure in the portal went to `showError()`, which replaces the
+  whole view — right for a screen that could not load, catastrophic for one
+  somebody has been typing into — and the retry button it offered navigated
+  to Messages from whichever screen you were on. The upload card's size check
+  called it directly, so choosing a photo over the limit destroyed unsaved
+  questionnaire answers on the same screen. And switching the visit selector
+  re-rendered every form from what was saved, silently dropping anything
+  typed and not saved.
+
+  A send failure is now reported inside the form, above the buttons, with
+  `role="alert"`; every field keeps its value and nothing else moves. This
+  applies to every form in the portal. Switching visit with unsaved answers
+  asks first, and Cancel leaves everything as it was. It asks rather than
+  saving the answers to the visit being left or carrying them to the one
+  chosen, because which is right depends on whether the patient picked the
+  wrong visit or is preparing two. H-213.
+
+- **The clinic board's "today" was the UTC day.** At UTC-07:00 the UTC day
+  ends at 17:00 local, and the board was wrong on both sides of that line.
+  Before it, a booking at 18:00 the same local day was already in tomorrow's
+  window and simply absent — and nobody was asked whether those patients had
+  sent anything in, because `expectedWithoutIntake()` only asks about visits
+  the board returned. After it, the board flipped: the morning's patients
+  vanished and tomorrow's appeared as today's, expected and unprepared.
+
+  `NORTHSTAR_CLINIC_UTC_OFFSET` (spelled and validated like a laboratory
+  profile's `timezoneOffset`) sets where the clinic is, and the day is
+  truncated in local time. Unset is UTC, exactly as before, so no deployment
+  changes behaviour without saying where it is. Not read from the host clock:
+  a server's timezone is a property of where it is racked. A fixed offset
+  rather than a zone name, which does not follow daylight saving and is an
+  honest number somebody sets rather than a half-right zone database. A
+  malformed value stops the engine at construction rather than producing a
+  board a few hours out. H-211.
+
 **Added**
 
 - **A patient's intake form now says which visit it is for, and the board

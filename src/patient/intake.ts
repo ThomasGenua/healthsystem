@@ -37,6 +37,36 @@
  * patient is on a medication because they mentioned starting it, which
  * nobody with prescribing authority ever confirmed.
  *
+ * ## A visit is a fact the server checks, not a field the caller fills in
+ *
+ * `appointment_id` decides whether the clinic board reads a visit as prepared
+ * — `submittedForAppointments()` answers "which of today's appointments have
+ * a form behind them" by that column alone. So it cannot be a string the
+ * caller supplies and nothing verifies. A portal that only *offers* the
+ * patient their own upcoming visits is a UI, and a UI is not an authorisation
+ * boundary: an id typed into the request instead of chosen from the list
+ * would attach one person's form to another person's appointment, and the
+ * second person would drop off the "coming in with nothing sent in" panel
+ * having sent in nothing. That is the exact hazard the per-visit question was
+ * added to answer, inverted. So a named appointment is looked up here, in
+ * this tenant, and has to be that patient's and not cancelled.
+ *
+ * ## One form per visit, and a refusal rather than a second opinion
+ *
+ * `submit()` is idempotent for the same draft, which covers the retry. It
+ * does not cover two browser tabs: the second tab was rendered before the
+ * first one submitted, so it holds no draft id, opens a *new* draft and
+ * submits that — two QuestionnaireResponses and two review tasks for one
+ * visit, the later one carrying the older answers. So opening a second draft
+ * for a visit that already has a submitted form is refused, at the earliest
+ * point it can be, rather than discovered by a clinician reading two
+ * conflicting accounts of the same conversation. The refusal names what is
+ * already on file; it does not quietly return the old row, because a patient
+ * whose newly typed answers were discarded should be told, not reassured.
+ *
+ * Only when a visit is named. Two general concerns with no appointment
+ * between them are two things a patient wanted to say, not one said twice.
+ *
  * ## Quarantine means nothing serves the bytes
  *
  * `Uploads.receive()` never marks a file clean — a store cannot honestly
@@ -71,6 +101,19 @@ export interface ReviewInbox {
     by: Actor;
   }): { id: string };
   complete(taskId: string, by: Actor & { evidence: string }): unknown;
+}
+
+/**
+ * The minimal shape this needs from the schedule — see `ReviewInbox` above
+ * for the same loose coupling, and `Actions` in clinical/actions.ts for the
+ * same get()-only adapter around a store this one does not otherwise touch.
+ *
+ * Tenant scoping is the caller's: `Schedule.booking()` is already bound to
+ * one tenant, so an id belonging to another custodian resolves to nothing
+ * here rather than to somebody else's appointment.
+ */
+export interface VisitLookup {
+  booking(id: string): { id: string; patient_id: string; status: string } | undefined;
 }
 
 // ---------------------------------------------------------------- Questionnaires
@@ -222,12 +265,52 @@ export class IntakeSubmissions {
   private questionnaires: Questionnaires;
   private clinical: ClinicalRecord;
   private tasks: ReviewInbox | undefined;
+  private visits: VisitLookup | undefined;
 
-  constructor(db: Db, questionnaires: Questionnaires, clinical: ClinicalRecord, tasks?: ReviewInbox) {
+  constructor(
+    db: Db,
+    questionnaires: Questionnaires,
+    clinical: ClinicalRecord,
+    tasks?: ReviewInbox,
+    visits?: VisitLookup
+  ) {
     this.db = db;
     this.questionnaires = questionnaires;
     this.clinical = clinical;
     this.tasks = tasks;
+    this.visits = visits;
+  }
+
+  /**
+   * Resolves the visit a form says it is for, or refuses.
+   *
+   * One message for "no such appointment" and for "somebody else's
+   * appointment", deliberately. The caller here is a patient portal, and two
+   * distinguishable answers would let an authenticated patient ask this
+   * boundary which arbitrary identifiers exist — an enumeration oracle over
+   * other people's bookings, paid for in nothing but a slightly less
+   * specific error for the one case nobody hits by accident.
+   */
+  private requireVisitOf(patientId: string, appointmentId: string): void {
+    if (!this.visits) {
+      // A deployment with no schedule wired cannot answer the question, and
+      // an unverified appointment id is the whole hazard. Storing one
+      // anyway would put the board's "prepared" back on the caller's word.
+      refuse("this deployment cannot attach an intake form to a visit: no schedule is wired", 409);
+    }
+    const booking = this.visits.booking(appointmentId);
+    if (!booking || booking.patient_id !== patientId) {
+      refuse(`no appointment ${appointmentId} for this patient`, 404);
+    }
+    if (booking.status === "cancelled") {
+      refuse(`appointment ${appointmentId} was cancelled; this form is not preparation for it`, 409);
+    }
+    // Deliberately not refused: an appointment whose start time has passed.
+    // A patient filling the form in the waiting room at 09:05 for a 09:00
+    // appointment is the ordinary case, and a clock this close to the
+    // boundary is the wrong thing to refuse a medication list over. The
+    // portal offers only future visits; the server does not turn that
+    // presentation choice into a rule.
   }
 
   private require(id: string): SubmissionRow {
@@ -269,6 +352,10 @@ export class IntakeSubmissions {
         if (!m.description.trim()) refuse("a proposed medication change needs a description");
       }
     }
+    // Before the transaction, because it is a refusal about the request
+    // rather than a decision about stored rows, and because the board reads
+    // this column as though somebody had checked it.
+    if (input.appointmentId) this.requireVisitOf(input.patientId, input.appointmentId);
 
     return this.db.transaction(() => {
       const existing = this.db.sql
@@ -300,6 +387,30 @@ export class IntakeSubmissions {
             existing.id
           );
         return this.require(existing.id);
+      }
+
+      // No draft open, and a visit named. If a form for this visit has
+      // already been sent in, this is a second tab rather than a second
+      // conversation — see "One form per visit" at the top of this file.
+      if (input.appointmentId) {
+        const sent = this.db.sql
+          .prepare(
+            `SELECT id, status, submitted_at FROM intake_submissions
+              WHERE tenant_id = ? AND patient_id = ? AND status != 'draft'
+                AND COALESCE(questionnaire_id, '') = COALESCE(?, '')
+                AND appointment_id = ?
+              ORDER BY submitted_at DESC LIMIT 1`
+          )
+          .get(this.db.tenantId, input.patientId, input.questionnaireId ?? null, input.appointmentId) as unknown as
+          | { id: string; status: SubmissionStatus; submitted_at: string }
+          | undefined;
+        if (sent) {
+          refuse(
+            `a form for this visit was already sent in on ${sent.submitted_at} and is ${sent.status}; ` +
+              "reload to see it, and send anything further as a message rather than a second form",
+            409
+          );
+        }
       }
 
       const id = randomUUID();
@@ -369,6 +480,33 @@ export class IntakeSubmissions {
     }
 
     return this.db.transaction(() => {
+      // The same rule saveDraft() applies, held again here because this is
+      // where the chart document is written. saveDraft() refuses the second
+      // tab early, before the patient types more; this is the invariant, and
+      // it also covers a draft opened before that check existed -- a patient
+      // who had a draft and a submitted form for one visit on the day this
+      // shipped would otherwise still produce the duplicate on submit.
+      if (row.appointment_id) {
+        const sent = this.db.sql
+          .prepare(
+            `SELECT submitted_at, status FROM intake_submissions
+              WHERE tenant_id = ? AND patient_id = ? AND id != ? AND status != 'draft'
+                AND COALESCE(questionnaire_id, '') = COALESCE(?, '')
+                AND appointment_id = ?
+              LIMIT 1`
+          )
+          .get(this.db.tenantId, row.patient_id, row.id, row.questionnaire_id, row.appointment_id) as unknown as
+          | { submitted_at: string; status: SubmissionStatus }
+          | undefined;
+        if (sent) {
+          refuse(
+            `a form for this visit was already sent in on ${sent.submitted_at} and is ${sent.status}; ` +
+              "this draft was not sent, so there is still one account of the visit on the chart",
+            409
+          );
+        }
+      }
+
       const now = new Date().toISOString();
       const entry = this.clinical.record({
         entryType: "QuestionnaireResponse",

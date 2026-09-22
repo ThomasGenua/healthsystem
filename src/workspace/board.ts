@@ -171,11 +171,78 @@ export function visitToken(bookingId: string): string {
   return out;
 }
 
+/**
+ * How far this clinic's civil day is from UTC, as `-07:00`.
+ *
+ * Same spelling and same validation as a laboratory profile's
+ * `timezoneOffset` in orders/hl7.ts, because it is the same kind of fact:
+ * something the deployment knows and the code must not guess.
+ */
+export function dayOffsetMs(offset: string | undefined): number {
+  if (offset === undefined) return 0;
+  const m = /^([+-])(\d{2}):?(\d{2})$/.exec(offset.trim());
+  if (!m) throw new Error(`clinic timezone offset must look like -07:00, got ${JSON.stringify(offset)}`);
+  const minutes = Number(m[2]) * 60 + Number(m[3]);
+  if (Number(m[3]) > 59 || minutes > 14 * 60) throw new Error(`clinic timezone offset out of range: ${offset}`);
+  return (m[1] === "-" ? -minutes : minutes) * 60_000;
+}
+
+export interface BoardOptions {
+  /**
+   * The clinic's offset from UTC, as `-07:00`. Absent means UTC.
+   *
+   * Everything on this board is scoped to "today", and until this existed
+   * "today" was the UTC calendar day wherever the clinic actually is. For a
+   * site west of UTC — which is every site this was written for — that is
+   * the wrong day for part of every day. In Yellowknife in winter (UTC-07:00)
+   * the UTC day ends at 17:00 local. Before then, every appointment from
+   * 17:00 on is already in tomorrow's window and simply absent, and
+   * `expectedWithoutIntake()` never asks whether those patients sent
+   * anything in, because it only asks about visits `waiting()` returned.
+   * After 17:00 the board flips: the morning's patients vanish and
+   * tomorrow's appear as today's, expected and unprepared.
+   *
+   * It is not derived from the host clock. A server's timezone is a property
+   * of where it is racked, and for a hosted deployment that is not where the
+   * clinic is; guessing from it would make the board quietly wrong in a way
+   * nobody could see. Unset keeps the previous behaviour exactly.
+   *
+   * A fixed offset rather than an IANA zone, deliberately and with a cost:
+   * it does not follow daylight saving, so a site that observes it has to
+   * change this twice a year. Reading tzdata to do better is a real change
+   * with a real dependency, and shipping a half-right zone database is worse
+   * than an honest number somebody sets. Recorded in docs/CLINICAL-SAFETY.md
+   * as H-211.
+   */
+  timezoneOffset?: string;
+}
+
 export class ClinicBoard {
   private sources: BoardSources;
+  private dayOffsetMs: number;
 
-  constructor(sources: BoardSources) {
+  constructor(sources: BoardSources, options: BoardOptions = {}) {
     this.sources = sources;
+    // Validated here rather than per call: a malformed offset is a
+    // deployment mistake, and the moment to fail on it is boot, not the
+    // first time somebody opens the board.
+    this.dayOffsetMs = dayOffsetMs(options.timezoneOffset);
+  }
+
+  /**
+   * The clinic's civil day containing `asOf`, as a UTC half-open interval.
+   *
+   * Shifting into local time, truncating there, and shifting back is the
+   * whole trick: the boundary moves to local midnight instead of sitting at
+   * 00:00Z. With no offset configured this is exactly the UTC day it always
+   * was.
+   */
+  private dayWindow(asOf: Date): { from: string; to: string } {
+    const local = new Date(asOf.getTime() + this.dayOffsetMs);
+    const startLocal = Date.parse(`${local.toISOString().slice(0, 10)}T00:00:00.000Z`);
+    const from = new Date(startLocal - this.dayOffsetMs);
+    const to = new Date(from.getTime() + 86_400_000);
+    return { from: from.toISOString(), to: to.toISOString() };
   }
 
   /**
@@ -187,11 +254,7 @@ export class ClinicBoard {
    * alone rewards a clinic for running late on the people who arrived early.
    */
   waiting(resourceIds: string[], asOf = new Date()): WaitingRow[] {
-    const day = asOf.toISOString().slice(0, 10);
-    const from = `${day}T00:00:00.000Z`;
-    const next = new Date(from);
-    next.setUTCDate(next.getUTCDate() + 1);
-    const to = next.toISOString();
+    const { from, to } = this.dayWindow(asOf);
 
     const rows: WaitingRow[] = [];
     for (const resourceId of resourceIds) {

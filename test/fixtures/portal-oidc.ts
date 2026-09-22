@@ -95,6 +95,47 @@ export async function portalFixture(options: {
   };
 }
 
+/**
+ * A questionnaire and some upcoming appointments, for the intake journey.
+ *
+ * Separate from `portalFixture()` rather than folded into it: the login and
+ * results journey does not need a schedule, and a fixture that seeds
+ * everything makes every test pay for the setup of every other one. Hours
+ * are relative to now, so "upcoming" stays upcoming however long the suite
+ * takes to reach this test.
+ */
+export function seedIntake(
+  engine: Engine,
+  opts: { patientId: string; hoursAhead: number[]; resourceId?: string }
+): { questionnaireId: string; appointmentIds: string[] } {
+  const tenant = engine.forTenant("default");
+  const by = { actorId: "fixture-clerk", actorKind: "practitioner" };
+  const existing = tenant.questionnaires.get("pre-visit");
+  if (!existing) {
+    tenant.questionnaires.publish({
+      id: "pre-visit",
+      title: "Pre-visit check-in",
+      questions: [
+        { key: "fasting", label: "Have you fasted for 8 hours?", type: "boolean", required: true },
+        { key: "notes", label: "Anything else we should know?", type: "text" },
+      ],
+      by,
+    });
+  }
+  const appointmentIds = opts.hoursAhead.map((hours, index) => {
+    const startsAt = new Date(Date.now() + hours * 3600_000).toISOString();
+    const slot = tenant.schedule.openSlot({
+      resourceId: opts.resourceId ?? "dr-okpik",
+      resourceKind: "practitioner",
+      service: index === 0 ? "Family practice" : "Diabetes clinic",
+      startsAt,
+      endsAt: new Date(Date.parse(startsAt) + 1800_000).toISOString(),
+    });
+    return tenant.schedule.book({ slotId: slot.id, patientId: opts.patientId, reason: "Follow-up", by }).id;
+  });
+  return { questionnaireId: "pre-visit", appointmentIds };
+}
+
 export function responseCookie(response: Response, name: string): string {
   return response.headers.getSetCookie().find(c => c.startsWith(`${name}=`))?.split(";")[0] ?? "";
 }

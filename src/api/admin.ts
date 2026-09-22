@@ -67,6 +67,7 @@ import { DIRECTORY_KINDS, type PartyKind } from "../directory/store.ts";
 import { errorBody, logFault, mapStoreError, refuse, routeArea } from "../core/refusal.ts";
 import type { MigrationRecordType, SourceRecord } from "../migrate/run.ts";
 import type { AuthorityRow, PatientPermission } from "../patient/access.ts";
+import type { Question } from "../patient/intake.ts";
 import { DISPENSE_OUTCOMES, type DispenseOutcome } from "../meds/prescribe.ts";
 import { readFhirBundle, readFhirNdjson } from "../migrate/read-fhir.ts";
 import { score as computeScore, SCORE_IDS } from "../clinical/scores.ts";
@@ -1157,7 +1158,29 @@ async function route(
       // Not itself PHI — a list of forms offered, not an answer to one — so
       // this is available to any authenticated patient-portal subject rather
       // than gated per patient, the same way /patient/authorities is.
-      return send(res, 200, { questionnaires: tenant.questionnaires.list() });
+      //
+      // `questions` is parsed here rather than served as the column holds
+      // it. The store keeps a JSON string, the screen does `for (const
+      // question of q.questions)`, and `for...of` over a string iterates
+      // characters — so a two-question form rendered as a hundred and
+      // sixty-odd nameless text boxes, every one of them `id="q-undefined"`,
+      // and the answers came back keyed `undefined` so the required-question
+      // check refused every submission. A patient could not complete a
+      // questionnaire at all. Nothing caught it because every test on this
+      // route asserted a status code, and 200 is what a broken payload
+      // returns too — the same gap #107 closed on /patient/appointments.
+      //
+      // Narrowed while it was being fixed, for the same reason: a patient is
+      // offered a form, not the row behind it. `status`, `published_by`,
+      // `published_at` and the tenant are clinic bookkeeping.
+      return send(res, 200, {
+        questionnaires: tenant.questionnaires.list().map((q) => ({
+          id: q.id,
+          version: q.version,
+          title: q.title,
+          questions: JSON.parse(q.questions) as Question[],
+        })),
+      });
     }
 
     if (path === "/patient/intake" && method === "GET") {

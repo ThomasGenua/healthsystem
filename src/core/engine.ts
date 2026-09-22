@@ -52,7 +52,7 @@ import { ingestFhir } from "../directory/fhir.ts";
 import { ChannelNoticeDispatcher, PatientNotices } from "../patient/notice.ts";
 import { PatientContacts } from "../patient/contacts.ts";
 import { Questionnaires, IntakeSubmissions, Uploads, type MalwareScanner } from "../patient/intake.ts";
-import { ClinicBoard } from "../workspace/board.ts";
+import { ClinicBoard, dayOffsetMs } from "../workspace/board.ts";
 import { Discharges, Handoffs } from "../work/discharge.ts";
 import { AccessReview } from "../audit/review.ts";
 import { Clinics } from "../schedule/clinics.ts";
@@ -269,6 +269,15 @@ export interface EngineOptions {
    */
   malwareScanner?: MalwareScanner;
   /**
+   * Where this clinic is, as an offset from UTC like `-07:00`, for the one
+   * question that needs it: which appointments are "today" on the clinic
+   * board. Unset means UTC, which is what it has always been. See
+   * `BoardOptions.timezoneOffset` in src/workspace/board.ts for why this is
+   * configured rather than read off the host clock, and why it is a fixed
+   * offset rather than a zone name.
+   */
+  clinicTimezoneOffset?: string;
+  /**
    * What actually books transport, accommodation, an interpreter, an escort
    * or equipment for a travelling-clinic visit. Unset means arrangements are
    * tracked and confirmed by a person writing down evidence — see
@@ -314,6 +323,7 @@ export class Engine {
   private pharmacyChannel: string | null;
   /** What scans a patient upload, when a deployment configures one. */
   private malwareScanner: MalwareScanner | null;
+  private clinicTimezoneOffset: string | undefined;
   /** What books travelling-clinic logistics externally, when a deployment configures one. */
   private externalCoordinator: ExternalCoordinator | null;
   /** What authorises transmitting a controlled substance, when anything does. */
@@ -368,6 +378,12 @@ export class Engine {
     this.pharmacyChannel = opts.pharmacyChannel ?? null;
     this.controlledAuthority = opts.controlledSubstanceAuthority ?? null;
     this.malwareScanner = opts.malwareScanner ?? null;
+    // Validated here and not only where the board is built, because
+    // `forTenant()` is lazy: a typo would otherwise sit quiet until the
+    // first person opened a board, which is a worse moment to find out than
+    // boot. The value itself is used by the board.
+    dayOffsetMs(opts.clinicTimezoneOffset);
+    this.clinicTimezoneOffset = opts.clinicTimezoneOffset;
     this.externalCoordinator = opts.externalCoordinator ?? null;
     this.lockStaleMs = opts.lockStaleMs ?? 20_000;
     // Comfortably inside the staleness window, so a slow moment never costs a
@@ -445,7 +461,15 @@ export class Engine {
     // clinician-recorded document does, and both a submission and a clean
     // upload raise a portal-submission task rather than landing silently.
     const questionnaires = new Questionnaires(db);
-    const intake = new IntakeSubmissions(db, questionnaires, clinical, tasks);
+    // The schedule arrives as a get()-only adapter, the same shape Actions
+    // takes its task and order lookups in. An intake form names the visit it
+    // prepares for, and the clinic board reads that column as "somebody has
+    // sent something in for this appointment" -- so the id has to be checked
+    // against a real booking of that patient rather than trusted from the
+    // request. See "A visit is a fact the server checks" in patient/intake.ts.
+    const intake = new IntakeSubmissions(db, questionnaires, clinical, tasks, {
+      booking: (id: string) => schedule.booking(id),
+    });
     const uploads = new Uploads(db, documents, { tasks, ...(this.malwareScanner ? { scanner: this.malwareScanner } : {}) });
     const notices = new PatientNotices(db, this.noticeChannel);
     const contacts = new PatientContacts(db);
@@ -494,7 +518,10 @@ export class Engine {
     // guard rather than by hand, which is the point of having one.
     messaging.useOwnershipRecord(handoffs);
     // After encounters, which it reads to tell an arrival from an expectation.
-    const board = new ClinicBoard({ schedule, encounters, tasks, discharges, handoffs, intake });
+    const board = new ClinicBoard(
+      { schedule, encounters, tasks, discharges, handoffs, intake },
+      { timezoneOffset: this.clinicTimezoneOffset }
+    );
     // Built here rather than inline in the view because the key store needs it
     // too: issuing a credential for an organization nobody has registered is a
     // typo worth refusing, and only the directory can tell.
