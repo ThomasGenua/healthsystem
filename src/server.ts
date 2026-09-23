@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { encryptionAtRest, shouldWarn } from "./core/atrest.ts";
 import { readEnv, legacyEnvWarning, resolveDbPath, legacyDbNotice } from "./core/naming.ts";
 import { RemoteBackup, remoteBackupWarning } from "./core/remote.ts";
+import { resolveClinicTimeZone } from "./schedule/clinic-day.ts";
 import { join } from "node:path";
 import { Engine } from "./core/engine.ts";
 import { DEFAULT_TENANT } from "./db.ts";
@@ -227,6 +228,10 @@ async function main(): Promise<void> {
   const envNotice = legacyEnvWarning();
   if (envNotice) console.log(envNotice);
 
+  // Before the engine, so a retired or malformed setting stops the boot
+  // rather than producing a board a few hours out.
+  const clinicTimeZone = resolveClinicTimeZone();
+
   // Same reason, same moment: an operator should not learn from a footnote
   // that every snapshot still lives on the disk that is about to die.
   let remote: RemoteBackup | undefined;
@@ -278,13 +283,28 @@ async function main(): Promise<void> {
       purgeAfterDays: days(readEnv("PURGE_AFTER_DAYS")),
     },
     malwareScanner,
-    // Which appointments are "today" on the clinic board. Unset is UTC,
-    // which is wrong for part of every day at any site west of it -- see
-    // BoardOptions.timezoneOffset in src/workspace/board.ts. Passed
-    // through rather than defaulted here, so a site that has not said where
-    // it is keeps exactly the behaviour it had.
-    ...(readEnv("CLINIC_UTC_OFFSET") ? { clinicTimezoneOffset: readEnv("CLINIC_UTC_OFFSET")! } : {}),
+    // Where the clinic is, which decides "today" on the board and the
+    // worklist and "after hours" in the privacy review. Passed through rather
+    // than defaulted, so a site that has not said keeps exactly the UTC
+    // behaviour it had. See src/schedule/clinic-day.ts.
+    ...(clinicTimeZone === undefined ? {} : { clinicTimeZone }),
   });
+
+  // Said out loud, like the encryption and backup postures above, because
+  // both ways of getting it wrong are silent. Unset, every "today" is the
+  // UTC day. Set, the answer depends on this runtime's copy of the zone
+  // rules -- and a name like America/Yellowknife can resolve to another
+  // zone's rules entirely -- so the line says what it resolved to and what
+  // the clinic's clocks read now, for the person who knows to compare.
+  if (engine.clinicDay.kind === "utc") {
+    console.warn(
+      "WARNING: no clinic time zone is configured (NORTHSTAR_CLINIC_TIMEZONE). The clinic board and worklist " +
+        "treat the UTC calendar day as today, and the privacy review reads after hours on UTC clocks — both wrong " +
+        "for part of every day anywhere that is not on UTC. Set it to a place like America/Yellowknife."
+    );
+  } else {
+    console.log(`clinic time zone: ${engine.clinicDay.describe()}`);
+  }
 
   if (existsSync(MAPPINGS_DIR)) {
     for (const f of readdirSync(MAPPINGS_DIR).filter((f) => f.endsWith(".json"))) {

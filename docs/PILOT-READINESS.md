@@ -68,7 +68,7 @@ behavior. Complete the full regression and deployment rehearsal before release.
 | Clinical use | Named clinical owner reviews hazards, workflows and residual risk for the site's intended use. |
 | Accessibility/security | Independent usability, assistive-technology and security testing on the deployed application; repository tests do not establish these outcomes. |
 | Operations | Verify encryption, monitoring, off-machine backups, recoverable backup keys, restoration and rollback on the actual deployment. |
-| Clinic location | Set `NORTHSTAR_CLINIC_UTC_OFFSET` to the site's offset, as `-07:00`. Unset means the clinic board's "today" is the UTC day, which is the wrong day for part of every day at any site west of UTC. A fixed offset does not follow daylight saving; a site that observes it changes this twice a year. See H-211. |
+| Clinic location | Set `NORTHSTAR_CLINIC_TIMEZONE`, preferably to a place such as `America/Yellowknife`; a fixed offset such as `-07:00` does not follow daylight saving. Unset, the board, the worklist and the privacy review's after-hours all use UTC (H-211, R-19). Then check the boot line against the clinic's clocks: a place name is resolved with the time-zone data compiled into Node, and copies differ. Node 24.21 (tzdata 2026c) treats `America/Yellowknife` as `America/Edmonton` and keeps it on UTC-06:00 from November 2026; Node 22.22 (tzdata 2025c) falls back to UTC-07:00. Which matches the law at the site is for the site to confirm, and to re-confirm after any Node upgrade (H-214). |
 
 ## Open questions for the clinical owner
 
