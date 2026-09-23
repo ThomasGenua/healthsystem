@@ -76,10 +76,15 @@ export async function launchBrowser(opts: { mobile?: boolean } = {}): Promise<Br
 
   const close = async (): Promise<void> => {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: ++seq, method: "Browser.close" }));
+    // The fallback timer is cleared once the race is decided. Left running,
+    // it held the test process open for its full three seconds after every
+    // browser test, whichever side of the race had won.
+    let fallback: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
       new Promise<void>((r) => child.once("exit", () => r())),
-      new Promise<void>((r) => setTimeout(r, 3000)),
+      new Promise<void>((r) => { fallback = setTimeout(r, 3000); }),
     ]);
+    clearTimeout(fallback);
     for (const req of pending.values()) { clearTimeout(req.timer); req.reject(new Error("browser closing")); }
     ws?.close();
     if (child.exitCode === null) child.kill();

@@ -416,7 +416,11 @@ test(
           // Already gone, or never got a group. Fall back to the launcher.
         }
         chrome.kill("SIGKILL");
-        await Promise.race([exited, new Promise((r) => setTimeout(r, 5_000))]);
+        // Cleared once decided, so a Chromium that exits at once does not
+        // leave this timer holding the process open for five more seconds.
+        let fallback: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([exited, new Promise((r) => { fallback = setTimeout(r, 5_000); })]);
+        clearTimeout(fallback);
       }
       await api.close();
       await engine.stop();

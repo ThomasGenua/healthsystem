@@ -313,7 +313,7 @@ the redirect URL. Origin must contain no path or trailing slash. All login
 settings are required together; invalid or insecure configuration fails boot.
 Without a login client the portal explains that clinic sign-in is unavailable.
 Manual token entry is available only with the development issuer.
-Use `node --test --test-force-exit test/portal-login.test.ts test/portal-browser.test.ts`
+Use `node --test --import ./test/exit-watchdog.ts test/portal-login.test.ts test/portal-browser.test.ts`
 for a synthetic rehearsal; set `NORTHSTAR_REQUIRE_BROWSER=1` to refuse a skipped
 browser test. A real provider still needs a site-specific acceptance run.
 

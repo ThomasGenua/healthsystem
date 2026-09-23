@@ -90,6 +90,14 @@ interface RuntimeChannel {
 }
 
 /**
+ * How long stop() waits for polls already in flight. Dropping a channel's
+ * client makes a pending query fail at once, so this is only reached by a
+ * connect still waiting on a host that does not answer — and shutdown must
+ * not wait on that host's timeout.
+ */
+const STOP_INFLIGHT_MS = 5_000;
+
+/**
  * How often a cron-scheduled source checks whether its minute has arrived.
  * Cron is minute-granular, so anything under a minute suffices; 20s keeps the
  * worst-case lateness small without waking often.
@@ -230,6 +238,11 @@ export interface EngineOptions {
    */
   lockStaleMs?: number;
   /**
+   * How long stop() waits for a source poll already in flight before closing
+   * the database under it. Defaults to five seconds; see STOP_INFLIGHT_MS.
+   */
+  stopInflightMs?: number;
+  /**
    * The channel break-glass notices are published to.
    *
    * Unset means notices are not sent, and the override queue behaves exactly
@@ -338,6 +351,9 @@ export class Engine {
   private lockStaleMs: number;
   private lockHeartbeatMs: number;
   private holdsLock = false;
+  /** Set as stop() closes the database; see sourceFailed(). */
+  private closed = false;
+  private stopInflightMs: number;
 
   constructor(opts: EngineOptions) {
     this.db = new Db(opts.dbPath);
@@ -391,6 +407,7 @@ export class Engine {
     this.clinicDay = ClinicDay.parse(opts.clinicTimeZone);
     this.externalCoordinator = opts.externalCoordinator ?? null;
     this.lockStaleMs = opts.lockStaleMs ?? 20_000;
+    this.stopInflightMs = opts.stopInflightMs ?? STOP_INFLIGHT_MS;
     // Comfortably inside the staleness window, so a slow moment never costs a
     // running engine its own claim.
     this.lockHeartbeatMs = Math.max(1_000, Math.floor(this.lockStaleMs / 4));
@@ -715,6 +732,23 @@ export class Engine {
       await this.dropSqlClient(rc);
       await this.dropSftpClient(rc);
     }
+    // A poll that was waiting on its source when the timers were cleared is
+    // still running: clearing a timer does not cancel the await inside it.
+    // Closing the database under it made its failure path write to a closed
+    // handle and throw from inside the net that catches poll errors — an
+    // unhandled rejection, after an ordinary shutdown. The shipped server
+    // exits straight after stop() and so rarely saw it; anything that
+    // outlives the engine does.
+    //
+    // Waits on `polling`, the flag each poll sets when it really starts and
+    // clears in its own `finally`, not on a promise per call: a tick that
+    // finds a poll already running returns at once, and tracking the latest
+    // call tracked exactly those. Bounded, because a connect to a host that
+    // does not answer may not settle for minutes.
+    const deadline = Date.now() + this.stopInflightMs;
+    while ([...this.channels.values()].some((rc) => rc.polling) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
     this.channels.clear();
     // Release before closing, so a restart does not have to wait out a claim
     // this process no longer holds. Only if this engine actually holds it:
@@ -728,6 +762,9 @@ export class Engine {
         // A database already gone is nothing to complain about on the way out.
       }
     }
+    // Anything still running past the bound finds this and records nothing,
+    // rather than writing to a closed database.
+    this.closed = true;
     this.db.close();
   }
 
@@ -1077,12 +1114,17 @@ export class Engine {
    * routinely named after a chart.
    */
   private sourceFailed(channelId: string, stage: SourceFailureStage, err: unknown, item?: string): void {
+    // After stop() there is nowhere to record it, and nothing is lost by not
+    // trying: a failed read never moved the channel's cursor, so the next
+    // start reads the same place again and meets the same failure.
+    if (this.closed) return;
     const record = this.db.recordSourceFailure(channelId, stage, err, item);
     console.error(`channel ${channelId}: ${stage} failed ${record.consecutive}x - ${faultLine(record.faultId, err)}`);
   }
 
   /** Forgets a channel's failures, after a pass that read its source and handled everything on it. */
   private sourcePassed(channelId: string): void {
+    if (this.closed) return;
     if (this.db.sourceFailure(channelId)) this.db.clearSourceFailure(channelId);
   }
 
