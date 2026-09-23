@@ -11,6 +11,31 @@ always forward-compatible and run automatically on open — see
 
 **Fixed**
 
+- **An upload could name any intake form, and naming one switched off its
+  review task (H-216).** An upload that says which form it goes with does not
+  raise its own "somebody looks at this" task; the form's task is meant to
+  cover it. The form id was stored as given. Confirmed before the fix: an
+  upload naming a made-up form id was answered 201, scanned clean, was filed
+  to the chart, and raised no task; the same file with no form named raised
+  one. Another patient's form id was accepted the same way. The form is now
+  looked up and has to be the same patient's, and "no such form" and
+  "another patient's form" get one answer, 404 `no intake submission <id> for
+  this patient`, before anything is stored. The portal never names a form on
+  an upload, so this took another client or a hand-built request. What
+  happens to an upload whose own form is abandoned as a draft is now an open
+  question for the clinical owner (`docs/PILOT-READINESS.md`, question 5).
+
+- **Revoking a delegate answered 500 "internal error" for anything that was
+  not one.** `/patient/delegate-revoke` threw a plain error when the id named
+  no delegate of the chart — a made-up id, another chart's delegate, or the
+  patient's own access — so a patient mistyping an id got a server fault, the
+  log got a fault line, and the audit row was marked a serious failure. All
+  three are now one refusal, 404 `no delegated authority <id> for this
+  patient`. The two "only the patient may review / revoke delegated access"
+  checks had the same fault and now answer 403. A caregiver reaches those
+  only through a grant row that carries `delegates`, which `grantProxy()` will
+  not write but an older or imported row can.
+
 - **A test run could report only part of its results.** `npm test` used
   `--test-force-exit`, which ends each test file's process with
   `process.exit()` the moment its last test finishes. A file's results reach
@@ -294,6 +319,28 @@ always forward-compatible and run automatically on open — see
   branches allocating hazard identifiers, and with nothing running it,
   two branches cut from the same revision will both claim the next number
   and each look correct alone.
+
+**Security**
+
+- **A signed-in patient could find out whether somebody else's record
+  existed by asking for it by id (H-215).** Five portal routes name a record
+  rather than a patient: reading or replying to a message thread
+  (`/patient/thread`, `/patient/thread-reply`), a visit's after-visit summary
+  (`/patient/after-visit-summary`), sending in an intake form
+  (`/patient/intake/submit`) and downloading an upload (`/patient/upload`).
+  They answered 404 when the record did not exist and 403 when it was on a
+  chart the caller held no grant for, and decided which before checking
+  anybody's authority. Confirmed before the fix: another patient's real
+  message thread was 403, a made-up id was 404 `no message thread <id>`.
+  Nothing inside a record was disclosed and the ids are random, so this could
+  not list what a clinic holds, but an id seen on a shared screen or in a
+  forwarded link could be confirmed. Now a record the caller may not read gets
+  403 `not authorized for this patient resource` whether it exists or not —
+  the answer a chart with no grant, or a patient id that does not exist, has
+  always had — byte for byte, including for the owner's own mistyped id. The
+  audit trail still tells the two apart: an attempt on a real record is
+  refused against its patient, there and in that patient's own access log;
+  an attempt on a missing one is on the audit trail with the id asked for.
 
 ## 0.9.0 — 2026-09-16
 

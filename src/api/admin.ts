@@ -813,6 +813,9 @@ async function route(
     }
     const subject = auth.principal.id;
     const access = tenant.patientAccess;
+    // One wording for every "you may not read this", so that no route can
+    // phrase it differently for a record that exists and one that does not.
+    const NOT_AUTHORIZED = "not authorized for this patient resource";
 
     const authorityView = (row: AuthorityRow) => ({
       id: row.id,
@@ -852,7 +855,7 @@ async function route(
             detail: authority ? `patient grant lacks ${permission}` : "no live patient authority",
           });
         });
-        return send(res, 403, { error: "not authorized for this patient resource" });
+        return send(res, 403, { error: NOT_AUTHORIZED });
       }
 
       let value: T;
@@ -898,6 +901,33 @@ async function route(
         return send(res, mapped.status, errorBody(mapped));
       }
       return send(res, status, value);
+    };
+
+    // For a route that names a record by its own id rather than naming a
+    // patient. The record says whose it is, and that patient's grant is the
+    // one checked — a query string cannot nominate whose authority applies.
+    //
+    // A missing record gets the answer patientPhi() gives a caller with no
+    // grant on the chart, which is also the answer a patient id that does
+    // not exist has always had. These routes used to say 404 for "not there"
+    // and 403 for "not yours", and said it before checking anybody's
+    // authority, so anyone signed in to the portal could learn whether a
+    // message thread, a visit, a form or a file existed by asking for it.
+    // Now the status and the body are the same either way. The trail still
+    // records which it was; the caller cannot tell.
+    const recordPhi = <R extends { patient_id: string }, T>(
+      record: R | undefined,
+      named: string,
+      permission: PatientPermission,
+      resourceType: string,
+      action: string,
+      produce: (authority: AuthorityRow, record: R) => T
+    ): void => {
+      if (!record) {
+        audit({ action: verbToAction(method), outcome: 4, resourceType, detail: `no ${named}` });
+        return send(res, 403, { error: NOT_AUTHORIZED });
+      }
+      return patientPhi(record.patient_id, permission, resourceType, action, (authority) => produce(authority, record));
     };
 
     if ((path === "/patient" || path === "/patient/authorities") && method === "GET") {
@@ -978,9 +1008,9 @@ async function route(
       // The encounter's own patient decides whose authority is checked, the
       // same way /patient/thread reads it from the thread rather than trusting
       // a caller-supplied id — a query string cannot nominate whose grant applies.
-      const e = tenant.encounters.get(encounterId);
-      if (!e) return send(res, 404, { error: `no encounter ${encounterId}` });
-      return patientPhi(e.patient_id, "summary", "CarePlan", "view-after-visit-summary", () => tenant.avs.build(encounterId));
+      return recordPhi(tenant.encounters.get(encounterId), `encounter ${encounterId}`, "summary", "CarePlan", "view-after-visit-summary", () =>
+        tenant.avs.build(encounterId)
+      );
     }
 
     if (path === "/patient/appointments" && method === "GET") {
@@ -1029,9 +1059,7 @@ async function route(
     if (path === "/patient/thread" && method === "GET") {
       const id = url.searchParams.get("id");
       if (!id) return send(res, 400, { error: "id required" });
-      const thread = tenant.messaging.get(id);
-      if (!thread) return send(res, 404, { error: `no message thread ${id}` });
-      return patientPhi(thread.patient_id, "messages", "Communication", "view-message-thread", () => ({
+      return recordPhi(tenant.messaging.get(id), `message thread ${id}`, "messages", "Communication", "view-message-thread", (_, thread) => ({
         thread,
         messages: tenant.messaging.messages(id),
       }));
@@ -1068,9 +1096,7 @@ async function route(
     if (path === "/patient/thread-reply" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as { id?: string; body?: string };
       if (!body.id || !body.body) return send(res, 400, { error: "id and body required" });
-      const thread = tenant.messaging.get(body.id);
-      if (!thread) return send(res, 404, { error: `no message thread ${body.id}` });
-      return patientPhi(thread.patient_id, "messages", "Communication", "reply-to-message", (authority) =>
+      return recordPhi(tenant.messaging.get(body.id), `message thread ${body.id}`, "messages", "Communication", "reply-to-message", (authority) =>
         tenant.messaging.reply(body.id!, {
           body: body.body!,
           authorKind: authority.relationship === "self" ? "patient" : "proxy",
@@ -1091,7 +1117,12 @@ async function route(
       const patientId = url.searchParams.get("patient");
       if (!patientId) return send(res, 400, { error: "patient required" });
       return patientPhi(patientId, "delegates", "Consent", "view-delegates", (authority) => {
-        if (authority.relationship !== "self") throw new Error("only the patient may review delegated access");
+        // Refusals, not faults. grantProxy() will not give a caregiver
+        // "delegates", so this is reached only by a grant row that carries it
+        // anyway — an older or imported one. As plain errors, this and its
+        // twin in /patient/delegate-revoke answered that caregiver 500
+        // "internal error", logged a fault and marked the trail row serious.
+        if (authority.relationship !== "self") refuse("only the patient may review delegated access", 403);
         return access.whoCanSee(patientId).map(authorityView);
       });
     }
@@ -1102,10 +1133,12 @@ async function route(
         return send(res, 400, { error: "patient, authority and reason required" });
       }
       return patientPhi(body.patient, "delegates", "Consent", "revoke-delegate", (self) => {
-        if (self.relationship !== "self") throw new Error("only the patient may revoke delegated access");
+        if (self.relationship !== "self") refuse("only the patient may revoke delegated access", 403);
         const delegated = access.authority(body.authority!);
+        // One answer for an id that does not exist, another patient's grant
+        // and the patient's own: none of them is a delegate of this chart.
         if (!delegated || delegated.patient_id !== body.patient || delegated.relationship === "self") {
-          throw new Error("that is not a delegated authority for this patient");
+          refuse(`no delegated authority ${body.authority} for this patient`, 404);
         }
         return authorityView(
           access.revoke(body.authority!, {
@@ -1221,8 +1254,7 @@ async function route(
     if (path === "/patient/intake/submit" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as { id?: string };
       if (!body.id) return send(res, 400, { error: "id required" });
-      const draft = tenant.intake.get(body.id);
-      return patientPhi(draft.patient_id, "intake", "QuestionnaireResponse", "submit-intake", (authority) =>
+      return recordPhi(tenant.intake.find(body.id), `intake submission ${body.id}`, "intake", "QuestionnaireResponse", "submit-intake", (authority) =>
         tenant.intake.submit(body.id!, { actorId: subject, actorKind: authority.relationship === "self" ? "patient" : "proxy" })
       );
     }
@@ -1265,8 +1297,7 @@ async function route(
     if (path === "/patient/upload" && method === "GET") {
       const id = url.searchParams.get("id");
       if (!id) return send(res, 400, { error: "id required" });
-      const upload = tenant.uploads.get(id);
-      return patientPhi(upload.patient_id, "intake", "DocumentReference", "download-upload", () => tenant.uploads.download(id));
+      return recordPhi(tenant.uploads.find(id), `upload ${id}`, "intake", "DocumentReference", "download-upload", () => tenant.uploads.download(id));
     }
 
     return send(res, 404, { error: "not found" });

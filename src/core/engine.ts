@@ -492,7 +492,12 @@ export class Engine {
     const intake = new IntakeSubmissions(db, questionnaires, clinical, tasks, {
       booking: (id: string) => schedule.booking(id),
     });
-    const uploads = new Uploads(db, documents, { tasks, ...(this.malwareScanner ? { scanner: this.malwareScanner } : {}) });
+    // Same reasoning for the form an upload says it goes with.
+    const uploads = new Uploads(db, documents, {
+      tasks,
+      forms: intake,
+      ...(this.malwareScanner ? { scanner: this.malwareScanner } : {}),
+    });
     const notices = new PatientNotices(db, this.noticeChannel);
     const contacts = new PatientContacts(db);
     const enrolment = new PatientEnrolment(db, patientAccess, notices);
