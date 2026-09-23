@@ -13,7 +13,7 @@
     "staging:smoke": "node scripts/staging-smoke.ts",
     "preflight": "node scripts/pilot-preflight.ts",
     "start": "node src/server.ts",
-    "test": "node --test --test-force-exit \"test/**/*.test.ts\"",
+    "test": "node --test --import ./test/exit-watchdog.ts --test-timeout=300000 \"test/**/*.test.ts\"",
     "demo": "node demo/run-demo.ts",
     "backup": "node scripts/backup.ts",
     "loadtest": "node scripts/loadtest.ts",

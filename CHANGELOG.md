@@ -11,6 +11,59 @@ always forward-compatible and run automatically on open — see
 
 **Fixed**
 
+- **A test run could report only part of its results.** `npm test` used
+  `--test-force-exit`, which ends each test file's process with
+  `process.exit()` the moment its last test finishes. A file's results reach
+  the runner over a pipe, pipe writes are asynchronous on Linux, and whatever
+  was still queued was lost — on Node 22 and Node 24 alike, whose runners do
+  the same thing. `test/score-boundaries.test.ts`, 97 tests, reported 43, 46,
+  55, 30, 30, 32, 97, 66, 53 and 63 across ten runs; whole-suite runs came
+  back 1572 and 1547 short of 1575. A failing test in the lost part still
+  failed the run, because the exit code was already set — 25 runs out of 25
+  — but in 23 of them without saying which test or why. Earlier notes put
+  the loss at one result; it was up to dozens.
+
+  The flag is gone. Each file finishes on its own, which is when every
+  result has actually been delivered, and `test/exit-watchdog.ts`, loaded
+  into every file, fails any file still alive ten seconds after its last
+  test and names what is holding it open. So the reason #84 added the flag
+  still holds: a test that fails with a listener open cannot hang the run. It
+  now takes ten seconds instead of under one, and says "Holding it open:
+  TCPServerWrap" instead of nothing.
+
+  Neither the flag nor the watchdog could end a test that never finishes,
+  since both act after a file's last test, so the script also sets
+  `--test-timeout` to five minutes — over six times the slowest test, more
+  than twice the whole suite's wall time, and a great deal less than the six
+  hours a hung CI job runs for. `test/test-runner.test.ts` runs the real
+  runner with the `test` script's own flags against fixture files, and fails
+  if results go missing again, if a leak or a stuck test hangs the run, or if
+  the watchdog's own timer ever holds a file open. Six runs of the whole
+  suite, three on each runtime, reported exactly 1582 of 1582 every time.
+
+  The browser tests left a three- and a five-second fallback timer running
+  after Chromium had already exited, holding their process open for exactly
+  that long. Cleared now; the slowest file exits within a tenth of a second
+  of its last test.
+
+- **Stopping the engine could close the database under a poll still
+  waiting on its source.** Clearing a poll's timer does not cancel the
+  `await` inside it. When the far end answered afterwards — a refused
+  connection, say — the poll's failure path wrote to a closed database and
+  threw from inside the handler that catches poll errors: an unhandled
+  rejection after an ordinary shutdown. The shipped server exits straight
+  after `stop()` and so almost never met it; anything that outlives the
+  engine, a test above all, did. `--test-force-exit` had been hiding it by
+  killing the process first. `stop()` now waits for polls already in flight
+  — up to five seconds, since a connect to a host that does not answer can
+  take minutes — and a poll that finishes later records nothing rather than
+  writing to a closed database. Nothing is lost by that: a failed read never
+  moved the channel's cursor, so the next start reads the same place again.
+  It waits on the flag each poll sets when it really starts, not on the
+  latest call: a tick that finds a poll already running returns at once, and
+  a first version that tracked the latest call was tracking those, which the
+  test caught once it let a few ticks pass before stopping.
+
 - **A patient's intake form could claim somebody else's appointment, and that
   patient then read as prepared.** `appointment_id` is what the clinic board
   answers "did anything arrive for this visit" from, and it arrived as a

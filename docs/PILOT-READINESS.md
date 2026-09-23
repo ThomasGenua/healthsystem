@@ -34,11 +34,11 @@ cannot file duplicate documents or review tasks. Protocol tests use a fake local
 daemon, not an installed antivirus engine or evidence of current signatures.
 
 - `npm run typecheck`
-- `node --test --test-force-exit test/clamav.test.ts test/intake.test.ts`:
+- `node --test --import ./test/exit-watchdog.ts test/clamav.test.ts test/intake.test.ts`:
   protocol framing, fail-closed responses, quarantine and concurrent scanning.
-- `node --test --test-force-exit test/portal-login.test.ts`: callback attacks,
+- `node --test --import ./test/exit-watchdog.ts test/portal-login.test.ts`: callback attacks,
   token/identity binding, cookie scope, CSRF, logout, expiry, provider failure.
-- `node --test --test-force-exit test/portal-browser.test.ts`: real Chromium,
+- `node --test --import ./test/exit-watchdog.ts test/portal-browser.test.ts`: real Chromium,
   mobile viewport, sign-in, released/held results, message received by the
   clinic, caregiver restrictions, revocation and logout.
 - `npm test`: complete regression suite; report environmental failures

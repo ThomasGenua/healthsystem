@@ -14,20 +14,25 @@
  *     real  1m30.009s
  *     exit=124        # killed by the timeout; no "# fail" line at all
  *
- * `--test-force-exit` in the `test` script is the fix, because it holds for
- * tests nobody has written yet: the runner reports what happened and exits
- * rather than waiting on a handle whose owner has already failed.
+ * #84 fixed it with `--test-force-exit`, which held for tests nobody had
+ * written yet. It also lost results — the tail of a file's output, often the
+ * line saying which test failed — and hid the in-flight poll bug below, so it
+ * has been replaced by test/exit-watchdog.ts: each file finishes on its own,
+ * and one still alive a grace period after its last test fails, naming what
+ * holds it open. The property #84 wanted still holds for tests nobody has
+ * written yet; see test/test-runner.test.ts, which proves both halves.
  *
- * What that flag costs is the one thing a hang was good for — it was also
- * how a genuine leak in shutdown would have announced itself. So the signal
- * is kept here as an assertion instead, which is the better shape anyway:
- * a leak now names itself in one test rather than stopping the whole run
- * somewhere unrelated.
+ * The engine and API assertions below stay, because they are the better
+ * shape for the two leaks that matter most: a leak in shutdown names itself
+ * in one test rather than failing whichever file happened to start an
+ * engine.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Engine } from "../src/core/engine.ts";
 import { startApi } from "../src/api/admin.ts";
+import { until } from "./helpers.ts";
+import type { ChannelConfig } from "../src/types.ts";
 import { AuthGate } from "../src/auth/gate.ts";
 
 /** Active handles by kind, ignoring whatever the runner itself is holding. */
@@ -83,4 +88,111 @@ test("an API listener that has been closed is holding nothing open", async () =>
   await engine.stop();
   await settle();
   assert.deepEqual(extra(before, handles()), {}, "close() left a socket or a timer behind");
+});
+
+// ------------------------------------------------ polls still in flight at stop
+
+/**
+ * A source poll waiting on its far end when stop() runs.
+ *
+ * Clearing a poll's timer does not cancel the await inside it. stop() used to
+ * close the database straight after, so when the far end finally answered —
+ * here, a refused connection — the poll's failure path wrote to a closed
+ * handle and threw from inside the net that catches poll errors: an unhandled
+ * rejection after an ordinary shutdown. `--test-force-exit` hid it by killing
+ * the process first; found by taking that flag away. The connector here is a
+ * fake whose connect settles when the test says, so the race is exact rather
+ * than a matter of load.
+ */
+const sqlChannel = (id: string): ChannelConfig => ({
+  id,
+  name: id,
+  source: {
+    type: "sqlpoll",
+    driver: "postgres",
+    dsn: "postgres://nobody@far.example.invalid/none",
+    query: "SELECT * FROM results WHERE id > ? ORDER BY id",
+    cursorColumn: "id",
+    pollMs: 20,
+  },
+  destinations: [{ id: "facade", type: "fhirstore", ordered: true }],
+});
+
+/** A connect that answers only when told to. */
+function pendingConnect() {
+  let refuse!: (err: Error) => void;
+  let called = false;
+  const factory = () => {
+    called = true;
+    return new Promise<never>((_, reject) => { refuse = reject; });
+  };
+  return { factory, refuse: (err: Error) => refuse(err), get called() { return called; } };
+}
+
+/** Collects unhandled rejections for the length of a test. */
+function watchRejections() {
+  const seen: unknown[] = [];
+  const onRejection = (reason: unknown) => seen.push(reason);
+  process.on("unhandledRejection", onRejection);
+  return { seen, stop: () => process.off("unhandledRejection", onRejection) };
+}
+
+const tick = () => new Promise<void>((r) => setImmediate(r));
+
+test("stop() lets a poll that is waiting on its source finish before the database closes", async () => {
+  const far = pendingConnect();
+  const rejections = watchRejections();
+  const engine = new Engine({ dbPath: ":memory:", tickMs: 15, orderDispatchIntervalMs: 0, connectors: { sql: far.factory } });
+  try {
+    await engine.start();
+    await engine.addChannel(sqlChannel("sql-late"));
+    await until(() => far.called);
+    // Several more ticks while the connect hangs. Each finds a poll already
+    // running and returns at once — and must not be mistaken for the poll
+    // stop() has to wait for. A first version of this fix tracked the latest
+    // call, which was always one of these.
+    await new Promise((r) => setTimeout(r, 150));
+
+    let stopped = false;
+    const stopping = engine.stop().then(() => { stopped = true; });
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(stopped, false, "stop() waits for the poll rather than closing the database under it");
+
+    far.refuse(new Error("connect ECONNREFUSED"));
+    await stopping;
+    await tick();
+    await tick();
+    assert.deepEqual(rejections.seen, [], "a refused connection during shutdown is recorded, not thrown into the void");
+  } finally {
+    rejections.stop();
+  }
+});
+
+test("stop() does not wait forever on a source that never answers, and a late answer is dropped quietly", async () => {
+  const far = pendingConnect();
+  const rejections = watchRejections();
+  const engine = new Engine({
+    dbPath: ":memory:", tickMs: 15, orderDispatchIntervalMs: 0, stopInflightMs: 100, connectors: { sql: far.factory },
+  });
+  try {
+    await engine.start();
+    await engine.addChannel(sqlChannel("sql-silent"));
+    await until(() => far.called);
+
+    // A host that swallows the connect can take minutes to time out.
+    // Shutdown waits a bounded time and then closes regardless.
+    const started = Date.now();
+    await engine.stop();
+    assert.ok(Date.now() - started < 2_000, `stop() returned after ${Date.now() - started}ms, not the host's timeout`);
+
+    // The answer arrives after the database is gone. There is nothing to
+    // record it into, and nothing is lost by not trying: a failed read never
+    // moved the cursor, so the next start reads from the same place.
+    far.refuse(new Error("connect ETIMEDOUT"));
+    await tick();
+    await tick();
+    assert.deepEqual(rejections.seen, [], "an answer after shutdown must not become an unhandled rejection");
+  } finally {
+    rejections.stop();
+  }
 });
