@@ -452,10 +452,17 @@ test("every patient-scoped route goes through the authority-and-permission helpe
   // see, and /patient/questionnaires is which forms exist to fill in. Neither
   // takes a patientId, so there is no authority for patientPhi() to check.
   const NOT_PATIENT_SCOPED = new Set(["/patient/authorities", "/patient/questionnaires"]);
+
+  // recordPhi() is the same gate for a route that names a record rather than
+  // a patient: it reads the patient off the record and hands over to
+  // patientPhi(). It counts only while that is still what it does.
+  const helper = block.slice(block.indexOf("const recordPhi = "), block.indexOf('if ((path === "/patient"'));
+  assert.match(helper, /return patientPhi\(record\.patient_id, /, "recordPhi() no longer checks the record's own patient through patientPhi()");
+
   for (const path of paths.filter((p) => !NOT_PATIENT_SCOPED.has(p))) {
     const at = block.indexOf(`path === "${path}"`);
     const next = block.indexOf('path === "/patient/', at + path.length);
     const body = block.slice(at, next < 0 ? undefined : next);
-    assert.match(body, /\bpatientPhi\(/, `${path} can serve a chart without checking its live authority grant`);
+    assert.match(body, /\b(patientPhi|recordPhi)\(/, `${path} can serve a chart without checking its live authority grant`);
   }
 });

@@ -314,11 +314,21 @@ export class IntakeSubmissions {
   }
 
   private require(id: string): SubmissionRow {
-    const row = this.db.sql
-      .prepare("SELECT * FROM intake_submissions WHERE tenant_id = ? AND id = ?")
-      .get(this.db.tenantId, id) as unknown as SubmissionRow | undefined;
+    const row = this.find(id);
     if (!row) refuse(`no intake submission ${id}`, 404);
     return row;
+  }
+
+  /**
+   * The submission, or undefined. For a caller that decides for itself what
+   * to say about an id that is not there — the patient boundary, which must
+   * not answer "no such form" to somebody it would answer "not yours" for a
+   * real one.
+   */
+  find(id: string): SubmissionRow | undefined {
+    return this.db.sql
+      .prepare("SELECT * FROM intake_submissions WHERE tenant_id = ? AND id = ?")
+      .get(this.db.tenantId, id) as unknown as SubmissionRow | undefined;
   }
 
   /**
@@ -703,25 +713,61 @@ export interface UploadRow {
   uploaded_at: string;
 }
 
+/** The one thing an upload needs from the forms: whose a submission is. See `VisitLookup`. */
+export interface FormLookup {
+  find(id: string): { patient_id: string } | undefined;
+}
+
 export class Uploads {
   private db: Db;
   private documents: PatientDocuments;
   private tasks: ReviewInbox | undefined;
   private scanner: MalwareScanner | undefined;
+  private forms: FormLookup | undefined;
 
-  constructor(db: Db, documents: PatientDocuments, opts: { tasks?: ReviewInbox; scanner?: MalwareScanner } = {}) {
+  constructor(
+    db: Db,
+    documents: PatientDocuments,
+    opts: { tasks?: ReviewInbox; scanner?: MalwareScanner; forms?: FormLookup } = {}
+  ) {
     this.db = db;
     this.documents = documents;
     this.tasks = opts.tasks;
     this.scanner = opts.scanner;
+    this.forms = opts.forms;
+  }
+
+  private row(id: string): UploadRow | undefined {
+    return this.db.sql
+      .prepare("SELECT * FROM intake_uploads WHERE tenant_id = ? AND id = ?")
+      .get(this.db.tenantId, id) as unknown as UploadRow | undefined;
   }
 
   private require(id: string): UploadRow {
-    const row = this.db.sql
-      .prepare("SELECT * FROM intake_uploads WHERE tenant_id = ? AND id = ?")
-      .get(this.db.tenantId, id) as unknown as UploadRow | undefined;
+    const row = this.row(id);
     if (!row) refuse(`no upload ${id}`, 404);
     return row;
+  }
+
+  /**
+   * An upload may say which of the patient's forms it goes with, and saying
+   * so is what stops it raising its own review task: scanOne() leaves the
+   * form's task to cover it. So the form is checked rather than taken on the
+   * caller's word. Unchecked, a made-up id or another patient's form was
+   * stored as given, and the file went into the chart with no task of its
+   * own and no form that would ever raise one.
+   *
+   * One answer for "no such form" and "somebody else's form", for the
+   * reason `requireVisitOf` gives for appointments.
+   */
+  private requireFormOf(patientId: string, submissionId: string): void {
+    if (!this.forms) {
+      refuse("this deployment cannot attach an upload to an intake form: no intake store is wired", 409);
+    }
+    const form = this.forms.find(submissionId);
+    if (!form || form.patient_id !== patientId) {
+      refuse(`no intake submission ${submissionId} for this patient`, 404);
+    }
   }
 
   /**
@@ -747,6 +793,7 @@ export class Uploads {
     if (size > INTAKE_UPLOAD_MAX_BYTES) {
       refuse(`an upload over ${INTAKE_UPLOAD_MAX_BYTES} bytes is refused, not stored`);
     }
+    if (input.submissionId !== undefined) this.requireFormOf(input.patientId, input.submissionId);
 
     const id = randomUUID();
     const now = new Date().toISOString();
@@ -859,6 +906,14 @@ export class Uploads {
   /** Metadata only, never the payload — for looking up whose upload this is before acting on it. */
   get(id: string): Omit<UploadRow, "data"> {
     const { data: _data, ...rest } = this.require(id);
+    return rest;
+  }
+
+  /** As get(), or undefined for an id that is not there. See `IntakeSubmissions.find()`. */
+  find(id: string): Omit<UploadRow, "data"> | undefined {
+    const row = this.row(id);
+    if (!row) return undefined;
+    const { data: _data, ...rest } = row;
     return rest;
   }
 

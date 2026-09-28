@@ -72,7 +72,7 @@ behavior. Complete the full regression and deployment rehearsal before release.
 
 ## Open questions for the clinical owner
 
-Four questions the pre-visit intake workflow raises and this repository has
+Five questions the pre-visit intake workflow raises and this repository has
 deliberately not answered. Each has a current behaviour, chosen to be the
 conservative one, and each is a clinical or operational judgement rather than
 an engineering default — the same line `labs/README.md` and the score
@@ -86,6 +86,7 @@ here rather than assumed.
 | 2 | **May a patient send a second intake for the same visit, and what should a clinician then see?** | The second one is refused, naming when the first was sent. This closes H-210, where two tabs produced two conflicting accounts with the *older* answers written second. It also blocks the patient who genuinely remembered something — they can still send a message, or a concern not attached to a visit. If the clinical answer is "yes, and show both in order", that is a supersede-and-display decision, not a bug fix. |
 | 3 | **Does a form sent for a cancelled or rescheduled visit carry over to its replacement?** | No. `Clinics.rescheduleVisit()` moves slots and a booking keeps its identity, so a form follows a visit that merely moves. A visit that is *cancelled and rebooked* is a new booking, and the old form does not follow it — the patient shows as unprepared for the new visit. That is the conservative direction (H-209's reasoning) and it may still be the wrong workload answer for a clinic that reschedules often. |
 | 4 | **How long after a visit should an unreviewed intake stay on the board?** | Indefinitely, oldest first. `attention().intakeAwaitingReview` never ages anything out, so a submission nobody read is still visible next month. Deciding it should drop off after some period is a decision about what a clinic is willing to stop being shown, which is H-202's question in a new place. |
+| 5 | **Should a file sent in with an intake form get its own review task?** | Not today. An upload that names one of the patient's own forms raises no task and relies on the form's. But the form's task does not list its files, and a draft that is never sent in raises no task at all, so a file attached to an abandoned draft is filed to the chart with nobody asked to look at it. The portal never attaches an upload to a form, so every upload made through it raises its own task; this applies to other clients of the API. Since H-216 the form has to be the patient's own. "Always a task of its own" can mean two tasks for one visit's paperwork; "ride the form" needs the form's task to list its files and a rule for drafts nobody sends. Which is right is about what the review inbox should hold. |
 
 ## Deployment rehearsal
 
