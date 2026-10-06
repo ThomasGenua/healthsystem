@@ -133,6 +133,11 @@ test("browser intake: a draft for one visit is not the draft for another", {
     assert.equal(await b.evaluate("document.getElementById('q-notes').value"), "",
       "switching visit must not carry the other visit's answers across");
     await b.evaluate("document.getElementById('q-fasting').value='false'; document.getElementById('q-notes').value='for next month'");
+    // The status line still says "Saved." from Thursday's save, and nothing
+    // clears it on a visit switch, so waiting for "Saved." again could return
+    // before this save had reached the server — and the count below then
+    // found one draft. Cleared first, the wait means this save.
+    await b.evaluate("document.getElementById('live').textContent = ''");
     await b.evaluate("Array.from(document.querySelectorAll('button')).find(x => x.textContent.includes('Save')).click()");
     await b.wait("document.getElementById('live').textContent.startsWith('Saved.')");
 

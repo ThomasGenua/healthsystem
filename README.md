@@ -951,8 +951,10 @@ accepting a patient id is not accepting its authority.
   `/patient/delegate-revoke` — accountable access and patient-controlled
   revocation.
 - `/patient/request`, `/patient/requests` — access and correction requests.
-  The patient receives a durable receipt and the clinic receives a linked,
-  unassigned privacy task that cannot be completed without evidence.
+  A correction names what should be corrected (`target`); one that does not
+  is refused with that reason. The patient receives a durable receipt and
+  the clinic receives a linked, unassigned privacy task that cannot be
+  completed without evidence.
 
 The patient-facing access row and the tamper-evident audit row commit in the
 same database transaction as a patient write. A message reply cannot persist

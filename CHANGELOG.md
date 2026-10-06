@@ -11,6 +11,28 @@ always forward-compatible and run automatically on open — see
 
 **Fixed**
 
+- **A patient could not ask for their record to be corrected through the
+  portal, and was told "internal error" (H-217).** The store refuses a
+  correction request that does not say what should be corrected, and the
+  portal's form never asked: it sent the kind and the free text and nothing
+  else, so every correction sent through it was refused. Confirmed in a real
+  browser before the fix: "Correct my record", typed and sent, showed
+  "internal error" and filed nothing. The form now asks "What should be
+  corrected" ("Que faut-il corriger") when a correction is chosen, requires
+  it, and sends it. A request for a copy sends nothing extra.
+
+  The "internal error" was its own defect. `PatientAccess` said every no
+  with a plain error, which the router answers as a fault: 500, a fault line
+  in the log, and an audit row marked as a serious failure. Its 23 refusals
+  are now refusals — 400 for the request, 404 for an id that is not there,
+  409 for a state that has moved on — in unchanged words. That reaches past
+  the portal. A clerk granting a caregiver access in person with an expiry
+  already past, or with a permission a caregiver cannot hold, revoking a
+  grant twice, or answering a patient request somebody already answered,
+  was also answered 500, and now gets the reason. A store built without its
+  review inbox is still a fault, because that is wiring rather than
+  anything the caller did.
+
 - **An upload could name any intake form, and naming one switched off its
   review task (H-216).** An upload that says which form it goes with does not
   raise its own "somebody looks at this" task; the form's task is meant to
