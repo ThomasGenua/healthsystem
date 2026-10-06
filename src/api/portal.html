@@ -155,7 +155,7 @@ const COPY = {
     openThread:"Open", closedThread:"Closed",
     noRequests:"You have not made any requests.",
     newRequest:"Make a request", requestKind:"What kind", access:"See my record", correction:"Correct my record",
-    requestDetail:"What are you asking for", submit:"Submit",
+    requestDetail:"What are you asking for", requestTarget:"What should be corrected", submit:"Submit",
     requestSent:"Sent. The clinic has it on their list.",
     by:"by", on:"on", refused:"refused", allowed:"looked at",
     reported:"Reported", unitless:"no unit recorded", abnormal:"abnormal",
@@ -223,7 +223,7 @@ const COPY = {
     noRequests:"Vous n’avez fait aucune demande.",
     newRequest:"Faire une demande", requestKind:"Type de demande", access:"Consulter mon dossier",
     correction:"Corriger mon dossier",
-    requestDetail:"Que demandez-vous", submit:"Envoyer",
+    requestDetail:"Que demandez-vous", requestTarget:"Que faut-il corriger", submit:"Envoyer",
     requestSent:"Envoyé. La clinique l’a dans sa liste.",
     by:"par", on:"le", refused:"refusé", allowed:"consulté",
     reported:"Signalé", unitless:"aucune unité inscrite", abnormal:"anormal",
@@ -751,12 +751,23 @@ async function screenRequests(){
   const view = document.getElementById("view");
   view.replaceChildren(el("h2", {text: t("tabRequests")}));
 
+  // A correction has to say what is wrong: the clinic cannot act on "please
+  // fix my record", and the server refuses one that does not say. This form
+  // never asked, so every correction sent through it was refused. Shown and
+  // required only for a correction; a request for a copy needs nothing more.
+  const target = el("input", {id:"target", type:"text"});
+  const targetRow = el("div", {hidden:true}, el("label", {for:"target", text: t("requestTarget")}), target);
   const form = el("form", {onsubmit: (e) => { e.preventDefault(); sendRequest(e.target); }},
     el("h3", {text: t("newRequest")}),
     el("label", {for:"kind", text: t("requestKind")}),
-    el("select", {id:"kind"},
+    el("select", {id:"kind", onchange: (e) => {
+        const correcting = e.target.value === "correction";
+        targetRow.hidden = !correcting;
+        target.required = correcting;
+      }},
       el("option", {value:"access", text: t("access")}),
       el("option", {value:"correction", text: t("correction")})),
+    targetRow,
     el("label", {for:"detail", text: t("requestDetail")}),
     el("textarea", {id:"detail", required:true}),
     el("p", {}, el("button", {class:"act", type:"submit", text: t("submit")}))
@@ -775,10 +786,13 @@ async function screenRequests(){
 
 function sendRequest(form){
   return submitting(form, async () => {
+    const kind = form.querySelector("#kind").value;
     await api("/patient/request", {method:"POST", body: JSON.stringify({
       patient: S.active.patientId,
-      kind: form.querySelector("#kind").value,
-      detail: form.querySelector("#detail").value.trim()
+      kind,
+      detail: form.querySelector("#detail").value.trim(),
+      // Only a correction names what is wrong. Absent for a copy, not empty.
+      ...(kind === "correction" ? {target: form.querySelector("#target").value.trim()} : {})
     })});
     say(t("requestSent"));
     await guard(screenRequests);
