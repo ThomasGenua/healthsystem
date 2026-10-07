@@ -366,6 +366,28 @@ always forward-compatible and run automatically on open — see
 
 **Security**
 
+- **A caregiver's access, or an API key, could be given an end the clock
+  never reached (H-30).** An expiry was stored exactly as it was typed and
+  compared as text against the clock. `December 31, 2027` sorts after every
+  timestamp, so a grant written that way never lapsed — the delegated access
+  that never ends which H-30 exists to prevent. `next year` is not a date at
+  all, and was accepted, because `new Date("next year")` is NaN and NaN is
+  never "already past". `12/31/2027` sorts before every timestamp, so that
+  grant never began, and a time with an offset ended early by the offset —
+  one written for 17:00 at `-07:00` ended at 17:00 UTC, seven hours early.
+  Confirmed before the fix: grants written `December 31, 2027` and `next
+  year` were live in 2030, and an API key issued with `next year` was stored
+  as typed and verified, and sorts after every timestamp there will be. An
+  expiry is now read strictly — a calendar date such as `2027-12-31`, or a
+  time with its zone — and stored in one canonical UTC form; anything else is
+  refused. That covers caregiver grants, enrolment requests (at the desk,
+  not weeks later at attestation, which now also refuses an end already
+  gone), API keys and result holds. A grant or key stored before this with
+  an end that does not start like a date is treated as already past, and
+  boot says how many there are; `docs/RUNBOOK.md`, "Expiries that are not
+  dates", says how to find and re-record them. Calendar dates and offset
+  times written correctly before this still compare exactly as they did.
+
 - **A signed-in patient could find out whether somebody else's record
   existed by asking for it by id (H-215).** Five portal routes name a record
   rather than a patient: reading or replying to a message thread

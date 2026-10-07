@@ -46,6 +46,7 @@ import type { Db } from "../db.ts";
 import type { OrderStore, ResultRow } from "../orders/store.ts";
 import type { TaskStore } from "../work/tasks.ts";
 import { refuse } from "../core/refusal.ts";
+import { DATE_LIKE, instant } from "../core/instant.ts";
 
 export type Relationship = "self" | "parent-guardian" | "substitute-decision-maker" | "representative";
 export type Extent = "full" | "summary";
@@ -195,7 +196,8 @@ export class PatientAccess {
     if (!input.expiresAt) {
       refuse("delegated access needs an expiry; an authority that never ends is the failure this guards against");
     }
-    if (new Date(input.expiresAt).getTime() <= Date.now()) {
+    const expiresAt = instant(input.expiresAt, "an expiry");
+    if (new Date(expiresAt).getTime() <= Date.now()) {
       refuse("that expiry is already past");
     }
     if (!input.purpose.trim()) {
@@ -208,7 +210,7 @@ export class PatientAccess {
     if (unknown.length > 0) {
       refuse(`proxy permission not allowed: ${unknown.join(", ")}`);
     }
-    return this.insertGrant({ ...input, expiresAt: input.expiresAt });
+    return this.insertGrant({ ...input, expiresAt });
   }
 
   /** Ends a grant early, with a reason. */
@@ -236,7 +238,7 @@ export class PatientAccess {
       .prepare(
         `SELECT * FROM patient_authority
           WHERE tenant_id = ? AND subject_id = ? AND patient_id = ? AND revoked_at IS NULL
-            AND (expires_at IS NULL OR expires_at > ?)
+            AND (expires_at IS NULL OR (expires_at GLOB '${DATE_LIKE}' AND expires_at > ?))
           ORDER BY granted_at DESC`
       )
       .all(this.db.tenantId, subjectId, patientId, asOf) as unknown as AuthorityRow[];
@@ -249,7 +251,7 @@ export class PatientAccess {
       .prepare(
         `SELECT * FROM patient_authority
           WHERE tenant_id = ? AND subject_id = ? AND revoked_at IS NULL
-            AND (expires_at IS NULL OR expires_at > ?)
+            AND (expires_at IS NULL OR (expires_at GLOB '${DATE_LIKE}' AND expires_at > ?))
           ORDER BY relationship, granted_at`
       )
       .all(this.db.tenantId, subjectId, asOf) as unknown as AuthorityRow[];
@@ -277,7 +279,7 @@ export class PatientAccess {
       .prepare(
         `SELECT subject_id, patient_id, relationship FROM patient_authority
           WHERE tenant_id = ? AND revoked_at IS NULL
-            AND (expires_at IS NULL OR expires_at > ?)
+            AND (expires_at IS NULL OR (expires_at GLOB '${DATE_LIKE}' AND expires_at > ?))
           ORDER BY subject_id, relationship, patient_id`
       )
       .all(this.db.tenantId, asOf) as Array<{ subject_id: string; patient_id: string; relationship: string }>;
@@ -335,7 +337,7 @@ export class PatientAccess {
       .prepare(
         `SELECT * FROM patient_authority
           WHERE tenant_id = ? AND revoked_at IS NULL AND expires_at IS NOT NULL
-            AND expires_at > ? AND expires_at <= ?
+            AND expires_at GLOB '${DATE_LIKE}' AND expires_at > ? AND expires_at <= ?
           ORDER BY expires_at`
       )
       .all(this.db.tenantId, asOf, until) as unknown as AuthorityRow[];
@@ -347,7 +349,7 @@ export class PatientAccess {
       .prepare(
         `SELECT * FROM patient_authority
           WHERE tenant_id = ? AND patient_id = ? AND revoked_at IS NULL
-            AND (expires_at IS NULL OR expires_at > ?)
+            AND (expires_at IS NULL OR (expires_at GLOB '${DATE_LIKE}' AND expires_at > ?))
           ORDER BY relationship, granted_at`
       )
       .all(this.db.tenantId, patientId, asOf) as unknown as AuthorityRow[];
@@ -378,7 +380,8 @@ export class PatientAccess {
   }): void {
     if (!input.reason.trim()) refuse("holding a result needs a reason");
     if (!input.releaseAt) refuse("a hold needs an end; a result held indefinitely is a result withheld");
-    if (new Date(input.releaseAt).getTime() <= Date.now()) refuse("that release date is already past");
+    const releaseAt = instant(input.releaseAt, "a release date");
+    if (new Date(releaseAt).getTime() <= Date.now()) refuse("that release date is already past");
     const r = this.orders.result(input.resultId);
     if (!r) refuse(`no result ${input.resultId}`, 404);
 
@@ -397,7 +400,7 @@ export class PatientAccess {
         r.patient_id,
         input.reason,
         input.category,
-        input.releaseAt,
+        releaseAt,
         input.by.actorId,
         new Date().toISOString(),
         new Date().toISOString()
