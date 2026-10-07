@@ -16,6 +16,7 @@ import { PortalLogin } from "./auth/portal-login.ts";
 import { SyntheticScanner } from "./patient/intake.ts";
 import { ClamAvScanner } from "./patient/clamav.ts";
 import { UploadScanWorker } from "./patient/scan-worker.ts";
+import { unreadableExpiryWarnings } from "./core/instant.ts";
 import type { ChannelConfig, MappingDoc } from "./types.ts";
 
 const PORT = parseInt(readEnv("PORT") ?? "8686", 10);
@@ -305,6 +306,10 @@ async function main(): Promise<void> {
   } else {
     console.log(`clinic time zone: ${engine.clinicDay.describe()}`);
   }
+
+  // Grants and keys whose stored expiry is not a date. They stopped working
+  // when this version started treating them as expired, so it is said here.
+  for (const line of unreadableExpiryWarnings(engine.db)) console.warn(line);
 
   if (existsSync(MAPPINGS_DIR)) {
     for (const f of readdirSync(MAPPINGS_DIR).filter((f) => f.endsWith(".json"))) {

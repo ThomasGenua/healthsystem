@@ -95,6 +95,7 @@ The escape hatch is break-glass, which is loud and recorded — see
   - [A clinician cannot see a record they need](#a-clinician-cannot-see-a-record-they-need)
   - [Break-glass queues are not emptying](#break-glass-queues-are-not-emptying)
   - [A credential is compromised](#a-credential-is-compromised)
+  - [Expiries that are not dates](#expiries-that-are-not-dates)
   - [Restoring from backup](#restoring-from-backup)
   - [How long it takes, and how much you lose](#how-long-it-takes-and-how-much-you-lose)
 - [Escalating](#escalating)
@@ -802,6 +803,46 @@ curl -sS -H "authorization: Bearer $ADMIN_KEY" \
 If patient data was served to it, that is a privacy incident and follows your
 jurisdiction's breach process, not this document. If the credential is a
 vulnerability in Northstar rather than a leaked secret, see [SECURITY.md](../SECURITY.md).
+
+### Expiries that are not dates
+
+Boot says `WARNING: tenant <id> has N caregiver grant(s) and M API key(s)
+whose expiry is not a date the clock can compare`.
+
+Before this version an expiry was stored exactly as it was typed and compared
+as text, so one written as `December 31, 2027` or `next year` never lapsed and
+one written as `12/31/2027` never began. Expiries are now read strictly — a
+date like `2027-12-31`, or a time with its zone — and a stored one that does
+not start like a date is treated as already past. Those grants and keys
+stopped working at the upgrade. Nothing was deleted, and the text that was
+typed is still on the row.
+
+Find them, in the data directory:
+
+```bash
+sqlite3 northstar.db "
+  SELECT tenant_id, id, patient_id, subject_id, expires_at FROM patient_authority
+   WHERE revoked_at IS NULL AND expires_at IS NOT NULL
+     AND expires_at NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*';
+  SELECT tenant_id, id, name, expires_at FROM api_keys
+   WHERE revoked_at IS NULL AND expires_at IS NOT NULL
+     AND expires_at NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*';"
+```
+
+For a caregiver grant, find out from the typed text — and from the patient or
+whoever recorded it — what end was meant. Revoke the grant
+(`/api/clinical/authority-revoke`) and grant it again in person, with that
+date. Do not edit the row: a grant's history is the record of who could see
+the chart, and when.
+
+A pending enrolment request made before this version with such an expiry is
+not counted at boot, because it is not access yet. Attesting it is refused
+with the reason; decline it and request it again with a date.
+
+For an API key, issue a new one with an `expiresAt` that is a date, deploy it,
+then revoke the old one (`DELETE /api/keys/<id>`). Do not rotate it: rotation
+gives the old key a fresh end for the overlap, which would bring a key whose
+end nobody can read back to life for a week.
 
 ### Restoring from backup
 

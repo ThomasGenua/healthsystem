@@ -18,6 +18,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { refuse } from "../core/refusal.ts";
+import { instant } from "../core/instant.ts";
 import type { Db } from "../db.ts";
 import type { Actor, PatientAccess, PatientPermission, Relationship } from "./access.ts";
 import type { PatientNotices } from "./notice.ts";
@@ -75,10 +76,17 @@ export class PatientEnrolment {
     const patientId = input.patientId.trim();
     const subjectId = input.subjectId.trim();
     if (!patientId || !subjectId) refuse("enrolment needs a patient and an OAuth subject");
+    // A grant for the patient themself has no end; one for anybody else
+    // carries the end it will be granted with. Read here rather than at
+    // attestation, so a typo is answered while the clerk is at the desk and
+    // not weeks later, when somebody attests a request nobody can grant.
+    let expiresAt: string | null = null;
     if (input.relationship !== "self") {
       if (!input.expiresAt) {
         refuse("delegated enrolment needs an expiry; an authority that never ends is the failure this guards against");
       }
+      expiresAt = instant(input.expiresAt, "an expiry");
+      if (new Date(expiresAt).getTime() <= Date.now()) refuse("that expiry is already past");
       if (!input.purpose?.trim()) refuse("delegated enrolment needs a purpose the patient can review");
       if (!input.permissions?.length) refuse("delegated enrolment needs at least one explicit permission");
     }
@@ -107,7 +115,7 @@ export class PatientEnrolment {
         input.by.actorKind,
         input.purpose?.trim() ?? null,
         input.permissions ? JSON.stringify(input.permissions) : null,
-        input.expiresAt ?? null,
+        expiresAt,
         now
       );
     return this.get(id)!;

@@ -5,6 +5,7 @@ import { mkdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname } from "node:path";
 import type { ApiKeyRow, DeliveryRow, MessageRow, MessageStatus, SubscriptionRow } from "./types.ts";
+import { DATE_LIKE } from "./core/instant.ts";
 
 /** Whether a pid is still running. Signal 0 checks without delivering. */
 function processAlive(pid: number): boolean {
@@ -4425,7 +4426,7 @@ export class Db {
       .prepare(
         `SELECT * FROM api_keys
           WHERE hash = ? AND revoked_at IS NULL
-            AND (expires_at IS NULL OR expires_at > ?)`
+            AND (expires_at IS NULL OR (expires_at GLOB '${DATE_LIKE}' AND expires_at > ?))`
       )
       .get(hash, new Date().toISOString()) as ApiKeyRow | undefined;
   }
@@ -4468,7 +4469,7 @@ export class Db {
       .prepare(
         `SELECT * FROM api_keys
           WHERE tenant_id = ? AND revoked_at IS NULL
-            AND (expires_at IS NULL OR expires_at > ?)
+            AND (expires_at IS NULL OR (expires_at GLOB '${DATE_LIKE}' AND expires_at > ?))
             AND COALESCE(last_used_at, created_at) < ?
           ORDER BY COALESCE(last_used_at, created_at)`
       )
@@ -4482,7 +4483,7 @@ export class Db {
       .prepare(
         `SELECT * FROM api_keys
           WHERE tenant_id = ? AND revoked_at IS NULL AND expires_at IS NOT NULL
-            AND expires_at > ? AND expires_at <= ?
+            AND expires_at GLOB '${DATE_LIKE}' AND expires_at > ? AND expires_at <= ?
           ORDER BY expires_at`
       )
       .all(this.tenantId, asOf, until) as unknown as ApiKeyRow[];
@@ -4503,7 +4504,7 @@ export class Db {
       this.sql
         .prepare(
           `SELECT COUNT(*) AS n FROM api_keys
-            WHERE tenant_id = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`
+            WHERE tenant_id = ? AND revoked_at IS NULL AND (expires_at IS NULL OR (expires_at GLOB '${DATE_LIKE}' AND expires_at > ?))`
         )
         .get(this.tenantId, new Date().toISOString()) as { n: number }
     ).n;

@@ -311,7 +311,7 @@ A credential that never expires and that nobody reviews is the ordinary way long
 
 Three things address that, none relying on anyone remembering:
 
-- **Expiry is checked at verification, against the clock.** A key that expired last night does not work this morning whether or not anything has restarted. `expires_at` is optional and has no default, so a non-expiring key is a choice somebody made.
+- **Expiry is checked at verification, against the clock.** A key that expired last night does not work this morning whether or not anything has restarted. `expires_at` is optional and has no default, so a non-expiring key is a choice somebody made. When it is given, it has to be a date like `2027-12-31` or a time with its zone; anything else is refused rather than stored, because the clock compares the stored text, and `next year` would never come.
 - **Rotation overlaps.** `POST /api/keys/:id/rotate` issues a replacement and gives the old key a retirement date — both work in between. A rotation that cut the old key off the instant the new one existed would make every rotation an outage between issuing the credential and deploying it, which is exactly why rotation gets deferred and then skipped. The old key's retirement is a **date**, not a follow-up task, so the overlap ends on its own; two working credentials where there should be one is worse than not having rotated.
 - **`GET /api/keys/review`** answers the two questions a list of keys cannot: which nobody is using, and which are about to stop working.
 
