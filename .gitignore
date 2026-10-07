@@ -17,3 +17,4 @@ certs/
 # Supply-chain artifacts; CI regenerates and uploads these per run.
 sbom.cdx.json
 *.tgz
+SHA256SUMS

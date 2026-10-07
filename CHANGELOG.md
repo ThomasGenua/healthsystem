@@ -216,6 +216,28 @@ always forward-compatible and run automatically on open — see
 
 **Added**
 
+- **The package builds the same twice, and the digests are published
+  (item 19).** `npm run repro` packs two independent checkouts of HEAD and
+  fails unless they are byte-identical; CI runs it before packing the tarball
+  it publishes, and writes a `SHA256SUMS` of that tarball and the SBOM into
+  both the artifact and the run summary.
+
+  Two checkouts rather than one tree packed twice, because the usual cause of
+  a difference is a timestamp and a second pack of the same tree sees the same
+  mtimes. The detector was checked against a build deliberately made
+  unreproducible — a `prepack` step writing the clock into a file — and
+  reports both digests and exits non-zero, so a pass means something.
+
+  This closes the gap the previous entry wrote down rather than hid: an
+  attestation says where a tarball came from, which is not the same as anyone
+  being able to produce it. What is now measured, and what is not, is in
+  `docs/STATE_OF_THE_ART_ROADMAP.md` under 56 — identical across two
+  checkouts five hours apart, across a shallow clone and a full one, and
+  across npm 10 and npm 11; **not** measured across platforms, architectures,
+  locales or Node majors, and never rebuilt by anyone outside this project,
+  which is the only thing that would make "verifiable" mean what a reader
+  assumes.
+
 - **A patient's intake form now says which visit it is for, and the board
   can ask who is coming in unprepared.** Two halves of one thing.
 

@@ -86,7 +86,7 @@ v0.7.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Documents, procedures and care plans as chart facts rather than notes**, so their absence is visible and structured rather than a gap in prose.
 - **Enrolment attested by a named clerk** who records how they checked, rather than inferred from a token.
 
-1500 tests. Backend first, then the interface that makes the backend's honesty visible.
+1599 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -142,7 +142,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 1500 tests
+npm test          # 1599 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
