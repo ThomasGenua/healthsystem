@@ -2,7 +2,7 @@
  * Native SFTP polling client.
  *
  * The filedrop source already covers the common northern pattern: openssh
- * terminates a transfer into a landing directory and Portage takes it from
+ * terminates a transfer into a landing directory and Northstar takes it from
  * there. This is for the case where there is no local landing directory to
  * watch because the files live on someone else's server.
  *

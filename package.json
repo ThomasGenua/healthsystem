@@ -1,6 +1,6 @@
 {
-  "name": "portage",
-  "version": "0.7.0",
+  "name": "northstar",
+  "version": "0.9.0",
   "description": "Health integration engine for northern operating conditions. HL7 v2, FHIR R4, durable store-and-forward, ordered replay, hash-chained message lineage, authenticated API with mutual TLS.",
   "type": "module",
   "private": true,
@@ -9,8 +9,11 @@
     "node": ">=22.18"
   },
   "scripts": {
+    "staging:drill": "node scripts/staging-outage-drill.ts",
+    "staging:smoke": "node scripts/staging-smoke.ts",
+    "preflight": "node scripts/pilot-preflight.ts",
     "start": "node src/server.ts",
-    "test": "node --test \"test/**/*.test.ts\"",
+    "test": "node --test --import ./test/exit-watchdog.ts --test-timeout=300000 \"test/**/*.test.ts\"",
     "demo": "node demo/run-demo.ts",
     "backup": "node scripts/backup.ts",
     "loadtest": "node scripts/loadtest.ts",
@@ -20,7 +23,12 @@
     "restoretest": "node scripts/restore-rehearsal.ts",
     "labcheck": "node scripts/lab-conformance.ts",
     "terminology:import": "node scripts/import-terminology.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "hazardcheck": "node scripts/check-hazard-ids.ts",
+    "invariants": "node scripts/invariants.ts",
+    "portal:demo": "node scripts/portal-demo.ts",
+    "sbom": "npm sbom --sbom-format cyclonedx",
+    "repro": "node scripts/repro-pack.ts"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",

@@ -26,8 +26,8 @@ const NURSE = { authorId: "rn-tetso", authorKind: "practitioner" };
 const NOW = "2026-08-27T20:00:00.000Z";
 
 function ward() {
-  const dir = mkdtempSync(join(tmpdir(), "portage-score-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-score-"));
+  const db = new Db(join(dir, "northstar.db"));
   const clinical = new ClinicalRecord(db);
   const vitals = new Vitals(clinical);
   clinical.record({
@@ -65,7 +65,7 @@ function ward() {
     },
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -89,7 +89,7 @@ test("a fresh set of vitals scores, and shows every value it used", () => {
   }
 });
 
-test("a fresh value in the wrong unit is unavailable, never converted implicitly", () => {
+test("a fresh value in an incompatible unit is unavailable", () => {
   const w = ward();
   try {
     w.observe("2026-08-27T19:30:00.000Z");
@@ -99,12 +99,12 @@ test("a fresh value in the wrong unit is unavailable, never converted implicitly
       takenAt: "2026-08-27T19:59:00.000Z",
       by: NURSE,
       value: 98.6,
-      unit: "degF",
+      unit: "mg/dL",
     });
     const out = news2FromChart(w.deps, P, { onSupplementalOxygen: false, alert: true }, { asOf: NOW });
     assert.equal(out.result.complete, false);
-    assert.match(out.unavailable.find((u) => u.input === "temperatureC")!.reason, /requires degC/);
-    assert.match(out.unavailable.find((u) => u.input === "temperatureC")!.reason, /No implicit conversion/);
+    assert.match(out.unavailable.find((u) => u.input === "temperatureC")!.reason, /scored in Cel/);
+    assert.match(out.unavailable.find((u) => u.input === "temperatureC")!.reason, /cannot convert without guessing/);
   } finally {
     w.cleanup();
   }

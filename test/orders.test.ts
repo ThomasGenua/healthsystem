@@ -22,14 +22,14 @@ import { Db } from "../src/db.ts";
 import { OrderStore } from "../src/orders/store.ts";
 
 function lab(): { db: Db; orders: OrderStore; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "portage-orders-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-orders-"));
+  const db = new Db(join(dir, "northstar.db"));
   return {
     db,
     orders: new OrderStore(db),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -242,14 +242,23 @@ test("a result is never filed against another patient's order", () => {
   const { orders, cleanup } = lab();
   try {
     const mine = placedOrder(orders);
+    // The refusal names the identifier the caller supplied and refuses to
+    // name the one they did not. Somebody filing onto the wrong chart must
+    // not learn whose chart it is from the error that stopped them, and the
+    // trail row — which holds PHI by design — carries both.
     assert.throws(
       () => orders.report({ ...normalPotassium(mine.id), patientId: "NT999" }),
-      /result is for NT999 but order .* is for NT123456/
+      (err: Error) =>
+        /result is for NT999 but order .* is for a different patient/.test(err.message) &&
+        !err.message.includes("NT123456")
     );
     assert.equal(orders.resultsFor(mine.id).length, 0, "and nothing was written");
 
     const loose = orders.report({ ...normalPotassium(), patientId: "NT999" });
-    assert.throws(() => orders.match(loose.id, mine.id, GP), /result is for NT999 but order/);
+    assert.throws(
+      () => orders.match(loose.id, mine.id, GP),
+      (err: Error) => /result is for NT999 but order/.test(err.message) && !err.message.includes("NT123456")
+    );
   } finally {
     cleanup();
   }
@@ -375,8 +384,8 @@ test("transitions out of order are refused rather than silently accepted", () =>
 });
 
 test("orders and results are confined to their tenant", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-orders-iso-"));
-  const root = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-orders-iso-"));
+  const root = new Db(join(dir, "northstar.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");
@@ -399,6 +408,6 @@ test("orders and results are confined to their tenant", () => {
     assert.equal(north.unmatched().length, 0);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

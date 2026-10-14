@@ -10,7 +10,8 @@
 import { readdirSync, readFileSync, renameSync, unlinkSync, mkdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { Db } from "../db.ts";
+import { Db, type SourceFailureStage } from "../db.ts";
+import { faultLine } from "./refusal.ts";
 import { DeliveryWorker } from "./queue.ts";
 import { FhirStore } from "../fhir/store.ts";
 import { SubscriptionManager } from "../fhir/subscriptions.ts";
@@ -22,6 +23,15 @@ import { ClinicalRecord } from "../clinical/record.ts";
 import { ClinicalNotes } from "../clinical/notes.ts";
 import { Immunizations } from "../clinical/immunizations.ts";
 import { Vitals } from "../clinical/vitals.ts";
+import { Procedures } from "../clinical/procedures.ts";
+import { CarePlans } from "../clinical/careplans.ts";
+import { Goals, Actions } from "../clinical/goals.ts";
+import { Timeline } from "../clinical/timeline.ts";
+import { Trends } from "../clinical/trends.ts";
+import { EligibilityRules } from "../population/eligibility.ts";
+import { OutreachCampaigns } from "../population/outreach.ts";
+import { AfterVisitSummaries } from "../clinical/avs.ts";
+import { PatientDocuments } from "../clinical/documents.ts";
 import { CareTeam } from "../clinical/careteam.ts";
 import { Coverage } from "../clinical/coverage.ts";
 import { MedicationStore } from "../meds/store.ts";
@@ -36,10 +46,18 @@ import { Workspace } from "../workspace/summary.ts";
 import { VisitView } from "../workspace/visit.ts";
 import { Encounters } from "../clinical/encounters.ts";
 import { Directory } from "../directory/store.ts";
+import { ScoreGovernance } from "../clinical/score-governance.ts";
+import { StandardsRegistry } from "../conformance/standards.ts";
 import { ingestFhir } from "../directory/fhir.ts";
-import { ChannelNoticeDispatcher } from "../patient/notice.ts";
+import { ChannelNoticeDispatcher, PatientNotices } from "../patient/notice.ts";
+import { PatientContacts } from "../patient/contacts.ts";
+import { Questionnaires, IntakeSubmissions, Uploads, type MalwareScanner } from "../patient/intake.ts";
+import { ClinicBoard } from "../workspace/board.ts";
+import { ClinicDay } from "../schedule/clinic-day.ts";
+import { Discharges, Handoffs } from "../work/discharge.ts";
 import { AccessReview } from "../audit/review.ts";
 import { Clinics } from "../schedule/clinics.ts";
+import { Arrangements, type ExternalCoordinator } from "../schedule/arrangements.ts";
 import { ChannelVersions } from "./channel-versions.ts";
 import { PatientLinks } from "../clinical/links.ts";
 import { Schedule } from "../schedule/store.ts";
@@ -48,9 +66,10 @@ import { Migration } from "../migrate/run.ts";
 import { ConsentDirectives } from "../patient/consent.ts";
 import { PatientMessaging } from "../patient/messaging.ts";
 import { PatientAccess } from "../patient/access.ts";
+import { PatientEnrolment } from "../patient/enrolment.ts";
 import { PrivacyOffice } from "../privacy/office.ts";
-import { ScoreGovernance } from "../clinical/score-governance.ts";
 import { RetentionRunner, type RetentionPolicy } from "./retention.ts";
+import { OrderDispatchSweeper, resolveInterval } from "../orders/sweep.ts";
 import { buildAck, getHl7, parseHl7, serializeHl7 } from "../hl7/parser.ts";
 import { startMllpServer, type MllpServerHandle } from "../hl7/mllp.ts";
 import { applyMapping, type MapperContext } from "../transform/mapper.ts";
@@ -69,6 +88,14 @@ interface RuntimeChannel {
   polling: boolean;
   destinationIds: string[];
 }
+
+/**
+ * How long stop() waits for polls already in flight. Dropping a channel's
+ * client makes a pending query fail at once, so this is only reached by a
+ * connect still waiting on a host that does not answer — and shutdown must
+ * not wait on that host's timeout.
+ */
+const STOP_INFLIGHT_MS = 5_000;
 
 /**
  * How often a cron-scheduled source checks whether its minute has arrived.
@@ -98,6 +125,18 @@ export interface TenantView {
   notes: ClinicalNotes;
   immunizations: Immunizations;
   vitals: Vitals;
+  procedures: Procedures;
+  carePlans: CarePlans;
+  /** Structured goals and the actions serving them, versioned like anything else on the chart. */
+  goals: Goals;
+  actions: Actions;
+  /** Assembled from approved plan content and this visit's own orders. Writes nothing. */
+  avs: AfterVisitSummaries;
+  /** One ordered read across every domain, each entry pointing back to its source. */
+  timeline: Timeline;
+  /** A validated series for one result code or vital kind, and whether every point in it is on one scale. */
+  trends: Trends;
+  documents: PatientDocuments;
   careTeam: CareTeam;
   coverage: Coverage;
   meds: MedicationStore;
@@ -111,14 +150,44 @@ export interface TenantView {
   schedule: Schedule;
   messaging: PatientMessaging;
   patientAccess: PatientAccess;
+  /** Clinic-attested binding of an OAuth subject to a chart. Not identity-proofing. */
+  enrolment: PatientEnrolment;
+  scoreGovernance: ScoreGovernance;
+  standards: StandardsRegistry;
+  /**
+   * The clinic as it is right now: who is here, which rooms are free, who
+   * has fallen through. A different question from the worklist, which is
+   * what one clinician owes somebody.
+   */
+  board: ClinicBoard;
+  /** What is still outstanding when somebody leaves, taken from the chart rather than typed. */
+  discharges: Discharges;
+  /** Transfers of accountability that are not complete until somebody accepts them. */
+  handoffs: Handoffs;
+  /** Notices a patient is owed, published onto a channel. Dispatching is not telling. */
+  notices: PatientNotices;
+  /**
+   * Where a patient has agreed to be reached. Demographics from an ADT feed
+   * are what a sending system believes; these are addresses a named clerk
+   * checked and a patient consented to, which is what a notice may use.
+   */
+  contacts: PatientContacts;
+  /** Versioned pre-visit questionnaires, and what a patient answered on one. */
+  questionnaires: Questionnaires;
+  /** Drafts, submissions and the review they raise. Never applies a proposed change itself. */
+  intake: IntakeSubmissions;
+  /** Patient-uploaded files: quarantined until scanned, and never served before then. */
+  uploads: Uploads;
   registry: Registry;
+  /** Clinical eligibility rules, published and versioned like a questionnaire — never edited in place. */
+  eligibility: EligibilityRules;
+  /** Care-gap cohorts turned into worked outreach lists. */
+  outreach: OutreachCampaigns;
   /** Bulk loads from an incumbent system, and whether they were complete. */
   migration: Migration;
   consent: ConsentDirectives;
   /** Queues, clocks, holds, incidents and the assurance catalogue. */
   privacy: PrivacyOffice;
-  /** Which exact risk-score implementations this deployment may use. */
-  scoreGovernance: ScoreGovernance;
   /** The assembled chart, over exactly the stores above. */
   workspace: Workspace;
   /** Visits, and what belongs to each one. */
@@ -129,6 +198,8 @@ export interface TenantView {
   review: AccessReview;
   /** Travelling-clinic visits and the waitlist. */
   clinics: Clinics;
+  /** Transport, accommodation, interpreter, escort, equipment and accessibility logistics for a visit. */
+  arrangements: Arrangements;
   /** Reversible assertions that two charts are one person. */
   links: PatientLinks;
   /** The assembled visit, the encounter-scoped counterpart to `workspace`. */
@@ -154,11 +225,23 @@ export interface EngineOptions {
   /** How long stored patient data is kept. Off unless configured. */
   retention?: RetentionPolicy;
   /**
+   * How often placed orders are swept onto the outbound queue, in
+   * milliseconds. `0` sends orders only when somebody presses send. Defaults
+   * to `NORTHSTAR_ORDER_DISPATCH_INTERVAL_MS`, and to a minute when that is
+   * unset — see `src/orders/sweep.ts` for why a minute.
+   */
+  orderDispatchIntervalMs?: number;
+  /**
    * How long another instance's claim on the database stays valid without a
    * heartbeat. A crashed holder on this host is detected at once by its pid,
    * so this only bounds the cross-host and reused-pid cases.
    */
   lockStaleMs?: number;
+  /**
+   * How long stop() waits for a source poll already in flight before closing
+   * the database under it. Defaults to five seconds; see STOP_INFLIGHT_MS.
+   */
+  stopInflightMs?: number;
   /**
    * The channel break-glass notices are published to.
    *
@@ -168,7 +251,7 @@ export interface EngineOptions {
    * to the deployment's destinations by the same ordered, retried, dead-lettered
    * machinery as any other clinical message.
    *
-   * Deliberately a channel id rather than an address: Portage holds nothing to
+   * Deliberately a channel id rather than an address: Northstar holds nothing to
    * reach a patient by, and inventing one for a disclosure notice would send
    * somebody's private business to a stranger.
    */
@@ -191,9 +274,36 @@ export interface EngineOptions {
    * deployment in breach without telling it.
    */
   controlledSubstanceAuthority?: string;
+  /**
+   * What scans a patient upload before it can be downloaded or filed onto
+   * the chart. Unset means every upload stays quarantined indefinitely —
+   * visible as pending-scan, never served — which is honest, not broken: a
+   * deployment that wants uploads to clear quarantine has to say what scans
+   * them. See src/patient/intake.ts for why there is no default scanner.
+   */
+  malwareScanner?: MalwareScanner;
+  /**
+   * Where the clinic is: a place like `America/Yellowknife`, which follows
+   * daylight saving, or a fixed offset like `-07:00`. It decides what
+   * "today" means on the clinic board and a clinician's worklist, and which
+   * hours the privacy review counts as after hours. Unset means UTC, which is
+   * what all three have always used. Not read off the host clock: a server's
+   * time zone is a property of where it is racked. See
+   * src/schedule/clinic-day.ts.
+   */
+  clinicTimeZone?: string;
+  /**
+   * What actually books transport, accommodation, an interpreter, an escort
+   * or equipment for a travelling-clinic visit. Unset means arrangements are
+   * tracked and confirmed by a person writing down evidence — see
+   * Arrangements.confirm() in src/schedule/arrangements.ts — which is the
+   * honest default and how most northern clinics coordinate today.
+   */
+  externalCoordinator?: ExternalCoordinator;
 }
 
 export class Engine {
+  uploadScanWorker?: import("../patient/scan-worker.ts").UploadScanWorker;
   readonly db: Db;
   readonly fhir: FhirStore;
   readonly worker: DeliveryWorker;
@@ -203,6 +313,7 @@ export class Engine {
   readonly keys: ApiKeyStore;
   readonly audit: AuditStore;
   readonly retention: RetentionRunner;
+  readonly orderDispatch: OrderDispatchSweeper;
   /** The ledger of every shape each channel's configuration has had. */
   readonly channelVersions: ChannelVersions;
   readonly mappings = new Map<string, MappingDoc>();
@@ -225,11 +336,24 @@ export class Engine {
   private noticeChannel: string | null;
   /** The channel prescriptions are transmitted on, when one is configured. */
   private pharmacyChannel: string | null;
+  /** What scans a patient upload, when a deployment configures one. */
+  private malwareScanner: MalwareScanner | null;
+  /**
+   * The clinic's calendar, shared by the board, the worklist and the privacy
+   * review so they cannot disagree about what today is. Public so the boot
+   * log can say what it resolved to.
+   */
+  readonly clinicDay: ClinicDay;
+  /** What books travelling-clinic logistics externally, when a deployment configures one. */
+  private externalCoordinator: ExternalCoordinator | null;
   /** What authorises transmitting a controlled substance, when anything does. */
   private controlledAuthority: string | null;
   private lockStaleMs: number;
   private lockHeartbeatMs: number;
   private holdsLock = false;
+  /** Set as stop() closes the database; see sourceFailed(). */
+  private closed = false;
+  private stopInflightMs: number;
 
   constructor(opts: EngineOptions) {
     this.db = new Db(opts.dbPath);
@@ -257,6 +381,17 @@ export class Engine {
     this.audit = new AuditStore(this.db);
     this.channelVersions = new ChannelVersions(this.db);
     this.retention = new RetentionRunner(this.db, opts.retention ?? {}, this.audit);
+    this.orderDispatch = new OrderDispatchSweeper(
+      {
+        db: this.db,
+        forTenant: (id) => {
+          const view = this.forTenant(id);
+          return { db: view.db, orders: view.orders, patients: view.clinical.patientIndex };
+        },
+        profiles: (id) => this.labProfiles.get(id),
+      },
+      opts.orderDispatchIntervalMs ?? resolveInterval()
+    );
     this.connectors = {
       sql: opts.connectors?.sql ?? connectSql,
       sftp: opts.connectors?.sftp ?? connectSftp,
@@ -265,7 +400,14 @@ export class Engine {
     this.noticeChannel = opts.breakGlassNoticeChannel ?? null;
     this.pharmacyChannel = opts.pharmacyChannel ?? null;
     this.controlledAuthority = opts.controlledSubstanceAuthority ?? null;
+    this.malwareScanner = opts.malwareScanner ?? null;
+    // Parsed here and not where the board is built, because `forTenant()`
+    // is lazy: a typo would otherwise sit quiet until the first person opened
+    // a board, which is a worse moment to find out than boot.
+    this.clinicDay = ClinicDay.parse(opts.clinicTimeZone);
+    this.externalCoordinator = opts.externalCoordinator ?? null;
     this.lockStaleMs = opts.lockStaleMs ?? 20_000;
+    this.stopInflightMs = opts.stopInflightMs ?? STOP_INFLIGHT_MS;
     // Comfortably inside the staleness window, so a slow moment never costs a
     // running engine its own claim.
     this.lockHeartbeatMs = Math.max(1_000, Math.floor(this.lockStaleMs / 4));
@@ -311,9 +453,12 @@ export class Engine {
     const notes = new ClinicalNotes(clinical);
     const immunizations = new Immunizations(clinical);
     const vitals = new Vitals(clinical);
+    const procedures = new Procedures(clinical);
+    const carePlans = new CarePlans(clinical);
+    const documents = new PatientDocuments(clinical);
     const careTeam = new CareTeam(db);
     const coverage = new Coverage(db);
-    const schedule = new Schedule(db);
+    const schedule = new Schedule(db, { clinicDay: this.clinicDay });
     const messaging = new PatientMessaging(db);
     // No interaction database unless a deployment supplies one. The safety
     // check reports interactions as unchecked rather than clear, which is the
@@ -333,12 +478,93 @@ export class Engine {
     const labIntake = new LabIntake(db, orders, clinical.patientIndex);
     const referrals = new ReferralStore(db);
     const patientAccess = new PatientAccess(db, orders, tasks);
+    // Pre-visit intake (item 60). Built on documents and tasks, both already
+    // constructed above: a submission files onto the chart the same way a
+    // clinician-recorded document does, and both a submission and a clean
+    // upload raise a portal-submission task rather than landing silently.
+    const questionnaires = new Questionnaires(db);
+    // The schedule arrives as a get()-only adapter, the same shape Actions
+    // takes its task and order lookups in. An intake form names the visit it
+    // prepares for, and the clinic board reads that column as "somebody has
+    // sent something in for this appointment" -- so the id has to be checked
+    // against a real booking of that patient rather than trusted from the
+    // request. See "A visit is a fact the server checks" in patient/intake.ts.
+    const intake = new IntakeSubmissions(db, questionnaires, clinical, tasks, {
+      booking: (id: string) => schedule.booking(id),
+    });
+    // Same reasoning for the form an upload says it goes with.
+    const uploads = new Uploads(db, documents, {
+      tasks,
+      forms: intake,
+      ...(this.malwareScanner ? { scanner: this.malwareScanner } : {}),
+    });
+    const notices = new PatientNotices(db, this.noticeChannel);
+    const contacts = new PatientContacts(db);
+    const enrolment = new PatientEnrolment(db, patientAccess, notices);
     const encounters = new Encounters(db);
+    // Item 61: structured goals and actions on a care plan. Built after
+    // schedule, tasks, orders and referrals, which is what an action may
+    // link to — each wrapped in a get()-only adapter so Actions stays as
+    // loosely coupled to them as Discharges is to its own sources.
+    const goals = new Goals(clinical);
+    const actions = new Actions(clinical, {
+      task: { get: (id: string) => tasks.get(id) },
+      appointment: { get: (id: string) => schedule.booking(id) },
+      order: { get: (id: string) => orders.get(id) },
+      referral: { get: (id: string) => referrals.get(id) },
+    });
+    const avs = new AfterVisitSummaries({ carePlans, goals, actions, encounters, orders });
+    // Item 63: one ordered read across every domain, and a validated series
+    // for one result code or vital kind. Built on stores already above.
+    const timeline = new Timeline({ orders, vitals, procedures, immunizations, encounters, goals, actions });
+    const trends = new Trends({ orders, vitals });
+    const registry = new Registry(db);
+    // Item 64: a published, versioned eligibility rule turned into a worked
+    // outreach list. contacts and schedule are both already built above.
+    const eligibility = new EligibilityRules(db);
+    const outreach = new OutreachCampaigns(db, eligibility, { contacts, schedule });
+    // Item 65: the logistics around a travelling-clinic visit. Built on
+    // clinics (hoisted out of the view object below, where it used to be
+    // constructed inline, so this can see it) and tasks, both already above.
+    const clinics = new Clinics(db);
+    const arrangements = new Arrangements(db, clinics, tasks, this.externalCoordinator ?? undefined);
+    // Reads the chart to take its snapshot, so it is built after the stores
+    // that hold the four loose ends it looks for.
+    const handoffs = new Handoffs(db);
+    const discharges = new Discharges(db, { orders, meds, referrals, schedule }, handoffs);
+    // The inbox answers from the handoff record rather than from its own
+    // owner column, so an item somebody handed away leaves their list and an
+    // accepted one arrives. Set here because the two are built in the same
+    // breath and one of them has to come first.
+    tasks.useOwnershipRecord(handoffs);
+    // And the same for the results a clinician is chasing. An order's
+    // responsible_id says who placed it; who answers for it today is a
+    // question only the handoff record can answer.
+    orders.useOwnershipRecord(handoffs);
+    // And the replies a clinician owes a patient. Found by the routing
+    // guard rather than by hand, which is the point of having one.
+    messaging.useOwnershipRecord(handoffs);
+    // After encounters, which it reads to tell an arrival from an expectation.
+    const board = new ClinicBoard(
+      { schedule, encounters, tasks, discharges, handoffs, intake },
+      { clinicDay: this.clinicDay }
+    );
     // Built here rather than inline in the view because the key store needs it
     // too: issuing a credential for an organization nobody has registered is a
     // typo worth refusing, and only the directory can tell.
     const directory = new Directory(db);
+    // Reads the directory, so it is built after it: a clinical owner must be
+    // a practitioner this tenant actually registered.
+    const scoreGovernance = new ScoreGovernance(db);
+    // Distinct from `conformance` above, which holds the validation packs:
+    // this records which published standards this deployment claims.
+    const standards = new StandardsRegistry(db);
     const fhir = new FhirStore(db, this.validation, directory);
+    // Resources written before fhir_resources carried a patient reference have
+    // none, and a patient-scoped search excludes what it cannot attribute. So
+    // the recovery runs here rather than waiting for somebody to notice a
+    // chart looking emptier than it is.
+    fhir.backfillPatients();
     const subs = new SubscriptionManager(db, this.worker);
     fhir.onChange((result, resource) => {
       subs.notify(result, resource);
@@ -352,7 +578,7 @@ export class Engine {
     const consent = new ConsentDirectives(db, {
       ...(this.noticeChannel ? { dispatcher: new ChannelNoticeDispatcher(db, this.noticeChannel) } : {}),
     });
-    const privacy = new PrivacyOffice({ db, consent, patientAccess, careTeam, tasks });
+    const privacy = new PrivacyOffice({ db, consent, patientAccess, careTeam, tasks, clinicDay: this.clinicDay });
     const view: TenantView = {
       tenantId,
       db,
@@ -364,6 +590,14 @@ export class Engine {
       notes,
       immunizations,
       vitals,
+      procedures,
+      carePlans,
+      goals,
+      actions,
+      avs,
+      timeline,
+      trends,
+      documents,
       careTeam,
       coverage,
       meds,
@@ -375,11 +609,23 @@ export class Engine {
       schedule,
       messaging,
       patientAccess,
-      registry: new Registry(db),
+      enrolment,
+      scoreGovernance,
+      standards,
+      notices,
+      contacts,
+      questionnaires,
+      intake,
+      uploads,
+      board,
+      discharges,
+      handoffs,
+      registry,
+      eligibility,
+      outreach,
       migration: new Migration(db, { clinical, meds }),
       consent,
       privacy,
-      scoreGovernance: new ScoreGovernance(db),
       workspace: new Workspace({
         record: clinical,
         notes,
@@ -389,6 +635,9 @@ export class Engine {
         tasks,
         immunizations,
         vitals,
+        procedures,
+        carePlans,
+        documents,
         careTeam,
         coverage,
         schedule,
@@ -397,7 +646,8 @@ export class Engine {
       encounters,
       directory,
       review: new AccessReview(db),
-      clinics: new Clinics(db),
+      clinics,
+      arrangements,
       links: new PatientLinks(db),
       visits: new VisitView({ encounters, record: clinical, meds, orders }),
     };
@@ -439,7 +689,7 @@ export class Engine {
     if (!lock.acquired) {
       const held = lock.heldBy!;
       throw new Error(
-        `another Portage instance owns this database (pid ${held.pid} on ${held.host}, ` +
+        `another Northstar instance owns this database (pid ${held.pid} on ${held.host}, ` +
           `last seen ${Math.round(held.ageMs / 1000)}s ago). Two engines on one database duplicate messages. ` +
           `If that process is gone, wait for its claim to expire and start again.`
       );
@@ -463,11 +713,21 @@ export class Engine {
       const config = JSON.parse(row.config) as ChannelConfig;
       await this.activate(config);
     }
+
+    // Last, and after the channels are up. The sweep's first pass enqueues
+    // immediately, and the worker parks a delivery whose destination is not
+    // registered yet on a five-second backoff. Nothing is lost either way --
+    // that path does not burn an attempt or touch the order -- but on a cold
+    // start it is five seconds added to every order in the building, for no
+    // reason other than the order these two lines are written in.
+    this.orderDispatch.start();
   }
 
   async stop(): Promise<void> {
+    await this.uploadScanWorker?.stop();
     if (this.lockTimer) clearInterval(this.lockTimer);
     this.lockTimer = null;
+    this.orderDispatch.stop();
     await this.worker.stop();
     this.retention.stop();
     for (const rc of this.channels.values()) {
@@ -476,6 +736,23 @@ export class Engine {
       rc.pollDb?.close();
       await this.dropSqlClient(rc);
       await this.dropSftpClient(rc);
+    }
+    // A poll that was waiting on its source when the timers were cleared is
+    // still running: clearing a timer does not cancel the await inside it.
+    // Closing the database under it made its failure path write to a closed
+    // handle and throw from inside the net that catches poll errors — an
+    // unhandled rejection, after an ordinary shutdown. The shipped server
+    // exits straight after stop() and so rarely saw it; anything that
+    // outlives the engine does.
+    //
+    // Waits on `polling`, the flag each poll sets when it really starts and
+    // clears in its own `finally`, not on a promise per call: a tick that
+    // finds a poll already running returns at once, and tracking the latest
+    // call tracked exactly those. Bounded, because a connect to a host that
+    // does not answer may not settle for minutes.
+    const deadline = Date.now() + this.stopInflightMs;
+    while ([...this.channels.values()].some((rc) => rc.polling) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
     }
     this.channels.clear();
     // Release before closing, so a restart does not have to wait out a claim
@@ -490,6 +767,9 @@ export class Engine {
         // A database already gone is nothing to complain about on the way out.
       }
     }
+    // Anything still running past the bound finds this and records nothing,
+    // rather than writing to a closed database.
+    this.closed = true;
     this.db.close();
   }
 
@@ -636,9 +916,16 @@ export class Engine {
           let names: string[];
           try {
             names = readdirSync(src.dir).sort();
-          } catch {
+          } catch (err) {
+            // A drop directory that has been unmounted, renamed or had its
+            // permissions changed used to be swallowed by a bare `catch`
+            // with no log and nothing written down. The channel stayed
+            // `running`, the health check stayed green, and the only symptom
+            // was files nobody collected.
+            this.sourceFailed(config.id, "read", err);
             return;
           }
+          let clean = true;
           for (const name of names) {
             if (pattern && !pattern.test(name)) continue;
             const full = join(src.dir, name);
@@ -653,9 +940,15 @@ export class Engine {
                 unlinkSync(full);
               }
             } catch (err) {
-              console.error(`filedrop ${config.id}: ${name}: ${err instanceof Error ? err.message : err}`);
+              // The directory was read, so the link is up and one file is
+              // bad. The name goes to the record rather than the log: a drop
+              // file is routinely named by the sending system after an
+              // accession or a chart number.
+              clean = false;
+              this.sourceFailed(config.id, "item", err, name);
             }
           }
+          if (clean) this.sourcePassed(config.id);
         } finally {
           rc.polling = false;
         }
@@ -670,16 +963,34 @@ export class Engine {
         if (rc.polling || !rc.pollDb) return;
         rc.polling = true;
         try {
-          const cursor = this.db.getChannelState(config.id, "cursor");
-          const bound: string | number =
-            cursor === undefined ? 0 : /^-?\d+(\.\d+)?$/.test(cursor) ? Number(cursor) : cursor;
-          const rows = rc.pollDb.prepare(src.query).all(bound) as Array<Record<string, unknown>>;
-          for (const row of rows) {
-            this.ingest(config.id, JSON.stringify(row), "application/json", "dbpoll");
-            this.db.setChannelState(config.id, "cursor", String(row[src.cursorColumn]));
+          let rows: Array<Record<string, unknown>>;
+          try {
+            const cursor = this.db.getChannelState(config.id, "cursor");
+            const bound: string | number =
+              cursor === undefined ? 0 : /^-?\d+(\.\d+)?$/.test(cursor) ? Number(cursor) : cursor;
+            rows = rc.pollDb.prepare(src.query).all(bound) as Array<Record<string, unknown>>;
+          } catch (err) {
+            // The query is the link. A file that has moved, a schema that has
+            // changed under us, a database that will not open: whatever it
+            // is, nothing is arriving and somebody has to be told.
+            this.sourceFailed(config.id, "read", err);
+            return;
           }
-        } catch (err) {
-          console.error(`dbpoll ${config.id}: ${err instanceof Error ? err.message : err}`);
+          let clean = true;
+          for (const row of rows) {
+            try {
+              this.ingest(config.id, JSON.stringify(row), "application/json", "dbpoll");
+              this.db.setChannelState(config.id, "cursor", String(row[src.cursorColumn]));
+            } catch (err) {
+              // Stop at the first bad row rather than advancing past it. The
+              // cursor has not moved, so the next poll re-reads from here;
+              // continuing would step over the row and lose it silently.
+              clean = false;
+              this.sourceFailed(config.id, "item", err);
+              break;
+            }
+          }
+          if (clean) this.sourcePassed(config.id);
         } finally {
           rc.polling = false;
         }
@@ -696,17 +1007,33 @@ export class Engine {
           // Connect lazily rather than at activation. A channel whose database
           // is unreachable at boot still starts and picks up when the link
           // returns, which is the normal condition here, not the exception.
-          if (!rc.sqlClient) rc.sqlClient = await this.connectors.sql(src.driver, src.dsn);
-          const stored = this.db.getChannelState(config.id, "cursor") ?? src.initialCursor ?? "0";
-          const bound: string | number = /^-?\d+(\.\d+)?$/.test(stored) ? Number(stored) : stored;
-          const rows = await rc.sqlClient.query(src.query, [bound]);
-          for (const row of rows) {
-            this.ingest(config.id, JSON.stringify(row), src.contentType ?? "application/json", "sqlpoll");
-            this.db.setChannelState(config.id, "cursor", cursorValue(row[src.cursorColumn]));
+          let rows: Array<Record<string, unknown>>;
+          try {
+            if (!rc.sqlClient) rc.sqlClient = await this.connectors.sql(src.driver, src.dsn);
+            const stored = this.db.getChannelState(config.id, "cursor") ?? src.initialCursor ?? "0";
+            const bound: string | number = /^-?\d+(\.\d+)?$/.test(stored) ? Number(stored) : stored;
+            rows = await rc.sqlClient.query(src.query, [bound]);
+          } catch (err) {
+            // Connecting and querying are both the link, and both fail the
+            // same way from an operator's chair: the far end is not
+            // answering. The client is dropped so the next poll reconnects.
+            this.sourceFailed(config.id, "read", err);
+            await this.dropSqlClient(rc);
+            return;
           }
-        } catch (err) {
-          console.error(`sqlpoll ${config.id}: ${err instanceof Error ? err.message : err}`);
-          await this.dropSqlClient(rc);
+          let clean = true;
+          for (const row of rows) {
+            try {
+              this.ingest(config.id, JSON.stringify(row), src.contentType ?? "application/json", "sqlpoll");
+              this.db.setChannelState(config.id, "cursor", cursorValue(row[src.cursorColumn]));
+            } catch (err) {
+              // As in dbpoll: stop here, leave the cursor, re-read next time.
+              clean = false;
+              this.sourceFailed(config.id, "item", err);
+              break;
+            }
+          }
+          if (clean) this.sourcePassed(config.id);
         } finally {
           rc.polling = false;
         }
@@ -721,35 +1048,54 @@ export class Engine {
         if (rc.polling) return;
         rc.polling = true;
         try {
-          if (!rc.sftpClient) {
-            rc.sftpClient = await this.connectors.sftp({
-              host: src.host,
-              port: src.port,
-              username: src.username,
-              password: src.password,
-              privateKey: src.privateKeyPath ? readFileSync(src.privateKeyPath) : undefined,
-              passphrase: src.passphrase,
-            });
+          let files: Array<{ name: string }>;
+          try {
+            if (!rc.sftpClient) {
+              rc.sftpClient = await this.connectors.sftp({
+                host: src.host,
+                port: src.port,
+                username: src.username,
+                password: src.password,
+                privateKey: src.privateKeyPath ? readFileSync(src.privateKeyPath) : undefined,
+                passphrase: src.passphrase,
+              });
+            }
+            files = (await rc.sftpClient.list(src.dir))
+              .filter((f) => !pattern || pattern.test(f.name))
+              .sort((a, b) => a.name.localeCompare(b.name));
+          } catch (err) {
+            // Credentials, host key, network, a directory that has moved: all
+            // of them are "we cannot reach the far end", which is the thing
+            // an operator has to be told and the thing nothing recorded.
+            this.sourceFailed(config.id, "read", err);
+            await this.dropSftpClient(rc);
+            return;
           }
-          const files = (await rc.sftpClient.list(src.dir))
-            .filter((f) => !pattern || pattern.test(f.name))
-            .sort((a, b) => a.name.localeCompare(b.name));
+          let clean = true;
           for (const f of files) {
-            const remote = remoteJoin(src.dir, f.name);
-            const content = await rc.sftpClient.get(remote);
-            this.ingest(config.id, content, src.contentType ?? "text/plain", "sftp", { file: f.name });
-            // Archive or delete only after the message is durably stored, so a
-            // crash mid-poll re-reads the file rather than losing it.
-            if (src.archiveDir) {
-              await rc.sftpClient.mkdir(src.archiveDir);
-              await rc.sftpClient.rename(remote, remoteJoin(src.archiveDir, f.name));
-            } else {
-              await rc.sftpClient.delete(remote);
+            try {
+              const remote = remoteJoin(src.dir, f.name);
+              const content = await rc.sftpClient.get(remote);
+              this.ingest(config.id, content, src.contentType ?? "text/plain", "sftp", { file: f.name });
+              // Archive or delete only after the message is durably stored, so a
+              // crash mid-poll re-reads the file rather than losing it.
+              if (src.archiveDir) {
+                await rc.sftpClient.mkdir(src.archiveDir);
+                await rc.sftpClient.rename(remote, remoteJoin(src.archiveDir, f.name));
+              } else {
+                await rc.sftpClient.delete(remote);
+              }
+            } catch (err) {
+              // One file, on a link that answered. The session is dropped
+              // anyway, because a transfer that failed part-way is the most
+              // likely sign of a connection that has gone bad underneath it.
+              clean = false;
+              this.sourceFailed(config.id, "item", err, f.name);
+              await this.dropSftpClient(rc);
+              break;
             }
           }
-        } catch (err) {
-          console.error(`sftp ${config.id}: ${err instanceof Error ? err.message : err}`);
-          await this.dropSftpClient(rc);
+          if (clean) this.sourcePassed(config.id);
         } finally {
           rc.polling = false;
         }
@@ -758,6 +1104,33 @@ export class Engine {
     }
 
     this.channels.set(config.id, rc);
+  }
+
+  /**
+   * Writes a poll failure down where a health check can see it.
+   *
+   * Every inbound poll used to catch its own exception, print it and return.
+   * A printed line is not a signal: nobody alerts on it, `/api/health` is
+   * built from the queue and from declared cadences, and a channel with no
+   * declared cadence therefore reported healthy for as long as its source
+   * stayed unreachable. The record is durable and per-channel; the log gets
+   * the id that reaches it, and the class and frames, and not the message —
+   * a polling query can quote the row it was reading, and a drop file is
+   * routinely named after a chart.
+   */
+  private sourceFailed(channelId: string, stage: SourceFailureStage, err: unknown, item?: string): void {
+    // After stop() there is nowhere to record it, and nothing is lost by not
+    // trying: a failed read never moved the channel's cursor, so the next
+    // start reads the same place again and meets the same failure.
+    if (this.closed) return;
+    const record = this.db.recordSourceFailure(channelId, stage, err, item);
+    console.error(`channel ${channelId}: ${stage} failed ${record.consecutive}x - ${faultLine(record.faultId, err)}`);
+  }
+
+  /** Forgets a channel's failures, after a pass that read its source and handled everything on it. */
+  private sourcePassed(channelId: string): void {
+    if (this.closed) return;
+    if (this.db.sourceFailure(channelId)) this.db.clearSourceFailure(channelId);
   }
 
   /**
@@ -773,9 +1146,17 @@ export class Engine {
     poll: () => void | Promise<void>
   ): void {
     const run = (): void => {
-      void Promise.resolve(poll()).catch((err: unknown) => {
-        console.error(`poll ${channelId}: ${err instanceof Error ? err.message : err}`);
-      });
+      // `Promise.resolve(poll())` evaluates `poll()` first, so a synchronous
+      // throw escapes before there is a promise to attach `.catch` to — out
+      // of the setInterval callback, and out of the process, which is an
+      // unhandled exception that takes the engine down over one bad poll.
+      // Every poll below guards itself, but this is the net under all of
+      // them and it has to actually be under them.
+      try {
+        void Promise.resolve(poll()).catch((err: unknown) => this.sourceFailed(channelId, "read", err));
+      } catch (err) {
+        this.sourceFailed(channelId, "read", err);
+      }
     };
 
     if (src.cron) {

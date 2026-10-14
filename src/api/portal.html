@@ -1,0 +1,1180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Northstar — patient access</title>
+<link rel="icon" href="data:,">
+<style>
+/*
+  No framework and no CDN, on purpose. This is served to people on satellite
+  and cellular links in the north, where a 200 KB bundle is a visible wait and
+  a blocked CDN is a blank page. Everything needed is in this one file.
+*/
+:root{
+  --bg:#f4f1ea;--panel:#fff;--line:#d7d0c4;--text:#1f1b16;--dim:#5c564c;
+  --acc:#1d4f8c;--warn:#8a5a12;--held:#6b4f9e;--bad:#8c1d1d;--ok:#1d6b3f;
+  font-size:18px;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:1rem/1.55 Georgia,Cambria,"Times New Roman",serif}
+a{color:var(--acc)}
+button{font:inherit}
+.skip{position:absolute;left:-999px;width:1px;height:1px;overflow:hidden}
+.skip:focus{position:static;width:auto;height:auto;padding:8px 12px;background:#fff;border:2px solid var(--acc)}
+:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+
+header{background:var(--panel);border-bottom:1px solid var(--line);padding:10px 16px}
+.bar{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px;max-width:46rem;margin:0 auto}
+.bar h1{margin:0;font-size:1.05rem}
+.sub{color:var(--dim);font-size:.85rem}
+.lang{margin-left:auto}
+select,input,textarea{font:inherit;padding:6px 8px;border:1px solid var(--line);background:#fff;color:inherit;max-width:100%}
+
+/* Whose chart this is. Never below the fold, never ambiguous. */
+.who{background:#eef3fa;border-bottom:1px solid var(--line);padding:8px 16px}
+.who .inner{max-width:46rem;margin:0 auto;display:flex;flex-wrap:wrap;gap:8px;align-items:baseline}
+.who b{font-size:1.02rem}
+.badge{font-size:.78rem;letter-spacing:.03em;text-transform:uppercase;border:1px solid var(--line);
+  border-radius:999px;padding:2px 9px;background:#fff;color:var(--dim)}
+.badge.proxy{border-color:var(--held);color:var(--held)}
+
+nav{background:var(--panel);border-bottom:1px solid var(--line);overflow-x:auto}
+nav ul{list-style:none;display:flex;gap:2px;margin:0 auto;padding:0 10px;max-width:46rem}
+nav a{display:block;padding:10px 12px;text-decoration:none;color:var(--dim);white-space:nowrap;
+  border-bottom:3px solid transparent}
+nav a[aria-current="page"]{color:var(--text);border-bottom-color:var(--acc);font-weight:bold}
+
+main{max-width:46rem;margin:0 auto;padding:16px}
+h2{font-size:1.15rem;margin:.2rem 0 .8rem}
+.card{background:var(--panel);border:1px solid var(--line);padding:12px 14px;margin:0 0 12px}
+.card h3{margin:0 0 .3rem;font-size:1rem}
+.meta{color:var(--dim);font-size:.86rem}
+.note{border-left:4px solid var(--warn);background:#fff8ea;padding:10px 12px;margin:0 0 14px}
+.err{border-left:4px solid var(--bad);background:#fdf0f0;padding:10px 12px;margin:0 0 14px}
+.empty{color:var(--dim);font-style:italic;padding:10px 0}
+.held{border-left:4px solid var(--held);background:#f6f3fb}
+.abn{color:var(--bad);font-weight:bold}
+button.act{padding:8px 14px;background:var(--acc);color:#fff;border:1px solid var(--acc);cursor:pointer}
+button.act:disabled{opacity:.55;cursor:progress}
+button.link{background:none;border:none;color:var(--acc);text-decoration:underline;cursor:pointer;padding:0}
+label{display:block;margin:.6rem 0 .2rem;font-weight:bold}
+textarea{width:100%;min-height:6rem}
+ul.plain{list-style:none;padding:0;margin:0}
+ul.plain li{padding:6px 0;border-bottom:1px solid var(--line)}
+ul.plain li:last-child{border-bottom:none}
+footer{max-width:46rem;margin:0 auto;padding:14px 16px 30px;color:var(--dim);font-size:.85rem}
+[hidden]{display:none !important}
+@media (max-width:34rem){:root{font-size:17px}main{padding:12px}}
+</style>
+</head>
+<body>
+<a class="skip" href="#main" data-t="skip">Skip to main content</a>
+
+<header>
+  <div class="bar">
+    <h1>Northstar</h1>
+    <span class="sub" data-t="tagline">Patient access</span>
+    <span class="lang">
+      <label for="lang" class="skip" data-t="langLabel">Language</label>
+      <select id="lang" aria-label="Language / Langue">
+        <option value="en">English</option>
+        <option value="fr">Français</option>
+      </select>
+    </span>
+  </div>
+</header>
+
+<div class="who" id="who" hidden>
+  <div class="inner">
+    <span data-t="viewing">Viewing</span>
+    <b id="whoName">—</b>
+    <span class="badge" id="whoRel"></span>
+    <button class="link" id="switch" hidden data-t="switchChart">Switch chart</button>
+    <button class="link" id="signout" style="margin-left:auto" data-t="signOut">Sign out</button>
+  </div>
+</div>
+
+<nav id="nav" hidden><ul id="tabs"></ul></nav>
+
+<main id="main" tabindex="-1">
+  <p id="live" role="status" aria-live="polite" class="skip"></p>
+  <div id="view"></div>
+</main>
+
+<footer>
+  <p data-t="footer">This is not a certified patient portal. There is no identity-proofing and no ONE ID,
+    and this page does not enrol anyone: a named clerk at your clinic writes how they checked who you are
+    before any access is granted. Nothing here is a claim of WCAG or AODA conformance. Your chart is
+    reached only through a live grant your clinic issued.</p>
+  <p lang="fr">Ceci n’est pas un portail patient certifié.</p>
+</footer>
+
+<script nonce="{{nonce}}">
+"use strict";
+/* ------------------------------------------------------------------ copy */
+/*
+  Both languages in one table rather than two files: a missing translation is
+  then a visibly missing key at review time instead of a page that silently
+  falls back to English for one string. `t()` returns the key itself when a
+  string is absent, which is ugly on purpose.
+*/
+const COPY = {
+  en: {
+    skip:"Skip to main content", tagline:"Patient access", langLabel:"Language",
+    viewing:"Viewing", switchChart:"Switch chart", signOut:"Sign out",
+    footer:"This is not a certified patient portal. There is no identity-proofing and no ONE ID, and this page does not enrol anyone: a named clerk at your clinic writes how they checked who you are before any access is granted. Nothing here is a claim of WCAG or AODA conformance. Your chart is reached only through a live grant your clinic issued.",
+    signInTitle:"Sign in", clinicSignIn:"Sign in with your clinic", loginUnavailable:"Your clinic has not enabled sign-in here yet. Please contact the clinic.", loginFailed:"Sign-in could not be completed. Please try again.", loading:"Loading…", retry:"Try again",
+    offline:"That did not reach the clinic. Your connection may have dropped.",
+    expired:"Your session has ended. Sign in again.",
+    noAccess:"This chart is no longer shared with you. If that is unexpected, contact the clinic.",
+    devTitle:"Development sign-in",
+    devBody:"This site is running a development identity provider. Choose a synthetic person to sign in as. Only people the clinic has already granted a chart to appear here — signing in does not create access.",
+    devNone:"Nobody has been granted a chart yet, so there is nobody to sign in as.",
+    tokenTitle:"Sign in with a token",
+    tokenBody:"Paste an access token from your identity provider. The portal does not issue tokens.",
+    tokenLabel:"Access token", signIn:"Sign in",
+    noCharts:"You do not have access to any chart right now.",
+    chooseChart:"Choose a chart",
+    self:"Your chart", proxy:"On behalf of",
+    tabResults:"Results", tabAppointments:"Appointments", tabMedications:"Medications",
+    tabMessages:"Messages", tabTeam:"Care team", tabAccess:"Access history", tabRequests:"Requests",
+    noResults:"No results have been released to you.",
+    heldTitle:"Held", heldUntil:"Expected to be available",
+    noAppointments:"You have no appointments booked.",
+    noMeds:"No medications are recorded.",
+    medsTaking:"What you are taking", medsPrescribed:"What was prescribed",
+    allergiesNever:"Nobody has recorded whether you have allergies. That is not the same as having none.",
+    noTeam:"No care team is recorded.",
+    noAccessLog:"Nobody has looked at your chart yet.",
+    noMessages:"You have no messages.",
+    newMessage:"Ask a question", subject:"Subject", messageBody:"Your message", send:"Send",
+    sent:"Sent. The clinic will see it in their worklist.",
+    reply:"Reply", replyPlaceholder:"Your reply",
+    openThread:"Open", closedThread:"Closed",
+    noRequests:"You have not made any requests.",
+    newRequest:"Make a request", requestKind:"What kind", access:"See my record", correction:"Correct my record",
+    requestDetail:"What are you asking for", requestTarget:"What should be corrected", submit:"Submit",
+    requestSent:"Sent. The clinic has it on their list.",
+    by:"by", on:"on", refused:"refused", allowed:"looked at",
+    reported:"Reported", unitless:"no unit recorded", abnormal:"abnormal",
+    status:"Status", when:"When", role:"Role", relationship:"Relationship",
+    permissionsNote:"Your access covers:",
+    sectionUnavailable:"This section could not be loaded.",
+    tabIntake:"Before your visit",
+    intakeIntro:"Answer what you can now and save the rest for later — nothing here is sent to your chart until you submit it.",
+    intakeForVisit:"These forms are for:",
+    intakeNoVisit:"Not for a particular visit",
+    intakeNoVisitNote:"Your clinic will see this, but it will not be attached to an appointment.",
+    intakeDiscardUnsaved:"You have answers here that are not saved. Switch visit and lose them? Choose Cancel, then Save for later, to keep them.",
+    noQuestionnaires:"Your clinic has not asked for anything before a visit right now.",
+    saveDraft:"Save for later", submitIntake:"Submit to the clinic",
+    draftSaved:"Saved. You can come back and finish this later.",
+    intakeSubmitted:"Submitted. Your clinic will see this before your visit.",
+    concernLabel:"Anything you want to raise at your visit?",
+    concernPlaceholder:"For example: new pain, a side effect, a question about a result",
+    medChangeLabel:"Any medication changes to tell your clinic about?",
+    medChangeAdd:"Add a medication change",
+    medChangeKind:"What changed", medChangeStarted:"Started", medChangeStopped:"Stopped", medChangeChanged:"Changed",
+    medChangeWhat:"Which medication, and what happened",
+    required:"required", yes:"Yes", no:"No",
+    draft:"Draft — not yet sent", submitted:"Submitted", reviewed:"Reviewed by your clinic",
+    uploadsTitle:"Documents", uploadLabel:"Send a document (PDF, image, or text file, up to 8 MB)",
+    uploadSend:"Send document",
+    uploadPending:"Being checked before it can be opened",
+    uploadClean:"Received", uploadInfected:"This file could not be accepted",
+    noUploads:"You have not sent any documents.",
+    fileTooBig:"That file is larger than 8 MB and cannot be sent.",
+    pastSubmissions:"What you have sent", noSubmissions:"You have not sent anything yet."
+  },
+  fr: {
+    skip:"Aller au contenu principal", tagline:"Accès patient", langLabel:"Langue",
+    viewing:"Dossier consulté", switchChart:"Changer de dossier", signOut:"Se déconnecter",
+    footer:"Ceci n’est pas un portail patient certifié. Il n’y a ni preuve d’identité ni ONE ID, et cette page n’inscrit personne : un commis nommé de votre clinique décrit par écrit comment il a vérifié votre identité avant qu’un accès soit accordé. Rien ici ne constitue une revendication de conformité WCAG ou AODA. Votre dossier n’est accessible que par une autorisation en vigueur délivrée par votre clinique.",
+    signInTitle:"Connexion", clinicSignIn:"Se connecter avec votre clinique", loginUnavailable:"Votre clinique n’a pas encore activé la connexion ici. Veuillez la contacter.", loginFailed:"La connexion n’a pas pu être effectuée. Veuillez réessayer.", loading:"Chargement…", retry:"Réessayer",
+    offline:"La demande n’est pas parvenue à la clinique. Votre connexion s’est peut-être interrompue.",
+    expired:"Votre session est terminée. Reconnectez-vous.",
+    noAccess:"Ce dossier ne vous est plus partagé. Si cela vous surprend, communiquez avec la clinique.",
+    devTitle:"Connexion de développement",
+    devBody:"Ce site utilise un fournisseur d’identité de développement. Choisissez une personne synthétique. Seules les personnes à qui la clinique a déjà accordé un dossier apparaissent ici — se connecter ne crée aucun accès.",
+    devNone:"Aucun dossier n’a encore été accordé; il n’y a donc personne à qui se connecter.",
+    tokenTitle:"Connexion par jeton",
+    tokenBody:"Collez un jeton d’accès de votre fournisseur d’identité. Le portail n’émet pas de jetons.",
+    tokenLabel:"Jeton d’accès", signIn:"Se connecter",
+    noCharts:"Vous n’avez accès à aucun dossier pour le moment.",
+    chooseChart:"Choisir un dossier",
+    self:"Votre dossier", proxy:"Au nom de",
+    tabResults:"Résultats", tabAppointments:"Rendez-vous", tabMedications:"Médicaments",
+    tabMessages:"Messages", tabTeam:"Équipe de soins", tabAccess:"Historique d’accès", tabRequests:"Demandes",
+    noResults:"Aucun résultat ne vous a été communiqué.",
+    heldTitle:"Retenu", heldUntil:"Disponible prévu le",
+    noAppointments:"Vous n’avez aucun rendez-vous.",
+    noMeds:"Aucun médicament n’est inscrit.",
+    medsTaking:"Ce que vous prenez", medsPrescribed:"Ce qui a été prescrit",
+    allergiesNever:"Personne n’a inscrit si vous avez des allergies. Ce n’est pas la même chose que ne pas en avoir.",
+    noTeam:"Aucune équipe de soins n’est inscrite.",
+    noAccessLog:"Personne n’a encore consulté votre dossier.",
+    noMessages:"Vous n’avez aucun message.",
+    newMessage:"Poser une question", subject:"Objet", messageBody:"Votre message", send:"Envoyer",
+    sent:"Envoyé. La clinique le verra dans sa liste de travail.",
+    reply:"Répondre", replyPlaceholder:"Votre réponse",
+    openThread:"Ouvert", closedThread:"Fermé",
+    noRequests:"Vous n’avez fait aucune demande.",
+    newRequest:"Faire une demande", requestKind:"Type de demande", access:"Consulter mon dossier",
+    correction:"Corriger mon dossier",
+    requestDetail:"Que demandez-vous", requestTarget:"Que faut-il corriger", submit:"Envoyer",
+    requestSent:"Envoyé. La clinique l’a dans sa liste.",
+    by:"par", on:"le", refused:"refusé", allowed:"consulté",
+    reported:"Signalé", unitless:"aucune unité inscrite", abnormal:"anormal",
+    status:"Statut", when:"Quand", role:"Rôle", relationship:"Lien",
+    permissionsNote:"Votre accès couvre :",
+    sectionUnavailable:"Cette section n’a pas pu être chargée.",
+    tabIntake:"Avant votre visite",
+    intakeIntro:"Répondez à ce que vous pouvez maintenant et gardez le reste pour plus tard — rien ici n’est envoyé à votre dossier avant que vous ne le soumettiez.",
+    intakeForVisit:"Ces formulaires sont pour :",
+    intakeNoVisit:"Pas pour une visite en particulier",
+    intakeNoVisitNote:"Votre clinique le verra, mais il ne sera rattaché à aucun rendez-vous.",
+    intakeDiscardUnsaved:"Certaines réponses ici ne sont pas enregistrées. Changer de visite et les perdre? Choisissez Annuler, puis Enregistrer pour plus tard, pour les garder.",
+    noQuestionnaires:"Votre clinique ne demande rien avant une visite pour le moment.",
+    saveDraft:"Enregistrer pour plus tard", submitIntake:"Soumettre à la clinique",
+    draftSaved:"Enregistré. Vous pouvez revenir terminer cela plus tard.",
+    intakeSubmitted:"Soumis. Votre clinique verra ceci avant votre visite.",
+    concernLabel:"Y a-t-il quelque chose que vous voulez soulever à votre visite?",
+    concernPlaceholder:"Par exemple : une nouvelle douleur, un effet secondaire, une question sur un résultat",
+    medChangeLabel:"Des changements de médicaments à signaler à votre clinique?",
+    medChangeAdd:"Ajouter un changement de médicament",
+    medChangeKind:"Ce qui a changé", medChangeStarted:"Commencé", medChangeStopped:"Arrêté", medChangeChanged:"Modifié",
+    medChangeWhat:"Quel médicament, et ce qui s’est passé",
+    required:"obligatoire", yes:"Oui", no:"Non",
+    draft:"Brouillon — pas encore envoyé", submitted:"Soumis", reviewed:"Revu par votre clinique",
+    uploadsTitle:"Documents", uploadLabel:"Envoyer un document (PDF, image ou texte, jusqu’à 8 Mo)",
+    uploadSend:"Envoyer le document",
+    uploadPending:"Vérification en cours avant de pouvoir être ouvert",
+    uploadClean:"Reçu", uploadInfected:"Ce fichier n’a pas pu être accepté",
+    noUploads:"Vous n’avez envoyé aucun document.",
+    fileTooBig:"Ce fichier dépasse 8 Mo et ne peut pas être envoyé.",
+    pastSubmissions:"Ce que vous avez envoyé", noSubmissions:"Vous n’avez encore rien envoyé."
+  }
+};
+let LANG = (navigator.language || "en").toLowerCase().startsWith("fr") ? "fr" : "en";
+const t = (k) => (COPY[LANG] && COPY[LANG][k]) || k;
+
+/* ----------------------------------------------------------------- state */
+const S = { token:null, session:false, csrf:null, authorities:[], active:null, tab:"results", busy:false, epoch:0,
+  /* Which appointment the intake forms on screen are for. Keyed by patient so
+     a caregiver switching charts does not carry one chart's visit to another. */
+  intakeVisit:null };
+
+/* Production tokens stay on the server. Development tokens live only in memory.
+   Remove credentials left by the older token-paste interface. */
+try { sessionStorage.removeItem("ns.token"); } catch { /* private mode */ }
+function setToken(v){
+  S.token = v;
+  S.epoch++;
+}
+
+const el = (tag, attrs, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k,v] of Object.entries(attrs||{})) {
+    if (v === null || v === undefined || v === false) continue;
+    if (k === "class") n.className = v;
+    else if (k === "text") n.textContent = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v === true ? "" : String(v));
+  }
+  for (const kid of kids.flat()) if (kid !== null && kid !== undefined) {
+    n.appendChild(typeof kid === "string" ? document.createTextNode(kid) : kid);
+  }
+  return n;
+};
+const say = (msg) => { document.getElementById("live").textContent = msg; };
+
+/* ------------------------------------------------------------------- api */
+/*
+  One place where every failure a patient can hit is turned into a sentence
+  they can act on. A blank screen is the worst outcome here: somebody on a
+  dropped satellite link and somebody whose caregiver access was revoked
+  this morning must be told two different things.
+*/
+class ApiError extends Error {
+  constructor(kind, message){ super(message); this.kind = kind; }
+}
+async function api(path, opts){
+  const epoch = S.epoch;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  let res;
+  try {
+    res = await fetch(path, {
+      ...(opts||{}),
+      signal: controller.signal,
+      headers: {
+        ...(S.token ? {"authorization": "Bearer " + S.token} : {}),
+        ...(S.session && S.csrf ? {"x-northstar-csrf": S.csrf} : {}),
+        ...(opts && opts.body ? {"content-type":"application/json"} : {}),
+        ...((opts||{}).headers||{})
+      }
+    });
+  } catch {
+    // Aborted, offline, DNS, TLS. All of them mean the same thing to a
+    // reader: it did not arrive, and trying again is reasonable.
+    throw new ApiError("offline", t("offline"));
+  } finally {
+    clearTimeout(timer);
+  }
+  if (epoch !== S.epoch) throw new ApiError("stale", "");
+  if (res.status === 401) throw new ApiError("expired", t("expired"));
+  if (res.status === 403) throw new ApiError("forbidden", t("noAccess"));
+  if (!res.ok) {
+    let detail = "";
+    try { detail = (await res.json()).error || ""; } catch {}
+    throw new ApiError("error", detail || (res.status + ""));
+  }
+  const body = await res.json();
+  if (epoch !== S.epoch) throw new ApiError("stale", "");
+  return body;
+}
+
+/* --------------------------------------------------------------- sign-in */
+async function devSubjects(){
+  try {
+    const res = await fetch("/dev-idp/subjects");
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+async function renderSignIn(){
+  const epoch = ++S.epoch;
+  const view = document.getElementById("view");
+  view.replaceChildren(el("h2", {text: t("signInTitle")}));
+  document.getElementById("who").hidden = true;
+  document.getElementById("nav").hidden = true;
+
+  let login;
+  try {
+    const response = await fetch("/auth/portal", {cache:"no-store", signal:AbortSignal.timeout(10000)});
+    if (!response.ok) throw new Error("login unavailable");
+    login = await response.json();
+  } catch { return showError(t("offline"), renderSignIn); }
+  if (epoch !== S.epoch) return;
+  if (new URL(location.href).searchParams.has("signin")) {
+    view.appendChild(el("p", {class:"err", text:t("loginFailed")}));
+    history.replaceState(null, "", "/me");
+  }
+  if (login.enabled) {
+    view.appendChild(el("a", {class:"act", href:"/auth/portal/login", text:t("clinicSignIn")}));
+    return;
+  }
+
+  const dev = await devSubjects();
+  if (epoch !== S.epoch) return;
+  if (dev) {
+    view.appendChild(el("div", {class:"note"},
+      el("h3", {text: t("devTitle")}), el("p", {text: t("devBody")})));
+    if (!dev.subjects.length) {
+      view.appendChild(el("p", {class:"empty", text: t("devNone")}));
+    } else {
+      const list = el("ul", {class:"plain"});
+      for (const s of dev.subjects) {
+        const charts = s.patients.map((p) => p.patientId).join(", ");
+        list.appendChild(el("li", {},
+          el("button", {class:"act", onclick: () => devSignIn(s.subject)}, s.subject),
+          el("div", {class:"meta", text: charts})
+        ));
+      }
+      view.appendChild(list);
+    }
+  }
+
+  if (!dev) { view.appendChild(el("p", {class:"note", text:t("loginUnavailable")})); return; }
+  // Token entry is confined to the explicitly enabled development provider.
+  const form = el("form", {onsubmit: (e) => { e.preventDefault(); manualSignIn(); }},
+    el("h3", {text: t("tokenTitle")}),
+    el("p", {class:"meta", text: t("tokenBody")}),
+    el("label", {for:"tok", text: t("tokenLabel")}),
+    el("input", {id:"tok", type:"password", autocomplete:"off", spellcheck:"false", style:"width:100%"}),
+    el("p", {}, el("button", {class:"act", type:"submit", text: t("signIn")}))
+  );
+  view.appendChild(form);
+}
+
+async function devSignIn(subject){
+  try {
+    const res = await fetch("/dev-idp/token", {
+      method:"POST", headers:{"content-type":"application/json"},
+      body: JSON.stringify({subject})
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || "sign-in failed");
+    setToken(body.access_token);
+    await start();
+  } catch (err) {
+    showError(err instanceof Error ? err.message : String(err), renderSignIn);
+  }
+}
+
+function manualSignIn(){
+  const v = document.getElementById("tok").value.trim();
+  if (!v) return;
+  setToken(v);
+  start();
+}
+
+async function signOut(){
+  S.epoch++;
+  S.authorities = []; S.active = null; S.busy = false;
+  showLoading();
+  if (S.session) {
+    try {
+      const response = await fetch("/auth/portal/logout", {method:"POST", headers:{"x-northstar-csrf":S.csrf || ""}, signal:AbortSignal.timeout(10000)});
+      if (!response.ok) throw new Error("logout failed");
+    } catch { return showError(t("offline"), signOut); }
+  }
+  setToken(null);
+  S.session = false; S.csrf = null;
+  S.authorities = []; S.active = null;
+  location.hash = "";
+  renderSignIn();
+}
+
+/* ---------------------------------------------------------------- shell */
+function showError(message, retry){
+  const view = document.getElementById("view");
+  const box = el("div", {class:"err"}, el("p", {text: message}));
+  if (retry) box.appendChild(el("p", {}, el("button", {class:"act", onclick: retry, text: t("retry")})));
+  view.replaceChildren(box);
+  say(message);
+}
+
+function showLoading(){
+  document.getElementById("view").replaceChildren(el("p", {class:"empty", text: t("loading")}));
+}
+
+/** Every screen funnels its failures here, so no failure ends as a blank page. */
+async function guard(fn, retry){
+  const epoch = S.epoch;
+  if (S.busy) return;
+  S.busy = true;
+  showLoading();
+  try {
+    await fn();
+  } catch (err) {
+    if (err instanceof ApiError && err.kind === "stale") return;
+    if (err instanceof ApiError && err.kind === "expired") { await signOut(); }
+    else if (err instanceof ApiError && err.kind === "forbidden") {
+      // The grant went away underneath us. Re-read the list rather than
+      // leaving a chart on screen that is no longer shared.
+      showError(err.message, () => start());
+    }
+    else showError(err instanceof Error ? err.message : String(err), retry);
+  } finally {
+    if (epoch === S.epoch) S.busy = false;
+  }
+}
+
+const TABS = [
+  {id:"results",      key:"tabResults",      perm:"results"},
+  {id:"appointments", key:"tabAppointments", perm:"appointments"},
+  {id:"medications",  key:"tabMedications",  perm:"summary"},
+  {id:"messages",     key:"tabMessages",     perm:"messages"},
+  {id:"intake",       key:"tabIntake",       perm:"intake"},
+  {id:"team",         key:"tabTeam",         perm:"summary"},
+  {id:"access",       key:"tabAccess",       perm:"access-log"},
+  {id:"requests",     key:"tabRequests",     perm:"requests"}
+];
+
+function drawChrome(){
+  const who = document.getElementById("who");
+  const a = S.active;
+  who.hidden = !a;
+  document.getElementById("nav").hidden = !a;
+  if (!a) return;
+
+  // Whose chart this is, above everything, always. A caregiver holding three
+  // charts must never have to infer which one is on screen.
+  document.getElementById("whoName").textContent = a.patientId;
+  const rel = document.getElementById("whoRel");
+  rel.textContent = a.relationship === "self" ? t("self") : t("proxy") + " · " + a.relationship;
+  rel.className = "badge" + (a.relationship === "self" ? "" : " proxy");
+  document.getElementById("switch").hidden = S.authorities.length < 2;
+
+  const tabs = document.getElementById("tabs");
+  tabs.replaceChildren();
+  for (const tab of TABS) {
+    // A tab the grant does not cover is not drawn. Showing one that answers
+    // 403 teaches a caregiver that the portal is broken rather than that
+    // their access is narrower than they thought.
+    if (!a.permissions.includes(tab.perm)) continue;
+    tabs.appendChild(el("li", {}, el("a", {
+      href:"#/" + tab.id, text: t(tab.key),
+      "aria-current": S.tab === tab.id ? "page" : null
+    })));
+  }
+}
+
+/* --------------------------------------------------------------- screens */
+const fmtDate = (iso) => {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(LANG === "fr" ? "fr-CA" : "en-CA", {dateStyle:"medium", timeStyle:"short"});
+};
+const card = (...kids) => el("div", {class:"card"}, ...kids);
+const empty = (key) => el("p", {class:"empty", text: t(key)});
+
+async function screenResults(){
+  const rows = await api("/patient/results?patient=" + encodeURIComponent(S.active.patientId));
+  const view = document.getElementById("view");
+  view.replaceChildren(el("h2", {text: t("tabResults")}));
+  if (!rows.length) return view.appendChild(empty("noResults"));
+  for (const r of rows) {
+    if (r.held) {
+      // The API sends no value for a held result, so there is none to leak.
+      view.appendChild(el("div", {class:"card held"},
+        el("h3", {text: r.display}),
+        el("p", {}, el("b", {text: t("heldTitle") + ": "}), r.held.because),
+        r.held.until ? el("p", {class:"meta", text: t("heldUntil") + " " + fmtDate(r.held.until)}) : null,
+        el("p", {class:"meta", text: t("reported") + " " + fmtDate(r.reportedAt)})
+      ));
+      continue;
+    }
+    view.appendChild(card(
+      el("h3", {text: r.display}),
+      el("p", {},
+        el("span", {class: r.abnormalFlag && r.abnormalFlag !== "N" ? "abn" : null,
+          text: (r.value ?? "—") + " " + (r.unit || t("unitless"))}),
+        r.abnormalFlag && r.abnormalFlag !== "N" ? el("span", {class:"meta", text: " · " + t("abnormal")}) : null
+      ),
+      el("p", {class:"meta", text: t("reported") + " " + fmtDate(r.reportedAt)})
+    ));
+  }
+}
+
+async function screenAppointments(){
+  const rows = await api("/patient/appointments?patient=" + encodeURIComponent(S.active.patientId));
+  const view = document.getElementById("view");
+  view.replaceChildren(el("h2", {text: t("tabAppointments")}));
+  if (!rows.length) return view.appendChild(empty("noAppointments"));
+  for (const a of rows) {
+    view.appendChild(card(
+      el("h3", {text: fmtDate(a.startsAt || a.starts_at)}),
+      el("p", {class:"meta", text: [a.service, a.resourceId || a.resource_id, a.status].filter(Boolean).join(" · ")})
+    ));
+  }
+}
+
+async function screenMedications(){
+  const s = await api("/patient/summary?patient=" + encodeURIComponent(S.active.patientId));
+  const view = document.getElementById("view");
+  view.replaceChildren(el("h2", {text: t("tabMedications")}));
+  const meds = s.medications || {};
+  const list = (label, items) => {
+    const box = card(el("h3", {text: label}));
+    if (!items || !items.length) box.appendChild(empty("noMeds"));
+    else {
+      const ul = el("ul", {class:"plain"});
+      for (const m of items) ul.appendChild(el("li", {},
+        el("b", {text: m.display || m.name || "—"}),
+        m.dose || m.dosage ? el("div", {class:"meta", text: m.dose || m.dosage}) : null));
+      box.appendChild(ul);
+    }
+    return box;
+  };
+  view.appendChild(list(t("medsTaking"), meds.taking));
+  view.appendChild(list(t("medsPrescribed"), meds.prescribed));
+
+  // Never-asked is not none. The API says which it is; the portal must not
+  // flatten the two into an empty list.
+  const allergies = s.allergies || {};
+  if (allergies.status && allergies.status !== "recorded" && (!allergies.items || !allergies.items.length)) {
+    view.appendChild(el("div", {class:"note"}, el("p", {text: t("allergiesNever")})));
+  }
+}
+
+async function screenTeam(){
+  const s = await api("/patient/summary?patient=" + encodeURIComponent(S.active.patientId));
+  const view = document.getElementById("view");
+  view.replaceChildren(el("h2", {text: t("tabTeam")}));
+  const team = s.careTeam || [];
+  if (!team.length) return view.appendChild(empty("noTeam"));
+  for (const m of team) {
+    view.appendChild(card(
+      el("h3", {text: m.display || m.practitionerId || m.practitioner_id || "—"}),
+      el("p", {class:"meta", text: [m.role, m.organizationId || m.organization_id].filter(Boolean).join(" · ")})
+    ));
+  }
+}
+
+async function screenAccess(){
+  const rows = await api("/patient/access-log?patient=" + encodeURIComponent(S.active.patientId));
+  const view = document.getElementById("view");
+  view.replaceChildren(el("h2", {text: t("tabAccess")}));
+  if (!rows.length) return view.appendChild(empty("noAccessLog"));
+  const ul = el("ul", {class:"plain"});
+  for (const r of rows) {
+    const outcome = r.outcome === "refused" ? t("refused") : t("allowed");
+    ul.appendChild(el("li", {},
+      el("b", {text: r.subject_id || r.subjectId || "—"}),
+      el("div", {class:"meta",
+        text: [outcome, r.resource, r.action, fmtDate(r.at || r.logged_at)].filter(Boolean).join(" · ")})
+    ));
+  }
+  view.appendChild(ul);
+}
+
+async function screenMessages(){
+  const threads = await api("/patient/threads?patient=" + encodeURIComponent(S.active.patientId));
+  const view = document.getElementById("view");
+  view.replaceChildren(el("h2", {text: t("tabMessages")}));
+
+  const form = el("form", {onsubmit: (e) => { e.preventDefault(); sendNewThread(e.target); }},
+    el("h3", {text: t("newMessage")}),
+    el("label", {for:"subj", text: t("subject")}),
+    el("input", {id:"subj", required:true, style:"width:100%"}),
+    el("label", {for:"body", text: t("messageBody")}),
+    el("textarea", {id:"body", required:true}),
+    el("p", {}, el("button", {class:"act", type:"submit", text: t("send")}))
+  );
+  view.appendChild(el("div", {class:"card"}, form));
+
+  if (!threads.length) { view.appendChild(empty("noMessages")); return; }
+  for (const th of threads) {
+    view.appendChild(card(
+      el("h3", {}, el("button", {class:"link", text: th.subject,
+        onclick: () => guard(() => openThread(th.id), () => guard(screenMessages))})),
+      el("p", {class:"meta", text: (th.status === "closed" ? t("closedThread") : t("openThread")) +
+        " · " + fmtDate(th.last_message_at || th.updated_at || th.created_at)})
+    ));
+  }
+}
+
+async function openThread(id){
+  const data = await api("/patient/thread?id=" + encodeURIComponent(id));
+  const view = document.getElementById("view");
+  view.replaceChildren(
+    el("p", {}, el("button", {class:"link", text: "← " + t("tabMessages"),
+      onclick: () => guard(screenMessages)})),
+    el("h2", {text: data.thread.subject})
+  );
+  for (const m of data.messages) {
+    view.appendChild(card(
+      el("p", {text: m.body}),
+      el("p", {class:"meta", text: (m.author_kind || m.authorKind || "") + " · " + fmtDate(m.sent_at || m.created_at)})
+    ));
+  }
+  if (data.thread.status !== "closed") {
+    view.appendChild(el("div", {class:"card"},
+      el("form", {onsubmit: (e) => { e.preventDefault(); sendReply(id, e.target); }},
+        el("label", {for:"rep", text: t("reply")}),
+        el("textarea", {id:"rep", required:true, placeholder: t("replyPlaceholder")}),
+        el("p", {}, el("button", {class:"act", type:"submit", text: t("send")}))
+      )));
+  }
+}
+
+/*
+  Submitting anything disables its own button first.
+  A double tap on a slow link would otherwise open two threads asking the
+  same question, and the clinic would answer a duplicate in their worklist.
+*/
+/**
+ * A failure while sending a form, shown without destroying the form.
+ *
+ * showError() replaces the whole view, which is right for a screen that
+ * could not load and catastrophic for one somebody has been typing into:
+ * a patient on a satellite link -- exactly who pre-visit intake exists for
+ * -- would hit Save, lose the connection, and find every answer gone,
+ * replaced by an error box. The retry button it offered went to Messages
+ * from whichever screen you were on, which is its own small betrayal.
+ *
+ * So a form failure is reported inside the form, above the buttons, and
+ * nothing else on the screen moves. role="alert" so it is announced rather
+ * than only seen -- and only that: writing it to the polite #live region as
+ * well would read it out twice. It replaces the previous attempt's message
+ * instead of stacking.
+ */
+function showFormError(form, message){
+  let box = form.querySelector(".err[data-form-error]");
+  if (!box) {
+    box = el("div", {class:"err", role:"alert", "data-form-error":"1"});
+    const buttons = form.querySelector("p:last-of-type");
+    if (buttons) form.insertBefore(box, buttons); else form.appendChild(box);
+  }
+  box.replaceChildren(el("p", {text: message}));
+}
+
+function clearFormError(form){
+  const box = form.querySelector(".err[data-form-error]");
+  if (box) box.remove();
+}
+
+async function submitting(form, fn){
+  const button = form.querySelector("button[type=submit]");
+  if (button.disabled) return;
+  button.disabled = true;
+  clearFormError(form);
+  try { await fn(); }
+  catch (err) {
+    if (err instanceof ApiError && err.kind === "stale") return;
+    if (err instanceof ApiError && err.kind === "expired") return signOut();
+    showFormError(form, err instanceof Error ? err.message : String(err));
+  }
+  finally { button.disabled = false; }
+}
+
+function sendNewThread(form){
+  return submitting(form, async () => {
+    await api("/patient/thread-open", {method:"POST", body: JSON.stringify({
+      patient: S.active.patientId,
+      subject: form.querySelector("#subj").value.trim(),
+      body: form.querySelector("#body").value.trim()
+    })});
+    say(t("sent"));
+    await guard(screenMessages);
+  });
+}
+
+function sendReply(id, form){
+  return submitting(form, async () => {
+    await api("/patient/thread-reply", {method:"POST", body: JSON.stringify({
+      id, body: form.querySelector("#rep").value.trim()
+    })});
+    say(t("sent"));
+    await guard(() => openThread(id));
+  });
+}
+
+async function screenRequests(){
+  const rows = await api("/patient/requests?patient=" + encodeURIComponent(S.active.patientId));
+  const view = document.getElementById("view");
+  view.replaceChildren(el("h2", {text: t("tabRequests")}));
+
+  // A correction has to say what is wrong: the clinic cannot act on "please
+  // fix my record", and the server refuses one that does not say. This form
+  // never asked, so every correction sent through it was refused. Shown and
+  // required only for a correction; a request for a copy needs nothing more.
+  const target = el("input", {id:"target", type:"text"});
+  const targetRow = el("div", {hidden:true}, el("label", {for:"target", text: t("requestTarget")}), target);
+  const form = el("form", {onsubmit: (e) => { e.preventDefault(); sendRequest(e.target); }},
+    el("h3", {text: t("newRequest")}),
+    el("label", {for:"kind", text: t("requestKind")}),
+    el("select", {id:"kind", onchange: (e) => {
+        const correcting = e.target.value === "correction";
+        targetRow.hidden = !correcting;
+        target.required = correcting;
+      }},
+      el("option", {value:"access", text: t("access")}),
+      el("option", {value:"correction", text: t("correction")})),
+    targetRow,
+    el("label", {for:"detail", text: t("requestDetail")}),
+    el("textarea", {id:"detail", required:true}),
+    el("p", {}, el("button", {class:"act", type:"submit", text: t("submit")}))
+  );
+  view.appendChild(el("div", {class:"card"}, form));
+
+  if (!rows.length) return view.appendChild(empty("noRequests"));
+  for (const r of rows) {
+    view.appendChild(card(
+      el("h3", {text: r.kind === "correction" ? t("correction") : t("access")}),
+      el("p", {text: r.detail}),
+      el("p", {class:"meta", text: [r.status, fmtDate(r.requested_at || r.created_at)].filter(Boolean).join(" · ")})
+    ));
+  }
+}
+
+function sendRequest(form){
+  return submitting(form, async () => {
+    const kind = form.querySelector("#kind").value;
+    await api("/patient/request", {method:"POST", body: JSON.stringify({
+      patient: S.active.patientId,
+      kind,
+      detail: form.querySelector("#detail").value.trim(),
+      // Only a correction names what is wrong. Absent for a copy, not empty.
+      ...(kind === "correction" ? {target: form.querySelector("#target").value.trim()} : {})
+    })});
+    say(t("requestSent"));
+    await guard(screenRequests);
+  });
+}
+
+/*
+  Item 60: pre-visit intake and uploads.
+
+  A draft is saved by id once one exists, so a dropped connection resumes the
+  same row rather than starting over — the server dedupes by (patient,
+  questionnaire) anyway, but carrying the id avoids a second round trip to
+  find that out. Nothing here is tied to a specific appointment; that
+  richness exists in the store (see src/patient/intake.ts) but this screen
+  does not ask which visit a concern belongs to, the same way "Ask a
+  question" does not ask which visit a message is about.
+*/
+function medRow(container, existing){
+  const row = el("div", {},
+    el("label", {text: t("medChangeKind")}),
+    el("select", {"data-role":"kind"},
+      el("option", {value:"started", text: t("medChangeStarted")}),
+      el("option", {value:"stopped", text: t("medChangeStopped")}),
+      el("option", {value:"changed", text: t("medChangeChanged")})),
+    el("label", {text: t("medChangeWhat")}),
+    el("input", {"data-role":"description", style:"width:100%"})
+  );
+  if (existing) {
+    row.querySelector("[data-role=kind]").value = existing.change || "started";
+    row.querySelector("[data-role=description]").value = existing.description || "";
+  }
+  container.appendChild(row);
+}
+
+function readMedRows(container){
+  const rows = [...container.children];
+  return rows
+    .map((row) => ({
+      change: row.querySelector("[data-role=kind]").value,
+      description: row.querySelector("[data-role=description]").value.trim()
+    }))
+    .filter((m) => m.description);
+}
+
+function intakeForm(q, draft, appointmentId){
+  const answers = draft ? JSON.parse(draft.answers || "{}") : {};
+  const meds = draft && draft.proposed_meds ? JSON.parse(draft.proposed_meds) : [];
+  const state = { id: draft ? draft.id : null };
+
+  const kids = [];
+  if (q) kids.push(el("h3", {text: q.title}));
+
+  const fields = [];
+  for (const question of (q ? q.questions : [])) {
+    const fieldId = "q-" + question.key;
+    const labelText = question.label + (question.required ? " (" + t("required") + ")" : "");
+    let input;
+    if (question.type === "boolean") {
+      input = el("select", {id: fieldId},
+        el("option", {value:"", text:"—"}),
+        el("option", {value:"true", text: t("yes")}),
+        el("option", {value:"false", text: t("no")}));
+      input.value = answers[question.key] === true ? "true" : answers[question.key] === false ? "false" : "";
+    } else if (question.type === "choice") {
+      input = el("select", {id: fieldId},
+        el("option", {value:"", text:"—"}),
+        ...(question.options||[]).map((o) => el("option", {value:o, text:o})));
+      input.value = answers[question.key] || "";
+    } else if (question.type === "number") {
+      input = el("input", {id: fieldId, type:"number"});
+      if (answers[question.key] !== undefined) input.value = answers[question.key];
+    } else {
+      input = el("input", {id: fieldId, type:"text", style:"width:100%"});
+      if (answers[question.key] !== undefined) input.value = answers[question.key];
+    }
+    kids.push(el("label", {for: fieldId, text: labelText}), input);
+    fields.push({key: question.key, type: question.type, el: input});
+  }
+
+  const concernField = el("textarea", {id:"intake-concern-" + (q ? q.id : "general"), placeholder: t("concernPlaceholder")});
+  if (draft && draft.concern) concernField.value = draft.concern;
+  kids.push(el("label", {for: concernField.id, text: t("concernLabel")}), concernField);
+
+  const medsBox = el("div", {});
+  for (const m of meds) medRow(medsBox, m);
+  kids.push(
+    el("label", {text: t("medChangeLabel")}),
+    medsBox,
+    el("p", {}, el("button", {type:"button", class:"link", onclick: () => medRow(medsBox), text: "+ " + t("medChangeAdd")}))
+  );
+
+  const readAnswers = () => {
+    const out = {};
+    for (const f of fields) {
+      const raw = f.el.value;
+      if (raw === "") continue;
+      out[f.key] = f.type === "boolean" ? raw === "true" : f.type === "number" ? Number(raw) : raw;
+    }
+    return out;
+  };
+  const readBody = () => ({
+    patient: S.active.patientId,
+    ...(q ? {questionnaireId: q.id} : {}),
+    // Which visit this is preparation for. Without it the clinic can see the
+    // form and not that it answers Thursday's appointment, so nobody can ask
+    // who is coming in on Thursday without one.
+    ...(appointmentId ? {appointmentId} : {}),
+    answers: readAnswers(),
+    concern: concernField.value.trim(),
+    proposedMeds: readMedRows(medsBox)
+  });
+
+  // draft, if given, is always status "draft" — screenIntake only ever looks
+  // one up by that status. A questionnaire already submitted with no new
+  // draft started falls through here too, and correctly renders empty: that
+  // is a fresh form for a new visit, not the old answers reopened.
+  // Marked on any edit and cleared on a successful save, so the visit
+  // selector can tell a form somebody has typed into from one they have not.
+  // `input` bubbles from every field, including medication rows added later.
+  const form = el("form", {
+    onsubmit: (e) => { e.preventDefault(); },
+    oninput: (e) => { e.currentTarget.dataset.dirty = "1"; }
+  }, ...kids);
+  const saveBtn = el("button", {type:"button", class:"act", onclick: () => saveIntakeDraft(form, state, readBody)}, t("saveDraft"));
+  const submitBtn = el("button", {type:"submit", class:"act", onclick: () => submitIntakeForm(form, state, readBody)}, t("submitIntake"));
+  form.appendChild(el("p", {}, saveBtn, " ", submitBtn));
+  return el("div", {class:"card"}, form);
+}
+
+function saveIntakeDraft(form, state, readBody){
+  return submitting(form, async () => {
+    const saved = await api("/patient/intake/draft", {method:"POST", body: JSON.stringify(readBody())});
+    state.id = saved.id;
+    delete form.dataset.dirty;
+    say(t("draftSaved"));
+  });
+}
+
+function submitIntakeForm(form, state, readBody){
+  return submitting(form, async () => {
+    if (!state.id) {
+      const saved = await api("/patient/intake/draft", {method:"POST", body: JSON.stringify(readBody())});
+      state.id = saved.id;
+    }
+    await api("/patient/intake/submit", {method:"POST", body: JSON.stringify({id: state.id})});
+    say(t("intakeSubmitted"));
+    await guard(screenIntake);
+  });
+}
+
+const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+
+function uploadCard(){
+  const fileInput = el("input", {type:"file", id:"upload-file", accept:".pdf,.jpg,.jpeg,.png,.webp,.txt,.csv"});
+  const form = el("form", {onsubmit: (e) => { e.preventDefault(); sendUpload(e.target, fileInput); }},
+    el("h3", {text: t("uploadsTitle")}),
+    el("label", {for:"upload-file", text: t("uploadLabel")}),
+    fileInput,
+    el("p", {}, el("button", {class:"act", type:"submit", text: t("uploadSend")}))
+  );
+  return el("div", {class:"card"}, form);
+}
+
+function sendUpload(form, fileInput){
+  return submitting(form, async () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    // In the form, not over the screen: the upload card shares the intake
+    // screen, so showError() here also destroyed any questionnaire answers
+    // typed above it and not yet saved -- a patient who picked a nine
+    // megabyte photo lost their medication list for it.
+    if (file.size > MAX_UPLOAD_BYTES) { showFormError(form, t("fileTooBig")); return; }
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+    const base64 = String(dataUrl).split(",", 2)[1] || "";
+    await api("/patient/upload", {method:"POST", body: JSON.stringify({
+      patient: S.active.patientId,
+      filename: file.name,
+      contentType: file.type || "application/octet-stream",
+      data: base64
+    })});
+    fileInput.value = "";
+    await guard(screenIntake);
+  });
+}
+
+async function screenIntake(){
+  const [forms, submissions, uploads, appointments] = await Promise.all([
+    api("/patient/questionnaires"),
+    api("/patient/intake?patient=" + encodeURIComponent(S.active.patientId)),
+    api("/patient/uploads?patient=" + encodeURIComponent(S.active.patientId)),
+    api("/patient/appointments?patient=" + encodeURIComponent(S.active.patientId))
+  ]);
+  const view = document.getElementById("view");
+  view.replaceChildren(el("h2", {text: t("tabIntake")}), el("p", {class:"meta", text: t("intakeIntro")}));
+
+  // Still to come, soonest first. A form is preparation for a visit that has
+  // not happened; offering to attach one to last month's appointment would
+  // let somebody file preparation for something already over.
+  const now = Date.now();
+  const upcoming = (appointments || [])
+    .filter((a) => a.status !== "cancelled" && a.status !== "did-not-attend" && Date.parse(a.startsAt) > now)
+    .sort((a, b) => String(a.startsAt).localeCompare(String(b.startsAt)));
+
+  // One visit for the whole screen rather than one per form: a patient fills
+  // in "my forms for Thursday", not a different visit per questionnaire.
+  if (!S.intakeVisit || S.intakeVisit.patientId !== S.active.patientId) {
+    S.intakeVisit = {
+      patientId: S.active.patientId,
+      // Preselected only when there is no choice to get wrong.
+      appointmentId: upcoming.length === 1 ? upcoming[0].id : null,
+    };
+  }
+  if (S.intakeVisit.appointmentId && !upcoming.some((a) => a.id === S.intakeVisit.appointmentId)) {
+    S.intakeVisit.appointmentId = null;   // the visit happened, or was cancelled
+  }
+  const chosen = S.intakeVisit.appointmentId;
+
+  if (upcoming.length) {
+    const pick = el("select", {id:"intake-visit", onchange: (e) => {
+      // Switching visit re-renders every form from what is saved for the
+      // visit chosen, which used to throw away anything typed and not yet
+      // saved, silently. The two ways to avoid that both decide something on
+      // the patient's behalf -- saving the answers to the visit they are
+      // leaving, or carrying them to the one they chose -- and which is
+      // right depends on whether they picked the wrong visit or are
+      // preparing two. So this only asks, and on Cancel leaves everything,
+      // including the selector, exactly as it was.
+      if (document.querySelector("#view form[data-dirty]") && !confirm(t("intakeDiscardUnsaved"))) {
+        e.target.value = S.intakeVisit.appointmentId || "";
+        return;
+      }
+      S.intakeVisit.appointmentId = e.target.value || null;
+      guard(screenIntake);
+    }});
+    pick.appendChild(el("option", {value:"", text: t("intakeNoVisit")}));
+    for (const a of upcoming) {
+      pick.appendChild(el("option", {
+        value: a.id,
+        text: fmtDate(a.startsAt) + (a.service ? " · " + a.service : ""),
+      }));
+    }
+    pick.value = chosen || "";
+    view.appendChild(el("div", {class:"note"},
+      el("label", {for:"intake-visit", text: t("intakeForVisit")}),
+      pick,
+      chosen ? null : el("p", {class:"meta", text: t("intakeNoVisitNote")})
+    ));
+  }
+
+  const questionnaires = forms.questionnaires || [];
+  // Matched on the visit too, because a draft is a draft *for* a visit: the
+  // same questionnaire answered for Thursday and for next month are two
+  // forms, and saveDraft already keys them that way.
+  const sameVisit = (row) => (row.appointment_id || null) === (chosen || null);
+  const openDraftFor = (qid) =>
+    submissions.find((s) => s.status === "draft" && s.questionnaire_id === qid && sameVisit(s));
+  const generalDraft = submissions.find((s) => s.status === "draft" && !s.questionnaire_id && sameVisit(s));
+
+  if (!questionnaires.length) {
+    view.appendChild(el("div", {class:"note"}, el("p", {text: t("noQuestionnaires")})));
+    view.appendChild(intakeForm(null, generalDraft, chosen));
+  } else {
+    for (const q of questionnaires) view.appendChild(intakeForm(q, openDraftFor(q.id), chosen));
+  }
+
+  view.appendChild(uploadCard());
+
+  const submitted = submissions.filter((s) => s.status !== "draft");
+  const pastCard = card(el("h3", {text: t("pastSubmissions")}));
+  if (!submitted.length) pastCard.appendChild(empty("noSubmissions"));
+  else {
+    const ul = el("ul", {class:"plain"});
+    for (const s of submitted) {
+      ul.appendChild(el("li", {},
+        el("b", {text: s.concern || s.questionnaire_id || t("tabIntake")}),
+        el("div", {class:"meta", text: (s.status === "reviewed" ? t("reviewed") : t("submitted")) + " · " + fmtDate(s.submitted_at)})
+      ));
+    }
+    pastCard.appendChild(ul);
+  }
+  view.appendChild(pastCard);
+
+  const upCard = card(el("h3", {text: t("uploadsTitle")}));
+  if (!uploads.length) upCard.appendChild(empty("noUploads"));
+  else {
+    const ul = el("ul", {class:"plain"});
+    for (const u of uploads) {
+      const statusText = u.status === "clean" ? t("uploadClean") : u.status === "infected" ? t("uploadInfected") : t("uploadPending");
+      ul.appendChild(el("li", {}, el("b", {text: u.filename}), el("div", {class:"meta", text: statusText + " · " + fmtDate(u.uploaded_at)})));
+    }
+    upCard.appendChild(ul);
+  }
+  view.appendChild(upCard);
+}
+
+const SCREENS = {
+  results: screenResults, appointments: screenAppointments, medications: screenMedications,
+  messages: screenMessages, intake: screenIntake, team: screenTeam, access: screenAccess, requests: screenRequests
+};
+
+/* --------------------------------------------------------------- routing */
+function chartPicker(){
+  const view = document.getElementById("view");
+  view.replaceChildren(el("h2", {text: t("chooseChart")}));
+  document.getElementById("who").hidden = true;
+  document.getElementById("nav").hidden = true;
+  if (!S.authorities.length) return view.appendChild(empty("noCharts"));
+  const ul = el("ul", {class:"plain"});
+  for (const a of S.authorities) {
+    ul.appendChild(el("li", {},
+      el("button", {class:"act", onclick: () => { S.active = a; location.hash = "#/results"; route(); }},
+        a.patientId),
+      el("div", {class:"meta", text:
+        (a.relationship === "self" ? t("self") : t("proxy") + " · " + a.relationship) +
+        " · " + t("permissionsNote") + " " + a.permissions.join(", ")})
+    ));
+  }
+  view.appendChild(ul);
+}
+
+function route(){
+  S.epoch++; S.busy = false;
+  if (!S.token && !S.session) return renderSignIn();
+  if (!S.active) return chartPicker();
+  const want = (location.hash || "").replace(/^#\//, "") || "results";
+  const tab = TABS.find((x) => x.id === want && S.active.permissions.includes(x.perm));
+  S.tab = tab ? tab.id : (TABS.find((x) => S.active.permissions.includes(x.perm)) || {id:"results"}).id;
+  drawChrome();
+  const screen = SCREENS[S.tab];
+  if (screen) guard(screen, () => guard(screen));
+}
+
+async function start(){
+  const epoch = ++S.epoch;
+  if (!S.token) {
+    try {
+      const response = await fetch("/auth/portal", {cache:"no-store", signal:AbortSignal.timeout(10000)});
+      if (!response.ok) throw new Error("login unavailable");
+      const login = await response.json();
+      if (epoch !== S.epoch) return;
+      S.session = login.authenticated; S.csrf = login.csrf || null;
+    } catch { return showError(t("offline"), start); }
+  }
+  if (!S.token && !S.session) return renderSignIn();
+  showLoading();
+  try {
+    const body = await api("/patient/authorities");
+    S.authorities = body.authorities || [];
+  } catch (err) {
+    if (err instanceof ApiError && err.kind === "stale") return;
+    if (err instanceof ApiError && err.kind === "expired") { setToken(null); S.session = false; S.csrf = null; return renderSignIn(); }
+    return showError(err instanceof Error ? err.message : String(err), start);
+  }
+  // A grant that disappeared while the tab was open must not leave a stale
+  // chart selected.
+  if (S.active) {
+    S.active = S.authorities.find((a) => a.patientId === S.active.patientId) || null;
+  }
+  if (!S.active && S.authorities.length === 1) S.active = S.authorities[0];
+  route();
+}
+
+/* ------------------------------------------------------------------ boot */
+function applyLanguage(){
+  document.documentElement.lang = LANG;
+  for (const node of document.querySelectorAll("[data-t]")) node.textContent = t(node.dataset.t);
+  document.getElementById("lang").value = LANG;
+  route();
+}
+document.getElementById("lang").addEventListener("change", (e) => { LANG = e.target.value; applyLanguage(); });
+document.getElementById("signout").addEventListener("click", signOut);
+document.getElementById("switch").addEventListener("click", () => { S.active = null; location.hash = ""; route(); });
+window.addEventListener("hashchange", route);
+window.addEventListener("pageshow", (e) => { if (e.persisted) { S.active = null; S.authorities = []; showLoading(); start(); } });
+
+applyLanguage();
+start();
+</script>
+</body>
+</html>

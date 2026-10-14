@@ -28,8 +28,8 @@ function desk(): {
   enc2: string;
   cleanup: () => void;
 } {
-  const dir = mkdtempSync(join(tmpdir(), "portage-notes-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-notes-"));
+  const db = new Db(join(dir, "northstar.db"));
   const rec = new ClinicalRecord(db);
   // Real visits, because a note names the encounter it was written at and the
   // record now refuses one that does not exist. The fixture used to invent
@@ -51,7 +51,7 @@ function desk(): {
     enc2: visit("Consult"),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }

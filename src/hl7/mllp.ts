@@ -13,6 +13,7 @@
  */
 import { createServer, Socket, type Server } from "node:net";
 import { CharsetError, DEFAULT_CHARSET, decodeFrame, encodeFrame } from "./charset.ts";
+import { hl7ApplicationName } from "../core/naming.ts";
 
 const VT = 0x0b;
 const FS = 0x1c;
@@ -71,7 +72,7 @@ function nakFor(bytes: Buffer, reason: string): string {
   const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
   return (
     [
-      `MSH|^~\\&|PORTAGE|GNWT|${fields[2] ?? ""}|${fields[3] ?? ""}|${stamp}||ACK|${controlId}|P|2.5.1|||||||${DEFAULT_CHARSET}`,
+      `MSH|^~\\&|${hl7ApplicationName()}|GNWT|${fields[2] ?? ""}|${fields[3] ?? ""}|${stamp}||ACK|${controlId}|P|2.5.1|||||||${DEFAULT_CHARSET}`,
       `MSA|AR|${controlId}|${reason.replace(/[|^~\\&\r\n]/g, " ").slice(0, 180)}`,
     ].join("\r") + "\r"
   );

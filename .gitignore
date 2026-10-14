@@ -1,4 +1,7 @@
 node_modules/
+deploy/staging/*.env
+deploy/staging/secrets/
+.pilot-artifacts/
 data/
 *.db
 *.db-wal
@@ -10,3 +13,8 @@ certs/
 *.pem
 *.key
 *.crt
+
+# Supply-chain artifacts; CI regenerates and uploads these per run.
+sbom.cdx.json
+*.tgz
+SHA256SUMS

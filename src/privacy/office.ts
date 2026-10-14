@@ -21,6 +21,7 @@ import type { ConsentDirectives } from "../patient/consent.ts";
 import type { Db } from "../db.ts";
 import type { PatientAccess } from "../patient/access.ts";
 import type { TaskStore } from "../work/tasks.ts";
+import { ClinicDay } from "../schedule/clinic-day.ts";
 
 export type Actor = { actorId: string; actorKind: string };
 
@@ -169,13 +170,20 @@ const DEFAULT_REPEAT = 10;
 const PHIPA_DAYS = 30;
 
 /**
- * Default clinic hours are 07:00–19:00 UTC. Residual: not clinic-local.
+ * Default clinic hours are 07:00–19:00 on the clinic's clocks.
+ *
+ * Decided from the access's own timestamp, never from when the review runs
+ * (H-76), and read in the clinic's time zone when the deployment has said
+ * what it is. Without one it is UTC, which at UTC-07:00 makes "clinic hours"
+ * midnight to noon: a 14:00 read is flagged and a 03:00 one is not — the
+ * opposite of the point (R-19).
+ *
  * startHour === endHour means always after-hours (tests that must flag).
  * A window of 0–24 means never after-hours.
  */
-export function isAfterHours(iso: string, hours: ClinicHours = DEFAULT_HOURS): boolean {
+export function isAfterHours(iso: string, hours: ClinicHours = DEFAULT_HOURS, clinicDay: ClinicDay = ClinicDay.utc()): boolean {
   if (hours.startHour === hours.endHour) return true;
-  const hour = new Date(iso).getUTCHours();
+  const hour = clinicDay.hourOf(iso);
   if (hours.startHour < hours.endHour) {
     return hour < hours.startHour || hour >= hours.endHour;
   }
@@ -268,6 +276,7 @@ export class PrivacyOffice {
   private patientAccess: PatientAccess;
   private careTeam: CareTeam;
   private tasks: TaskStore;
+  private clinicDay: ClinicDay;
 
   constructor(deps: {
     db: Db;
@@ -275,12 +284,15 @@ export class PrivacyOffice {
     patientAccess: PatientAccess;
     careTeam: CareTeam;
     tasks: TaskStore;
+    /** Whose clock "after hours" is read on. Absent is UTC — see isAfterHours. */
+    clinicDay?: ClinicDay;
   }) {
     this.db = deps.db;
     this.consent = deps.consent;
     this.patientAccess = deps.patientAccess;
     this.careTeam = deps.careTeam;
     this.tasks = deps.tasks;
+    this.clinicDay = deps.clinicDay ?? ClinicDay.utc();
   }
 
   inbox(): PrivacyInbox {
@@ -378,7 +390,7 @@ export class PrivacyOffice {
       }
       const seenAfter = new Set<string>();
       for (const r of list) {
-        if (!isAfterHours(r.recorded_at, hours)) continue;
+        if (!isAfterHours(r.recorded_at, hours, this.clinicDay)) continue;
         const key = `${principalId}|${r.patient}`;
         if (seenAfter.has(key)) continue;
         seenAfter.add(key);
@@ -387,7 +399,7 @@ export class PrivacyOffice {
           patientId: r.patient,
           principalId,
           principalKind: kind,
-          detail: `${principalId} read ${r.patient} at ${r.recorded_at} (UTC clinic hours ${hours.startHour}–${hours.endHour})`,
+          detail: `${principalId} read ${r.patient} at ${r.recorded_at} (clinic hours ${hours.startHour}–${hours.endHour}, ${this.clinicDay.kind === "utc" ? "UTC" : this.clinicDay.configured})`,
         });
       }
     }

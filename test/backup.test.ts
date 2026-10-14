@@ -28,9 +28,21 @@ const CHANNEL: ChannelConfig = {
 
 /** A live engine on a real file, since the point is backing up a live database. */
 async function liveEngine(dir: string, messages = 5): Promise<Engine> {
-  const engine = new Engine({ dbPath: join(dir, "portage.db"), tickMs: 15 });
+  const engine = new Engine({ dbPath: join(dir, "northstar.db"), tickMs: 15 });
   engine.registerMapping(MAPPING);
   await engine.start();
+  // SQLite auto-checkpoints WAL back into the main file once it crosses a
+  // page threshold, and the schema alone — every table and index this
+  // deployment has, whether this test touches it or not — already occupies
+  // several hundred WAL pages before a single message is sent. Left on, five
+  // messages can be enough to cross that threshold by accident, at which
+  // point the "naive copy" this test exists to catch is no longer naive: the
+  // auto-checkpoint already did its job first, and the very race this file
+  // is for stops happening — not because the hazard is gone, but because the
+  // schema's size that day happened not to trip it. Off, the property this
+  // test asserts is true by construction rather than by how many tables a
+  // later change happens to add.
+  engine.db.sql.exec("PRAGMA wal_autocheckpoint = 0");
   await engine.addChannel(CHANNEL);
   for (let i = 0; i < messages; i++) engine.ingest("backed-up", ADT, "x-application/hl7-v2+er7", "test");
   await until(() => engine.db.listDeliveries({ channelId: "backed-up", state: "delivered" }).length === messages);
@@ -38,7 +50,7 @@ async function liveEngine(dir: string, messages = 5): Promise<Engine> {
 }
 
 test("a snapshot of a live database is consistent and independently verifiable", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-backup-"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-backup-"));
   const engine = await liveEngine(dir);
   try {
     // The engine is running and has committed data through WAL, which is the
@@ -67,26 +79,26 @@ test("a snapshot of a live database is consistent and independently verifiable",
     assert.equal(engine.db.listMessages({ channelId: "backed-up" }).length, 6);
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
 test("a copied file is not a backup, but a snapshot of the same database is", async () => {
   // The reason this module exists. Under WAL, committed rows can still live in
   // the -wal sidecar, so the main file alone is not the database.
-  const dir = mkdtempSync(join(tmpdir(), "portage-wal-"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-wal-"));
   const engine = await liveEngine(dir, 5);
   try {
     const naive = join(dir, "naive-copy.db");
-    writeFileSync(naive, readFileSync(join(dir, "portage.db")));
+    writeFileSync(naive, readFileSync(join(dir, "northstar.db")));
 
     // Under WAL the main file can lack even the schema until a checkpoint, so
     // reading the copy may fail outright rather than merely come up short.
     let naiveCount: number | null = null;
     try {
       const naiveDb = new Db(naive, { readOnly: true });
-      naiveCount = naiveDb.listMessages({ channelId: "backed-up" }).length;
-      naiveDb.close();
+      try { naiveCount = naiveDb.listMessages({ channelId: "backed-up" }).length; }
+      finally { naiveDb.close(); }
     } catch {
       naiveCount = null;
     }
@@ -103,12 +115,12 @@ test("a copied file is not a backup, but a snapshot of the same database is", as
     );
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
 test("verification rejects a corrupt snapshot rather than reporting success", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-corrupt-"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-corrupt-"));
   const engine = await liveEngine(dir, 4);
   try {
     const result = await takeBackup(engine.db, { dir: join(dir, "backups") });
@@ -124,12 +136,12 @@ test("verification rejects a corrupt snapshot rather than reporting success", as
     assert.throws(() => verifyBackup(result.path), /lineage broken/);
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
 test("retention keeps the newest snapshots and removes the rest", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-prune-"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-prune-"));
   const engine = await liveEngine(dir, 2);
   const backups = join(dir, "backups");
   try {
@@ -140,9 +152,9 @@ test("retention keeps the newest snapshots and removes the rest", async () => {
     // Each snapshot is exactly one file: no -wal or -shm left beside it, or a
     // restore would apply a write-ahead log from a different database.
     assert.deepEqual(readdirSync(backups).sort(), [
-      "portage-2026-01-01T00-00-00.db",
-      "portage-2026-01-02T00-00-00.db",
-      "portage-2026-01-03T00-00-00.db",
+      "northstar-2026-01-01T00-00-00.db",
+      "northstar-2026-01-02T00-00-00.db",
+      "northstar-2026-01-03T00-00-00.db",
     ]);
 
     const removed = prune(backups, 2);
@@ -150,18 +162,18 @@ test("retention keeps the newest snapshots and removes the rest", async () => {
     assert.match(removed[0], /2026-01-01/, "the oldest goes first");
 
     const left = readdirSync(backups).sort();
-    assert.deepEqual(left, ["portage-2026-01-02T00-00-00.db", "portage-2026-01-03T00-00-00.db"]);
+    assert.deepEqual(left, ["northstar-2026-01-02T00-00-00.db", "northstar-2026-01-03T00-00-00.db"]);
 
     // Keeping more than exist is not an error.
     assert.deepEqual(prune(backups, 10), []);
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
 test("the backup endpoint writes, verifies and records a snapshot", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-api-backup-"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-api-backup-"));
   const engine = await liveEngine(dir, 3);
   const api = await startApi(engine, 0, "127.0.0.1");
   const previous = process.env.PORTAGE_BACKUP_DIR;
@@ -181,6 +193,6 @@ test("the backup endpoint writes, verifies and records a snapshot", async () => 
     else process.env.PORTAGE_BACKUP_DIR = previous;
     await api.close();
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

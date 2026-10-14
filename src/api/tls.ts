@@ -35,10 +35,10 @@ export interface TlsEnv {
 export function tlsFromEnv(env: TlsEnv): TlsConfig | null {
   const { certPath, keyPath, caPath, requireClientCert } = env;
   if (!certPath && !keyPath) {
-    if (requireClientCert) throw new Error("PORTAGE_TLS_CLIENT_CA set without PORTAGE_TLS_CERT/KEY");
+    if (requireClientCert) throw new Error("NORTHSTAR_TLS_CLIENT_CA set without NORTHSTAR_TLS_CERT/KEY");
     return null;
   }
-  if (!certPath || !keyPath) throw new Error("PORTAGE_TLS_CERT and PORTAGE_TLS_KEY must both be set");
+  if (!certPath || !keyPath) throw new Error("NORTHSTAR_TLS_CERT and NORTHSTAR_TLS_KEY must both be set");
 
   const serverOptions: ServerOptions = {
     cert: readFileSync(certPath),
@@ -47,7 +47,7 @@ export function tlsFromEnv(env: TlsEnv): TlsConfig | null {
   };
 
   if (requireClientCert) {
-    if (!caPath) throw new Error("mutual TLS requires PORTAGE_TLS_CLIENT_CA");
+    if (!caPath) throw new Error("mutual TLS requires NORTHSTAR_TLS_CLIENT_CA");
     serverOptions.ca = readFileSync(caPath);
     serverOptions.requestCert = true;
     serverOptions.rejectUnauthorized = true;

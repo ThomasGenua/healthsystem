@@ -38,8 +38,8 @@ const PROFILE: LabProfile = {
 };
 
 function lab() {
-  const dir = mkdtempSync(join(tmpdir(), "portage-lab-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-lab-"));
+  const db = new Db(join(dir, "northstar.db"));
   const record = new ClinicalRecord(db);
   const orders = new OrderStore(db);
   record.record({
@@ -60,7 +60,7 @@ function lab() {
     intake: new LabIntake(db, orders, record.patientIndex),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -601,8 +601,8 @@ test("parsing keeps what the laboratory actually sent beside the mapped meaning"
 });
 
 test("one custodian's laboratory feed cannot reach another's charts", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-lab-iso-"));
-  const root = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-lab-iso-"));
+  const root = new Db(join(dir, "northstar.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");
@@ -635,6 +635,6 @@ test("one custodian's laboratory feed cannot reach another's charts", () => {
     assert.equal(north.intake.heldForIdentity().length, 0);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

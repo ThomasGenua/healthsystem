@@ -26,7 +26,7 @@
 import { randomUUID } from "node:crypto";
 import { an } from "../core/text.ts";
 import type { Db } from "../db.ts";
-import { Refusal } from "../core/refusal.ts";
+import { refuse, Refusal } from "../core/refusal.ts";
 import { Encounters } from "../clinical/encounters.ts";
 import { assess, normalise, type AllergyStatus, type Finding, type InteractionSource, type SafetyCheck } from "./safety.ts";
 
@@ -556,18 +556,30 @@ export class MedicationStore {
    * unresolved lines are named in the error so the refusal is actionable.
    */
   completeReconciliation(reconciliationId: string, by: Actor): ReconciliationRow {
-    const rec = this.requireReconciliation(reconciliationId);
-    if (rec.status !== "open") throw new Error(`this reconciliation is already ${rec.status}`);
-    const open = this.items(reconciliationId).filter((i) => i.decision === "unresolved");
-    if (open.length > 0) {
-      throw new Error(`${open.length} medication(s) still undecided: ${open.map((i) => i.display).join(", ")}`);
-    }
+    // The checks were outside the transaction and the write did not name the
+    // state they had read, so two clinicians completing the same
+    // reconciliation both passed the guard and both wrote: two people each
+    // told it was done, and a record naming only the second.
     return this.db.transaction(() => {
+      const rec = this.requireReconciliation(reconciliationId);
+      if (rec.status !== "open") refuse(`this reconciliation is already ${rec.status}`, 409);
+      const open = this.items(reconciliationId).filter((i) => i.decision === "unresolved");
+      if (open.length > 0) {
+        // Refused rather than thrown, and the distinction is not cosmetic.
+        // A plain `Error` is a fault: 500 to the caller, and the message on
+        // the operator's log — so this list of the patient's drug names was
+        // printed to stdout every time a clinician tried to finish early.
+        // A refusal is a decision: it goes to the clinician who asked, who
+        // is looking at these lines, and to the trail, which holds PHI by
+        // design. Naming them is what makes the refusal actionable; naming
+        // them in the log was the accident.
+        refuse(`${open.length} medication(s) still undecided: ${open.map((i) => i.display).join(", ")}`, 409);
+      }
       const now = new Date().toISOString();
-      this.db.sql
+      const done = this.db.sql
         .prepare(
           `UPDATE med_reconciliations SET status = 'completed', completed_by = ?, completed_at = ?
-            WHERE tenant_id = ? AND id = ?`
+            WHERE tenant_id = ? AND id = ? AND status = 'open'`
         )
         .run(by.actorId, now, this.db.tenantId, reconciliationId);
       // The decisions are applied to the list, which is what makes this a

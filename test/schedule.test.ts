@@ -33,14 +33,14 @@ const P1 = "NT123456";
 const P2 = "NT999999";
 
 function clinic() {
-  const dir = mkdtempSync(join(tmpdir(), "portage-sched-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-sched-"));
+  const db = new Db(join(dir, "northstar.db"));
   return {
     db,
     s: new Schedule(db),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -267,8 +267,8 @@ test("availability and a diary answer different questions about the same slots",
 });
 
 test("the schedule is confined to its tenant", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-sched-iso-"));
-  const root = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-sched-iso-"));
+  const root = new Db(join(dir, "northstar.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");
@@ -293,7 +293,7 @@ test("the schedule is confined to its tenant", () => {
     assert.equal(south.diary("dr-tetso", "2026-07-01T00:00:00Z", "2026-07-02T00:00:00Z")[0].slot.id, s2.id);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 

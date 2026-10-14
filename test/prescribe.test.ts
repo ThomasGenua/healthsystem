@@ -45,8 +45,8 @@ const brokenPharmacy: PharmacyDispatcher = {
 };
 
 function clinic(opts: { dispatcher?: PharmacyDispatcher; controlledAuthority?: string; noTasks?: boolean } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "portage-rx-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-rx-"));
+  const db = new Db(join(dir, "northstar.db"));
   const meds = new MedicationStore(db, { check: () => [] });
   new Directory(db).addOrganization({ id: "yk-pharmacy", name: "Yellowknife Pharmacy" });
   const statement = meds.record({
@@ -74,7 +74,7 @@ function clinic(opts: { dispatcher?: PharmacyDispatcher; controlledAuthority?: s
     }),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -337,8 +337,8 @@ test("cancelling a prescription that never left does not owe the pharmacy anythi
 });
 
 test("prescriptions are confined to their tenant", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-rx-iso-"));
-  const root = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-rx-iso-"));
+  const root = new Db(join(dir, "northstar.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");
@@ -372,7 +372,7 @@ test("prescriptions are confined to their tenant", () => {
     assert.throws(() => south.rx.acknowledge(rx.id, GP), Refusal);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -671,8 +671,8 @@ test("a prescription written without a check being handed in still carries one",
 });
 
 test("dispenses and renewals are confined to their custodian", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-rx-tenant-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-rx-tenant-"));
+  const db = new Db(join(dir, "northstar.db"));
   try {
     db.createTenant("north", "Northern Health", "Northern Regional Custodian");
     const northDb = db.forTenant("north");
@@ -704,7 +704,7 @@ test("dispenses and renewals are confined to their custodian", () => {
     assert.equal(northRx.reportsDispenses("yk-pharmacy"), false, "a declaration is the custodian's own");
   } finally {
     db.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 

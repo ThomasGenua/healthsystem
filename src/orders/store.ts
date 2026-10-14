@@ -50,9 +50,79 @@ export type OrderPriority = "routine" | "urgent" | "stat";
  * laboratory telephones through because waiting for someone to check a queue
  * is not safe.
  */
+import type { OwnershipRecord } from "../work/tasks.ts";
+
 export type AbnormalFlag = "normal" | "low" | "high" | "critical-low" | "critical-high" | "abnormal";
 
 export type ResultStatus = "preliminary" | "final" | "corrected" | "cancelled";
+
+/** What actually happened to an order after somebody pressed place. */
+export type TransmissionOutcome = "sent" | "acknowledged" | "rejected" | "failed";
+
+/**
+ * Where an order has got to on its way out of this building.
+ *
+ * `acknowledged` is the only state in which a laboratory can be said to hold
+ * the order. Every other state is the order still being here, and each one
+ * says so differently because the actions differ: an undeclared route is an
+ * operator's problem, a route that exists but has not carried this order is a
+ * queue to look at, and a rejection is a requisition somebody has to correct
+ * and resend.
+ */
+export type TransmissionState =
+  | { state: "no-route"; detail: string }
+  | { state: "not-declared"; detail: string }
+  | { state: "not-sent"; detail: string }
+  | { state: "sent"; at: string; detail: string }
+  | { state: "acknowledged"; at: string; detail: string }
+  | { state: "rejected"; at: string; detail: string }
+  | { state: "failed"; at: string; detail: string };
+
+export interface OrderRouting {
+  category: OrderCategory;
+  transmits: boolean;
+  destination: string | null;
+  detail: string;
+  endpoint_host: string | null;
+  endpoint_port: number | null;
+  sending_application: string | null;
+  sending_facility: string | null;
+  receiving_application: string | null;
+  receiving_facility: string | null;
+  timezone_offset: string | null;
+  profile_id: string | null;
+  declared_at: string;
+  declared_by: string;
+}
+
+/** Everything a route needs before an order can actually leave on it. */
+export interface RouteConnection {
+  host: string;
+  port: number;
+  sendingApplication: string;
+  sendingFacility: string;
+  receivingApplication: string;
+  receivingFacility: string;
+  /** The clinic's offset, e.g. "-06:00". */
+  timezoneOffset: string;
+  profileId: string;
+}
+
+/** Whether an attempt carried the order or its cancellation. */
+export type TransmissionKind = "order" | "cancel";
+
+export interface TransmissionRow {
+  tenant_id: string;
+  kind: TransmissionKind;
+  id: string;
+  order_id: string;
+  outcome: TransmissionOutcome;
+  destination: string;
+  control_id: string | null;
+  detail: string;
+  at: string;
+  by: string;
+}
 
 /**
  * How long acknowledgement may wait, by how abnormal the value is.
@@ -163,7 +233,72 @@ function hoursFrom(iso: string, hours: number): string {
   return new Date(new Date(iso).getTime() + hours * 3_600_000).toISOString();
 }
 
+/**
+ * The refusal when an order moved between the check and the write.
+ *
+ * Reading the order, deciding against its status and then writing are two
+ * steps. Naming the expected status in the update makes them one: a write
+ * that changes no rows means the order is no longer what the decision was
+ * about, and a refusal is the only honest answer.
+ */
+function orderMovedOn(id: string, expected: string): never {
+  throw new Error(`order ${id} is no longer ${expected}; it moved while this change was being applied`);
+}
+
 export class OrderStore {
+  /**
+   * Where accountability actually lives, once a handoff exists.
+   *
+   * Absent, every query here answers from `responsible_id` exactly as before,
+   * which is correct for a deployment with no handoffs.
+   */
+  private handoffs: OwnershipRecord | undefined;
+
+  /** @see TaskStore.useOwnershipRecord — the same wiring, for the same reason. */
+  useOwnershipRecord(handoffs: OwnershipRecord): void {
+    this.handoffs = handoffs;
+  }
+
+  /**
+   * The orders one person is answerable for right now.
+   *
+   * `responsible_id` says who the order started with. An accepted handoff
+   * says whose it is today, and a result is chased by whoever holds the order
+   * — not by whoever placed it and has since gone on leave.
+   */
+  private ordersHeldBy(responsibleId: string, asOf?: Date): string[] {
+    const own = (
+      this.db.sql
+        .prepare("SELECT id FROM orders WHERE tenant_id = ? AND responsible_id = ?")
+        .all(this.db.tenantId, responsibleId) as Array<{ id: string }>
+    ).map((r) => r.id);
+
+    const overrides = this.handoffs?.effectiveOwners("order", asOf);
+    if (!overrides || overrides.size === 0) return own;
+
+    // Theirs unless handed away, plus anything handed to them.
+    const ids = new Set(own.filter((id) => (overrides.get(id)?.ownerId ?? responsibleId) === responsibleId));
+    for (const [subjectId, holder] of overrides) if (holder.ownerId === responsibleId) ids.add(subjectId);
+    return [...ids];
+  }
+
+  /**
+   * Who is answerable for one order right now, and how it came to be them.
+   *
+   * The single answer callers should use rather than reading
+   * `responsible_id`, which is only the beginning of the story once a handoff
+   * exists.
+   */
+  responsibleFor(
+    orderId: string,
+    asOf = new Date()
+  ): { responsibleId: string | null; via: "original" | "transfer" | "coverage"; covering?: string } {
+    const row = this.require(orderId);
+    const holder = this.handoffs?.effectiveOwners("order", asOf).get(orderId);
+    if (!holder) return { responsibleId: row.responsible_id, via: "original" };
+    return { responsibleId: holder.ownerId, via: holder.via, ...(holder.covering ? { covering: holder.covering } : {}) };
+  }
+
   private db: Db;
   private encounters: Encounters;
 
@@ -247,12 +382,13 @@ export class OrderStore {
     if (o.status !== "draft") throw new Error(`${an(o.status)} order cannot be placed again`);
     return this.db.transaction(() => {
       const now = new Date().toISOString();
-      this.db.sql
+      const placed = this.db.sql
         .prepare(
           `UPDATE orders SET status = 'placed', ordered_at = ?, responsible_id = ?, expected_by = ?, updated_at = ?
-            WHERE tenant_id = ? AND id = ?`
+            WHERE tenant_id = ? AND id = ? AND status = 'draft'`
         )
         .run(now, by.responsibleId, by.expectedBy ?? null, now, this.db.tenantId, orderId);
+      if (placed.changes === 0) orderMovedOn(orderId, "a draft");
       this.event(orderId, "placed", by, {
         fromStatus: o.status,
         toStatus: "placed",
@@ -332,7 +468,18 @@ export class OrderStore {
       if (o.patient_id !== input.patientId) {
         // The one mismatch never worth resolving automatically: a result on
         // the wrong chart is the harm this whole module is about.
-        throw new Error(`result is for ${input.patientId} but order ${input.orderId} is for ${o.patient_id}`);
+        //
+        // Refused rather than thrown: the caller sent two things that do not
+        // go together, which is a decision and not a fault, and a plain
+        // `Error` here became a 500 telling a client to retry a request that
+        // will be refused every time.
+        //
+        // The other patient is not named. The caller supplied one identifier
+        // and gets told it does not match; saying whose order it is would
+        // answer "which chart is this order on" for someone who has just
+        // demonstrated they are working from the wrong one. The trail row
+        // carries both ids, which is where that question belongs.
+        refuse(`result is for ${input.patientId} but order ${input.orderId} is for a different patient`, 409);
       }
     }
     return this.db.transaction(() => this.insertResult(input, null));
@@ -415,12 +562,19 @@ export class OrderStore {
       refuse(`this result was corrected; acknowledge ${newer} instead`);
     }
     return this.db.transaction(() => {
-      this.db.sql
+      // Conditional on the state the check above read. Two clinicians opening
+      // the same critical result and both acting on it is the ordinary case,
+      // not the exotic one — and an unconditional write would record the
+      // second silently over the first, losing what the first said they did.
+      const done = this.db.sql
         .prepare(
           `UPDATE order_results SET acknowledged_by = ?, acknowledged_at = ?, acknowledgement_action = ?
-            WHERE tenant_id = ? AND id = ?`
+            WHERE tenant_id = ? AND id = ? AND acknowledged_at IS NULL`
         )
         .run(by.actorId, new Date().toISOString(), by.action, this.db.tenantId, resultId);
+      if (done.changes === 0) {
+        refuse("this result has already been acknowledged", 409);
+      }
       if (r.order_id) {
         this.event(r.order_id, "result-acknowledged", by, { detail: `${r.display}: ${by.action}` });
       }
@@ -441,7 +595,8 @@ export class OrderStore {
     if (r.order_id) throw new Error(`that result is already filed against order ${r.order_id}`);
     const o = this.require(orderId);
     if (o.patient_id !== r.patient_id) {
-      throw new Error(`result is for ${r.patient_id} but order ${orderId} is for ${o.patient_id}`);
+      // Same refusal, same silence about the other chart, as `report` above.
+      refuse(`result is for ${r.patient_id} but order ${orderId} is for a different patient`, 409);
     }
     return this.db.transaction(() => {
       this.db.sql
@@ -465,7 +620,7 @@ export class OrderStore {
    * queue buries the critical potassium under forty normal ones — which is the
    * mechanism by which a result is missed with nobody doing anything wrong.
    */
-  unacknowledged(opts: { responsibleId?: string; overdueAsOf?: string; limit?: number } = {}): ResultRow[] {
+  unacknowledged(opts: { responsibleId?: string; overdueAsOf?: string; limit?: number; asOf?: Date } = {}): ResultRow[] {
     const args: unknown[] = [this.db.tenantId, this.db.tenantId];
     let sql = `SELECT r.* FROM order_results r
                 WHERE r.tenant_id = ? AND r.acknowledged_at IS NULL
@@ -475,8 +630,15 @@ export class OrderStore {
                      WHERE n.tenant_id = ? AND n.supersedes = r.id
                   )`;
     if (opts.responsibleId) {
-      sql += ` AND r.order_id IN (SELECT id FROM orders WHERE tenant_id = ? AND responsible_id = ?)`;
-      args.push(this.db.tenantId, opts.responsibleId);
+      // Through the handoff record rather than straight at the column. Until
+      // this consulted it, a clinician who handed their patients over and
+      // went on leave kept every outstanding result, and the colleague who
+      // accepted them saw none -- which is this module's whole subject
+      // arriving one layer down.
+      const held = this.ordersHeldBy(opts.responsibleId, opts.asOf);
+      if (held.length === 0) return [];
+      sql += ` AND r.order_id IN (${held.map(() => "?").join(", ")})`;
+      args.push(...held);
     }
     if (opts.overdueAsOf) {
       sql += " AND r.ack_due_by IS NOT NULL AND r.ack_due_by < ?";
@@ -565,6 +727,41 @@ export class OrderStore {
   }
 
   /**
+   * The current results for a patient, one row per analyte — corrections
+   * folded to their latest version, cancelled ones excluded. For the
+   * clinician-facing timeline (src/clinical/timeline.ts); a patient-facing
+   * read goes through PatientAccess.resultsFor() instead, which is
+   * hold-aware and this deliberately is not.
+   */
+  currentResultsFor(patientId: string): ResultRow[] {
+    return this.db.sql
+      .prepare(
+        `SELECT * FROM order_results r
+          WHERE tenant_id = ? AND patient_id = ? AND result_status != 'cancelled'
+            AND NOT EXISTS (SELECT 1 FROM order_results n WHERE n.tenant_id = r.tenant_id AND n.supersedes = r.id)
+          ORDER BY COALESCE(observed_at, reported_at)`
+      )
+      .all(this.db.tenantId, patientId) as unknown as ResultRow[];
+  }
+
+  /**
+   * Every result of one code for one patient, oldest first, corrections
+   * included — the series a trend is built from (see src/clinical/trends.ts).
+   * Cancelled results are excluded; a superseded one is kept and carries its
+   * own `supersedes` pointer, so a caller can show what a value used to be
+   * next to what replaced it, the same way an amended chart entry can.
+   */
+  resultSeries(patientId: string, code: string): ResultRow[] {
+    return this.db.sql
+      .prepare(
+        `SELECT * FROM order_results
+          WHERE tenant_id = ? AND patient_id = ? AND code = ? AND result_status != 'cancelled'
+          ORDER BY COALESCE(observed_at, reported_at), created_at`
+      )
+      .all(this.db.tenantId, patientId, code) as unknown as ResultRow[];
+  }
+
+  /**
    * The orders placed during one visit.
    *
    * Scoped by encounter rather than by a time window around it, which is what
@@ -578,10 +775,20 @@ export class OrderStore {
       .all(this.db.tenantId, encounterId) as unknown as OrderRow[];
   }
 
-  forPatient(patientId: string): OrderRow[] {
-    return this.db.sql
+  /**
+   * A patient's orders, each carrying where it actually got to.
+   *
+   * The transmission state rides on the row rather than being a second call a
+   * caller has to know to make. A chart that renders `status` alone shows
+   * "placed" for an order no laboratory has ever seen, and every screen in
+   * this system would have had to remember to ask separately — which is the
+   * kind of guarantee that holds until one screen forgets.
+   */
+  forPatient(patientId: string): Array<OrderRow & { transmission: TransmissionState }> {
+    const rows = this.db.sql
       .prepare("SELECT * FROM orders WHERE tenant_id = ? AND patient_id = ? ORDER BY created_at DESC")
       .all(this.db.tenantId, patientId) as unknown as OrderRow[];
+    return rows.map((o) => ({ ...o, transmission: this.transmissionState(o.id) }));
   }
 
   history(orderId: string): OrderEvent[] {
@@ -674,9 +881,17 @@ export class OrderStore {
     const final = this.resultsFor(orderId).some((r) => r.result_status === "final" || r.result_status === "corrected");
     if (!final) return;
     const now = new Date().toISOString();
-    this.db.sql
-      .prepare("UPDATE orders SET status = 'completed', updated_at = ?, closed_at = ? WHERE tenant_id = ? AND id = ?")
+    // Completion races cancellation: a result landing as somebody cancels the
+    // order must not reopen it as completed.
+    const completed = this.db.sql
+      .prepare(
+        `UPDATE orders SET status = 'completed', updated_at = ?, closed_at = ?
+          WHERE tenant_id = ? AND id = ? AND status NOT IN ('completed', 'cancelled')`
+      )
       .run(now, now, this.db.tenantId, orderId);
+    // Not a refusal: this runs as a side effect of filing a result, and the
+    // order having closed meanwhile is an ordinary outcome rather than a fault.
+    if (completed.changes === 0) return;
     this.event(orderId, "completed", by, { fromStatus: o.status, toStatus: "completed" });
   }
 
@@ -722,6 +937,369 @@ export class OrderStore {
         extra.toStatus ?? null,
         extra.detail ?? null
       );
+  }
+
+  /**
+   * Declares whether orders of a category leave this site, and to whom.
+   *
+   * Required before `transmissionState` will say anything other than "nobody
+   * has said". The declaration is the site admitting what it does: a clinic
+   * that orders on paper says so, and its orders then read as sitting here on
+   * purpose rather than as a queue somebody forgot to drain.
+   *
+   * `transmits: false` needs a detail as much as `true` does — "faxed on the
+   * paper requisition" and "the interface is not commissioned yet" call for
+   * completely different actions from whoever reads it.
+   */
+  declareOrderRouting(
+    category: OrderCategory,
+    routing: { transmits: boolean; destination?: string; detail: string; connection?: RouteConnection },
+    by: Actor
+  ): void {
+    if (!routing.detail.trim()) {
+      throw new Error("a routing declaration needs a detail saying how orders leave, or why they do not");
+    }
+    if (routing.transmits && !routing.destination?.trim()) {
+      throw new Error("a route that transmits needs a destination");
+    }
+    // Checked when the declaration is made, not when somebody presses send.
+    // A route that says it transmits and cannot is a promise the record makes
+    // on a site's behalf, and the moment it is discovered should not be the
+    // moment a specimen is sitting in a fridge.
+    if (routing.transmits) {
+      const c = routing.connection;
+      const missing: string[] = [];
+      if (!c) {
+        throw new Error(
+          "a route that transmits needs a connection: host, port, the four MSH identities, " +
+            "a timezone offset and a laboratory profile"
+        );
+      }
+      if (!c.host?.trim()) missing.push("host");
+      if (!Number.isInteger(c.port) || c.port <= 0 || c.port > 65535) missing.push("port");
+      if (!c.sendingApplication?.trim()) missing.push("sendingApplication");
+      if (!c.sendingFacility?.trim()) missing.push("sendingFacility");
+      if (!c.receivingApplication?.trim()) missing.push("receivingApplication");
+      if (!c.receivingFacility?.trim()) missing.push("receivingFacility");
+      if (!c.profileId?.trim()) missing.push("profileId");
+      // Declared, never inferred, for the same reason the builder requires it.
+      if (!/^[+-]\d{2}:?\d{2}$/.test(c.timezoneOffset ?? "")) missing.push("timezoneOffset (e.g. -06:00)");
+      if (missing.length > 0) {
+        throw new Error(`this route cannot carry an order as declared: ${missing.join(", ")}`);
+      }
+    }
+    this.db.sql
+      .prepare(
+        `INSERT INTO order_routing (tenant_id, category, transmits, destination, detail,
+            endpoint_host, endpoint_port, sending_application, sending_facility,
+            receiving_application, receiving_facility, timezone_offset, profile_id,
+            declared_at, declared_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(tenant_id, category) DO UPDATE SET
+           transmits = excluded.transmits, destination = excluded.destination, detail = excluded.detail,
+           endpoint_host = excluded.endpoint_host, endpoint_port = excluded.endpoint_port,
+           sending_application = excluded.sending_application, sending_facility = excluded.sending_facility,
+           receiving_application = excluded.receiving_application,
+           receiving_facility = excluded.receiving_facility,
+           timezone_offset = excluded.timezone_offset, profile_id = excluded.profile_id,
+           declared_at = excluded.declared_at, declared_by = excluded.declared_by`
+      )
+      .run(
+        this.db.tenantId,
+        category,
+        routing.transmits ? 1 : 0,
+        routing.transmits ? routing.destination!.trim() : null,
+        routing.detail.trim(),
+        routing.transmits ? routing.connection!.host.trim() : null,
+        routing.transmits ? routing.connection!.port : null,
+        routing.transmits ? routing.connection!.sendingApplication.trim() : null,
+        routing.transmits ? routing.connection!.sendingFacility.trim() : null,
+        routing.transmits ? routing.connection!.receivingApplication.trim() : null,
+        routing.transmits ? routing.connection!.receivingFacility.trim() : null,
+        routing.transmits ? routing.connection!.timezoneOffset.trim() : null,
+        routing.transmits ? routing.connection!.profileId.trim() : null,
+        new Date().toISOString(),
+        by.actorId
+      );
+  }
+
+  /** How orders of this category leave, as declared. Undefined when nobody has said. */
+  orderRouting(category: OrderCategory): OrderRouting | undefined {
+    const row = this.db.sql
+      .prepare(`SELECT * FROM order_routing WHERE tenant_id = ? AND category = ?`)
+      .get(this.db.tenantId, category) as
+      | (Omit<OrderRouting, "transmits"> & { transmits: number })
+      | undefined;
+    return row ? { ...row, transmits: row.transmits === 1 } : undefined;
+  }
+
+  /**
+   * Records one attempt to hand an order over, and what came back.
+   *
+   * Appended, never updated, for the reason results are: an acknowledgement
+   * belongs to the attempt it answered. Overwriting would let a later success
+   * erase the fact that this laboratory once rejected this requisition, which
+   * is the history somebody needs when a specimen turns up against an order
+   * the lab does not hold.
+   */
+  recordTransmission(
+    orderId: string,
+    attempt: {
+      outcome: TransmissionOutcome;
+      destination: string;
+      controlId?: string;
+      detail: string;
+      kind?: TransmissionKind;
+    },
+    by: Actor
+  ): TransmissionRow {
+    this.require(orderId);
+    if (!attempt.destination.trim()) throw new Error("a transmission needs a destination");
+    if (!attempt.detail.trim()) throw new Error("a transmission needs a detail");
+    const row: TransmissionRow = {
+      tenant_id: this.db.tenantId,
+      kind: attempt.kind ?? "order",
+      id: randomUUID(),
+      order_id: orderId,
+      outcome: attempt.outcome,
+      destination: attempt.destination.trim(),
+      control_id: attempt.controlId ?? null,
+      detail: attempt.detail.trim(),
+      at: new Date().toISOString(),
+      by: by.actorId,
+    };
+    this.db.sql
+      .prepare(
+        `INSERT INTO order_transmissions
+           (tenant_id, kind, id, order_id, outcome, destination, control_id, detail, at, by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        row.tenant_id,
+        row.kind,
+        row.id,
+        row.order_id,
+        row.outcome,
+        row.destination,
+        row.control_id,
+        row.detail,
+        row.at,
+        row.by
+      );
+    return row;
+  }
+
+  /** Every attempt to send this order, oldest first. Both kinds unless one is named. */
+  transmissions(orderId: string, kind?: TransmissionKind): TransmissionRow[] {
+    const rows = this.db.sql
+      .prepare(`SELECT * FROM order_transmissions WHERE tenant_id = ? AND order_id = ? ORDER BY seq`)
+      .all(this.db.tenantId, orderId) as unknown as TransmissionRow[];
+    return kind ? rows.filter((r) => r.kind === kind) : rows;
+  }
+
+  /**
+   * Where an order has got to on its way out.
+   *
+   * Only `acknowledged` means a laboratory holds it. The rest are all the
+   * order still being here, and the point of distinguishing them is that a
+   * clinician reading "placed" has no way to tell which one they are looking
+   * at — every one of them renders identically on a chart today.
+   *
+   * A later attempt supersedes an earlier one, so a rejection followed by a
+   * corrected resend that was acknowledged reads as acknowledged. The
+   * rejection stays in `transmissions()`, because it happened.
+   */
+  transmissionState(orderId: string): TransmissionState {
+    const order = this.require(orderId);
+    const attempts = this.transmissions(orderId, "order");
+    const last = attempts[attempts.length - 1];
+    if (last) {
+      const where = `${last.outcome} at ${last.at} to ${last.destination}`;
+      if (last.outcome === "acknowledged") {
+        return { state: "acknowledged", at: last.at, detail: `${where}: ${last.detail}` };
+      }
+      if (last.outcome === "rejected") {
+        return {
+          state: "rejected",
+          at: last.at,
+          detail: `${where}: ${last.detail}. The order is not with them; it needs correcting and resending.`,
+        };
+      }
+      if (last.outcome === "failed") {
+        return {
+          state: "failed",
+          at: last.at,
+          detail: `${where}: ${last.detail}. Nothing acknowledged receipt, so treat it as not sent.`,
+        };
+      }
+      return {
+        state: "sent",
+        at: last.at,
+        detail: `${where}: ${last.detail}. Sent is not received — no acknowledgement has come back.`,
+      };
+    }
+
+    const routing = this.orderRouting(order.category);
+    if (!routing) {
+      return {
+        state: "not-declared",
+        detail:
+          `nobody has declared whether ${order.category} orders leave this site. Until somebody does, ` +
+          "there is no way to tell an order waiting in a queue from one that was never going anywhere.",
+      };
+    }
+    if (!routing.transmits) {
+      return {
+        state: "no-route",
+        detail:
+          `${order.category} orders are not transmitted from this site (${routing.detail}). ` +
+          "This order is here, and whatever happens next happens outside this system.",
+      };
+    }
+    return {
+      state: "not-sent",
+      detail:
+        `${order.category} orders go to ${routing.destination}, and this one has not been handed over yet. ` +
+        "No laboratory holds it.",
+    };
+  }
+
+  /**
+   * Placed orders that no laboratory has acknowledged holding.
+   *
+   * The list this whole mechanism exists to make possible. `awaitingResult`
+   * answers "who is late?", which quietly assumes somebody was asked. This
+   * answers the question underneath it — was anybody asked at all — and on a
+   * site that has declared nothing it returns every open order, which is the
+   * correct and uncomfortable answer.
+   *
+   * A site that has declared it does *not* transmit is excluded, and that
+   * exclusion is the difference between a list and wallpaper. Such a site has
+   * answered the question: the requisition is printed and travels with the
+   * specimen, so there is nothing outstanding about it. Listing every order
+   * there forever would make this wrong so often that nobody would read it —
+   * the same failure the dispense declaration exists to avoid. An *undeclared*
+   * site is a different thing: nobody has said, so every order is a question.
+   */
+  notWithFiller(): Array<OrderRow & { transmission: TransmissionState }> {
+    const open = this.db.sql
+      .prepare(
+        `SELECT * FROM orders WHERE tenant_id = ? AND status IN ('placed', 'in-progress')
+          ORDER BY ordered_at`
+      )
+      .all(this.db.tenantId) as unknown as OrderRow[];
+    return open
+      .map((o) => ({ ...o, transmission: this.transmissionState(o.id) }))
+      .filter((o) => o.transmission.state !== "acknowledged" && o.transmission.state !== "no-route");
+  }
+
+  /**
+   * Whether the laboratory has been told this order is cancelled.
+   *
+   * Separate from `transmissionState` because they answer opposite questions
+   * and a single state would let one hide the other: an order can be
+   * acknowledged *and* its cancellation unsent, which is the dangerous
+   * combination and the one that reads as fine if you only ask once.
+   */
+  cancellationState(orderId: string): TransmissionState {
+    const order = this.require(orderId);
+    if (order.status !== "cancelled") {
+      return { state: "no-route", detail: "this order is not cancelled, so there is nothing to withdraw" };
+    }
+    const attempts = this.transmissions(orderId, "cancel");
+    const last = attempts[attempts.length - 1];
+    if (!last) {
+      const held = this.transmissionState(orderId);
+      if (held.state !== "acknowledged") {
+        return {
+          state: "not-sent",
+          detail:
+            "no cancellation has been sent, and none is needed: no laboratory ever acknowledged the order.",
+        };
+      }
+      return {
+        state: "not-sent",
+        detail:
+          "this order was cancelled here and the laboratory that acknowledged it has not been told. " +
+          "They still hold the requisition, so the specimen is still due to be collected.",
+      };
+    }
+    const where = `${last.outcome} at ${last.at} to ${last.destination}`;
+    if (last.outcome === "acknowledged") {
+      return { state: "acknowledged", at: last.at, detail: `cancellation ${where}: ${last.detail}` };
+    }
+    if (last.outcome === "rejected") {
+      return {
+        state: "rejected",
+        at: last.at,
+        detail: `cancellation ${where}: ${last.detail}. They still hold the order.`,
+      };
+    }
+    if (last.outcome === "failed") {
+      return {
+        state: "failed",
+        at: last.at,
+        detail: `cancellation ${where}: ${last.detail}. Treat the order as still with them.`,
+      };
+    }
+    return {
+      state: "sent",
+      at: last.at,
+      detail: `cancellation ${where}: ${last.detail}. Nothing has confirmed they withdrew it.`,
+    };
+  }
+
+  /**
+   * Orders cancelled here that a laboratory still holds.
+   *
+   * The mirror of `notWithFiller`, and the more urgent list. There, the record
+   * claimed a laboratory had something it did not. Here a laboratory has
+   * something the record says it does not: the specimen is still collected,
+   * the test still run, and a result arrives for a test the chart says nobody
+   * wanted — against a patient who may have been told it was called off.
+   */
+  cancelledButStillWithFiller(): Array<OrderRow & { cancellation: TransmissionState }> {
+    const cancelled = this.db.sql
+      .prepare(`SELECT * FROM orders WHERE tenant_id = ? AND status = 'cancelled' ORDER BY updated_at`)
+      .all(this.db.tenantId) as unknown as OrderRow[];
+    return cancelled
+      .filter((o) => this.transmissionState(o.id).state === "acknowledged")
+      .map((o) => ({ ...o, cancellation: this.cancellationState(o.id) }))
+      .filter((o) => o.cancellation.state !== "acknowledged");
+  }
+
+  /**
+   * Cancellations a sweep should send, which is not the same list.
+   *
+   * `cancelledButStillWithFiller` answers a clinician's question -- who has a
+   * requisition they should not -- and so it asks whether a laboratory
+   * *acknowledged* the order. A sweep has to answer a different one: could
+   * they end up with it? An order handed to the outbound queue and cancelled
+   * a minute later has not been acknowledged and may still be delivered, and
+   * waiting for the acknowledgement before withdrawing it means the
+   * withdrawal is always a step behind the thing it is chasing.
+   *
+   * So this includes `sent` as well as `acknowledged`, and the two failure
+   * modes are not comparable. Withdrawing an order the laboratory never
+   * received earns an application reject, which is recorded and visible and
+   * costs somebody a minute. Not withdrawing one they did receive is a
+   * patient sitting down to be drawn for a test nobody wants.
+   *
+   * Only cancellations that have gone nowhere at all: `rejected` and `failed`
+   * are answers somebody has to read, and resending past them buries the
+   * refusal under repetitions of itself (H-165).
+   */
+  cancellationsNotSent(): Array<OrderRow & { cancellation: TransmissionState }> {
+    const cancelled = this.db.sql
+      .prepare(`SELECT * FROM orders WHERE tenant_id = ? AND status = 'cancelled' ORDER BY updated_at`)
+      .all(this.db.tenantId) as unknown as OrderRow[];
+    return cancelled
+      .filter((o) => {
+        const held = this.transmissionState(o.id).state;
+        return held === "sent" || held === "acknowledged";
+      })
+      .map((o) => ({ ...o, cancellation: this.cancellationState(o.id) }))
+      .filter((o) => o.cancellation.state === "not-sent");
   }
 
   private require(orderId: string): OrderRow {

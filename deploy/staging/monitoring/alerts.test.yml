@@ -1,0 +1,63 @@
+rule_files: [alerts.yml]
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'up{job="northstar"}'
+        values: '0+0x10'
+      - series: 'northstar_upload_scan_oldest_age_seconds{job="northstar"}'
+        values: '901+0x10'
+      - series: 'northstar_dead_letters{job="northstar"}'
+        values: '1+0x10'
+      - series: 'northstar_backup_remote_configured{job="northstar"}'
+        values: '1+0x10'
+      - series: 'northstar_backup_remote_ok{job="northstar"}'
+        values: '0+0x10'
+      - series: 'northstar_backup_remote_age_seconds{job="northstar"}'
+        values: '90000+0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: NorthstarServiceDown
+        exp_alerts:
+          - exp_labels: {job: northstar, severity: critical}
+            exp_annotations: {summary: Northstar metrics endpoint unavailable}
+      - eval_time: 10m
+        alertname: NorthstarScannerBacklog
+        exp_alerts:
+          - exp_labels: {job: northstar, severity: warning}
+            exp_annotations: {summary: Quarantined uploads are older than fifteen minutes}
+      - eval_time: 10m
+        alertname: NorthstarDeliveryFailures
+        exp_alerts:
+          - exp_labels: {job: northstar, severity: warning}
+            exp_annotations: {summary: Delivery dead letters require review}
+      - eval_time: 10m
+        alertname: NorthstarBackupFailed
+        exp_alerts:
+          - exp_labels: {job: northstar, severity: critical}
+            exp_annotations: {summary: Configured backup has no verified successful replica}
+      - eval_time: 10m
+        alertname: NorthstarBackupStale
+        exp_alerts:
+          - exp_labels: {job: northstar, severity: warning}
+            exp_annotations: {summary: Verified backup is older than the staging 24-hour threshold}
+  - interval: 1m
+    input_series:
+      - series: 'up{job="northstar"}'
+        values: '1+0x10'
+      - series: 'northstar_upload_scan_oldest_age_seconds{job="northstar"}'
+        values: '0+0x10'
+      - series: 'northstar_dead_letters{job="northstar"}'
+        values: '0+0x10'
+      - series: 'northstar_backup_remote_configured{job="northstar"}'
+        values: '0+0x10'
+      - series: 'northstar_backup_remote_ok{job="northstar"}'
+        values: '0+0x10'
+      - series: 'northstar_backup_remote_age_seconds{job="northstar"}'
+        values: '-1+0x10'
+    alert_rule_test:
+      - {eval_time: 10m, alertname: NorthstarServiceDown, exp_alerts: []}
+      - {eval_time: 10m, alertname: NorthstarScannerBacklog, exp_alerts: []}
+      - {eval_time: 10m, alertname: NorthstarDeliveryFailures, exp_alerts: []}
+      - {eval_time: 10m, alertname: NorthstarBackupFailed, exp_alerts: []}
+      - {eval_time: 10m, alertname: NorthstarBackupStale, exp_alerts: []}

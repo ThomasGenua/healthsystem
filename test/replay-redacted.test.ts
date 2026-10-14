@@ -39,8 +39,8 @@ async function sink(): Promise<{ port: number; got: string[]; close: () => Promi
 
 test("a redacted delivery is refused, and no tombstone reaches the remote", async () => {
   const s = await sink();
-  const dir = mkdtempSync(join(tmpdir(), "portage-replay-"));
-  const engine = new Engine({ dbPath: join(dir, "portage.db"), tickMs: 25 });
+  const dir = mkdtempSync(join(tmpdir(), "northstar-replay-"));
+  const engine = new Engine({ dbPath: join(dir, "northstar.db"), tickMs: 25 });
   await engine.start();
   try {
     await engine.addChannel({
@@ -87,15 +87,15 @@ test("a redacted delivery is refused, and no tombstone reaches the remote", asyn
   } finally {
     await engine.stop();
     await s.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
 test("an unredacted delivery still replays, so the refusal is narrow", async () => {
   // The guard must not cost the feature it sits in front of.
   const s = await sink();
-  const dir = mkdtempSync(join(tmpdir(), "portage-replay-ok-"));
-  const engine = new Engine({ dbPath: join(dir, "portage.db"), tickMs: 25 });
+  const dir = mkdtempSync(join(tmpdir(), "northstar-replay-ok-"));
+  const engine = new Engine({ dbPath: join(dir, "northstar.db"), tickMs: 25 });
   await engine.start();
   try {
     await engine.addChannel({
@@ -125,13 +125,13 @@ test("an unredacted delivery still replays, so the refusal is narrow", async () 
   } finally {
     await engine.stop();
     await s.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
 test("the admin API returns the reason rather than a generic conflict", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-replay-api-"));
-  const engine = new Engine({ dbPath: join(dir, "portage.db"), tickMs: 100_000 });
+  const dir = mkdtempSync(join(tmpdir(), "northstar-replay-api-"));
+  const engine = new Engine({ dbPath: join(dir, "northstar.db"), tickMs: 100_000 });
   await engine.start();
   const api = await startApi(engine, 0, "127.0.0.1");
   try {
@@ -169,6 +169,6 @@ test("the admin API returns the reason rather than a generic conflict", async ()
   } finally {
     await api.close();
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

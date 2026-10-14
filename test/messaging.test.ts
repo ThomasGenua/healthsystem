@@ -17,8 +17,8 @@ import { PatientMessaging } from "../src/patient/messaging.ts";
 import { Refusal } from "../src/core/refusal.ts";
 
 function clinic() {
-  const dir = mkdtempSync(join(tmpdir(), "portage-msg-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-msg-"));
+  const db = new Db(join(dir, "northstar.db"));
   new Directory(db).addPractitioner({ id: "dr-tetso", family: "Tetso", given: "Jean" });
   new CareTeam(db).assign({
     patientId: "NT123456",
@@ -31,7 +31,7 @@ function clinic() {
     msg: new PatientMessaging(db),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -129,8 +129,8 @@ test("a reply on a closed thread is refused so the close is not silently undone"
 });
 
 test("an unowned patient message is a list, not a missing inbox", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-msg-none-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-msg-none-"));
+  const db = new Db(join(dir, "northstar.db"));
   try {
     const msg = new PatientMessaging(db);
     msg.open({
@@ -148,7 +148,7 @@ test("an unowned patient message is a list, not a missing inbox", () => {
     assert.equal(msg.inbox("dr-tetso")[0].id, id);
   } finally {
     db.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -180,8 +180,8 @@ test("urgent threads sort ahead of routine, oldest first inside a priority", () 
 });
 
 test("one custodian cannot read another's threads", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-msg-iso-"));
-  const root = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-msg-iso-"));
+  const root = new Db(join(dir, "northstar.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");
@@ -199,6 +199,6 @@ test("one custodian cannot read another's threads", () => {
     assert.equal(south.unassigned().length, 0);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

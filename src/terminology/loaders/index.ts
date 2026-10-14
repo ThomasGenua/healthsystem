@@ -2,7 +2,7 @@
  * Loaders that turn licensed terminology distributions into the pack shape the
  * terminology store already accepts.
  *
- * No licensed content ships with Portage. SNOMED CT CA, LOINC, pCLOCD,
+ * No licensed content ships with Northstar. SNOMED CT CA, LOINC, pCLOCD,
  * ICD-10-CA and CCI are licensed distributions an operator obtains and loads
  * themselves; these readers take the files as published and emit concepts, so
  * loading a release is a command rather than a data-entry exercise.

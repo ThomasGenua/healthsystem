@@ -1,0 +1,41 @@
+name: Monitoring rules and outage drill
+on:
+  # Manual only. See the note below.
+  workflow_dispatch:
+# ---------------------------------------------------------------------------
+# CI IS DISABLED. Requested by the repository owner on 2026-09-22, so that
+# changes are reviewed and promoted by hand rather than gated by an automatic
+# run. This workflow no longer starts on a push or a pull request.
+#
+# Nothing here has been weakened. Every job, step, action pin and assertion
+# below is exactly what it was while CI was running, and none of them has been
+# made to pass, skip or swallow a failure. What changed is the `on:` block
+# above this comment: only `workflow_dispatch` remains, so the workflow runs
+# when somebody deliberately starts it from the Actions tab and at no other
+# time.
+#
+# To turn it back on, restore the trigger block recorded for this file in
+# docs/CI-DISABLED.md.
+# ---------------------------------------------------------------------------
+permissions:
+  contents: read
+jobs:
+  drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+      - name: Alert rule tests
+        run: >-
+          docker run --rm --entrypoint /bin/promtool -w /rules
+          -v "$PWD/deploy/staging/monitoring:/rules:ro"
+          prom/prometheus:latest@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0
+          test rules alerts.test.yml
+      - name: Synthetic outage and recovery delivery
+        run: npm run staging:drill
+      - name: Ensure drill containers are stopped, retain volumes
+        if: always()
+        run: docker compose -p northstar-alert-drill -f deploy/staging/compose.yaml -f deploy/staging/monitoring.yaml --profile monitoring down

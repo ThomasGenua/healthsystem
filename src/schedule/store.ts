@@ -41,6 +41,7 @@ import { an } from "../core/text.ts";
 import type { Db } from "../db.ts";
 import { Refusal } from "../core/refusal.ts";
 import { Directory, type PartyKind, type Resolution } from "../directory/store.ts";
+import { ClinicDay } from "./clinic-day.ts";
 
 export type SlotStatus = "open" | "blocked";
 export type BookingStatus = "booked" | "attended" | "did-not-attend" | "cancelled";
@@ -103,10 +104,17 @@ export const PRIORITY_RANK: Record<Priority, number> = { stat: 0, urgent: 1, rou
 export class Schedule {
   private db: Db;
   private directory: Directory;
+  private clinicDay: ClinicDay;
 
-  constructor(db: Db) {
+  /**
+   * `clinicDay` decides what "today" means for the worklist. Absent is UTC,
+   * which is what it always was; the engine passes the clinic's own, the
+   * same one the board uses.
+   */
+  constructor(db: Db, opts: { clinicDay?: ClinicDay } = {}) {
     this.db = db;
     this.directory = new Directory(db);
+    this.clinicDay = opts.clinicDay ?? ClinicDay.utc();
   }
 
   /**
@@ -277,12 +285,17 @@ export class Schedule {
     const b = this.requireBooking(bookingId);
     if (b.status !== "booked") throw new Error(`${an(b.status)} booking cannot be cancelled`);
     const now = new Date().toISOString();
-    this.db.sql
+    const cancelled = this.db.sql
       .prepare(
         `UPDATE schedule_bookings SET status = 'cancelled', cancelled_by = ?, cancelled_at = ?, cancel_reason = ?
-          WHERE tenant_id = ? AND id = ?`
+          WHERE tenant_id = ? AND id = ? AND status = 'booked'`
       )
       .run(by.actorId, now, by.reason, this.db.tenantId, bookingId);
+    // A booking attended while this cancellation was being applied must not be
+    // erased: the patient came, and the seat was not free.
+    if (cancelled.changes === 0) {
+      throw new Error(`booking ${bookingId} is no longer booked; it changed while this was being applied`);
+    }
     this.event(bookingId, "cancelled", by, by.reason);
     return this.booking(bookingId)!;
   }
@@ -394,17 +407,16 @@ export class Schedule {
    * The worklist's "today" queue. A diary is every slot, including empty
    * ones; a worklist that listed empty slots would bury the people who are
    * actually coming. Cancelled and did-not-attend stay off it — those have
-   * their own lists — and the day is the UTC date of `asOf`, because a
-   * server inventing a clinic timezone it was never told would be a
-   * quieter kind of wrong.
+   * their own lists. The day is the clinic's, when the deployment has said
+   * where the clinic is, and the UTC date otherwise — a server inventing a
+   * time zone it was never told would be a quieter kind of wrong. It is the
+   * same calendar the clinic board uses, so a clinician's list and the
+   * front desk's cannot disagree about who is expected today (H-211).
    */
   today(resourceId: string, asOf = new Date().toISOString()): Array<{ slot: SlotRow; booking: BookingRow }> {
-    const day = asOf.slice(0, 10);
-    const from = `${day}T00:00:00.000Z`;
-    const next = new Date(from);
-    next.setUTCDate(next.getUTCDate() + 1);
+    const { from, to } = this.clinicDay.window(asOf);
     const out: Array<{ slot: SlotRow; booking: BookingRow }> = [];
-    for (const { slot, bookings } of this.diary(resourceId, from, next.toISOString())) {
+    for (const { slot, bookings } of this.diary(resourceId, from, to)) {
       for (const booking of bookings) {
         if (booking.status === "booked" || booking.status === "attended") {
           out.push({ slot, booking });
@@ -428,6 +440,25 @@ export class Schedule {
       )
       .all(this.db.tenantId, resourceId, from, to) as unknown as SlotRow[];
     return slots.map((slot) => ({ slot, bookings: this.liveBookings(slot.id) }));
+  }
+
+  /**
+   * Every booking whose appointment falls in a window, across every
+   * resource, cancelled ones included — unlike `diary()` and
+   * `liveBookings()`, which are for showing a worklist rather than for
+   * counting what was cancelled versus what simply never got an outcome
+   * recorded. `startsAt` comes from the slot, which a booking does not
+   * otherwise carry.
+   */
+  bookingsBetween(from: string, to: string): Array<BookingRow & { startsAt: string }> {
+    return this.db.sql
+      .prepare(
+        `SELECT b.*, s.starts_at AS startsAt FROM schedule_bookings b
+           JOIN schedule_slots s ON s.tenant_id = b.tenant_id AND s.id = b.slot_id
+          WHERE b.tenant_id = ? AND s.starts_at >= ? AND s.starts_at < ?
+          ORDER BY s.starts_at`
+      )
+      .all(this.db.tenantId, from, to) as unknown as Array<BookingRow & { startsAt: string }>;
   }
 
   /** A patient's appointments, newest first. */

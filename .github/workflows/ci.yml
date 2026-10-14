@@ -1,9 +1,29 @@
 name: CI
 
+# Third-party actions are pinned to a commit, with the release they were taken
+# from in the comment beside them. A tag is a moving pointer its owner can
+# repoint, and these steps hold a checkout of this repository and a token — so
+# a repointed tag is an unreviewed change running with that access. The comment
+# is what makes the pin readable and updatable; the hex is what is enforced.
+
 on:
-  push:
-    branches: ["**"]
-  pull_request:
+  # Manual only. See the note below.
+  workflow_dispatch:
+# ---------------------------------------------------------------------------
+# CI IS DISABLED. Requested by the repository owner on 2026-09-22, so that
+# changes are reviewed and promoted by hand rather than gated by an automatic
+# run. This workflow no longer starts on a push to any branch or on a pull request.
+#
+# Nothing here has been weakened. Every job, step, action pin and assertion
+# below is exactly what it was while CI was running, and none of them has been
+# made to pass, skip or swallow a failure. What changed is the `on:` block
+# above this comment: only `workflow_dispatch` remains, so the workflow runs
+# when somebody deliberately starts it from the Actions tab and at no other
+# time.
+#
+# To turn it back on, restore the trigger block recorded for this file in
+# docs/CI-DISABLED.md.
+# ---------------------------------------------------------------------------
 
 jobs:
   check:
@@ -16,11 +36,90 @@ jobs:
         node: ["22.x", "24.x"]
     name: node ${{ matrix.node }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The hazard-identifier check compares this revision against the
+          # base branch and the point they diverged, so it needs history
+          # rather than the default single commit.
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+        env:
+          NORTHSTAR_REQUIRE_BROWSER: "1"
+      # Last, because it is the only step that needs a second revision and so
+      # the only one that can be skipped for want of one. See
+      # src/safety/hazard-ids.ts for why a single tree cannot answer this.
+      - name: hazard identifiers
+        run: npm run hazardcheck -- origin/${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
+
+  # What was installed, and — on the default branch — signed evidence of where
+  # it was built. Separate from the matrix above because it describes one tree
+  # rather than one runtime, and running it twice would produce two documents
+  # differing only in which Node wrote them.
+  supply-chain:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Both needed by the attestation below, and by nothing else here. They
+      # are declared on this job alone so the test matrix keeps the read-only
+      # token it has always had.
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.x"
+          cache: npm
+      # Not `--omit=optional`: the point of the document is what an ordinary
+      # install puts on disk, and an ordinary install takes the drivers.
+      - run: npm ci
+      - name: bill of materials
+        run: npm run --silent sbom > sbom.cdx.json
+      # Before packing the one that gets published: two independent checkouts
+      # of this commit, packed, compared. The attestation below says where an
+      # artifact came from, which is not the same as anybody else being able
+      # to produce it.
+      - name: the package builds the same twice
+        run: npm run repro
+      - name: the tarball a site would install
+        run: npm pack --pack-destination .
+      # Published beside the artifact rather than only in the log, because a
+      # digest somebody has to go and find in a build's output is a digest
+      # nobody checks.
+      - name: digests
+        run: |
+          sha256sum sbom.cdx.json *.tgz | tee SHA256SUMS
+          {
+            echo '### Supply chain'
+            echo
+            echo 'Reproducible: two checkouts of this commit packed to the same bytes.'
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: supply-chain
+          path: |
+            sbom.cdx.json
+            SHA256SUMS
+            *.tgz
+          if-no-files-found: error
+      # Only on the default branch. An attestation says this artifact was built
+      # by this workflow from this commit; minting one for every push to every
+      # branch would fill the store with claims about trees nobody released,
+      # and say nothing more about the ones they did.
+      - name: build provenance
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            sbom.cdx.json
+            *.tgz

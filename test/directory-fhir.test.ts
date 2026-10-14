@@ -19,8 +19,8 @@ import { startApi } from "../src/api/admin.ts";
 import { ingestFhir } from "../src/directory/fhir.ts";
 
 function region(): { db: Db; dir: Directory; fhir: FhirStore; cleanup: () => void } {
-  const d = mkdtempSync(join(tmpdir(), "portage-dir-fhir-"));
-  const db = new Db(join(d, "portage.db"));
+  const d = mkdtempSync(join(tmpdir(), "northstar-dir-fhir-"));
+  const db = new Db(join(d, "northstar.db"));
   const dir = new Directory(db);
   return {
     db,
@@ -28,7 +28,7 @@ function region(): { db: Db; dir: Directory; fhir: FhirStore; cleanup: () => voi
     fhir: new FhirStore(db, undefined, dir),
     cleanup: () => {
       db.close();
-      rmSync(d, { recursive: true, force: true });
+      rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }

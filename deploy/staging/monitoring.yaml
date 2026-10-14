@@ -1,0 +1,32 @@
+services:
+  prometheus:
+    profiles: ["monitoring"]
+    image: prom/prometheus:latest@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time=24h"]
+    ports: ["127.0.0.1:19090:9090"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+    tmpfs: ["/prometheus:uid=65534,gid=65534"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+  alertmanager:
+    profiles: ["monitoring"]
+    image: prom/alertmanager:latest@sha256:690c7b525f4367aa91f73e2f91c632206d32e97c6384bdbf2fb7a861b420340d
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager", "--cluster.listen-address="]
+    ports: ["127.0.0.1:19093:9093"]
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    tmpfs: ["/alertmanager:uid=65534,gid=65534"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+  alert-sink:
+    profiles: ["monitoring"]
+    image: northstar-staging:local
+    command: ["node", "scripts/staging-alert-sink.ts"]
+    environment:
+      NORTHSTAR_SYNTHETIC_ALERT_SINK: "on"
+    ports: ["127.0.0.1:19094:9094"]
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]

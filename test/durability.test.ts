@@ -38,16 +38,16 @@ test("every commit is flushed to disk, so an AA survives power loss", () => {
   // lose power, and an AA has already promised the message is safe. FULL is
   // what makes that promise true, and it is what the ingest rate buys —
   // pinned here so it cannot be quietly traded away for throughput.
-  const dir = mkdtempSync(join(tmpdir(), "portage-sync-"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-sync-"));
   try {
-    const db = new Db(join(dir, "portage.db"));
+    const db = new Db(join(dir, "northstar.db"));
     const journal = db.sql.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
     const sync = db.sql.prepare("PRAGMA synchronous").get() as { synchronous: number };
     assert.equal(journal.journal_mode, "wal");
     assert.equal(sync.synchronous, 2, "synchronous must be FULL (2), not NORMAL (1) or OFF (0)");
     db.close();
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -56,8 +56,8 @@ test("a failed write is answered with AE, never AA", async () => {
   // sender must be told. Forcing the failure at the SQL layer exercises the
   // same path a full disk does — ingest throws, and the MLLP handler has to
   // turn that into a negative acknowledgement rather than a positive one.
-  const dir = mkdtempSync(join(tmpdir(), "portage-fail-"));
-  const engine = new Engine({ dbPath: join(dir, "portage.db"), tickMs: 100_000 });
+  const dir = mkdtempSync(join(tmpdir(), "northstar-fail-"));
+  const engine = new Engine({ dbPath: join(dir, "northstar.db"), tickMs: 100_000 });
   await engine.start();
   try {
     await engine.addChannel(channel);
@@ -84,15 +84,15 @@ test("a failed write is answered with AE, never AA", async () => {
     } catch {
       /* expected: storage was pulled out from under it */
     }
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
 test("only messages that were acknowledged are actually stored", async () => {
   // The converse of the above: nothing may be persisted that the sender was
   // told had failed, or a retry would duplicate it.
-  const dir = mkdtempSync(join(tmpdir(), "portage-acked-"));
-  const engine = new Engine({ dbPath: join(dir, "portage.db"), tickMs: 100_000 });
+  const dir = mkdtempSync(join(tmpdir(), "northstar-acked-"));
+  const engine = new Engine({ dbPath: join(dir, "northstar.db"), tickMs: 100_000 });
   await engine.start();
   try {
     await engine.addChannel({
@@ -118,13 +118,13 @@ test("only messages that were acknowledged are actually stored", async () => {
     assert.equal(engine.db.verifyChain("durable").ok, true);
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
 test("a rejected message leaves the chain intact for the ones that follow", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-chain-"));
-  const engine = new Engine({ dbPath: join(dir, "portage.db"), tickMs: 100_000 });
+  const dir = mkdtempSync(join(tmpdir(), "northstar-chain-"));
+  const engine = new Engine({ dbPath: join(dir, "northstar.db"), tickMs: 100_000 });
   await engine.start();
   try {
     await engine.addChannel({
@@ -143,7 +143,7 @@ test("a rejected message leaves the chain intact for the ones that follow", asyn
     assert.ok(chain.checked >= 2);
   } finally {
     await engine.stop();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -153,9 +153,9 @@ test("a nested transaction joins the outer one rather than starting a second", (
   // refuses a second BEGIN outright, so without this the composite either
   // crashes or has to be written non-atomically, and a half-applied composite
   // is precisely the state these stores exist to prevent.
-  const dir = mkdtempSync(join(tmpdir(), "portage-tx-"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-tx-"));
   try {
-    const db = new Db(join(dir, "portage.db"));
+    const db = new Db(join(dir, "northstar.db"));
     db.upsertChannel("c", "c", true, "{}");
 
     const out = db.transaction(() => {
@@ -189,6 +189,6 @@ test("a nested transaction joins the outer one rather than starting a second", (
     assert.equal(db.listMessages({ channelId: "c" }).length, 3);
     db.close();
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

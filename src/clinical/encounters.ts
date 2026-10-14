@@ -99,6 +99,19 @@ export class EncounterMismatch extends Refusal {
   }
 }
 
+/**
+ * The refusal when a row moved between the check and the write.
+ *
+ * Every transition below reads the encounter, decides against its status, and
+ * then writes. Those are two steps, and naming the expected status in the
+ * update is what makes them one: a write that changes no rows means the
+ * encounter is no longer what the decision was made about, and the answer is
+ * a refusal rather than a silent overwrite of whatever happened instead.
+ */
+function movedOn(id: string, expected: string): never {
+  refuse(`encounter ${id} is no longer ${expected}; it moved while this change was being applied`, 409);
+}
+
 export class Encounters {
   private db: Db;
 
@@ -167,9 +180,13 @@ export class Encounters {
     const e = this.require(encounterId);
     if (e.status !== "planned") refuse(`${an(e.status)} encounter cannot be marked as arrived`);
     const now = new Date().toISOString();
-    this.db.sql
-      .prepare("UPDATE encounters SET status = 'in-progress', started_at = ?, updated_at = ? WHERE tenant_id = ? AND id = ?")
+    const arrived = this.db.sql
+      .prepare(
+        `UPDATE encounters SET status = 'in-progress', started_at = ?, updated_at = ?
+          WHERE tenant_id = ? AND id = ? AND status = 'planned'`
+      )
       .run(at ?? now, now, this.db.tenantId, encounterId);
+    if (arrived.changes === 0) movedOn(encounterId, "planned");
     this.event(encounterId, "arrived", by, { fromStatus: e.status, toStatus: "in-progress" });
     return this.get(encounterId)!;
   }
@@ -191,12 +208,13 @@ export class Encounters {
     }
     if (!by.disposition.trim()) refuse("closing an encounter needs a disposition saying what was decided");
     const now = new Date().toISOString();
-    this.db.sql
+    const closed = this.db.sql
       .prepare(
         `UPDATE encounters SET status = 'finished', ended_at = ?, disposition = ?, updated_at = ?
-          WHERE tenant_id = ? AND id = ?`
+          WHERE tenant_id = ? AND id = ? AND status = 'in-progress'`
       )
       .run(now, by.disposition, now, this.db.tenantId, encounterId);
+    if (closed.changes === 0) movedOn(encounterId, "in progress");
     this.event(encounterId, "closed", by, { fromStatus: e.status, toStatus: "finished", detail: by.disposition });
     return this.get(encounterId)!;
   }
@@ -217,9 +235,15 @@ export class Encounters {
     }
     if (!by.reason.trim()) refuse("cancelling an encounter needs a reason");
     const now = new Date().toISOString();
-    this.db.sql
-      .prepare("UPDATE encounters SET status = 'cancelled', ended_at = ?, updated_at = ? WHERE tenant_id = ? AND id = ?")
+    const cancelled = this.db.sql
+      .prepare(
+        `UPDATE encounters SET status = 'cancelled', ended_at = ?, updated_at = ?
+          WHERE tenant_id = ? AND id = ? AND status = 'planned'`
+      )
       .run(now, now, this.db.tenantId, encounterId);
+    // A visit that started while this was being cancelled must not be erased:
+    // the patient attended, and that is a disposition rather than a nothing.
+    if (cancelled.changes === 0) movedOn(encounterId, "planned");
     this.event(encounterId, "cancelled", by, { fromStatus: e.status, toStatus: "cancelled", detail: by.reason });
     return this.get(encounterId)!;
   }

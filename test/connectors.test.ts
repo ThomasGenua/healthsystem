@@ -34,7 +34,7 @@ function collector() {
 
 
 test("filedrop source ingests files in name order and archives them", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-drop-"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-drop-"));
   const archive = join(dir, "done");
   writeFileSync(join(dir, "002.txt"), "second");
   writeFileSync(join(dir, "001.txt"), "first");
@@ -64,11 +64,11 @@ test("filedrop source ingests files in name order and archives them", async () =
 
   await engine.stop();
   await sink.close();
-  rmSync(dir, { recursive: true, force: true });
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 test("dbpoll source follows a cursor, persists it, and picks up new rows", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-poll-"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-poll-"));
   const scratchPath = join(dir, "lab.db");
   const scratch = new DatabaseSync(scratchPath);
   scratch.exec("CREATE TABLE results (id INTEGER PRIMARY KEY, test TEXT, value REAL)");
@@ -107,5 +107,5 @@ test("dbpoll source follows a cursor, persists it, and picks up new rows", async
   await engine.stop();
   scratch.close();
   await sink.close();
-  rmSync(dir, { recursive: true, force: true });
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });

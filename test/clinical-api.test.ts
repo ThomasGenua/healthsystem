@@ -15,19 +15,36 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { Engine } from "../src/core/engine.ts";
 import { startApi } from "../src/api/admin.ts";
 import { AuthGate } from "../src/auth/gate.ts";
 import type { AuditRow } from "../src/audit/store.ts";
+import { SyntheticScanner } from "../src/patient/intake.ts";
+import { SyntheticExternalCoordinator } from "../src/schedule/arrangements.ts";
 
 const P = "NT123456";
 const GP = { actorId: "dr-tetso", actorKind: "practitioner" };
 const GP_AUTHOR = { authorId: "dr-tetso", authorKind: "practitioner" };
 
 async function boot() {
+  // The summary export refuses without one, deliberately: an unsigned summary
+  // cannot be told from one edited after it left.
+  process.env.NORTHSTAR_SUMMARY_SIGNING_KEY = "a-signing-key-for-the-route-tests";
   // A pharmacy channel, so the prescription routes exercise the transmit path
   // rather than the refusal a deployment without one gets.
-  const engine = new Engine({ dbPath: ":memory:", tickMs: 15, pharmacyChannel: "pharmacy-out" });
+  // A scanner, so upload-scan exercises its own clean/infected logic rather
+  // than the "no scanner configured" refusal every other route test's fixture
+  // upload would otherwise hit.
+  // A synthetic external coordinator, so arrangement-request-external
+  // exercises its own logic rather than the "not configured" refusal.
+  const engine = new Engine({
+    dbPath: ":memory:",
+    tickMs: 15,
+    pharmacyChannel: "pharmacy-out",
+    malwareScanner: new SyntheticScanner(),
+    externalCoordinator: new SyntheticExternalCoordinator(),
+  });
   await engine.start();
   engine.db.upsertChannel(
     "pharmacy-out",
@@ -40,6 +57,30 @@ async function boot() {
       destinations: [{ id: "pharmacy", type: "http", url: "http://127.0.0.1:1/pharmacy" }],
     })
   );
+  // A declared route, so the order-send endpoints exercise their own logic
+  // rather than the "no route" refusal. It names the generic profile, which
+  // declares no patient assigning authority — so the builder refuses before
+  // anything reaches a socket, which is what keeps this test deterministic
+  // and off the network while still driving the route end to end.
+  engine.forTenant("default").orders.declareOrderRouting(
+    "lab",
+    {
+      transmits: true,
+      destination: "Stanton Laboratory",
+      detail: "MLLP over the site VPN",
+      connection: {
+        host: "127.0.0.1",
+        port: 1,
+        sendingApplication: "NORTHSTAR",
+        sendingFacility: "GNWT",
+        receivingApplication: "LABAPP",
+        receivingFacility: "STANTON",
+        timezoneOffset: "-06:00",
+        profileId: "generic-oru",
+      },
+    },
+    { actorId: "ops", actorKind: "practitioner" }
+  );
   const adminKey = engine.keys.issue("ops", ["admin"]);
   const admin = adminKey.key;
   const reader = engine.keys.issue("consumer", ["read"]).key;
@@ -47,19 +88,6 @@ async function boot() {
   const base = `http://127.0.0.1:${api.port}`;
 
   const t = engine.forTenant("default");
-  for (const scoreId of ["curb-65", "news2", "has-bled"] as const) {
-    t.scoreGovernance.approve({
-      scoreId,
-      implementationVersion: "portage-1",
-      clinicalOwner: "Dr Jean Tetso",
-      approvedPopulation: "Synthetic test patients only",
-      reviewedAt: "2026-08-01T00:00:00.000Z",
-      reviewDue: "2099-08-01T00:00:00.000Z",
-      licensingAcceptedBy: "test-governance",
-      reason: "HTTP regression-test fixture",
-      by: { actorId: "test-governance", actorKind: "system" },
-    });
-  }
   t.clinical.record({
     entryType: "Patient",
     patientId: P,
@@ -112,6 +140,24 @@ async function boot() {
   const note = t.notes.draft({ patientId: P, noteType: "SOAP", sections: { plan: "Repeat" }, author: GP_AUTHOR });
   t.notes.sign(note.record_id, GP_AUTHOR);
   t.directory.addPractitioner({ id: "dr-tetso", family: "Tetso", given: "Jean" });
+  // Every score is disabled until somebody approves it, so the score routes
+  // below serve nothing without this. Synthetic, and deliberately explicit:
+  // there is no fixture shortcut that enables a score without a named owner,
+  // a review date and a written reason, because there is no such path in the
+  // product either.
+  for (const scoreId of ["curb-65", "news2", "has-bled"] as const) t.scoreGovernance.approve({
+    scoreId,
+    clinicalOwnerId: "dr-tetso",
+    reviewDue: "2027-01-01",
+    reason: "synthetic fixture approval for the API tests; not a clinical decision",
+    by: { id: "ops", kind: "apikey" },
+    evidence: {
+      implementationVersion: "portage-1",
+      approvedPopulation: "Synthetic test patients only",
+      reviewedAt: "2026-08-01T00:00:00.000Z",
+      licensingAcceptedBy: "test-governance",
+    },
+  });
   t.immunizations.record({
     patientId: P,
     vaccine: "MMR",
@@ -175,8 +221,8 @@ test("clinical score use is approval-gated, unit-bound, and names its approval o
       headers: { authorization: `Bearer ${s.admin}`, "content-type": "application/json" },
       body: JSON.stringify({ score: "meld-na", patient: P, input: {} }),
     });
-    assert.equal(unapproved.status, 409);
-    assert.match(await unapproved.text(), /no deployment approval recorded/);
+    assert.equal(unapproved.status, 403);
+    assert.match(await unapproved.text(), /never been approved/);
 
     const input = { confusion: false, ureaMmolL: 9, respiratoryRate: 32, systolicBp: 88, diastolicBp: 55, ageYears: 72 };
     const units = { ureaMmolL: "mmol/L", respiratoryRate: "breaths/min", systolicBp: "mmHg", diastolicBp: "mmHg", ageYears: "completed years" };
@@ -200,6 +246,66 @@ test("clinical score use is approval-gated, unit-bound, and names its approval o
     assert.equal(result.authorization.implementationVersion, "portage-1");
     assert.match(s.trail()[0].detail ?? "", new RegExp(`approval ${result.authorization.approvalId}`));
     assert.match(s.trail()[0].detail ?? "", /implementation portage-1/);
+
+    for (const route of ["score/v2", "chart-score"]) {
+      const response = await fetch(`${s.base}/api/clinical/${route}`, {
+        method: "POST",
+        headers: { Authorization: "Bearer " + s.admin, "content-type": "application/json" },
+        body: JSON.stringify({ score: "curb-65", patient: P }),
+      });
+      assert.equal(response.status, 200);
+      const value = await response.json() as { authorization: { approvalId: string; approvedPopulation: string } };
+      assert.equal(value.authorization.approvalId, result.authorization.approvalId);
+      assert.equal(value.authorization.approvedPopulation, "Synthetic test patients only");
+      assert.match(s.trail()[0].detail ?? "", new RegExp(`approval ${result.authorization.approvalId}`));
+    }
+
+    s.engine.forTenant("default").scoreGovernance.disable({
+      scoreId: "news2", reason: "withdraw the synthetic approval for this regression", by: { id: "ops", kind: "apikey" },
+    });
+    const withdrawn = await fetch(`${s.base}/api/clinical/chart-score`, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + s.admin, "content-type": "application/json" },
+      body: JSON.stringify({ score: "news2", patient: P }),
+    });
+    assert.equal(withdrawn.status, 403, "chart-derived scores cannot bypass withdrawal");
+  } finally {
+    await s.close();
+  }
+});
+
+test("the retained approval route requires review evidence and a directory identity", async () => {
+  const s = await boot();
+  try {
+    const review = {
+      score: "wells-pe", clinicalOwner: "dr-tetso", implementationVersion: "portage-1",
+      approvedPopulation: "Synthetic test adults only", reviewedAt: "2026-08-01",
+      reviewDue: "2099-08-01", licensingAcceptedBy: "test-governance",
+      reason: "review the retained approval contract",
+    };
+    for (const over of [
+      { licensingAcceptedBy: "" },
+      { clinicalOwner: "Dr Jean Tetso" },
+      { implementationVersion: "portage-0" },
+    ]) {
+      const refused = await fetch(`${s.base}/api/clinical/score-approval`, {
+        method: "POST",
+        headers: { Authorization: "Bearer " + s.admin, "content-type": "application/json" },
+        body: JSON.stringify({ ...review, ...over }),
+      });
+      assert.equal(refused.status, 400);
+    }
+    assert.equal(s.engine.forTenant("default").scoreGovernance.history("wells-pe").length, 0);
+    const accepted = await fetch(`${s.base}/api/clinical/score-approval`, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + s.admin, "content-type": "application/json" },
+      body: JSON.stringify(review),
+    });
+    assert.equal(accepted.status, 200);
+    const row = await accepted.json() as { approvedPopulation: string; licensingAcceptedBy: string; clinicalOwnerId: string };
+    assert.equal(row.approvedPopulation, review.approvedPopulation);
+    assert.equal(row.licensingAcceptedBy, review.licensingAcceptedBy);
+    assert.equal(row.clinicalOwnerId, "dr-tetso");
   } finally {
     await s.close();
   }
@@ -329,7 +435,13 @@ test("every clinical route leaves an audit row, including ones added later", asy
   // found too. It did not, once, and a route added as
   // /api/clinical/encounter/arrive would have been exempt from this whole
   // guarantee by virtue of its name.
-  const paths = [...new Set([...source.matchAll(/path === "(\/api\/clinical\/[a-z/-]+)"/g)].map((m) => m[1]))];
+  //
+  // It admits digits for the same reason. It did not, once, and
+  // /api/clinical/score/v2 — the versioned measurement contract, and every
+  // versioned route after it — was exempt on the strength of its "2". A
+  // scanner that silently matches nothing is worse than no scanner: this one
+  // reported a healthy count of routes the whole time.
+  const paths = [...new Set([...source.matchAll(/path === "(\/api\/clinical\/[a-z0-9/-]+)"/g)].map((m) => m[1]))];
   assert.ok(paths.length >= 16, `expected the clinical routes to be found by scanning, got ${paths.length}`);
 
   const s = await boot();
@@ -341,6 +453,23 @@ test("every clinical route leaves an audit row, including ones added later", asy
     // fixture's own critical potassium is used by other cases here, so this is
     // a second one rather than a shared one — a route that only passes because
     // another test has not run yet is not a route anything has driven.
+    // A submitted intake questionnaire for the review route to act on, and a
+    // pending upload for the scan route — both need something real to exist
+    // before their route is exercised, the same as the routes below them.
+    const intakeDraft = s.engine.forTenant("default").intake.saveDraft({
+      patientId: P,
+      concern: "New shortness of breath climbing stairs",
+      by: { actorId: P, actorKind: "patient" },
+    });
+    const intakeToReview = s.engine.forTenant("default").intake.submit(intakeDraft.id, { actorId: P, actorKind: "patient" });
+    const uploadToScan = s.engine.forTenant("default").uploads.receive({
+      patientId: P,
+      filename: "route-test.pdf",
+      contentType: "application/pdf",
+      data: Buffer.from("route test upload").toString("base64"),
+      by: { actorId: P, actorKind: "patient" },
+    });
+
     const forAck = s.engine.forTenant("default").orders.create({
       patientId: P,
       category: "lab",
@@ -396,6 +525,203 @@ test("every clinical route leaves an audit row, including ones added later", asy
       practitionerId: "dr-tetso",
       role: "allied",
       by: { actorId: "ops" },
+    });
+    const planToComplete = s.engine.forTenant("default").carePlans.record({
+      patientId: P,
+      title: "COPD action plan",
+      goals: ["no unscheduled visits this winter"],
+      reviewBy: "2026-12-01T00:00:00Z",
+      by: GP_AUTHOR,
+    });
+    const planToRevoke = s.engine.forTenant("default").carePlans.record({
+      patientId: P,
+      title: "Draft smoking-cessation plan",
+      goals: ["set a quit date with the patient"],
+      reviewBy: "2026-11-01T00:00:00Z",
+      status: "draft",
+      by: GP_AUTHOR,
+    });
+    // Item 61: one fixture per one-way transition — approve, decline and
+    // complete each need a goal or action that has not already made that
+    // trip, the same reason forAck above is not shared with anything else.
+    const goalToApprove = s.engine.forTenant("default").goals.propose({
+      patientId: P,
+      carePlanId: planToComplete.recordId,
+      description: "Walk 30 minutes daily",
+      by: GP_AUTHOR,
+    });
+    const goalToDecline = s.engine.forTenant("default").goals.propose({
+      patientId: P,
+      carePlanId: planToComplete.recordId,
+      description: "Suggested but not clinically indicated",
+      by: GP_AUTHOR,
+    });
+    const goalToCompleteFirst = s.engine.forTenant("default").goals.propose({
+      patientId: P,
+      carePlanId: planToComplete.recordId,
+      description: "Reduce sodium intake",
+      by: GP_AUTHOR,
+    });
+    const goalToComplete = s.engine.forTenant("default").goals.approve(goalToCompleteFirst.recordId, GP_AUTHOR);
+    const goalToRevise = s.engine.forTenant("default").goals.propose({
+      patientId: P,
+      carePlanId: planToComplete.recordId,
+      description: "A1C under 7.5%",
+      by: GP_AUTHOR,
+    });
+    const actionToApprove = s.engine.forTenant("default").actions.propose({
+      patientId: P,
+      carePlanId: planToComplete.recordId,
+      description: "Book a pulmonary function test",
+      responsibleId: P,
+      by: GP_AUTHOR,
+    });
+    const actionToDecline = s.engine.forTenant("default").actions.propose({
+      patientId: P,
+      carePlanId: planToComplete.recordId,
+      description: "Suggested but superseded by another plan",
+      responsibleId: P,
+      by: GP_AUTHOR,
+    });
+    const actionToProgressFirst = s.engine.forTenant("default").actions.propose({
+      patientId: P,
+      carePlanId: planToComplete.recordId,
+      description: "Attend a smoking-cessation group",
+      responsibleId: P,
+      by: GP_AUTHOR,
+    });
+    const actionToProgress = s.engine.forTenant("default").actions.approve(actionToProgressFirst.recordId, GP_AUTHOR);
+    const actionToCompleteFirst = s.engine.forTenant("default").actions.propose({
+      patientId: P,
+      carePlanId: planToComplete.recordId,
+      description: "Book a dietitian follow-up",
+      responsibleId: P,
+      by: GP_AUTHOR,
+    });
+    const actionToComplete = s.engine.forTenant("default").actions.approve(actionToCompleteFirst.recordId, GP_AUTHOR);
+    // Item 64: outreach campaigns. idx_outreach_open_once means a second open
+    // item for the same patient and rule is refused outright, so — same
+    // reason as the goal/action fixtures above — each state-transition route
+    // gets its own patient rather than sharing one that another route has
+    // already moved.
+    const outreachRule = s.engine.forTenant("default").eligibility.publish({
+      id: "route-test-outreach-rule",
+      name: "Route-test cohort",
+      cohort: { id: "route-test-cohort", name: "Route-test cohort", conditionCodes: ["route-test outreach condition"] },
+      gap: { id: "route-test-gap", name: "Route-test gap", withinDays: 365 },
+      by: GP,
+    });
+    const outreachPatientRecord = (id: string) => {
+      s.engine.forTenant("default").clinical.record({
+        entryType: "Patient",
+        patientId: id,
+        content: { resourceType: "Patient", identifier: [{ value: id }] },
+        authorId: "adt",
+        authorKind: "device",
+      });
+      s.engine.forTenant("default").clinical.record({
+        entryType: "Condition",
+        patientId: id,
+        content: { resourceType: "Condition", code: { text: "route-test outreach condition" } },
+        ...GP_AUTHOR,
+      });
+    };
+    for (const id of ["NT-OUT-ASSIGN", "NT-OUT-ATTEMPT", "NT-OUT-ATTLIST", "NT-OUT-BOOK", "NT-OUT-COMPLETE", "NT-OUT-EXCLUDE"]) {
+      outreachPatientRecord(id);
+    }
+    const outreachCampaign = s.engine.forTenant("default").outreach.create({
+      eligibilityRuleId: outreachRule.id,
+      name: "Route-test campaign",
+      by: GP,
+    });
+    const outreachItem = (patientId: string) => outreachCampaign.items.find((i) => i.patient_id === patientId)!;
+    const itemToAssign = outreachItem("NT-OUT-ASSIGN");
+    const itemToAttempt = outreachItem("NT-OUT-ATTEMPT");
+    const itemForAttemptsList = outreachItem("NT-OUT-ATTLIST");
+    s.engine.forTenant("default").outreach.recordAttempt(itemForAttemptsList.id, { channel: "phone", outcome: "no-answer", by: GP });
+    const itemToBook = outreachItem("NT-OUT-BOOK");
+    const outreachBookSlot = s.engine.forTenant("default").schedule.openSlot({
+      resourceId: "dr-tetso",
+      service: "Outreach follow-up",
+      startsAt: "2026-09-15T10:00:00Z",
+      endsAt: "2026-09-15T10:30:00Z",
+    });
+    const outreachBooking = s.engine.forTenant("default").schedule.book({
+      slotId: outreachBookSlot.id,
+      patientId: "NT-OUT-BOOK",
+      reason: "Outreach follow-up",
+      by: GP,
+    });
+    const itemToComplete = outreachItem("NT-OUT-COMPLETE");
+    const outreachCompleteSlot = s.engine.forTenant("default").schedule.openSlot({
+      resourceId: "dr-tetso",
+      service: "Outreach follow-up",
+      startsAt: "2026-09-16T10:00:00Z",
+      endsAt: "2026-09-16T10:30:00Z",
+    });
+    const outreachCompleteBooking = s.engine.forTenant("default").schedule.book({
+      slotId: outreachCompleteSlot.id,
+      patientId: "NT-OUT-COMPLETE",
+      reason: "Outreach follow-up",
+      by: GP,
+    });
+    s.engine.forTenant("default").outreach.linkBooking(itemToComplete.id, outreachCompleteBooking.id, GP);
+    const itemToExclude = outreachItem("NT-OUT-EXCLUDE");
+    // A campaign already active, pre-built (not through the route under
+    // test), so the live close route has something one-way to close.
+    outreachPatientRecord("NT-OUT-CAMPAIGN-CLOSE");
+    const campaignToClose = s.engine.forTenant("default").outreach.create({
+      eligibilityRuleId: outreachRule.id,
+      name: "Route-test campaign to close",
+      by: GP,
+    }).campaign;
+    // And one more patient, added only now — after every campaign above has
+    // already been built — so the live create-campaign route has exactly one
+    // still-open patient under this rule to pick up, rather than colliding
+    // with everyone the fixtures above already claimed.
+    outreachPatientRecord("NT-OUT-CAMPAIGN-CREATE");
+    // Item 65: arrangements around a travelling-clinic visit. A dedicated
+    // visit, separate from tcRepeat/tcCancel/tcMove below, so an arrangement
+    // fixture here is never touched by a different route's cancellation.
+    const arrangementVisit = s.engine.forTenant("default").clinics.planVisit({
+      resourceId: "dr-tetso",
+      service: "Diabetes follow-up",
+      community: "Fort Smith",
+      days: [{ date: "2027-05-01", from: "09:00", to: "12:00" }],
+      slotMinutes: 30,
+      by: GP,
+    }).visit;
+    const arrangementForAssign = s.engine.forTenant("default").arrangements.request({
+      visitId: arrangementVisit.id,
+      patientId: P,
+      kind: "transport",
+      detail: "van from the airstrip",
+      by: GP,
+    });
+    const arrangementForConfirm = s.engine.forTenant("default").arrangements.request({
+      visitId: arrangementVisit.id,
+      kind: "interpreter",
+      detail: "South Slavey interpreter for the visit",
+      by: GP,
+    });
+    const arrangementForExternal = s.engine.forTenant("default").arrangements.request({
+      visitId: arrangementVisit.id,
+      kind: "accommodation",
+      detail: "one room, night before an early clinic",
+      by: GP,
+    });
+    const arrangementForCancel = s.engine.forTenant("default").arrangements.request({
+      visitId: arrangementVisit.id,
+      kind: "escort",
+      detail: "adult child travelling with an elder patient",
+      by: GP,
+    });
+    const docToRead = s.engine.forTenant("default").documents.receive({
+      patientId: P,
+      title: "Cardiology letter",
+      source: "patient-brought",
+      receivedAt: "2026-08-20T10:00:00Z",
+      by: GP_AUTHOR,
     });
     const messaging = s.engine.forTenant("default").messaging;
     const thread = messaging.open({
@@ -622,6 +948,57 @@ test("every clinical route leaves an audit row, including ones added later", asy
       officer
     );
 
+    // Enrolment and patient-notice fixtures. Dedicated rows so attest,
+    // decline, dispatch and told do not depend on the order the discovery
+    // loop happens to visit the paths. A pending enrolment is not a grant;
+    // queue() dispatches immediately, and with no channel that is a visible
+    // failure — which is the path the dispatch route still has to audit.
+    const clerk = { actorId: "registration-desk", actorKind: "practitioner" as const };
+    const pendingToAttest = tPriv.enrolment.request({
+      patientId: P,
+      subjectId: "enrol-attest-subject",
+      relationship: "self",
+      by: clerk,
+    });
+    const pendingToDecline = tPriv.enrolment.request({
+      patientId: P,
+      subjectId: "enrol-decline-subject",
+      relationship: "self",
+      by: clerk,
+    });
+    const pendingToRead = tPriv.enrolment.request({
+      patientId: P,
+      subjectId: "enrol-read-subject",
+      relationship: "self",
+      by: clerk,
+    });
+    const noticeToDispatch = tPriv.notices.queue({
+      patientId: P,
+      kind: "request-completed",
+      summary: "Your access request was completed. Reference fixture-dispatch.",
+    });
+    const noticeToTell = tPriv.notices.queue({
+      patientId: P,
+      kind: "enrolment-attested",
+      summary: "Your clinic has attested your identity. Reference fixture-told.",
+    });
+
+    // A registered, verified standards package for the activation route to
+    // put into force. Synthetic bytes: this fixture is not a real package,
+    // and the registry's whole point is that it cannot tell the difference
+    // between a real one and this except by hashing what it is given.
+    const stdBytes = "a synthetic package tarball for the route test";
+    const stdPackage = tPriv.standards.register({
+      canonicalUrl: "http://example.invalid/fhir/test-ig/",
+      packageId: "example.fixture.ig",
+      version: "1.0.0",
+      publicationStatus: "release",
+      fhirVersion: "4.0.1",
+      license: "CC0-1.0",
+      checksum: createHash("sha256").update(stdBytes).digest("hex"),
+    });
+    tPriv.standards.verify(stdPackage.id, stdBytes);
+
     // Arguments good enough for each route to do real work. A route that
     // needs one not listed here 400s, which this treats as a failure rather
     // than a pass — an untested route is the thing being guarded against.
@@ -633,8 +1010,19 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/allergies": `?patient=${P}`,
       "/api/clinical/results": "",
       "/api/clinical/orders": `?patient=${P}`,
+      "/api/clinical/order-transmission": `?order=${forAck.id}`,
+      "/api/clinical/orders-not-with-filler": "",
+      "/api/clinical/orders-cancelled-still-with-filler": "",
+      "/api/clinical/order-transmission-record": "POST",
+      "/api/clinical/order-send": "POST",
+      "/api/clinical/order-cancel-send": "POST",
       "/api/clinical/referrals": "",
       "/api/clinical/tasks": "?owner=dr-tetso",
+      "/api/clinical/intake": `?patient=${P}`,
+      "/api/clinical/intake-review": "POST",
+      "/api/clinical/questionnaires": "POST",
+      "/api/clinical/uploads": `?patient=${P}`,
+      "/api/clinical/upload-scan": "POST",
       "/api/clinical/notes": `?patient=${P}`,
       "/api/clinical/appointments": `?patient=${P}`,
       "/api/clinical/missed": "",
@@ -648,6 +1036,13 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/gaps": "POST",
       "/api/clinical/measure": "POST",
       "/api/clinical/release": "POST",
+      "/api/clinical/effectiveness-review": "POST",
+      "/api/clinical/effectiveness-follow-up": "POST",
+      "/api/clinical/effectiveness-referrals": "POST",
+      "/api/clinical/effectiveness-notifications": "POST",
+      "/api/clinical/effectiveness-missed-appointments": "POST",
+      "/api/clinical/effectiveness-task-burden": "POST",
+      "/api/clinical/effectiveness-release": "POST",
       "/api/clinical/links": `?patient=${P}`,
       "/api/clinical/link": "POST",
       "/api/clinical/unlink": "POST",
@@ -656,6 +1051,12 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/visit-repeat": "POST",
       "/api/clinical/visit-cancel": "POST",
       "/api/clinical/visit-reschedule": "POST",
+      "/api/clinical/arrangements": "POST",
+      "/api/clinical/arrangements-unconfirmed": "",
+      "/api/clinical/arrangement-assign": "POST",
+      "/api/clinical/arrangement-confirm": "POST",
+      "/api/clinical/arrangement-request-external": "POST",
+      "/api/clinical/arrangement-cancel": "POST",
       "/api/clinical/waitlist": "?service=TC%20offer",
       "/api/clinical/waitlist-add": "POST",
       "/api/clinical/waitlist-remove": "POST",
@@ -671,10 +1072,47 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/book": "POST",
       "/api/clinical/immunizations": `?patient=${P}`,
       "/api/clinical/vitals": `?patient=${P}`,
+      "/api/clinical/procedures": `?patient=${P}`,
+      "/api/clinical/care-plans": `?patient=${P}`,
+      "/api/clinical/patient-documents": `?patient=${P}`,
+      "/api/clinical/patient-document": `?id=${docToRead.recordId}`,
       "/api/clinical/care-team": `?patient=${P}`,
       "/api/clinical/coverage": `?patient=${P}`,
       "/api/clinical/immunization-record": "POST",
       "/api/clinical/vital-record": "POST",
+      "/api/clinical/procedure-record": "POST",
+      "/api/clinical/care-plan-record": "POST",
+      "/api/clinical/care-plan-complete": "POST",
+      "/api/clinical/care-plan-revoke": "POST",
+      "/api/clinical/goals": `?patient=${P}`,
+      "/api/clinical/goal-propose": "POST",
+      "/api/clinical/goal-approve": "POST",
+      "/api/clinical/goal-decline": "POST",
+      "/api/clinical/goal-complete": "POST",
+      "/api/clinical/goal-revise": "POST",
+      "/api/clinical/actions": `?patient=${P}`,
+      "/api/clinical/action-propose": "POST",
+      "/api/clinical/action-approve": "POST",
+      "/api/clinical/action-decline": "POST",
+      "/api/clinical/action-progress": "POST",
+      "/api/clinical/action-complete": "POST",
+      "/api/clinical/after-visit-summary": `?encounter=${visit.id}`,
+      "/api/clinical/timeline": `?patient=${P}`,
+      "/api/clinical/result-trend": `?patient=${P}&code=2823-3`,
+      "/api/clinical/vital-trend": `?patient=${P}&kind=heart-rate`,
+      "/api/clinical/eligibility-rules": "POST",
+      "/api/clinical/outreach-campaigns": "POST",
+      "/api/clinical/outreach-campaigns-close": "POST",
+      "/api/clinical/outreach-items": `?campaign=${outreachCampaign.campaign.id}`,
+      "/api/clinical/outreach-items-unreachable": `?campaign=${outreachCampaign.campaign.id}`,
+      "/api/clinical/outreach-item-recheck": `?item=${itemToAssign.id}`,
+      "/api/clinical/outreach-item-assign": "POST",
+      "/api/clinical/outreach-item-attempt": "POST",
+      "/api/clinical/outreach-item-attempts": `?item=${itemForAttemptsList.id}`,
+      "/api/clinical/outreach-item-book": "POST",
+      "/api/clinical/outreach-item-complete": "POST",
+      "/api/clinical/outreach-item-exclude": "POST",
+      "/api/clinical/patient-document-record": "POST",
       "/api/clinical/care-team-assign": "POST",
       "/api/clinical/care-team-retire": "POST",
       "/api/clinical/coverage-record": "POST",
@@ -690,6 +1128,14 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/authority-self": "POST",
       "/api/clinical/authority-proxy": "POST",
       "/api/clinical/authority-revoke": "POST",
+      "/api/clinical/enrolments": "",
+      "/api/clinical/enrolment": `?id=${pendingToRead.id}`,
+      "/api/clinical/enrolment-request": "POST",
+      "/api/clinical/enrolment-attest": "POST",
+      "/api/clinical/enrolment-decline": "POST",
+      "/api/clinical/patient-notices": "",
+      "/api/clinical/patient-notice-dispatch": "POST",
+      "/api/clinical/patient-notice-told": "POST",
       "/api/clinical/patient-requests": "",
       "/api/clinical/patient-request-complete": "POST",
       "/api/clinical/patient-request-decline": "POST",
@@ -698,8 +1144,17 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/lab-resolve": "POST",
       "/api/clinical/score-approvals": "",
       "/api/clinical/score-approval": "POST",
-      "/api/clinical/score-disable": "POST",
       "/api/clinical/score": "POST",
+      "/api/clinical/score/v2": "POST",
+      "/api/clinical/patient-summary-export": "POST",
+      "/api/clinical/standards": "",
+      "/api/clinical/standards-register": "POST",
+      "/api/clinical/standards-activate": "POST",
+      "/api/clinical/score-governance": "",
+      "/api/clinical/score-governance-history": "?score=curb-65",
+      "/api/clinical/score-governance-expiring": "?withinDays=30",
+      "/api/clinical/score-approve": "POST",
+      "/api/clinical/score-disable": "POST",
       "/api/clinical/chart-score": "POST",
       "/api/clinical/prescriptions": `?patient=${P}`,
       "/api/clinical/prescription-chase": "",
@@ -755,6 +1210,14 @@ test("every clinical route leaves an audit row, including ones added later", asy
 
     /** The body each POST route needs to do real work. */
     const bodies: Record<string, unknown> = {
+      "/api/clinical/order-send": { order: forAck.id },
+      "/api/clinical/order-cancel-send": { order: forAck.id },
+      "/api/clinical/order-transmission-record": {
+        order: forAck.id,
+        outcome: "sent",
+        destination: "Stanton Laboratory",
+        detail: "handed to the outbound queue",
+      },
       "/api/clinical/safety-check": { patient: P, ingredient: "amoxicillin" },
       "/api/clinical/break-glass": {
         patient: P,
@@ -782,6 +1245,20 @@ test("every clinical route leaves an audit row, including ones added later", asy
         measure: { id: "hba1c-8", name: "HbA1c under 8", withinDays: 365, target: { code: "4548-4", below: 8 } },
         recipient: "NWT quality improvement committee",
         purpose: "quarterly diabetes measure review",
+      },
+      "/api/clinical/effectiveness-review": { from: "2000-01-01T00:00:00Z", to: "2030-01-01T00:00:00Z", targetWithinHours: 24 },
+      "/api/clinical/effectiveness-follow-up": { from: "2000-01-01T00:00:00Z", to: "2030-01-01T00:00:00Z" },
+      "/api/clinical/effectiveness-referrals": { from: "2000-01-01T00:00:00Z", to: "2030-01-01T00:00:00Z" },
+      "/api/clinical/effectiveness-notifications": { from: "2000-01-01T00:00:00Z", to: "2030-01-01T00:00:00Z" },
+      "/api/clinical/effectiveness-missed-appointments": { from: "2000-01-01T00:00:00Z", to: "2030-01-01T00:00:00Z", outcomeGraceHours: 24 },
+      "/api/clinical/effectiveness-task-burden": { from: "2000-01-01T00:00:00Z", to: "2030-01-01T00:00:00Z" },
+      "/api/clinical/effectiveness-release": {
+        metric: "missed-appointments",
+        from: "2000-01-01T00:00:00Z",
+        to: "2030-01-01T00:00:00Z",
+        outcomeGraceHours: 24,
+        recipient: "NWT quality improvement committee",
+        purpose: "quarterly workflow-effectiveness review",
       },
       "/api/clinical/link": {
         a: P,
@@ -821,6 +1298,56 @@ test("every clinical route leaves an audit row, including ones added later", asy
         unit: "/min",
         takenAt: "2026-08-24T10:00:00Z",
       },
+      "/api/clinical/procedure-record": {
+        patient: P,
+        procedure: "IUD insertion",
+        performedAt: "2025-03-01T12:00:00Z",
+      },
+      "/api/clinical/care-plan-record": {
+        patient: P,
+        title: "Asthma action plan",
+        goals: ["no unscheduled visits this winter"],
+        reviewBy: "2026-12-01T00:00:00Z",
+      },
+      "/api/clinical/care-plan-complete": {
+        id: planToComplete.recordId,
+        outcome: "goals met at annual review; HbA1c 6.8",
+      },
+      "/api/clinical/care-plan-revoke": {
+        id: planToRevoke.recordId,
+        reason: "patient moved; care transferred to Fort Smith",
+      },
+      "/api/clinical/goal-propose": {
+        patient: P,
+        carePlan: planToComplete.recordId,
+        description: "Attend all scheduled pulmonary follow-ups",
+      },
+      "/api/clinical/goal-approve": { id: goalToApprove.recordId },
+      "/api/clinical/goal-decline": { id: goalToDecline.recordId, reason: "not appropriate given the patient's other conditions" },
+      "/api/clinical/goal-complete": { id: goalToComplete.recordId, outcome: "sodium intake now within target range" },
+      "/api/clinical/goal-revise": {
+        id: goalToRevise.recordId,
+        description: "A1C under 7.0%",
+        reason: "patient is tolerating the new regimen well",
+      },
+      "/api/clinical/action-propose": {
+        patient: P,
+        carePlan: planToComplete.recordId,
+        description: "Refer to respiratory therapy",
+        responsible: "dr-tetso",
+      },
+      "/api/clinical/action-approve": { id: actionToApprove.recordId },
+      "/api/clinical/action-decline": { id: actionToDecline.recordId, reason: "already covered by the pulmonology referral" },
+      "/api/clinical/action-progress": { id: actionToProgress.recordId, progress: "attended first of four sessions" },
+      "/api/clinical/action-complete": { id: actionToComplete.recordId, outcome: "attended; dietitian plan on file" },
+      "/api/clinical/patient-document-record": {
+        patient: P,
+        title: "Advance directive photocopy",
+        source: "clinic-scanned",
+        receivedAt: "2026-01-15T09:00:00Z",
+        contentType: "text/plain",
+        data: "photocopy on file at the desk",
+      },
       "/api/clinical/care-team-assign": { patient: P, practitioner: "dr-tetso", role: "covering" },
       "/api/clinical/care-team-retire": { id: membership.id },
       "/api/clinical/coverage-record": { patient: P, plan: "NIHB", eligibility: "eligible" },
@@ -841,7 +1368,11 @@ test("every clinical route leaves an audit row, including ones added later", asy
       },
       "/api/clinical/thread-reopen": { id: toReopen.id, reason: "patient called back with a new question" },
       "/api/clinical/thread-assign": { id: toAssign.id, owner: "dr-tetso", reason: "picked up from the unowned queue" },
-      "/api/clinical/authority-self": { patient: P, subject: "patient-oauth-subject" },
+      "/api/clinical/authority-self": {
+        patient: P,
+        subject: "patient-oauth-subject",
+        method: "photo ID and health card matched at the desk",
+      },
       "/api/clinical/authority-proxy": {
         patient: P,
         subject: "proxy-oauth-subject",
@@ -849,8 +1380,24 @@ test("every clinical route leaves an audit row, including ones added later", asy
         expiresAt: "2027-08-24T00:00:00Z",
         permissions: ["appointments", "messages"],
         purpose: "book appointments and exchange messages",
+        method: "photo ID and health card matched at the desk",
       },
       "/api/clinical/authority-revoke": { authority: authorityToRevoke.id, reason: "patient withdrew access" },
+      "/api/clinical/enrolment-request": {
+        patient: P,
+        subject: "enrol-request-subject",
+        relationship: "self",
+      },
+      "/api/clinical/enrolment-attest": {
+        id: pendingToAttest.id,
+        method: "photo ID and health card matched at the desk",
+      },
+      "/api/clinical/enrolment-decline": {
+        id: pendingToDecline.id,
+        reason: "could not confirm identity from the documents presented",
+      },
+      "/api/clinical/patient-notice-dispatch": { id: noticeToDispatch.id },
+      "/api/clinical/patient-notice-told": { id: noticeToTell.id },
       "/api/clinical/patient-request-complete": {
         request: requestToComplete.id,
         outcome: "encrypted chart export provided to the patient",
@@ -866,7 +1413,46 @@ test("every clinical route leaves an audit row, including ones added later", asy
         input: { confusion: false, ureaMmolL: 9, respiratoryRate: 32, systolicBp: 88, diastolicBp: 55, ageYears: 72 },
         units: { ureaMmolL: "mmol/L", respiratoryRate: "breaths/min", systolicBp: "mmHg", diastolicBp: "mmHg", ageYears: "completed years" },
       },
+      // The same patient through the measurement contract: the units travel
+      // with the values instead of being spelled into the parameter names.
+      "/api/clinical/score/v2": {
+        score: "curb-65",
+        patient: P,
+        measurements: {
+          urea: { value: 9, unit: "mmol/L" },
+          respiratoryRate: { value: 32, unit: "/min" },
+          systolicBp: { value: 88, unit: "mm[Hg]" },
+          diastolicBp: { value: 55, unit: "mm[Hg]" },
+          age: { value: 72, unit: "a" },
+        },
+        input: { confusion: false },
+      },
       "/api/clinical/chart-score": { score: "news2", patient: P, supplied: { onSupplementalOxygen: false, alert: true } },
+      // A different score from the fixture's, so approving here cannot make
+      // the score routes above pass for the wrong reason.
+      "/api/clinical/score-approve": {
+        score: "wells-pe",
+        clinicalOwner: "dr-tetso",
+        reviewDue: "2027-06-30",
+        reason: "synthetic approval recorded by the route test",
+      },
+      "/api/clinical/score-disable": {
+        score: "has-bled",
+        reason: "synthetic withdrawal recorded by the route test",
+      },
+      "/api/clinical/patient-summary-export": { patient: P },
+      "/api/clinical/standards-register": {
+        canonicalUrl: "http://example.invalid/fhir/other-ig/",
+        packageId: "example.fixture.other",
+        version: "2.0.0",
+        publicationStatus: "release",
+        fhirVersion: "4.0.1",
+        license: "CC0-1.0",
+      },
+      "/api/clinical/standards-activate": {
+        id: stdPackage.id,
+        reason: "putting the fixture package into force for the route test",
+      },
       "/api/clinical/prescribe": { statement: statement.id, instructions: "One tablet twice daily with food" },
       "/api/clinical/prescription-transmit": { prescription: rxToTransmit, pharmacy: "yk-pharmacy" },
       "/api/clinical/prescription-handout": { prescription: rxToHandOut, reason: "printed for the patient" },
@@ -971,16 +1557,12 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/score-approval": {
         score: "curb-65",
         implementationVersion: "portage-1",
-        clinicalOwner: "Dr Jean Tetso",
+        clinicalOwner: "dr-tetso",
         approvedPopulation: "Synthetic test patients only",
         reviewedAt: "2026-08-01T00:00:00.000Z",
         reviewDue: "2099-08-01T00:00:00.000Z",
         licensingAcceptedBy: "test-governance",
         reason: "exercise the approval endpoint",
-      },
-      "/api/clinical/score-disable": {
-        score: "has-bled",
-        reason: "exercise the fail-closed disable endpoint",
       },
       "/api/clinical/assurance-finding-close": {
         id: findingToClose.id,
@@ -998,6 +1580,35 @@ test("every clinical route leaves an audit row, including ones added later", asy
         region: "ca-central-1",
         status: "active",
       },
+      "/api/clinical/intake-review": {
+        id: intakeToReview.id,
+        outcome: "needs-follow-up",
+        note: "Booked a same-week GP review for the shortness of breath",
+      },
+      "/api/clinical/questionnaires": {
+        id: "route-test-questionnaire",
+        title: "Route test questionnaire",
+        questions: [{ key: "q1", label: "Anything to flag before your visit?", type: "text" }],
+      },
+      "/api/clinical/upload-scan": { id: uploadToScan.id },
+      "/api/clinical/eligibility-rules": {
+        id: "route-test-published-rule",
+        name: "Route-test published rule",
+        cohort: { id: "route-test-published-cohort", name: "Route-test published cohort", conditionCodes: ["route-test outreach condition"] },
+        gap: { id: "route-test-published-gap", name: "Route-test published gap", withinDays: 180 },
+      },
+      "/api/clinical/outreach-campaigns": { eligibilityRuleId: outreachRule.id, name: "Route-test live-created campaign" },
+      "/api/clinical/outreach-campaigns-close": { id: campaignToClose.id },
+      "/api/clinical/outreach-item-assign": { id: itemToAssign.id, staffId: "clerk-amaruq" },
+      "/api/clinical/outreach-item-attempt": { id: itemToAttempt.id, channel: "phone", outcome: "no-answer" },
+      "/api/clinical/outreach-item-book": { id: itemToBook.id, bookingId: outreachBooking.id },
+      "/api/clinical/outreach-item-complete": { id: itemToComplete.id },
+      "/api/clinical/outreach-item-exclude": { id: itemToExclude.id, reason: "route-test exclusion: patient moved away" },
+      "/api/clinical/arrangements": { visit: arrangementVisit.id, kind: "equipment", detail: "portable ultrasound flown in with the clinician" },
+      "/api/clinical/arrangement-assign": { id: arrangementForAssign.id, ownerId: "clerk-amaruq" },
+      "/api/clinical/arrangement-confirm": { id: arrangementForConfirm.id, evidence: "confirmed by phone with the interpreter co-op" },
+      "/api/clinical/arrangement-request-external": { id: arrangementForExternal.id },
+      "/api/clinical/arrangement-cancel": { id: arrangementForCancel.id, reason: "route-test cancellation: patient no longer attending" },
     };
 
     const unlisted = paths.filter((p) => !(p in args));
@@ -1064,7 +1675,7 @@ test("a patient directive stops the chart at the API, and the refusal is on the 
       assert.match(row.detail ?? "", /withheld by patient directive/);
 
       // Every patient-scoped route, not just the chart.
-      for (const p of ["medications", "allergies", "orders", "notes", "appointments", "immunizations", "vitals", "care-team", "coverage", "threads"]) {
+      for (const p of ["medications", "allergies", "orders", "notes", "appointments", "immunizations", "vitals", "procedures", "care-plans", "patient-documents", "care-team", "coverage", "threads"]) {
         assert.equal((await s.get(`/api/clinical/${p}?patient=${P}`)).status, 403, `${p} honoured the directive`);
       }
     } finally {
@@ -1168,7 +1779,7 @@ test("every patient-scoped clinical route consults the directive check", () => {
     const next = block.indexOf('if (path === "', i + 10);
     const body = block.slice(i, next === -1 ? undefined : next);
     assert.ok(
-      /\bphi\(/.test(body) || /consent\./.test(body),
+      /\bphi(For|Office)?\(/.test(body) || /consent\./.test(body),
       `${route} serves one patient's data without going through phi() or consulting consent directly`
     );
   }
@@ -1291,12 +1902,15 @@ test("a directive narrowed to some entry types withholds that section, not the w
         complete: boolean;
         omissions: string[];
         recentNotes: { items: unknown[]; complete: boolean; incomplete?: { reason: string; detail?: string } };
+        documents: { items: unknown[]; complete: boolean; incomplete?: { reason: string; detail?: string } };
         allergies: { complete: boolean };
       };
 
       assert.equal(chart.recentNotes.items.length, 0);
       assert.equal(chart.recentNotes.incomplete?.reason, "withheld", "not 'unavailable' — nothing failed");
       assert.match(chart.recentNotes.incomplete!.detail!, /break glass/, "and the way through is named");
+      assert.equal(chart.documents.items.length, 0);
+      assert.equal(chart.documents.incomplete?.reason, "withheld", "locking DocumentReference withholds notes and patient-supplied documents");
       assert.equal(chart.complete, false, "a chart missing what the patient locked is not the whole chart");
       assert.ok(
         chart.omissions.some((o) => /Recent notes/.test(o)),
@@ -1319,6 +1933,7 @@ test("a directive narrowed to some entry types withholds that section, not the w
       const refusal = (await notes.json()) as { error: string; breakGlass: string };
       assert.match(refusal.error, /withheld by a patient directive/);
       assert.equal(refusal.breakGlass, "POST /api/clinical/break-glass");
+      assert.equal((await s.get(`/api/clinical/patient-documents?patient=${P}`)).status, 403);
 
       // A route serving a type the patient did not lock is not affected.
       assert.equal((await s.get(`/api/clinical/allergies?patient=${P}`)).status, 200);

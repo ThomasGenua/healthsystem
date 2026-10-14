@@ -19,7 +19,7 @@
  * against.
  *
  * Skipped where no Chromium is installed, rather than quietly asserting
- * nothing. Set PORTAGE_TEST_CHROME to point at one.
+ * nothing. Set NORTHSTAR_TEST_CHROME to point at one.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -36,7 +36,7 @@ import type { MappingDoc } from "../src/types.ts";
 
 function findChrome(): string | undefined {
   const candidates = [
-    process.env.PORTAGE_TEST_CHROME,
+    process.env.NORTHSTAR_TEST_CHROME,
     "/opt/pw-browsers/chromium-1194/chrome-linux/chrome",
     "/usr/bin/chromium",
     "/usr/bin/chromium-browser",
@@ -54,7 +54,7 @@ const HOSTILE_ACTOR = { actorId: HOSTILE_CLINICIAN, actorKind: "practitioner" };
 
 test(
   "hostile message content does not execute in the admin console",
-  { skip: CHROME ? false : "no chromium found; set PORTAGE_TEST_CHROME to run this" },
+  { skip: CHROME ? false : "no chromium found; set NORTHSTAR_TEST_CHROME to run this" },
   async () => {
     // Anything that runs calls this. A hit is proof rather than an inference.
     const beacons: string[] = [];
@@ -66,9 +66,23 @@ test(
     const canaryPort = (canary.address() as { port: number }).port;
     const beacon = (tag: string) => `fetch('http://127.0.0.1:${canaryPort}/fired-${tag}')`;
 
-    const dir = mkdtempSync(join(tmpdir(), "portage-xss-"));
-    const profile = mkdtempSync(join(tmpdir(), "portage-chrome-"));
-    const engine = new Engine({ dbPath: join(dir, "portage.db"), tickMs: 25 });
+    // The same hostility in an *identifier* position, which is a different
+    // context from everything else here. Names, titles and reasons land in
+    // element content or a quoted attribute, where `esc()` is the right tool.
+    // An id lands in `onclick="openChart('…')"` — and there escaping an
+    // apostrophe to `&#39;` does not help, because the HTML parser decodes the
+    // attribute value before the JavaScript in it is parsed, so the entity is
+    // an apostrophe again by the time it matters.
+    //
+    // Injected as an expression in argument position rather than a statement
+    // after the call, because the call it lands in throws on any tab without a
+    // `#pt` input — and a statement sequenced after a throw would prove the
+    // breakout impossible when it is only unreachable that one way.
+    const EVIL_ID = `NT9'+${beacon("onclick")}+'`;
+
+    const dir = mkdtempSync(join(tmpdir(), "northstar-xss-"));
+    const profile = mkdtempSync(join(tmpdir(), "northstar-chrome-"));
+    const engine = new Engine({ dbPath: join(dir, "northstar.db"), tickMs: 25 });
     await engine.start();
     const api = await startApi(engine, 0, "127.0.0.1");
     let chrome: ReturnType<typeof spawn> | undefined;
@@ -168,6 +182,26 @@ test(
         by: HOSTILE_ACTOR,
       });
       t.tasks.create({ kind: "administrative", title: payloads[5], by: HOSTILE_ACTOR, ownerId: HOSTILE_CLINICIAN });
+      t.procedures.record({
+        patientId: HOSTILE_PATIENT,
+        procedure: payloads[0],
+        performedAt: "2026-08-20T10:00:00Z",
+        by: { authorId: HOSTILE_CLINICIAN, authorKind: "practitioner" },
+      });
+      t.carePlans.record({
+        patientId: HOSTILE_PATIENT,
+        title: payloads[2],
+        goals: [payloads[5]],
+        reviewBy: "2020-01-01T00:00:00Z",
+        by: { authorId: HOSTILE_CLINICIAN, authorKind: "practitioner" },
+      });
+      t.documents.receive({
+        patientId: HOSTILE_PATIENT,
+        title: payloads[1],
+        source: "patient-brought",
+        receivedAt: "2026-08-20T10:00:00Z",
+        by: { authorId: HOSTILE_CLINICIAN, authorKind: "practitioner" },
+      });
       // Narrowed, not a full lockbox. An unscoped directive would make the
       // chart answer 403 and render a refusal banner containing nothing
       // hostile — so this test would pass while proving nothing about the tab
@@ -185,6 +219,39 @@ test(
         patientId: HOSTILE_PATIENT,
         by: { actorId: payloads[3], actorKind: "practitioner" },
         reason: `${payloads[0]} — unresponsive on arrival, need the allergy list now`,
+      });
+      t.enrolment.request({
+        patientId: HOSTILE_PATIENT,
+        subjectId: payloads[0],
+        relationship: "self",
+        by: HOSTILE_ACTOR,
+      });
+      t.notices.queue({
+        patientId: HOSTILE_PATIENT,
+        kind: "request-completed",
+        summary: payloads[1],
+      });
+
+      // A patient identifier is not validated for charset anywhere: it is
+      // whatever PID-3 of the message said, and MLLP has nothing to
+      // authenticate with. Seeded through the stores rather than a feed only
+      // because the break-glass queue is the shortest render path to an id in
+      // an onclick — the id itself is exactly as arbitrary either way.
+      t.clinical.record({
+        entryType: "Patient",
+        patientId: EVIL_ID,
+        content: {
+          resourceType: "Patient",
+          identifier: [{ system: "urn:jhn", value: EVIL_ID }],
+          name: [{ family: "Breakout", given: ["Identifier"] }],
+        },
+        authorId: "adt-feed",
+        authorKind: "device",
+      });
+      t.consent.breakGlass({
+        patientId: EVIL_ID,
+        by: HOSTILE_ACTOR,
+        reason: "an identifier that breaks out of the onclick it is rendered into, if it can",
       });
 
       chrome = spawn(CHROME!, [
@@ -256,14 +323,15 @@ test(
 
       const base = `http://127.0.0.1:${api.port}`;
       const seen: Record<string, boolean> = {};
+      let idSeen = false;
 
       // What each tab needs before it will render anything. The clinical tabs
       // are driven by a patient or a clinician the user has chosen, so without
       // this they paint an empty form and the payloads never reach the DOM —
       // which would pass, having proved nothing.
       const prep: Record<string, string> = {
-        Chart: `sessionStorage.setItem('portage.patient',${JSON.stringify(HOSTILE_PATIENT)});`,
-        Worklist: `localStorage.setItem('portage.clinician',${JSON.stringify(HOSTILE_CLINICIAN)});`,
+        Chart: `sessionStorage.setItem('northstar.patient',${JSON.stringify(HOSTILE_PATIENT)});`,
+        Worklist: `localStorage.setItem('northstar.clinician',${JSON.stringify(HOSTILE_CLINICIAN)});`,
       };
 
       for (const tab of ["Channels", "Messages", "FHIR", "Audit", "Chart", "Worklist", "Break-glass", "Privacy"]) {
@@ -291,10 +359,12 @@ test(
                 if(HOSTILE.test(document.body.innerHTML)){ escaped = true; break; }
               }
               for(const el of document.querySelectorAll('*')) el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
+              for(const a of document.querySelectorAll('#main a')) a.click();
               for(const row of document.querySelectorAll('tr.row')) row.click();
               await new Promise(r=>setTimeout(r,400));
               return JSON.stringify({
                 escaped: escaped || HOSTILE.test(document.body.innerHTML),
+                idRendered: document.body.innerHTML.includes('fired-onclick'),
                 live: document.querySelectorAll('img,svg,script[src]').length,
               });
             })()`,
@@ -304,8 +374,9 @@ test(
         );
         const v = JSON.parse(
           ((out.result as { result?: { value?: string } })?.result?.value ?? "{}") as string
-        ) as { escaped?: boolean; live?: number };
+        ) as { escaped?: boolean; idRendered?: boolean; live?: number };
         seen[tab] = v.escaped === true;
+        if (v.idRendered) idSeen = true;
         assert.equal(v.live ?? 0, 0, `${tab} rendered an element built from message content`);
       }
 
@@ -328,6 +399,10 @@ test(
       for (const tab of ["Chart", "Worklist", "Break-glass"]) {
         assert.ok(seen[tab], `the hostile payload never rendered on the ${tab} tab, so this proved nothing about it`);
       }
+      // And the same for the identifier. Without this the id case would pass
+      // on a console that never rendered the row carrying it, which is the
+      // state this test was in before the row existed.
+      assert.ok(idSeen, "the hostile identifier never rendered, so this proved nothing about ids in handlers");
       assert.deepEqual(beacons, [], "message content executed in the admin console");
     } finally {
       if (chrome) {
@@ -341,12 +416,16 @@ test(
           // Already gone, or never got a group. Fall back to the launcher.
         }
         chrome.kill("SIGKILL");
-        await Promise.race([exited, new Promise((r) => setTimeout(r, 5_000))]);
+        // Cleared once decided, so a Chromium that exits at once does not
+        // leave this timer holding the process open for five more seconds.
+        let fallback: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([exited, new Promise((r) => { fallback = setTimeout(r, 5_000); })]);
+        clearTimeout(fallback);
       }
       await api.close();
       await engine.stop();
       await new Promise<void>((r) => canary.close(() => r()));
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 
       // Best effort, and deliberately not an assertion. A Chromium profile
       // that will not delete is a temp directory on a CI runner; it says

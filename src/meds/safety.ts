@@ -17,7 +17,7 @@
  *
  * The mechanism is here. The content is not, and pretending otherwise would be
  * worse than the gap: a drug interaction table that is 80% complete is one a
- * prescriber learns to trust, and the missing 20% is then invisible. Portage
+ * prescriber learns to trust, and the missing 20% is then invisible. Northstar
  * ships a deliberately small rule set covering duplicate therapy and the
  * cross-reactivity classes with the clearest consensus, and takes a licensed
  * interaction database through `InteractionSource` for anything more. A

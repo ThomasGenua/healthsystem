@@ -1,6 +1,6 @@
 # Security policy
 
-Portage moves and stores personal health information. A defect in it is not an
+Northstar moves and stores personal health information. A defect in it is not an
 availability problem with a privacy footnote — a record served to the wrong
 clinician, an audit row that was never written, or a lockbox that reports
 itself in force while enforcing nothing are all, on their own, the failure this
@@ -62,7 +62,7 @@ intentions rather than a contractual SLA:
 You will be credited in the advisory by whatever name you ask for, or not at
 all if you prefer. There is no bug bounty.
 
-## Testing against Portage
+## Testing against Northstar
 
 Security research against **your own deployment or a local checkout** is
 welcome and needs no permission. Please do not test against a live deployment
@@ -90,26 +90,36 @@ writing:
 - a durability claim that does not hold — acknowledged and lost, or replayed
   out of order
 - recovering redacted or purged content from a database file or a backup
+- running script in the admin console or the patient page. Neither puts a value
+  into an attribute that holds JavaScript, and both are served under a policy
+  whose `script-src` is a per-response nonce — so an injected handler or
+  `<script>` has to get past both. A message arriving on an unauthenticated
+  MLLP port reaching either is the shape this matters in
 
 **Out of scope** — the demo fixtures and synthetic data, denial of service by
 brute resource exhaustion against a single-node deployment (it is single-node
-on purpose and documented as such), missing hardening headers on the admin UI
-where no session or credential is at stake, and anything requiring physical
-access to a machine or an operator's terminal. Reports generated wholesale by
-an automated scanner with no reproduction attached are unlikely to get a useful
-response.
+on purpose and documented as such), and anything requiring physical access to a
+machine or an operator's terminal. Reports generated wholesale by an automated
+scanner with no reproduction attached are unlikely to get a useful response.
+
+This list used to also exclude missing hardening headers on the admin console,
+"where no session or credential is at stake". That was wrong on its own terms —
+the console holds an API key in browser storage and attaches it to every
+request, so script running there runs with that key — and it is no longer true
+of the code either: both pages are served under a Content-Security-Policy whose
+`script-src` is a per-response nonce. Reports about those headers are in scope.
 
 ## Supported versions
 
-Portage is pre-1.0 and moving quickly. Only the latest minor release receives
+Northstar is pre-1.0 and moving quickly. Only the latest minor release receives
 security fixes; there are no long-term support branches. A site running an
 older version should expect to upgrade to receive a fix — `test/migration.test.ts`
 exists precisely so that upgrading is not the risky part.
 
 | Version | Supported |
 | --- | --- |
-| 0.7.x | yes |
-| < 0.7 | no |
+| 0.9.x | yes |
+| < 0.9 | no |
 
 ## Known limitations, which are not vulnerabilities
 
@@ -120,12 +130,22 @@ discussion, but they will not be treated as advisories:
 - **Single node.** One process owns a database file, enforced with a lock.
   There is no clustering, and a hardware failure is an outage until the standby
   is promoted by hand.
-- **No certified patient portal.** `GET /me` is chrome (EN/FR copy, landmarks,
-  an honest banner) and loads no chart. The patient/proxy JSON boundary is
-  mounted at `/patient/*`, but it is not an enrolment or identity-proofing
-  flow, notification delivery, or an accessibility claim. It is OAuth-only; a
-  patient-context token cannot read the general FHIR facade, and each chart
-  still needs a live, explicitly scoped subject-to-patient grant.
+- **Patient portal assurance remains deployment-specific.** `/me` is an
+  EN/FR application with optional server-side OIDC code/PKCE sign-in. Tokens
+  remain server-side; opaque HttpOnly/Secure cookies authorize only patient
+  routes. Cookie-authenticated writes and logout require the exact public
+  Origin and a session-bound CSRF token. Sessions expire on idle time, token
+  expiry, logout and process restart; logout does not end upstream SSO.
+  Development token entry stores nothing in browser storage.
+  It does not enrol anyone. The
+  patient/proxy JSON boundary is mounted at `/patient/*`. Binding a subject
+  is clinic-attested enrolment: a named person writes how they checked, and
+  a pending row is not a grant. Notices publish fact onto a configured
+  channel; dispatching is not telling. None of that is identity-proofing,
+  ONE ID, notification that a letter arrived, or an accessibility claim.
+  It is OAuth-only; a patient-context token cannot read the general FHIR
+  facade, and each chart still needs a live, explicitly scoped
+  subject-to-patient grant.
 - **A credential that carries no organization is withheld from by every
   `withhold-from-organization` directive.** Credentials can now carry one, so a
   directive against one clinic no longer withholds from the whole territory —
@@ -135,7 +155,16 @@ discussion, but they will not be treated as advisories:
 - **Medication decision support ships without a broad interaction source.**
   Deterministic published risk instruments are a separate catalogue and carry
   their formula version, population, exclusions, units and an explicit
-  not-independently-clinically-validated product assurance state. They are
-  disabled until each deployment records a current, version-bound clinical
-  approval, and complete inputs with missing or mismatched units are refused.
-  Nothing in Portage uses machine learning.
+  not-independently-clinically-validated assurance state. Nothing in Northstar
+  uses machine learning. No output should be read as though it did.
+- **An `admin`-scoped key can direct the engine's outbound requests anywhere,
+  including a private address.** A channel's HTTP destination is exactly as
+  configurable as an interface engine's destination has to be — an on-premises
+  laboratory or pharmacy system is routinely on a private address, and
+  refusing those would break the integrations this exists to run, so there is
+  no allow-list or private-range check on a destination URL. `admin` is
+  therefore not a scope to hand out for convenience or to a lower-trust tenant
+  administrator: whoever holds one can make the server issue outbound HTTP
+  requests, from the server's own network position, with headers and a body
+  they choose. Treat issuing an `admin` key the same as trusting somebody with
+  the machine itself.

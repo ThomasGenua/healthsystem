@@ -13,7 +13,7 @@
  * The restore itself was a documented sequence of `mv`, `rm` and `cp`. Three
  * things go wrong with that, and all three are silent:
  *
- *   The stale sidecars. `rm -f data/portage.db-wal` is the step people skip,
+ *   The stale sidecars. `rm -f data/northstar.db-wal` is the step people skip,
  *   and skipping it points SQLite at a write-ahead log belonging to the
  *   database that was just replaced. The README says so; a procedure that
  *   relies on nobody skipping a step under pressure at 03:00 is not a
@@ -67,6 +67,7 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { Db } from "../db.ts";
 import { verifyBackup, type BackupResult } from "./backup.ts";
+import { BACKUP_FILE_RE, sortSnapshots } from "./naming.ts";
 
 export interface RestoreOptions {
   /** The snapshot to restore. Verified before anything is touched. */
@@ -223,7 +224,7 @@ export function restore(opts: RestoreOptions): RestoreResult {
   let verified: BackupResult["verified"] | undefined;
   let migratedFromOlderSchema: boolean | undefined;
   if (!opts.skipPreflight) {
-    const scratchDir = mkdtempSync(join(tmpdir(), "portage-preflight-"));
+    const scratchDir = mkdtempSync(join(tmpdir(), "northstar-preflight-"));
     const scratch = join(scratchDir, "candidate.db");
     try {
       copyFileSync(opts.snapshot, scratch);
@@ -319,14 +320,13 @@ export function restore(opts: RestoreOptions): RestoreResult {
 /**
  * The newest snapshot in a backup directory.
  *
- * Filenames carry an ISO stamp, so they sort chronologically — the same
- * property `prune()` relies on to decide what to delete.
+ * Filenames carry an ISO stamp, so they order chronologically once the
+ * product prefix is stripped — the same property `prune()` relies on to decide
+ * what to delete, and the reason both are sorted through `sortSnapshots()`.
  */
 export function latestSnapshot(dir: string): string | undefined {
   if (!existsSync(dir)) return undefined;
-  const snapshots = readdirSync(dir)
-    .filter((f) => /^portage-.*\.db$/.test(f))
-    .sort();
+  const snapshots = sortSnapshots(readdirSync(dir).filter((f) => BACKUP_FILE_RE.test(f)));
   const newest = snapshots.at(-1);
   return newest ? join(dir, newest) : undefined;
 }

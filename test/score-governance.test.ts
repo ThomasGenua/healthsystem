@@ -1,103 +1,426 @@
-/** Deployment score approval is a gate, not a label. */
+/**
+ * Permission to use a score, as distinct from the arithmetic being right.
+ *
+ * `scores.ts` computes correctly and `score-invariants.test.ts` proves the
+ * shape holds. Neither says anybody may act on the number. An instrument
+ * derived in one population, implemented from a paper and never looked at by
+ * anyone accountable at this site is a calculator — and a calculator wired
+ * into a chart, returning a band and an interpretation, is indistinguishable
+ * at the point of care from a decision somebody stands behind.
+ *
+ * So the default is off, and the first test here is that the empty table is
+ * the safe state rather than an unconfigured one. The rest are the ways an
+ * approval can stop being one: it expires, the arithmetic changes underneath
+ * it, its owner leaves, or somebody withdraws it. Each disables the score,
+ * and none of them clears itself.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Db } from "../src/db.ts";
+import { Directory } from "../src/directory/store.ts";
 import { ScoreGovernance, requireScoreUnits } from "../src/clinical/score-governance.ts";
+import { SCORE_IDS } from "../src/clinical/score-definitions.ts";
+import { Refusal } from "../src/core/refusal.ts";
 
-const REVIEW = {
-  scoreId: "curb-65",
+const OPS = { id: "ops-lachance", kind: "apikey" };
+const FUTURE = "2027-06-30";
+const EVIDENCE = {
   implementationVersion: "portage-1",
-  clinicalOwner: "Dr Jean Tetso",
-  approvedPopulation: "Adults presenting to this deployment with community-acquired pneumonia",
+  approvedPopulation: "Adults presenting locally with community-acquired pneumonia",
   reviewedAt: "2026-08-01T00:00:00.000Z",
-  reviewDue: "2027-08-01T00:00:00.000Z",
   licensingAcceptedBy: "clinical-governance-board",
-  reason: "Board minute CGB-2026-14",
-  by: { actorId: "cso-tetso", actorKind: "practitioner" },
-  at: "2026-09-01T00:00:00.000Z",
-} as const;
+};
 
-test("scores are disabled until a named, current, version-bound review enables them", () => {
-  const db = new Db(":memory:");
+function site() {
+  const dir = mkdtempSync(join(tmpdir(), "northstar-gov-"));
+  const db = new Db(join(dir, "northstar.db"));
+  const directory = new Directory(db);
+  directory.addPractitioner({ id: "dr-tetso", family: "Tetso", given: "Jean" });
+  return {
+    db,
+    directory,
+    gov: new ScoreGovernance(db),
+    cleanup: () => {
+      db.close();
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    },
+  };
+}
+
+const approve = (s: ReturnType<typeof site>, over: Record<string, unknown> = {}) =>
+  s.gov.approve({
+    scoreId: "curb-65",
+    clinicalOwnerId: "dr-tetso",
+    reviewDue: FUTURE,
+    reason: "reviewed against the published instrument by the medical director",
+    by: OPS,
+    ...over,
+  } as Parameters<ScoreGovernance["approve"]>[0]);
+
+test("authorization preserves population, licensing acceptance and the exact approval", () => {
+  const s = site();
   try {
-    const governance = new ScoreGovernance(db);
-    assert.equal(governance.state("curb-65", REVIEW.at).enabled, false);
-    assert.throws(() => governance.requireEnabled("curb-65", REVIEW.at), /no deployment approval recorded/);
-
-    const row = governance.approve(REVIEW);
-    const authorization = governance.requireEnabled("curb-65", REVIEW.at);
+    const row = approve(s, { evidence: EVIDENCE });
+    const authorization = s.gov.requireEnabled("curb-65");
     assert.equal(authorization.approvalId, row.id);
-    assert.equal(authorization.implementationVersion, "portage-1");
-    assert.equal(authorization.clinicalOwner, "Dr Jean Tetso");
-
-    assert.throws(
-      () => governance.requireEnabled("curb-65", "2027-08-01T00:00:00.000Z"),
-      /clinical review expired/
-    );
-
-    // Simulates opening a database whose approval names the implementation
-    // from before an upgrade. The current code must not inherit that decision.
-    db.sql
-      .prepare("UPDATE score_approvals SET implementation_version = ? WHERE tenant_id = ? AND id = ?")
-      .run("portage-0", db.tenantId, row.id);
-    assert.throws(() => governance.requireEnabled("curb-65", REVIEW.at), /not current implementation portage-1/);
+    assert.equal(authorization.implementationVersion, EVIDENCE.implementationVersion);
+    assert.equal(authorization.clinicalOwner, "Jean Tetso");
+    assert.equal(authorization.approvedPopulation, EVIDENCE.approvedPopulation);
+    assert.equal(authorization.reviewedAt, EVIDENCE.reviewedAt);
+    assert.equal(authorization.licensingAcceptedBy, EVIDENCE.licensingAcceptedBy);
+    assert.equal(authorization.licensingAcceptedAt, row.recordedAt);
+    const disabled = s.gov.disable({ scoreId: "curb-65", reason: "source licensing requires another review", by: OPS });
+    assert.equal(disabled.supersedes, row.id);
+    assert.equal(disabled.licensingAcceptedAt, row.licensingAcceptedAt);
+    assert.throws(() => s.gov.requireEnabled("curb-65"), /disabled/);
   } finally {
-    db.close();
+    s.cleanup();
   }
 });
 
-test("renewal and disable are append-only decisions", () => {
-  const db = new Db(":memory:");
+test("review evidence cannot approve a different version, missing population or licensing, or invalid dates", () => {
+  const s = site();
   try {
-    const governance = new ScoreGovernance(db);
-    const enabled = governance.approve(REVIEW);
-    const disabled = governance.disable({
-      scoreId: "curb-65",
-      reason: "steward guidance changed; review required",
-      by: REVIEW.by,
-      at: "2026-10-01T00:00:00.000Z",
-    });
-    assert.equal(disabled.supersedes, enabled.id);
-    assert.equal(governance.history("curb-65").length, 2);
-    assert.throws(() => governance.requireEnabled("curb-65", "2026-10-02T00:00:00.000Z"), /disabled/);
+    for (const evidence of [
+      { ...EVIDENCE, implementationVersion: "portage-0" },
+      { ...EVIDENCE, approvedPopulation: "" },
+      { ...EVIDENCE, licensingAcceptedBy: "" },
+      { ...EVIDENCE, reviewedAt: "invalid" },
+      { ...EVIDENCE, reviewedAt: "2099-01-01" },
+    ]) assert.throws(() => approve(s, { evidence }), Refusal);
+    assert.throws(() => approve(s, { evidence: EVIDENCE, reviewDue: "2026-08-01" }), /must be in the future/);
+    assert.equal(s.gov.history("curb-65").length, 0);
   } finally {
-    db.close();
+    s.cleanup();
   }
 });
 
-test("approval cannot be invented for the wrong implementation or without governance evidence", () => {
-  const db = new Db(":memory:");
-  try {
-    const governance = new ScoreGovernance(db);
-    assert.throws(() => governance.approve({ ...REVIEW, implementationVersion: "portage-0" }), /cannot enable/);
-    assert.throws(() => governance.approve({ ...REVIEW, clinicalOwner: "" }), /named clinical owner/);
-    assert.throws(() => governance.approve({ ...REVIEW, reviewDue: REVIEW.at }), /must be in the future/);
-  } finally {
-    db.close();
-  }
-});
-
-test("approval is tenant-scoped", () => {
-  const db = new Db(":memory:");
-  try {
-    new ScoreGovernance(db.forTenant("north")).approve(REVIEW);
-    assert.equal(new ScoreGovernance(db.forTenant("north")).state("curb-65", REVIEW.at).enabled, true);
-    assert.equal(new ScoreGovernance(db.forTenant("south")).state("curb-65", REVIEW.at).enabled, false);
-  } finally {
-    db.close();
-  }
-});
-
-test("a complete hand-supplied score must name every governed unit exactly", () => {
+test("explicit units must name every governed scale exactly", () => {
   const units = {
-    ureaMmolL: "mmol/L",
-    respiratoryRate: "breaths/min",
-    systolicBp: "mmHg",
-    diastolicBp: "mmHg",
-    ageYears: "completed years",
+    ureaMmolL: "mmol/L", respiratoryRate: "breaths/min",
+    systolicBp: "mmHg", diastolicBp: "mmHg", ageYears: "completed years",
   };
   assert.deepEqual(requireScoreUnits("curb-65", units), units);
   assert.throws(() => requireScoreUnits("curb-65", { ...units, ureaMmolL: "mg/dL" }), /requires units\.ureaMmolL/);
   const { ureaMmolL: _omitted, ...missing } = units;
   assert.throws(() => requireScoreUnits("curb-65", missing), /unit was omitted/);
+});
+
+test("opening main's approval schema adds evidence columns without changing existing decisions", () => {
+  const dir = mkdtempSync(join(tmpdir(), "northstar-gov-upgrade-"));
+  const path = join(dir, "northstar.db");
+  let db = new Db(path);
+  try {
+    new Directory(db).addPractitioner({ id: "dr-tetso", family: "Tetso", given: "Jean" });
+    const row = new ScoreGovernance(db).approve({
+      scoreId: "curb-65", clinicalOwnerId: "dr-tetso", reviewDue: FUTURE,
+      reason: "approval before population evidence was recorded", by: OPS,
+    });
+    for (const column of ["approved_population", "reviewed_at", "licensing_accepted_by", "licensing_accepted_at"]) {
+      db.sql.exec(`ALTER TABLE score_approvals DROP COLUMN ${column}`);
+    }
+    db.close();
+    db = new Db(path);
+    const gov = new ScoreGovernance(db);
+    const authorization = gov.requireEnabled("curb-65");
+    assert.equal(authorization.approvalId, row.id);
+    assert.equal(authorization.approvedPopulation, null, "no population evidence is invented");
+    assert.equal(authorization.licensingAcceptedBy, null);
+    assert.equal(gov.history("curb-65").length, 1);
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test("draft approvals retain their evidence on upgrade but need a registered owner before use", () => {
+  const dir = mkdtempSync(join(tmpdir(), "northstar-gov-draft-"));
+  const path = join(dir, "northstar.db");
+  let db = new Db(path);
+  try {
+    new Directory(db).addPractitioner({ id: "dr-tetso", family: "Tetso", given: "Jean" });
+    db.sql.exec(`
+      DROP TABLE score_approvals;
+      CREATE TABLE score_approvals (
+        tenant_id TEXT NOT NULL, id TEXT NOT NULL, score_id TEXT NOT NULL,
+        implementation_version TEXT NOT NULL, status TEXT NOT NULL,
+        clinical_owner TEXT NOT NULL, approved_population TEXT NOT NULL,
+        reviewed_at TEXT NOT NULL, review_due TEXT NOT NULL,
+        licensing_accepted_by TEXT NOT NULL, licensing_accepted_at TEXT NOT NULL,
+        reason TEXT NOT NULL, recorded_by TEXT NOT NULL, recorded_by_kind TEXT NOT NULL,
+        recorded_at TEXT NOT NULL, supersedes TEXT, PRIMARY KEY (tenant_id, id)
+      );
+    `);
+    for (const tenant of ["default", "north"]) {
+      db.sql.prepare("INSERT INTO score_approvals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(tenant, `draft-${tenant}`, "curb-65", "portage-1", "enabled", "Dr Jean Tetso",
+          EVIDENCE.approvedPopulation, EVIDENCE.reviewedAt, FUTURE, EVIDENCE.licensingAcceptedBy,
+          EVIDENCE.reviewedAt, "draft review decision", OPS.id, OPS.kind, EVIDENCE.reviewedAt, null);
+    }
+    db.close();
+    db = new Db(path);
+    const gov = new ScoreGovernance(db);
+    assert.throws(() => gov.requireEnabled("curb-65"), /directory-registered clinical owner/);
+    const row = gov.history("curb-65")[0];
+    assert.equal(row.id, "draft-default");
+    assert.equal(row.approvedPopulation, EVIDENCE.approvedPopulation);
+    assert.equal(row.licensingAcceptedBy, EVIDENCE.licensingAcceptedBy);
+    assert.equal(row.clinicalOwnerDisplay, "Dr Jean Tetso");
+    assert.equal(new ScoreGovernance(db.forTenant("north")).history("curb-65")[0].id, "draft-north");
+    const renewed = gov.approve({
+      scoreId: "curb-65", clinicalOwnerId: "dr-tetso", reviewDue: FUTURE,
+      reason: "re-reviewed with a directory-registered owner", by: OPS, evidence: EVIDENCE,
+    });
+    assert.equal(renewed.supersedes, row.id);
+    assert.equal(gov.requireEnabled("curb-65").approvalId, renewed.id);
+    db.close();
+    db = new Db(path);
+    assert.equal(new ScoreGovernance(db).history("curb-65").length, 2, "upgrade is idempotent");
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+// ── The default ───────────────────────────────────────────────────────────
+
+test("every score is disabled before anybody says otherwise", () => {
+  const s = site();
+  try {
+    for (const id of SCORE_IDS) {
+      const state = s.gov.state(id);
+      assert.equal(state.status, "never-approved", `${id} should start unapproved`);
+      assert.equal(state.enabled, false, `${id} should start disabled`);
+      assert.equal(state.approval, null);
+    }
+    assert.equal(s.gov.all().filter((x) => x.enabled).length, 0, "no score is enabled on an empty table");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("the gate throws rather than returning false, so a forgotten check cannot serve a number", () => {
+  const s = site();
+  try {
+    assert.throws(
+      () => s.gov.require("news2"),
+      (err: unknown) => err instanceof Refusal && err.status === 403 && /not approved for use here/.test(err.message),
+    );
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ── Recording a decision ──────────────────────────────────────────────────
+
+test("an approval names the instrument, the owner, the operator and the review date", () => {
+  const s = site();
+  try {
+    const row = approve(s);
+    assert.equal(row.scoreId, "curb-65");
+    assert.equal(row.decision, "approved");
+    assert.equal(row.clinicalOwnerId, "dr-tetso");
+    // A readable snapshot, so the record stays legible after the directory changes.
+    assert.equal(row.clinicalOwnerDisplay, "Jean Tetso");
+    assert.equal(row.reviewDue, FUTURE);
+    // The operator who typed it is not the clinician who owns it.
+    assert.equal(row.recordedBy.id, "ops-lachance");
+    assert.notEqual(row.recordedBy.id, row.clinicalOwnerId);
+    assert.equal(row.supersedes, null, "the first decision supersedes nothing");
+    assert.ok(row.implementationVersion, "the decision records which arithmetic it was about");
+
+    assert.equal(s.gov.state("curb-65").status, "current");
+    assert.equal(s.gov.enabled("curb-65"), true);
+    // And only that one.
+    assert.deepEqual(s.gov.all().filter((x) => x.enabled).map((x) => x.scoreId), ["curb-65"]);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("nothing can be approved without a written reason, an owner and a review date", () => {
+  const s = site();
+  try {
+    assert.throws(() => approve(s, { reason: "ok" }), /written reason of at least 12 characters/);
+    assert.throws(() => approve(s, { reason: "" }), /written reason/);
+    assert.throws(() => approve(s, { clinicalOwnerId: "" }), /requires the practitioner who owns it/);
+    assert.throws(() => approve(s, { reviewDue: "" }), /requires an explicit review date/);
+    assert.throws(() => approve(s, { reviewDue: "soon" }), /requires an explicit review date/);
+    // Nothing was recorded by any of those attempts.
+    assert.equal(s.gov.state("curb-65").status, "never-approved");
+    assert.equal(s.gov.history("curb-65").length, 0);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a review date is never computed, only supplied", () => {
+  const s = site();
+  try {
+    const row = approve(s, { reviewDue: "2026-11-05" });
+    assert.equal(row.reviewDue, "2026-11-05", "the date recorded is the date given, not a default interval");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a clinical owner must be a practitioner the directory holds and has not retired", () => {
+  const s = site();
+  try {
+    assert.throws(() => approve(s, { clinicalOwnerId: "dr-nobody" }), /no practitioner dr-nobody in the directory/);
+
+    s.directory.addPractitioner({ id: "dr-gone", family: "Gone", given: "Pat" });
+    s.directory.retire("practitioner", "dr-gone");
+    assert.throws(() => approve(s, { clinicalOwnerId: "dr-gone" }), /retired.*cannot own a live approval/s);
+
+    assert.equal(s.gov.state("curb-65").status, "never-approved");
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ── The ways an approval stops being one ──────────────────────────────────
+
+test("an approval past its review date disables the score, and does not renew itself", () => {
+  const s = site();
+  try {
+    approve(s, { reviewDue: "2026-09-01" });
+    const before = new Date("2026-08-25T00:00:00.000Z");
+    assert.equal(s.gov.state("curb-65", { asOf: before }).status, "expiring");
+    assert.equal(s.gov.enabled("curb-65", before), true);
+
+    const after = new Date("2026-09-02T00:00:00.000Z");
+    const expired = s.gov.state("curb-65", { asOf: after });
+    assert.equal(expired.status, "expired");
+    assert.equal(expired.enabled, false);
+    assert.match(expired.detail, /Nothing renews on its own/);
+
+    // Reading the state repeatedly, and asking for the expiring report, must
+    // not quietly extend anything.
+    s.gov.expiring(30, after);
+    s.gov.all({ asOf: after });
+    assert.equal(s.gov.state("curb-65", { asOf: after }).status, "expired");
+    assert.equal(s.gov.history("curb-65").length, 1, "reading never writes a decision");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("expiring reports what is already past as well as what is due soon", () => {
+  const s = site();
+  try {
+    approve(s, { scoreId: "curb-65", reviewDue: "2026-09-10" });
+    approve(s, { scoreId: "news2", reviewDue: "2026-08-01" });
+    approve(s, { scoreId: "lace", reviewDue: "2030-01-01" });
+
+    const asOf = new Date("2026-09-01T00:00:00.000Z");
+    const due = s.gov.expiring(30, asOf);
+    const byId = Object.fromEntries(due.map((d) => [d.scoreId, d.status]));
+    assert.equal(byId["curb-65"], "expiring", "nine days out is due soon");
+    assert.equal(byId["news2"], "expired", "a month past is expired");
+    assert.equal(byId["lace"], undefined, "years out is not reported");
+
+    // A narrower window excludes the one that is merely approaching, but never
+    // the one already past: an expired approval is not less urgent close up.
+    const narrow = s.gov.expiring(3, asOf).map((d) => d.scoreId);
+    assert.ok(!narrow.includes("curb-65"));
+    assert.ok(narrow.includes("news2"));
+
+    assert.throws(() => s.gov.expiring(-1, asOf), /whole number of days/);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("an approval does not survive the arithmetic changing underneath it", () => {
+  const s = site();
+  try {
+    approve(s);
+    assert.equal(s.gov.state("curb-65").status, "current");
+
+    // The decision was about one implementation; the code now runs another.
+    s.db.sql
+      .prepare("UPDATE score_approvals SET implementation_version = ? WHERE tenant_id = ? AND score_id = ?")
+      .run("portage-0", "default", "curb-65");
+
+    const state = s.gov.state("curb-65");
+    assert.equal(state.status, "version-mismatch");
+    assert.equal(state.enabled, false);
+    assert.match(state.detail, /arithmetic has changed since anybody looked at it/);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("disabling requires a reason, and supersedes the approval without erasing it", () => {
+  const s = site();
+  try {
+    const first = approve(s);
+    assert.throws(() => s.gov.disable({ scoreId: "curb-65", reason: "no", by: OPS }), /written reason/);
+
+    const off = s.gov.disable({
+      scoreId: "curb-65",
+      reason: "withdrawn pending review of the urea threshold",
+      by: OPS,
+    });
+    assert.equal(off.decision, "disabled");
+    assert.equal(off.supersedes, first.id, "the withdrawal points at what it replaced");
+    assert.equal(s.gov.state("curb-65").status, "disabled");
+    assert.equal(s.gov.enabled("curb-65"), false);
+
+    // Append-only: the approval is still on the record, so "who allowed this,
+    // and what did they know" survives the reversal.
+    const history = s.gov.history("curb-65");
+    assert.equal(history.length, 2);
+    assert.equal(history[1].id, first.id);
+    assert.equal(history[1].decision, "approved");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a disabled score comes back only by a new decision, which supersedes the withdrawal", () => {
+  const s = site();
+  try {
+    approve(s);
+    s.gov.disable({ scoreId: "curb-65", reason: "withdrawn while the threshold is checked", by: OPS });
+    const again = approve(s, { reason: "threshold confirmed against the source; returned to use" });
+    assert.equal(s.gov.state("curb-65").status, "current");
+    assert.equal(s.gov.history("curb-65").length, 3);
+    assert.equal(again.supersedes, s.gov.history("curb-65")[1].id);
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ── Tenancy ───────────────────────────────────────────────────────────────
+
+test("one site's approval does not enable another site's score", () => {
+  const s = site();
+  try {
+    approve(s);
+    assert.equal(s.gov.enabled("curb-65"), true);
+
+    const other = new ScoreGovernance(s.db.forTenant("yellowknife"));
+    assert.equal(other.state("curb-65").status, "never-approved");
+    assert.equal(other.enabled("curb-65"), false);
+    assert.equal(other.history("curb-65").length, 0);
+    assert.throws(() => other.require("curb-65"), (e: unknown) => e instanceof Refusal && e.status === 403);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a clinical owner from another tenant's directory is not a clinical owner here", () => {
+  const s = site();
+  try {
+    const other = s.db.forTenant("yellowknife");
+    new Directory(other).addPractitioner({ id: "dr-elsewhere", family: "Elsewhere", given: "Sam" });
+    assert.throws(() => approve(s, { clinicalOwnerId: "dr-elsewhere" }), /no practitioner dr-elsewhere in the directory/);
+  } finally {
+    s.cleanup();
+  }
 });

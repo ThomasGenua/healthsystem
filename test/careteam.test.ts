@@ -16,8 +16,8 @@ import { CareTeam } from "../src/clinical/careteam.ts";
 import { Refusal } from "../src/core/refusal.ts";
 
 function clinic() {
-  const dir = mkdtempSync(join(tmpdir(), "portage-team-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-team-"));
+  const db = new Db(join(dir, "northstar.db"));
   const directory = new Directory(db);
   directory.addPractitioner({ id: "dr-tetso", family: "Tetso", given: "Jean" });
   directory.addPractitioner({ id: "dr-hale", family: "Hale", given: "Sarah" });
@@ -27,7 +27,7 @@ function clinic() {
     team: new CareTeam(db),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -92,8 +92,8 @@ test("a covering locum is not the primary, and retiring ends the stretch", () =>
 });
 
 test("one custodian's care team is not another's", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-team-iso-"));
-  const root = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-team-iso-"));
+  const root = new Db(join(dir, "northstar.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");
@@ -108,6 +108,6 @@ test("one custodian's care team is not another's", () => {
     assert.equal(south.primary(P), undefined);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

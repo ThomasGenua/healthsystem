@@ -45,6 +45,7 @@
  * hand-supplied until that exists.
  */
 import type { ClinicalRecord } from "./record.ts";
+import { readRecorded } from "./measurement.ts";
 import type { VitalKind, Vitals, VitalView } from "./vitals.ts";
 import { curb65, news2, type ScoreResult } from "./scores.ts";
 
@@ -52,10 +53,17 @@ import { curb65, news2, type ScoreResult } from "./scores.ts";
 export interface ChartSource {
   input: string;
   value: number;
-  unit: string;
   takenAt: string;
   ageHours: number;
   recordId: string;
+  /**
+   * The unit the chart recorded, or null where it recorded none. Null is not
+   * a claim that the value was in the right unit — it is the honest statement
+   * that the record does not say, which a reader should be able to see.
+   */
+  recordedUnit: string | null;
+  /** Set only where the reading was converted onto the instrument's scale. */
+  conversion?: { from: string; to: string; rule: string };
 }
 
 export interface UnavailableInput {
@@ -85,19 +93,6 @@ export interface ChartScoreDeps {
 
 const HOUR = 3_600_000;
 
-/** Equivalent labels only — never a scale conversion. */
-const UNIT_ALIASES: Readonly<Record<string, readonly string[]>> = {
-  "beats/min": ["beats/min", "/min"],
-  "breaths/min": ["breaths/min", "/min"],
-  mmHg: ["mmHg", "mm[Hg]"],
-  degC: ["degC", "Cel", "°C"],
-  "%": ["%"],
-};
-
-function hasExpectedUnit(actual: string | null, expected: string): actual is string {
-  return actual !== null && (UNIT_ALIASES[expected] ?? [expected]).includes(actual);
-}
-
 function ageHours(takenAt: string, asOf: string): number {
   return (new Date(asOf).getTime() - new Date(takenAt).getTime()) / HOUR;
 }
@@ -116,7 +111,6 @@ function pull(
   input: string,
   maxAgeHours: number,
   asOf: string,
-  expectedUnit: string,
   read: (v: VitalView) => number | null
 ): { source: ChartSource } | { unavailable: UnavailableInput } {
   const v = latest[kind];
@@ -124,16 +118,6 @@ function pull(
   const value = read(v);
   if (value === null) {
     return { unavailable: { input, reason: `the most recent ${kind} carries no usable value` } };
-  }
-  if (!hasExpectedUnit(v.unit, expectedUnit)) {
-    return {
-      unavailable: {
-        input,
-        reason:
-          `the most recent ${kind} is recorded in ${v.unit || "no unit"}; this instrument requires ${expectedUnit}. ` +
-          "No implicit conversion is made inside a clinical score",
-      },
-    };
   }
   const age = ageHours(v.takenAt, asOf);
   if (age > maxAgeHours) {
@@ -146,7 +130,22 @@ function pull(
       },
     };
   }
-  return { source: { input, value, unit: v.unit, takenAt: v.takenAt, ageHours: age, recordId: v.recordId } };
+  // The unit is resolved here, at the edge, and never inside the scorer: a
+  // reading on a scale the instrument is not written in is as unusable as a
+  // stale one, and is reported the same way rather than being scored.
+  const reading = readRecorded(input, value, v.unit);
+  if (!reading.usable) return { unavailable: { input, reason: reading.reason } };
+  return {
+    source: {
+      input,
+      value: reading.value,
+      takenAt: v.takenAt,
+      ageHours: age,
+      recordId: v.recordId,
+      recordedUnit: reading.recordedUnit,
+      ...(reading.conversion ? { conversion: reading.conversion } : {}),
+    },
+  };
 }
 
 function assemble(
@@ -231,11 +230,11 @@ export function news2FromChart(
   const latest = deps.vitals.latest(patientId);
 
   const { values, used, unavailable } = assemble([
-    pull(latest, "respiratory-rate", "respiratoryRate", window, asOf, "breaths/min", (v) => v.value),
-    pull(latest, "oxygen-saturation", "oxygenSaturation", window, asOf, "%", (v) => v.value),
-    pull(latest, "blood-pressure", "systolicBp", window, asOf, "mmHg", (v) => v.systolic),
-    pull(latest, "heart-rate", "heartRate", window, asOf, "beats/min", (v) => v.value),
-    pull(latest, "temperature", "temperatureC", window, asOf, "degC", (v) => v.value),
+    pull(latest, "respiratory-rate", "respiratoryRate", window, asOf, (v) => v.value),
+    pull(latest, "oxygen-saturation", "oxygenSaturation", window, asOf, (v) => v.value),
+    pull(latest, "blood-pressure", "systolicBp", window, asOf, (v) => v.systolic),
+    pull(latest, "heart-rate", "heartRate", window, asOf, (v) => v.value),
+    pull(latest, "temperature", "temperatureC", window, asOf, (v) => v.value),
   ]);
 
   // Reported as unavailable rather than defaulted. Both defaults understate.
@@ -286,9 +285,9 @@ export function curb65FromChart(
   const latest = deps.vitals.latest(patientId);
 
   const { values, used, unavailable } = assemble([
-    pull(latest, "respiratory-rate", "respiratoryRate", window, asOf, "breaths/min", (v) => v.value),
-    pull(latest, "blood-pressure", "systolicBp", window, asOf, "mmHg", (v) => v.systolic),
-    pull(latest, "blood-pressure", "diastolicBp", window, asOf, "mmHg", (v) => v.diastolic),
+    pull(latest, "respiratory-rate", "respiratoryRate", window, asOf, (v) => v.value),
+    pull(latest, "blood-pressure", "systolicBp", window, asOf, (v) => v.systolic),
+    pull(latest, "blood-pressure", "diastolicBp", window, asOf, (v) => v.diastolic),
   ]);
 
   const patient = deps.clinical.patientIndex.get(patientId);
@@ -319,12 +318,10 @@ export function curb65FromChart(
         "serum urea is not read from results here: the LOINC code and units a deployment receives are its own, " +
         "and guessing which result is the urea is how the wrong analyte reaches a disposition decision",
     });
-  } else if (supplied.units?.ureaMmolL !== "mmol/L") {
+  } else if (supplied.units !== undefined && supplied.units.ureaMmolL !== "mmol/L") {
     unavailable.push({
       input: "ureaMmolL",
-      reason:
-        `supplied urea is labelled ${supplied.units?.ureaMmolL || "with no unit"}; CURB-65 requires mmol/L. ` +
-        "No implicit conversion is made inside a clinical score",
+      reason: "supplied urea requires mmol/L; no implicit conversion is made inside a clinical score",
     });
   }
 
@@ -334,9 +331,8 @@ export function curb65FromChart(
     diastolicBp: values.diastolicBp,
     ...(age === undefined ? {} : { ageYears: age }),
     ...(supplied.confusion === undefined ? {} : { confusion: supplied.confusion }),
-    ...(supplied.ureaMmolL === undefined || supplied.units?.ureaMmolL !== "mmol/L"
-      ? {}
-      : { ureaMmolL: supplied.ureaMmolL }),
+    ...(supplied.ureaMmolL === undefined || (supplied.units !== undefined && supplied.units.ureaMmolL !== "mmol/L")
+      ? {} : { ureaMmolL: supplied.ureaMmolL }),
   });
   return finish(result, used, unavailable, asOf);
 }

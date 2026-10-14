@@ -32,6 +32,7 @@
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Db } from "../db.ts";
+import { instant } from "../core/instant.ts";
 import type { Directory } from "../directory/store.ts";
 import type { ApiKeyRow } from "../types.ts";
 import { ALL_SCOPES, effectiveScopes, isScope, type Scope } from "./scopes.ts";
@@ -92,7 +93,11 @@ export class ApiKeyStore {
     }
     const requested = scopes.filter(isScope);
     if (requested.length === 0) throw new Error(`no valid scopes in [${scopes.join(", ")}]`);
-    if (opts.expiresAt && new Date(opts.expiresAt).getTime() <= Date.now()) {
+    // Read strictly and stored canonically: the expiry is compared as text at
+    // every verification, and "next year" — which is NaN, and so never
+    // "already past" — would otherwise be a key that never expires.
+    const expiresAt = opts.expiresAt === undefined ? undefined : instant(opts.expiresAt, "an expiry");
+    if (expiresAt && new Date(expiresAt).getTime() <= Date.now()) {
       throw new Error("that expiry is already past");
     }
     // Refused rather than recorded-and-ignored. An organization that resolves
@@ -120,7 +125,7 @@ export class ApiKeyStore {
       name,
       hashKey(key),
       requested,
-      opts.expiresAt,
+      expiresAt,
       opts.organizationId,
       opts.practitionerId
     );
@@ -129,7 +134,7 @@ export class ApiKeyStore {
       name,
       scopes: requested,
       key,
-      expiresAt: opts.expiresAt ?? null,
+      expiresAt: expiresAt ?? null,
       organizationId: opts.organizationId ?? null,
       practitionerId: opts.practitionerId ?? null,
     };

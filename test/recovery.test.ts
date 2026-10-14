@@ -64,9 +64,9 @@ test("a delivery left in flight by a crash is requeued, not abandoned", async ()
   // The failure this prevents is silent and permanent: nothing ever claims an
   // inflight row, and an ordered destination treats it as blocking, so one
   // orphan stops the whole feed. A hard kill mid-send is enough to cause it.
-  const dir = mkdtempSync(join(tmpdir(), "portage-recover-"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-recover-"));
   const s = await sink();
-  const dbPath = join(dir, "portage.db");
+  const dbPath = join(dir, "northstar.db");
 
   try {
     // Write a queue, then simulate dying mid-send by marking one inflight and
@@ -114,16 +114,16 @@ test("a delivery left in flight by a crash is requeued, not abandoned", async ()
     }
   } finally {
     await s.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
 test("without recovery the channel would be wedged, so the reclaim is load-bearing", async () => {
   // Pins why the previous test matters rather than restating that it passes:
   // an inflight row blocks every ordered message behind it, permanently.
-  const dir = mkdtempSync(join(tmpdir(), "portage-wedge-"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-wedge-"));
   const s = await sink();
-  const dbPath = join(dir, "portage.db");
+  const dbPath = join(dir, "northstar.db");
 
   try {
     const engine = new Engine({ dbPath, tickMs: 15 });
@@ -145,13 +145,13 @@ test("without recovery the channel would be wedged, so the reclaim is load-beari
     }
   } finally {
     await s.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
 test("reclaim counts the interrupted attempt and says why", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-reclaim-"));
-  const dbPath = join(dir, "portage.db");
+  const dir = mkdtempSync(join(tmpdir(), "northstar-reclaim-"));
+  const dbPath = join(dir, "northstar.db");
   try {
     const db = new Db(dbPath);
     db.upsertChannel("c", "c", true, "{}");
@@ -182,14 +182,14 @@ test("reclaim counts the interrupted attempt and says why", async () => {
     assert.equal(db.reclaimInflight(), 0);
     db.close();
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
 test("a restart resumes a partly drained queue without losing or reordering", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-resume-"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-resume-"));
   const s = await sink();
-  const dbPath = join(dir, "portage.db");
+  const dbPath = join(dir, "northstar.db");
 
   try {
     {
@@ -221,6 +221,6 @@ test("a restart resumes a partly drained queue without losing or reordering", as
     }
   } finally {
     await s.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

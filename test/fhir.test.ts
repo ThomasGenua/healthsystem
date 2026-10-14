@@ -8,6 +8,7 @@ import { startApi } from "../src/api/admin.ts";
 import { mllpSend } from "../src/hl7/mllp.ts";
 import type { ChannelConfig, MappingDoc } from "../src/types.ts";
 import { until } from "./helpers.ts";
+import { VERSION } from "../src/version.ts";
 
 const load = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8");
 const mapping = (p: string) => JSON.parse(load(p)) as MappingDoc;
@@ -204,4 +205,22 @@ test("HL7 feeds land in the facade: Patient, split Observations, split Condition
 
   await api.close();
   await engine.stop();
+});
+
+test("the version the CapabilityStatement reports is the version that shipped", () => {
+  // Three files carry the version at a release, and only one of them is read
+  // by anything at runtime. Forgetting src/version.ts does not fail a build or
+  // a test — it ships a CapabilityStatement that tells every federation
+  // partner it is talking to the previous release, which is the one claim a
+  // conformance negotiation is entitled to take at face value.
+  //
+  // So the two are pinned to each other here rather than to a literal: a
+  // literal is a third place to forget.
+  const pkg = JSON.parse(load("../package.json")) as { version: string };
+  assert.equal(VERSION, pkg.version, "src/version.ts and package.json disagree about what this is");
+
+  const statement = new FhirStore(new Db(":memory:")).capability("http://example.test/fhir", VERSION) as {
+    software?: { version?: string };
+  };
+  assert.equal(statement.software?.version, pkg.version, "the statement reports something else again");
 });

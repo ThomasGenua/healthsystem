@@ -20,14 +20,14 @@ import { Db } from "../src/db.ts";
 import { ReferralStore } from "../src/work/referrals.ts";
 
 function clinic(): { db: Db; refs: ReferralStore; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "portage-refs-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-refs-"));
+  const db = new Db(join(dir, "northstar.db"));
   return {
     db,
     refs: new ReferralStore(db),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -285,8 +285,8 @@ test("a cancelled referral stays on the record and is not chased", () => {
 });
 
 test("referrals are confined to their tenant", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-refs-iso-"));
-  const root = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-refs-iso-"));
+  const root = new Db(join(dir, "northstar.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");
@@ -304,7 +304,7 @@ test("referrals are confined to their tenant", () => {
     assert.equal(north.forPatient("NT123456").length, 1);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 

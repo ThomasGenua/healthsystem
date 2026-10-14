@@ -5,6 +5,7 @@ import { mkdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname } from "node:path";
 import type { ApiKeyRow, DeliveryRow, MessageRow, MessageStatus, SubscriptionRow } from "./types.ts";
+import { DATE_LIKE } from "./core/instant.ts";
 
 /** Whether a pid is still running. Signal 0 checks without delivering. */
 function processAlive(pid: number): boolean {
@@ -35,6 +36,11 @@ export const TENANT_SCOPED_TABLES = [
   "fhir_resources",
   "fhir_identifiers",
   "channel_state",
+  "patient_contacts",
+  "discharges",
+  "discharge_items",
+  "handoffs",
+  "patient_notice_deliveries",
   "fhir_subscriptions",
   "api_keys",
   "audit_events",
@@ -47,6 +53,8 @@ export const TENANT_SCOPED_TABLES = [
   "referral_events",
   "orders",
   "order_results",
+  "order_routing",
+  "order_transmissions",
   "order_events",
   "medication_statements",
   "allergies",
@@ -58,6 +66,16 @@ export const TENANT_SCOPED_TABLES = [
   "patient_access_log",
   "patient_requests",
   "patient_request_events",
+  "intake_questionnaires",
+  "intake_submissions",
+  "intake_uploads",
+  "eligibility_rules",
+  "outreach_campaigns",
+  "outreach_items",
+  "outreach_attempts",
+  "arrangements",
+  "patient_enrolments",
+  "patient_notices",
   "schedule_slots",
   "schedule_bookings",
   "schedule_events",
@@ -103,8 +121,10 @@ export const TENANT_SCOPED_TABLES = [
   "privacy_deadlines",
   "assurance_findings",
   "assurance_exercises",
-  "score_approvals",
   "subprocessors",
+  "score_approvals",
+  "conformance_packages",
+  "provenance",
 ] as const;
 
 /**
@@ -114,6 +134,51 @@ export const TENANT_SCOPED_TABLES = [
  * somewhere on upgrade rather than becoming unreachable. They land here, and a
  * deployment that never configures a second tenant behaves exactly as before.
  */
+/** Where a channel's poll failed: reading the source, or handling one thing it read. */
+export type SourceFailureStage = "read" | "item";
+
+/** A channel's most recent failure, and how long it has been failing. */
+export interface SourceFailure {
+  stage: SourceFailureStage;
+  /** Consecutive failures at this stage. Reset by a pass that read and handled everything. */
+  consecutive: number;
+  /** When this run of failures began. */
+  since: string;
+  /** The most recent one. */
+  at: string;
+  /** The exception class. Published. */
+  kind: string;
+  /** The exception message. Not published — a polling query can quote the row it was reading. */
+  detail: string;
+  /** The thing that failed, when the stage is `item`. Not published — drop files are named after charts. */
+  item?: string;
+  /** Ties this record to the line the engine logged when it happened. */
+  faultId: string;
+}
+
+/** What `/api/health` says about a failing channel. Deliberately without the detail. */
+export interface FailingChannel {
+  channelId: string;
+  stage: SourceFailureStage;
+  consecutive: number;
+  kind: string;
+  failingForSec: number | null;
+  lastFailureAgeSec: number | null;
+  /** True once this is an outage rather than a blip. Folded into `degraded`. */
+  degrading: boolean;
+}
+
+/**
+ * Consecutive failed reads before a channel is an outage rather than a blip.
+ *
+ * Polls, not seconds: three misses is past coincidence on a lab feed pushing
+ * every ten seconds and on a nightly extract alike, and a wall-clock
+ * threshold would have to be wrong for one of them.
+ */
+export const SOURCE_FAILURES_BEFORE_DEGRADED = 3;
+
+const SOURCE_FAILURE_KEY = "source_failure";
+
 export const DEFAULT_TENANT = "default";
 
 /**
@@ -257,6 +322,14 @@ CREATE TABLE IF NOT EXISTS fhir_resources (
   version_id INTEGER NOT NULL,
   json TEXT NOT NULL,
   hash TEXT NOT NULL,
+  -- The chart this resource is about, lifted out of the JSON so a search can
+  -- be scoped to one patient without reading every row.
+  --
+  -- Null has one meaning and it is not "any patient": it means no patient
+  -- reference could be found. A patient-scoped search therefore excludes it
+  -- rather than including it, because a resource nobody could attribute is
+  -- the last thing that should appear under somebody's name.
+  patient_id TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   -- Per tenant, deliberately. Two custodians can hold a patient with the same
   -- id without one overwriting the other, and a resource id is only ever
@@ -521,7 +594,7 @@ CREATE TABLE IF NOT EXISTS referrals (
   to_service TEXT NOT NULL,
   -- The directory service this names, when it names one. Three-valued on
   -- purpose: an id means a known service, to_external = 1 means a deliberate
-  -- referral out to somewhere Portage does not hold, and both NULL means
+  -- referral out to somewhere Northstar does not hold, and both NULL means
   -- nobody said which — an unverified free-text target, and a different thing
   -- from a declared external one.
   to_service_id TEXT,
@@ -638,6 +711,93 @@ CREATE TABLE IF NOT EXISTS order_results (
   ack_due_by TEXT,
   created_at TEXT NOT NULL,
   PRIMARY KEY (tenant_id, id)
+);
+
+-- Whether orders of a given category actually leave this site, and to whom.
+--
+-- The third silence, and the earliest one. The orders table records that a
+-- clinician placed an order; nothing in it records that the order was sent. A
+-- site with no outbound ordering interface — which is every site until one is
+-- built and commissioned — marks orders 'placed', shows them on the chart as
+-- placed, and lists them as awaiting a result. The laboratory has never heard
+-- of them.
+--
+-- That is worse than the dispense silence it resembles. A prescription with no
+-- dispense record may still have been collected; the pharmacy simply may not
+-- report. Here *we* are the sender, so the absence is not ambiguous — it is
+-- ours, and it is knowable. Refusing to know it is the only way it stays
+-- invisible.
+--
+-- So a route is declared per category, and its absence is a fact with a name
+-- rather than an empty column: an order at a site that has declared no route
+-- is not "awaiting the lab", it is sitting here.
+CREATE TABLE IF NOT EXISTS order_routing (
+  tenant_id TEXT NOT NULL,
+  -- lab | imaging | procedure | referral | other
+  category TEXT NOT NULL,
+  -- 1 when an outbound interface exists and orders of this category go out on it.
+  transmits INTEGER NOT NULL,
+  -- Who receives them. Null when nothing is transmitted.
+  destination TEXT,
+  -- Where and as whom. All of it is required before an order can actually be
+  -- sent, and all of it is checked when the declaration is made rather than
+  -- when a clinician presses send: a routing that says it transmits and
+  -- cannot is a promise the record makes on behalf of a site that has not
+  -- kept it, and the moment it is discovered should not be the moment a
+  -- specimen is waiting.
+  endpoint_host TEXT,
+  endpoint_port INTEGER,
+  -- MSH-3/4 and MSH-5/6. Named per route because a site that sends to two
+  -- laboratories is known to each of them by whatever they configured.
+  sending_application TEXT,
+  sending_facility TEXT,
+  receiving_application TEXT,
+  receiving_facility TEXT,
+  -- The clinic's offset, e.g. "-06:00". Never this machine's: a server in one
+  -- zone sending for a clinic in another is ordinary in the north.
+  timezone_offset TEXT,
+  -- Which laboratory profile the message is built against.
+  profile_id TEXT,
+  -- How, or why not. Read by an operator deciding whether this is expected.
+  detail TEXT NOT NULL,
+  declared_at TEXT NOT NULL,
+  declared_by TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, category)
+);
+
+-- Every attempt to hand an order to whoever performs it, appended never updated.
+--
+-- Append-only for the same reason results are: an acknowledgement belongs to
+-- the attempt it answered. A retry that overwrote the first attempt would let
+-- a rejection be replaced by a later success and leave no trace that the
+-- laboratory once refused this requisition, which is exactly the history
+-- somebody needs when a specimen arrives against an order the lab does not
+-- hold.
+CREATE TABLE IF NOT EXISTS order_transmissions (
+  -- Whether this attempt carried the order or its cancellation. One table
+  -- because they are the same event with opposite meaning, and separating
+  -- them would let a site answer "is this order with them?" without noticing
+  -- that the cancellation never arrived.
+  kind TEXT NOT NULL DEFAULT 'order',
+  -- Ordering is the whole safety property here, so it does not rest on a
+  -- timestamp. Two attempts in the same millisecond — a send and the
+  -- acknowledgement that answers it, which is the ordinary case on a fast
+  -- link — would otherwise fall back to a tiebreak on a random id, and the
+  -- superseding attempt would be whichever uuid happened to sort last. That
+  -- reports a rejected order as acknowledged about half the time.
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  order_id TEXT NOT NULL,
+  -- sent | acknowledged | rejected | failed
+  outcome TEXT NOT NULL,
+  destination TEXT NOT NULL,
+  -- MSH-10 of the message handed over, so an acknowledgement can be matched.
+  control_id TEXT,
+  detail TEXT NOT NULL,
+  at TEXT NOT NULL,
+  by TEXT NOT NULL,
+  UNIQUE (tenant_id, id)
 );
 
 -- Laboratory results whose patient could not be identified.
@@ -987,6 +1147,64 @@ CREATE TABLE IF NOT EXISTS patient_authority (
   granted_by TEXT NOT NULL,
   granted_at TEXT NOT NULL,
   reason TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- Clinic-attested enrolment: binding an OAuth subject to a chart.
+--
+-- This is not identity-proofing and not ONE ID. A named person at the clinic
+-- writes, in their own words, how they checked that the person in front of
+-- them is the patient (or proxy) on the chart. The grant that follows is the
+-- same patient_authority row the boundary already uses. A pending row is not
+-- authority. GET /me does not enrol anyone.
+CREATE TABLE IF NOT EXISTS patient_enrolments (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  -- self | parent-guardian | substitute-decision-maker | representative
+  relationship TEXT NOT NULL,
+  -- pending | attested | declined
+  status TEXT NOT NULL,
+  requested_at TEXT NOT NULL,
+  requested_by TEXT NOT NULL,
+  requested_kind TEXT NOT NULL,
+  -- Written method of verification. Required to attest; null while pending.
+  method TEXT,
+  attested_at TEXT,
+  attested_by TEXT,
+  declined_at TEXT,
+  declined_by TEXT,
+  decline_reason TEXT,
+  authority_id TEXT,
+  purpose TEXT,
+  permissions TEXT,
+  expires_at TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- A notice the patient is owed, published onto a channel the deployment
+-- already uses to reach people. Northstar does not know phone numbers or
+-- inboxes and will not invent them. Dispatching is handing the fact to the
+-- delivery machinery; recording that the patient was told is a separate act.
+-- Kinds: enrolment-attested | result-released | request-completed.
+CREATE TABLE IF NOT EXISTS patient_notices (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  about_id TEXT,
+  -- The fact, never a result value or a chart excerpt.
+  summary TEXT NOT NULL,
+  -- queued | dispatched | failed | told
+  status TEXT NOT NULL,
+  dispatched_at TEXT,
+  message_id TEXT,
+  error TEXT,
+  told_at TEXT,
+  told_by TEXT,
   created_at TEXT NOT NULL,
   PRIMARY KEY (tenant_id, id)
 );
@@ -1821,30 +2039,6 @@ CREATE TABLE IF NOT EXISTS assurance_exercises (
   PRIMARY KEY (tenant_id, id)
 );
 
--- A deployment's permission to use one exact clinical-score implementation.
--- Append-only: enabling, renewing or disabling supersedes a prior decision
--- rather than rewriting the evidence under which an earlier result ran.
-CREATE TABLE IF NOT EXISTS score_approvals (
-  tenant_id TEXT NOT NULL,
-  id TEXT NOT NULL,
-  score_id TEXT NOT NULL,
-  implementation_version TEXT NOT NULL,
-  -- enabled | disabled
-  status TEXT NOT NULL,
-  clinical_owner TEXT NOT NULL,
-  approved_population TEXT NOT NULL,
-  reviewed_at TEXT NOT NULL,
-  review_due TEXT NOT NULL,
-  licensing_accepted_by TEXT NOT NULL,
-  licensing_accepted_at TEXT NOT NULL,
-  reason TEXT NOT NULL,
-  recorded_by TEXT NOT NULL,
-  recorded_by_kind TEXT NOT NULL,
-  recorded_at TEXT NOT NULL,
-  supersedes TEXT,
-  PRIMARY KEY (tenant_id, id)
-);
-
 CREATE TABLE IF NOT EXISTS subprocessors (
   tenant_id TEXT NOT NULL,
   id TEXT NOT NULL,
@@ -1859,6 +2053,177 @@ CREATE TABLE IF NOT EXISTS subprocessors (
   created_at TEXT NOT NULL,
   PRIMARY KEY (tenant_id, id)
 );
+
+-- A clinical score is arithmetic until somebody accountable says it may be
+-- used here. This table is that decision, and its absence is the default: a
+-- score with no row is not enabled, which is why the table being empty is the
+-- safe state rather than an unconfigured one.
+--
+-- Append-only, like the clinical record. A renewal, a re-approval after the
+-- arithmetic changed, and a withdrawal are all new rows pointing at the one
+-- they supersede; nothing is updated. So "who allowed this, and what did they
+-- know at the time" always has an answer, including after the decision was
+-- reversed.
+--
+-- Every column that could be invented is required instead. review_due is
+-- supplied by the person approving and is never computed from a default
+-- interval, because a review date the system picked is not a commitment
+-- anybody made. clinical_owner_id must resolve to a practitioner the
+-- directory holds and has not retired. reason is written, because a decision
+-- with no stated basis cannot be reviewed later.
+CREATE TABLE IF NOT EXISTS score_approvals (
+  tenant_id TEXT NOT NULL DEFAULT 'default',
+  id TEXT NOT NULL,
+  score_id TEXT NOT NULL,
+  -- The exact implementation the decision was made about. Arithmetic that has
+  -- changed since is not what anybody approved, so this is compared rather
+  -- than assumed to still match.
+  implementation_version TEXT NOT NULL,
+  decision TEXT NOT NULL CHECK (decision IN ('approved', 'disabled')),
+  reason TEXT NOT NULL,
+  -- Present on an approval, absent on a withdrawal.
+  clinical_owner_id TEXT,
+  -- A readable snapshot taken at the moment of the decision, so the record
+  -- stays legible after the directory renames or retires the person.
+  clinical_owner_display TEXT,
+  review_due TEXT,
+  approved_population TEXT,
+  reviewed_at TEXT,
+  licensing_accepted_by TEXT,
+  licensing_accepted_at TEXT,
+  -- The authenticated operator who recorded the decision, kept separate from
+  -- the clinician who owns it. They are frequently not the same person, and a
+  -- record that conflates them can answer neither question afterwards.
+  recorded_by_id TEXT NOT NULL,
+  recorded_by_kind TEXT NOT NULL,
+  supersedes TEXT,
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- What this deployment claims to conform to, and where each claim came from.
+--
+-- The conformance packs in conformance/*.json are hand-written and say
+-- nothing about their own provenance: which published release they were
+-- derived from, at what version, or whether the bytes have changed since.
+-- A profile pack carrying a publisher's name and a membership nobody can
+-- trace is worse than none, because it is the one somebody cites.
+--
+-- So every implementation guide, terminology release, security profile and
+-- schema is recorded here with its canonical URL, package identifier, exact
+-- version and a checksum, and nothing is active until somebody activates it.
+--
+-- checksum_verified is the column that matters. A checksum copied from a
+-- release note proves nothing; this flag is set only when the bytes were
+-- hashed here and matched. An entry that has not been verified is refused
+-- activation in production unless somebody overrides it in writing, which is
+-- recorded rather than assumed.
+CREATE TABLE IF NOT EXISTS conformance_packages (
+  tenant_id TEXT NOT NULL DEFAULT 'default',
+  id TEXT NOT NULL,
+  -- The identity the publisher uses. Both, because a package id without a
+  -- canonical URL cannot be resolved and a URL without a package id cannot be
+  -- installed.
+  canonical_url TEXT NOT NULL,
+  package_id TEXT NOT NULL,
+  version TEXT NOT NULL,
+  fhir_version TEXT,
+  license TEXT,
+  -- release | trial-use | ballot | draft | unknown
+  publication_status TEXT NOT NULL CHECK (
+    publication_status IN ('release', 'trial-use', 'ballot', 'draft', 'unknown')
+  ),
+  -- 1 where the version string names a moving target: current, dev, latest.
+  -- A mutable version cannot be conformed to, because what it points at today
+  -- is not what it pointed at when the claim was made.
+  mutable_version INTEGER NOT NULL DEFAULT 0 CHECK (mutable_version IN (0, 1)),
+  checksum TEXT,
+  checksum_verified INTEGER NOT NULL DEFAULT 0 CHECK (checksum_verified IN (0, 1)),
+  installed_at TEXT NOT NULL,
+  -- registered | active | retired
+  activation_state TEXT NOT NULL DEFAULT 'registered' CHECK (
+    activation_state IN ('registered', 'active', 'retired')
+  ),
+  activated_at TEXT,
+  activated_by TEXT,
+  activation_reason TEXT,
+  -- Set where a package that would otherwise be refused was activated anyway.
+  -- The reason is required, so the exception is legible later.
+  override_reason TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id),
+  -- One record per package version. Registering the same version twice would
+  -- allow two entries disagreeing about its checksum.
+  UNIQUE (tenant_id, package_id, version)
+);
+
+-- Where a resource came from, which is a different question from who looked
+-- at it.
+--
+-- audit_events answers the second: a hash-chained record of access and system
+-- activity, and it is the wrong shape for the first. An audit row says a
+-- clinician read a chart at a time. It does not say that this observation was
+-- produced by mapping version 3 of the laboratory feed from message 8812, or
+-- that this medication list entry came from a migration rather than from a
+-- prescriber. Treating the two as interchangeable loses whichever question
+-- was not being asked when the row was written.
+--
+-- So this table is lineage, and it is deliberately not chained: a provenance
+-- record is a statement about one write, and the sequence that matters is the
+-- resource's own version history, which it points at.
+CREATE TABLE IF NOT EXISTS provenance (
+  tenant_id TEXT NOT NULL DEFAULT 'default',
+  id TEXT NOT NULL,
+  -- What was produced.
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  target_version INTEGER NOT NULL,
+  -- create | update | transform | import | reconcile | compute
+  activity TEXT NOT NULL CHECK (
+    activity IN ('create', 'update', 'transform', 'import', 'reconcile', 'compute')
+  ),
+  -- Who or what did it. Null where nothing stated an actor: that is recorded
+  -- as unattributed rather than filled in with whoever happened to be nearby,
+  -- because a lineage naming the wrong author is worse than one admitting it
+  -- does not know.
+  agent_id TEXT,
+  agent_kind TEXT,
+  organization_id TEXT,
+  -- What it was made from: a message off the wire, another resource, or
+  -- nothing stated.
+  source_kind TEXT CHECK (source_kind IS NULL OR source_kind IN ('message', 'resource', 'file')),
+  source_id TEXT,
+  -- The mapping or rule that did the work, and its version. A transformation
+  -- whose version is not recorded cannot be re-run against the same input to
+  -- see what it would produce now.
+  transformation TEXT,
+  transformation_version TEXT,
+  rule_id TEXT,
+  rule_version TEXT,
+  occurred_at TEXT,
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_provenance_target
+  ON provenance(tenant_id, target_type, target_id, target_version DESC);
+
+-- At most one active version of a package per tenant. Two versions of one
+-- implementation guide active at once is not a configuration, it is a
+-- question nobody can answer about which rules applied to a given resource.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conformance_active
+  ON conformance_packages(tenant_id, package_id) WHERE activation_state = 'active';
+
+CREATE INDEX IF NOT EXISTS idx_score_approvals_score
+  ON score_approvals(tenant_id, score_id, recorded_at DESC);
+-- The chain stays linear, and the database is what keeps it that way: a
+-- transaction only binds writers sharing one process, and two decisions
+-- superseding the same one would leave a score with two current approvals and
+-- no way to say which of them governed a result that has already gone out.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_score_approvals_successor
+  ON score_approvals(tenant_id, score_id, supersedes) WHERE supersedes IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_score_approvals_root
+  ON score_approvals(tenant_id, score_id) WHERE supersedes IS NULL;
+
 
 -- Lookup index over the charts.
 --
@@ -2055,6 +2420,208 @@ CREATE INDEX IF NOT EXISTS idx_authority_patient ON patient_authority(tenant_id,
 CREATE INDEX IF NOT EXISTS idx_release_patient ON result_release(tenant_id, patient_id, state);
 CREATE INDEX IF NOT EXISTS idx_patient_access ON patient_access_log(tenant_id, patient_id, seq);
 CREATE INDEX IF NOT EXISTS idx_patient_requests ON patient_requests(tenant_id, patient_id, submitted_at);
+CREATE INDEX IF NOT EXISTS idx_enrolments_status ON patient_enrolments(tenant_id, status, requested_at);
+CREATE INDEX IF NOT EXISTS idx_enrolments_patient ON patient_enrolments(tenant_id, patient_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_enrolment_pending
+  ON patient_enrolments(tenant_id, patient_id, subject_id) WHERE status = 'pending';
+-- Where a patient has agreed to be reached, and on what terms.
+--
+-- Two facts, deliberately separate columns, because they are two different
+-- questions and a system that conflates them sends a result notice to a
+-- number somebody typed wrong. verified_at says a named clerk checked that
+-- this address belongs to this patient and wrote down how. consent says the
+-- patient agreed to be contacted here. Neither implies the other: a verified
+-- number nobody asked about is unasked, and consent to a number nobody
+-- checked reaches whoever actually holds it.
+--
+-- language is nullable and null means unstated, never English. A notice
+-- sent in a language the patient does not read is a notice that was not sent,
+-- and defaulting the column would make that indistinguishable from a
+-- deliberate choice.
+--
+-- Quiet hours need a zone. quiet_from/quiet_to without timezone cannot
+-- be evaluated at all — 21:00 is a different instant in Iqaluit and Vancouver
+-- — so a contact carrying hours and no zone is refused on the way in rather
+-- than silently interpreted as UTC.
+CREATE TABLE IF NOT EXISTS patient_contacts (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  value TEXT NOT NULL,
+  language TEXT,
+  verified_at TEXT,
+  verified_by TEXT,
+  verification_method TEXT,
+  consent TEXT NOT NULL DEFAULT 'unasked',
+  consent_at TEXT,
+  consent_by TEXT,
+  quiet_from TEXT,
+  quiet_to TEXT,
+  timezone TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  retired_at TEXT,
+  retired_reason TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+-- What is still outstanding when somebody leaves.
+--
+-- Derived rather than typed. A discharge form somebody fills in records what
+-- they remembered at the end of a long shift; the four things that actually
+-- go wrong after a visit — a result nobody read, a medication list nobody
+-- reconciled, a follow-up nobody booked, a referral nobody chased — are all
+-- computable from the chart at the moment the encounter closes. So the
+-- snapshot is taken, not requested, and what a clinician does is resolve the
+-- items rather than remember them.
+--
+-- The snapshot is kept even after the items resolve, because the question
+-- asked afterwards is what was outstanding when this person went home, and a
+-- list that empties itself cannot answer it.
+CREATE TABLE IF NOT EXISTS discharges (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  encounter_id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  disposition TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  -- Who is accountable for the follow-up. Never null while the discharge is
+  -- open: work owned by nobody is work on nobody's list.
+  accountable_id TEXT NOT NULL,
+  accountable_kind TEXT NOT NULL DEFAULT 'practitioner',
+  opened_at TEXT NOT NULL,
+  opened_by TEXT NOT NULL,
+  closed_at TEXT,
+  closed_by TEXT,
+  closed_outcome TEXT,
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_discharges_status
+  ON discharges(tenant_id, status, opened_at);
+CREATE INDEX IF NOT EXISTS idx_discharges_patient
+  ON discharges(tenant_id, patient_id, opened_at);
+-- One discharge per encounter. Closing a visit twice would otherwise take two
+-- snapshots of the same moment and leave two lists somebody has to reconcile.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_discharge_per_encounter
+  ON discharges(tenant_id, encounter_id);
+
+-- One thing still outstanding, and whether it was dealt with.
+--
+-- The reference is deliberately loose: kind plus the identifier of whatever
+-- it points at, rather than a column per kind. A result, a reconciliation, a
+-- referral and a missing appointment are four different tables, and a schema
+-- that named all four would need a fifth column the day somebody adds a
+-- fifth kind of loose end.
+CREATE TABLE IF NOT EXISTS discharge_items (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  discharge_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  reference_id TEXT,
+  summary TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'outstanding',
+  resolved_at TEXT,
+  resolved_by TEXT,
+  resolution TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_discharge_items
+  ON discharge_items(tenant_id, discharge_id, status);
+
+-- A transfer of accountability, and the acceptance that completes it.
+--
+-- Proposing is not transferring. Until somebody accepts, the person who
+-- proposed it is still accountable — which is the whole point, because "I
+-- handed it over" and "somebody has it" are different statements and only the
+-- second is true of a transfer nobody answered. An unaccepted handoff is
+-- visible as its own queue rather than as a gap.
+--
+-- Coverage is a different thing and lives here too, distinguished by kind. A
+-- handoff moves accountability permanently; coverage lends it for a window
+-- and hands it back. Coverage with no end is the failure this guards against,
+-- so covers_until is required for that kind and checked in code.
+CREATE TABLE IF NOT EXISTS handoffs (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  subject_kind TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  patient_id TEXT,
+  from_id TEXT NOT NULL,
+  to_id TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'proposed',
+  covers_from TEXT,
+  covers_until TEXT,
+  proposed_at TEXT NOT NULL,
+  proposed_by TEXT NOT NULL,
+  responded_at TEXT,
+  responded_by TEXT,
+  response_reason TEXT,
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_handoffs_status
+  ON handoffs(tenant_id, status, proposed_at);
+CREATE INDEX IF NOT EXISTS idx_handoffs_subject
+  ON handoffs(tenant_id, subject_kind, subject_id);
+-- One live proposal per subject. Two people cannot each be offered the same
+-- work, because then two people can each accept it and each believe the other
+-- did not.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_one_proposal
+  ON handoffs(tenant_id, subject_kind, subject_id) WHERE status = 'proposed';
+
+CREATE INDEX IF NOT EXISTS idx_patient_contacts_patient
+  ON patient_contacts(tenant_id, patient_id, status);
+-- One live row per address. Two active contacts holding the same number
+-- would be two notices to one phone, which reads to the patient as the
+-- clinic having lost track of them.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_patient_contacts_live
+  ON patient_contacts(tenant_id, patient_id, channel, value) WHERE status = 'active';
+
+-- One attempt to reach one contact point about one notice.
+--
+-- The five states are not a refinement of the delivery queue's; they are a
+-- different question. The queue's delivered means a destination returned
+-- 2xx — the gateway took the request. Whether a text message reached a phone
+-- is something only the gateway can say, and it says it later or not at all.
+-- So a queue success lands here as provider-accepted, and delivered
+-- requires a receipt somebody wired up. With no receipt path configured an
+-- attempt stays provider-accepted forever, which is the true answer:
+-- nobody knows.
+--
+-- unknown is for a receipt that arrived and did not map — a status string
+-- this build does not recognise. It is not failed and it is not
+-- delivered, and collapsing it into either invents a fact.
+CREATE TABLE IF NOT EXISTS patient_notice_deliveries (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  notice_id TEXT NOT NULL,
+  contact_id TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  state TEXT NOT NULL,
+  message_id TEXT,
+  provider_reference TEXT,
+  held_until TEXT,
+  accepted_at TEXT,
+  delivered_at TEXT,
+  failed_at TEXT,
+  detail TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+-- One notice reaches one contact point once. Without this a retry loop, or
+-- two operators pressing send, is two texts about one result — which is the
+-- duplicate-outreach failure, arriving through the machinery meant to
+-- prevent silence.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notice_delivery_once
+  ON patient_notice_deliveries(tenant_id, notice_id, contact_id);
+CREATE INDEX IF NOT EXISTS idx_notice_delivery_state
+  ON patient_notice_deliveries(tenant_id, state, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_patient_notices_status ON patient_notices(tenant_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_patient_notices_patient ON patient_notices(tenant_id, patient_id);
 -- The deduplication lookup. Every inbound result does it, so it is the one
 -- query on this table that has to stay fast as results accumulate.
 CREATE INDEX IF NOT EXISTS idx_results_key ON order_results(tenant_id, result_key);
@@ -2135,6 +2702,209 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(hash);
 CREATE INDEX IF NOT EXISTS idx_audit_recorded ON audit_events(recorded_at);
 CREATE INDEX IF NOT EXISTS idx_audit_principal ON audit_events(principal_id, recorded_at);
 CREATE INDEX IF NOT EXISTS idx_audit_patient ON audit_events(tenant_id, patient, recorded_at);
+
+-- Item 60: pre-visit intake and patient uploads.
+--
+-- A questionnaire version is never edited once published; a new version is a
+-- new row. That is what lets a submission reference (id, version) rather than
+-- a copy of the questions, and still show, five years later, exactly what was
+-- asked when it names a version this deployment has since changed.
+CREATE TABLE IF NOT EXISTS intake_questionnaires (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  -- [{key, label, type, required, options?}] as published. Immutable: a
+  -- change is a new version, not an edit of this column.
+  questions TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  published_by TEXT NOT NULL,
+  published_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id, version)
+);
+
+-- A submission is a workflow object, not a chart entry: a draft is typed
+-- into over minutes or days and an append-only ledger has no way to take
+-- that back. It lives here, mutable, until submit() freezes it and writes
+-- the one fact that belongs on the chart: what was actually submitted, once.
+CREATE TABLE IF NOT EXISTS intake_submissions (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  appointment_id TEXT,
+  questionnaire_id TEXT,
+  questionnaire_version INTEGER,
+  -- draft | submitted | reviewed
+  status TEXT NOT NULL DEFAULT 'draft',
+  answers TEXT NOT NULL DEFAULT '{}',
+  concern TEXT,
+  -- [{change: started|stopped|changed, description}]. Proposed only — nothing
+  -- here writes to the medication list. A clinician reviewing the submission
+  -- decides whether it belongs in a reconciliation.
+  proposed_meds TEXT,
+  started_by TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  submitted_at TEXT,
+  -- The QuestionnaireResponse this submission became on the chart. NULL
+  -- until submit(); the frozen record from that point on.
+  record_id TEXT,
+  task_id TEXT,
+  reviewed_by TEXT,
+  reviewed_at TEXT,
+  review_outcome TEXT,
+  review_note TEXT,
+  PRIMARY KEY (tenant_id, id)
+);
+-- One open draft per patient, questionnaire and appointment (each treated as
+-- '' when absent, so a concern with no questionnaire still dedupes per
+-- appointment, and a fully general one dedupes globally). Resuming after a
+-- dropped connection continues this row; it does not start a second one.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_intake_open_draft
+  ON intake_submissions(tenant_id, patient_id, COALESCE(questionnaire_id, ''), COALESCE(appointment_id, ''))
+  WHERE status = 'draft';
+CREATE INDEX IF NOT EXISTS idx_intake_patient ON intake_submissions(tenant_id, patient_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_intake_status ON intake_submissions(tenant_id, status, submitted_at);
+
+-- A file a patient sent in. It sits here, quarantined, until something scans
+-- it: receive() never marks a file clean, because a store cannot honestly
+-- vouch for bytes it did not examine. No scanner configured means every
+-- upload stays pending-scan forever, visible as such rather than served —
+-- the same choice src/meds/safety.ts makes about an unconfigured interaction
+-- database: unchecked is reported as unchecked, never quietly as clear.
+CREATE TABLE IF NOT EXISTS intake_uploads (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  submission_id TEXT,
+  filename TEXT NOT NULL,
+  content_type TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  -- base64. Nulled out once infected: a flagged payload is never retrievable
+  -- again through any path, including this table read directly.
+  data TEXT,
+  -- pending-scan | clean | infected
+  status TEXT NOT NULL DEFAULT 'pending-scan',
+  scanned_at TEXT,
+  scanner_note TEXT,
+  scan_attempts INTEGER NOT NULL DEFAULT 0,
+  scan_retry_at INTEGER NOT NULL DEFAULT 0,
+  -- Set once filed as a chart DocumentReference (source patient-submitted),
+  -- which only happens on a clean verdict.
+  document_record_id TEXT,
+  uploaded_by TEXT NOT NULL,
+  uploaded_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_intake_uploads_patient ON intake_uploads(tenant_id, patient_id, uploaded_at);
+CREATE INDEX IF NOT EXISTS idx_intake_uploads_submission ON intake_uploads(tenant_id, submission_id);
+CREATE INDEX IF NOT EXISTS idx_intake_uploads_pending ON intake_uploads(tenant_id, status, uploaded_at);
+
+-- Item 64: outreach campaigns.
+--
+-- A clinical eligibility rule is published, never edited, the same way a
+-- questionnaire is: a campaign names an id and a version, and what it meant
+-- when a list was built stays what it meant when somebody reviews the list
+-- next year, whatever the rule reads today.
+CREATE TABLE IF NOT EXISTS eligibility_rules (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  cohort TEXT NOT NULL,
+  gap TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  published_by TEXT NOT NULL,
+  published_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id, version)
+);
+
+CREATE TABLE IF NOT EXISTS outreach_campaigns (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  eligibility_rule_id TEXT NOT NULL,
+  eligibility_rule_version INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  closed_at TEXT,
+  PRIMARY KEY (tenant_id, id)
+);
+
+-- One row per patient this campaign has ever named. eligibility_rule_id is
+-- carried here too, denormalised from the campaign, because the duplicate-
+-- outreach guard below has to hold across campaigns, not only within one.
+CREATE TABLE IF NOT EXISTS outreach_items (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  campaign_id TEXT NOT NULL,
+  patient_id TEXT NOT NULL,
+  eligibility_rule_id TEXT NOT NULL,
+  -- What the gap said at list-build time: when it was last done (or never),
+  -- and how overdue. The list a staff member works from, preserved even
+  -- after a recheck says the patient is no longer eligible.
+  eligible_last_done TEXT,
+  eligible_overdue_days INTEGER,
+  -- pending | attempted | responded | booked | completed | excluded | unreachable
+  status TEXT NOT NULL DEFAULT 'pending',
+  assigned_to TEXT,
+  booking_id TEXT,
+  excluded_reason TEXT,
+  excluded_by TEXT,
+  excluded_at TEXT,
+  completed_at TEXT,
+  completed_by TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+-- The duplicate-outreach guard: one open item per patient per eligibility
+-- rule, across every campaign that has ever run it. A second campaign for
+-- the same rule recheck finds the patient already being worked rather than
+-- calling them a second time about the same gap.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_outreach_open_once
+  ON outreach_items(tenant_id, patient_id, eligibility_rule_id)
+  WHERE status NOT IN ('completed', 'excluded');
+CREATE INDEX IF NOT EXISTS idx_outreach_campaign ON outreach_items(tenant_id, campaign_id, status);
+CREATE INDEX IF NOT EXISTS idx_outreach_assigned ON outreach_items(tenant_id, assigned_to, status);
+
+CREATE TABLE IF NOT EXISTS outreach_attempts (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  item_id TEXT NOT NULL,
+  attempted_by TEXT NOT NULL,
+  attempted_at TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  note TEXT,
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_outreach_attempts_item ON outreach_attempts(tenant_id, item_id, attempted_at);
+CREATE TABLE IF NOT EXISTS arrangements (
+  tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT}',
+  id TEXT NOT NULL,
+  visit_id TEXT NOT NULL,
+  patient_id TEXT,
+  kind TEXT NOT NULL,
+  detail TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'needed',
+  owner_id TEXT,
+  external_reference TEXT,
+  confirmation_evidence TEXT,
+  confirmed_at TEXT,
+  confirmed_by TEXT,
+  cancelled_at TEXT,
+  cancelled_by TEXT,
+  cancelled_reason TEXT,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_arrangements_visit ON arrangements(tenant_id, visit_id, status);
+CREATE INDEX IF NOT EXISTS idx_arrangements_patient ON arrangements(tenant_id, patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_arrangements_owner ON arrangements(tenant_id, owner_id, status);
 `;
 
 
@@ -2164,6 +2934,20 @@ export interface DbOptions {
  * this column existed".
  */
 const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
+  { table: "score_approvals", column: "approved_population", type: "TEXT" },
+  { table: "score_approvals", column: "reviewed_at", type: "TEXT" },
+  { table: "score_approvals", column: "licensing_accepted_by", type: "TEXT" },
+  { table: "score_approvals", column: "licensing_accepted_at", type: "TEXT" },
+  { table: "intake_uploads", column: "scan_attempts", type: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "intake_uploads", column: "scan_retry_at", type: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "fhir_resources", column: "patient_id", type: "TEXT" },
+  // Reading a notice in the portal, which is a different fact from any
+  // provider's opinion about delivery. Null on every existing row, which
+  // reads correctly: before this there was no portal to read one in.
+  { table: "patient_notices", column: "viewed_at", type: "TEXT" },
+  // The follow-up task a failed delivery opened, so the chase is a queue item
+  // somebody owns rather than a row on a list nobody is assigned.
+  { table: "patient_notices", column: "follow_up_task_id", type: "TEXT" },
   { table: "prescriptions", column: "dispense_reporting", type: "INTEGER" },
   { table: "prescriptions", column: "safety_summary", type: "TEXT" },
   { table: "referrals", column: "to_service_id", type: "TEXT" },
@@ -2223,6 +3007,19 @@ const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
   // is recorded rather than resolved by assuming UTC.
   { table: "order_results", column: "timezone_assumed", type: "INTEGER" },
   { table: "orders", column: "filler_order_number", type: "TEXT" },
+  // Whether a transmission carried the order or its cancellation. Defaulted to
+  // 'order' so rows written before cancellation existed keep their meaning.
+  { table: "order_transmissions", column: "kind", type: "TEXT NOT NULL DEFAULT 'order'" },
+  // The connection an order actually goes out on. Nullable: a site that has
+  // declared it does not transmit has nothing to put here.
+  { table: "order_routing", column: "endpoint_host", type: "TEXT" },
+  { table: "order_routing", column: "endpoint_port", type: "INTEGER" },
+  { table: "order_routing", column: "sending_application", type: "TEXT" },
+  { table: "order_routing", column: "sending_facility", type: "TEXT" },
+  { table: "order_routing", column: "receiving_application", type: "TEXT" },
+  { table: "order_routing", column: "receiving_facility", type: "TEXT" },
+  { table: "order_routing", column: "timezone_offset", type: "TEXT" },
+  { table: "order_routing", column: "profile_id", type: "TEXT" },
   // Tenancy. NOT NULL with a default, so existing rows land in the default
   // tenant rather than becoming unreachable, and a deployment that never
   // configures a second tenant is unaffected.
@@ -2380,6 +3177,30 @@ export class Db {
    * to stay in step.
    */
   private migrate(): void {
+    const approvalColumns = this.sql.prepare("PRAGMA table_info(score_approvals)").all() as Array<{ name: string }>;
+    if (approvalColumns.some((c) => c.name === "status") && !approvalColumns.some((c) => c.name === "decision")) {
+      this.transaction(() => {
+        this.sql.exec("ALTER TABLE score_approvals RENAME TO score_approvals_legacy");
+        this.sql.exec(SCHEMA);
+        // crosses-tenants: translate the draft approval schema without
+        // dropping any site's history. A free-text owner is not a directory
+        // identity; the governance gate requires a new, registered owner.
+        this.sql.exec(`
+          INSERT INTO score_approvals
+            (tenant_id, id, score_id, implementation_version, decision, reason,
+             clinical_owner_display, review_due, recorded_by_id, recorded_by_kind,
+             supersedes, recorded_at, approved_population, reviewed_at,
+             licensing_accepted_by, licensing_accepted_at)
+          SELECT tenant_id, id, score_id, implementation_version,
+                 CASE status WHEN 'enabled' THEN 'approved' ELSE 'disabled' END,
+                 reason, clinical_owner, review_due, recorded_by, recorded_by_kind,
+                 supersedes, recorded_at, approved_population, reviewed_at,
+                 licensing_accepted_by, licensing_accepted_at
+            FROM score_approvals_legacy;
+          DROP TABLE score_approvals_legacy;
+        `);
+      });
+    }
     for (const { table, column, type } of ADDED_COLUMNS) {
       const cols = this.sql.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
       // An empty result means the table is not there at all, which SCHEMA
@@ -2407,6 +3228,10 @@ export class Db {
           const list = columns.join(", ");
           this.transaction(() => {
             this.sql.exec(ddl);
+            // crosses-tenants: a schema rebuild copies the table, which means
+            // every custodian's rows in it. There is no tenant to name here —
+            // naming one would rebuild a fraction of the table and drop the
+            // rest, which is the opposite of what this is for.
             this.sql.exec(`INSERT INTO ${table}__new (${list}) SELECT ${list} FROM ${table}`);
             this.sql.exec(`DROP TABLE ${table}`);
             this.sql.exec(`ALTER TABLE ${table}__new RENAME TO ${table}`);
@@ -2989,6 +3814,111 @@ export class Db {
       .run(this.tenantId, channelId, key, value);
   }
 
+  /* --------------------------- source failures --------------------------- */
+
+  /**
+   * What a channel's last failure to read its source was, kept where a
+   * health check can see it.
+   *
+   * Every inbound poll caught its own exception, printed it, and returned —
+   * and the bare `catch { return; }` around `readdirSync` did not even print.
+   * Nothing was written down, and `/api/health` is built from the delivery
+   * queue and from declared cadences, so a channel whose database had been
+   * unreachable since Tuesday reported `ok: true, degraded: false`. A channel
+   * that declared no cadence reported healthy forever. It is the one failure
+   * where the engine knows something is wrong and says nothing.
+   *
+   * `read` is the source itself: a drop directory that is gone, a polling
+   * query that throws, a database that will not connect. `item` is one
+   * message after a successful read — a file that could not be opened, a row
+   * that could not be ingested — which says the link is up and one thing on
+   * it is bad. They need different responses, so they are not one signal.
+   */
+  recordSourceFailure(channelId: string, stage: SourceFailureStage, err: unknown, item?: string): SourceFailure {
+    const previous = this.sourceFailure(channelId);
+    const now = new Date().toISOString();
+    const record: SourceFailure = {
+      stage,
+      // A run of failures is failures of the same kind of thing. A directory
+      // that came back and then served one bad file is not four failures.
+      consecutive: previous && previous.stage === stage ? previous.consecutive + 1 : 1,
+      since: previous && previous.stage === stage ? previous.since : now,
+      at: now,
+      kind: err instanceof Error ? err.name : typeof err,
+      detail: err instanceof Error ? err.message : String(err),
+      faultId: randomUUID(),
+      ...(item === undefined ? {} : { item }),
+    };
+    this.setChannelState(channelId, SOURCE_FAILURE_KEY, JSON.stringify(record));
+    return record;
+  }
+
+  /** Forgets a channel's failures. Called after a pass that read and handled everything. */
+  clearSourceFailure(channelId: string): void {
+    this.sql
+      .prepare("DELETE FROM channel_state WHERE tenant_id = ? AND channel_id = ? AND key = ?")
+      .run(this.tenantId, channelId, SOURCE_FAILURE_KEY);
+  }
+
+  sourceFailure(channelId: string): SourceFailure | undefined {
+    const raw = this.getChannelState(channelId, SOURCE_FAILURE_KEY);
+    if (raw === undefined) return undefined;
+    try {
+      return JSON.parse(raw) as SourceFailure;
+    } catch {
+      // A health check must not be the thing that throws. An unreadable
+      // record is reported as a failure of unknown kind rather than dropped,
+      // because "we cannot read our own note about the outage" is not a
+      // reason to say the channel is fine.
+      return { stage: "read", consecutive: 1, since: "", at: "", kind: "Unreadable", detail: raw, faultId: "" };
+    }
+  }
+
+  /**
+   * Channels that could not read or handle their source, most stuck first.
+   *
+   * Carries no `detail` and no `item`: this is what `/api/health` publishes,
+   * and that endpoint is unauthenticated. A drop file is routinely named by
+   * the sending system after an accession or a chart number, and an exception
+   * from a polling query can quote the row it was reading. The class of the
+   * error and how long it has been failing are enough to raise an alert; the
+   * rest is on the authenticated channel listing.
+   */
+  failingChannels(): FailingChannel[] {
+    const rows = this.sql
+      .prepare("SELECT channel_id FROM channel_state WHERE tenant_id = ? AND key = ?")
+      .all(this.tenantId, SOURCE_FAILURE_KEY) as Array<{ channel_id: string }>;
+    const enabled = new Set(this.listChannels().filter((c) => c.enabled).map((c) => c.id));
+    const out: FailingChannel[] = [];
+    for (const row of rows) {
+      // A channel somebody has disabled is not an outage. Its record is kept
+      // so re-enabling does not start from a clean slate it has not earned.
+      if (!enabled.has(row.channel_id)) continue;
+      const f = this.sourceFailure(row.channel_id);
+      if (!f) continue;
+      const ageSec = (iso: string): number | null => {
+        const t = Date.parse(iso);
+        return Number.isNaN(t) ? null : Math.max(0, Math.floor((Date.now() - t) / 1000));
+      };
+      out.push({
+        channelId: row.channel_id,
+        stage: f.stage,
+        consecutive: f.consecutive,
+        kind: f.kind,
+        failingForSec: ageSec(f.since),
+        lastFailureAgeSec: ageSec(f.at),
+        // Reading is the link. Three consecutive failures is not a blip on
+        // any cadence, and counting polls rather than seconds scales with the
+        // channel's own interval instead of a wall clock that fits a lab feed
+        // and not a nightly extract. A bad item is reported and never
+        // degrades: the interface is up, and one message is the pipeline's
+        // problem, which records it on the message itself.
+        degrading: f.stage === "read" && f.consecutive >= SOURCE_FAILURES_BEFORE_DEGRADED,
+      });
+    }
+    return out.sort((a, b) => b.consecutive - a.consecutive || a.channelId.localeCompare(b.channelId));
+  }
+
   /* ---------------------------- subscriptions ---------------------------- */
 
   listSubscriptions(): SubscriptionRow[] {
@@ -3339,6 +4269,7 @@ export class Db {
     stalledChannels: Array<{ channelId: string; oldestQueuedAgeSec: number; queued: number }>;
     lastDeliveryAt: string | null;
     silentChannels: Array<{ channelId: string; lastMessageAgeSec: number | null; expectEverySec: number }>;
+    failingChannels: FailingChannel[];
   } {
     const counts = this.sql
       .prepare("SELECT state, COUNT(*) AS n FROM deliveries WHERE tenant_id = ? GROUP BY state")
@@ -3378,6 +4309,11 @@ export class Db {
       })),
       lastDeliveryAt: lastDelivery.t,
       silentChannels: this.silentChannels(),
+      // A silent channel and a failing one are different incidents with
+      // different first calls: one is "the sending site has stopped", the
+      // other is "our end cannot reach theirs". Reporting them as one signal
+      // sends an operator to the wrong phone.
+      failingChannels: this.failingChannels(),
     };
   }
 
@@ -3522,7 +4458,7 @@ export class Db {
       .prepare(
         `SELECT * FROM api_keys
           WHERE hash = ? AND revoked_at IS NULL
-            AND (expires_at IS NULL OR expires_at > ?)`
+            AND (expires_at IS NULL OR (expires_at GLOB '${DATE_LIKE}' AND expires_at > ?))`
       )
       .get(hash, new Date().toISOString()) as ApiKeyRow | undefined;
   }
@@ -3565,7 +4501,7 @@ export class Db {
       .prepare(
         `SELECT * FROM api_keys
           WHERE tenant_id = ? AND revoked_at IS NULL
-            AND (expires_at IS NULL OR expires_at > ?)
+            AND (expires_at IS NULL OR (expires_at GLOB '${DATE_LIKE}' AND expires_at > ?))
             AND COALESCE(last_used_at, created_at) < ?
           ORDER BY COALESCE(last_used_at, created_at)`
       )
@@ -3579,7 +4515,7 @@ export class Db {
       .prepare(
         `SELECT * FROM api_keys
           WHERE tenant_id = ? AND revoked_at IS NULL AND expires_at IS NOT NULL
-            AND expires_at > ? AND expires_at <= ?
+            AND expires_at GLOB '${DATE_LIKE}' AND expires_at > ? AND expires_at <= ?
           ORDER BY expires_at`
       )
       .all(this.tenantId, asOf, until) as unknown as ApiKeyRow[];
@@ -3600,7 +4536,7 @@ export class Db {
       this.sql
         .prepare(
           `SELECT COUNT(*) AS n FROM api_keys
-            WHERE tenant_id = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`
+            WHERE tenant_id = ? AND revoked_at IS NULL AND (expires_at IS NULL OR (expires_at GLOB '${DATE_LIKE}' AND expires_at > ?))`
         )
         .get(this.tenantId, new Date().toISOString()) as { n: number }
     ).n;

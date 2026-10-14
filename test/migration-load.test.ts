@@ -26,8 +26,8 @@ const OPS = { actorId: "migration-operator" };
 const P = "OLD-1001";
 
 function site() {
-  const dir = mkdtempSync(join(tmpdir(), "portage-mig-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-mig-"));
+  const db = new Db(join(dir, "northstar.db"));
   const clinical = new ClinicalRecord(db);
   const meds = new MedicationStore(db, { check: () => [] });
   return {
@@ -37,7 +37,7 @@ function site() {
     mig: new Migration(db, { clinical, meds }),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -495,8 +495,8 @@ test("a re-declared count replaces the earlier one rather than accumulating", ()
 });
 
 test("migrations are confined to their tenant", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-mig-iso-"));
-  const root = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-mig-iso-"));
+  const root = new Db(join(dir, "northstar.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");
@@ -524,7 +524,7 @@ test("migrations are confined to their tenant", () => {
     assert.equal(south.mig.load(southRun.id, allergyRecord("AL-1"), OPS).outcome, "loaded");
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 

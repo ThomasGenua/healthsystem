@@ -28,15 +28,15 @@ import {
 const SCT = "http://snomed.info/sct";
 
 function store() {
-  const dir = mkdtempSync(join(tmpdir(), "portage-term-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-term-"));
+  const db = new Db(join(dir, "northstar.db"));
   return {
     db,
     terms: new TerminologyStore(db),
     dir,
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }

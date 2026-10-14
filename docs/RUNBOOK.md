@@ -1,4 +1,55 @@
-# Portage runbook
+# Northstar runbook
+
+## Local staging package
+
+See [synthetic Docker staging](../deploy/staging/README.md) for a localhost-only
+container setup, pinned images, configuration templates, optional real ClamAV
+and read-only smoke checks. This is separate from a live clinical deployment.
+
+## Pilot preflight
+
+Run `npm run preflight` against the service environment. Add `-- --probe-scanner`
+to send a harmless synthetic sample to the local daemon. Output contains check
+IDs and remediation text, never environment values or secret paths. Exit 1 means
+configuration blockers exist; exit 0 does not constitute deployment approval.
+Review items require site evidence, not another environment assertion. This
+command does not contact the identity provider or send notifications.
+
+## Local upload antivirus
+
+Set `NORTHSTAR_CLAMD_SOCKET` to an absolute local clamd socket path, or
+`NORTHSTAR_CLAMD_PORT=3310` for TCP restricted by the client to `127.0.0.1`.
+Configure exactly one, with `NORTHSTAR_DEV_MALWARE_SCANNER` off. On Windows,
+use loopback TCP; UNC and named-pipe paths are refused. Without a scanner,
+uploads remain quarantined. Do not expose clamd to the public network;
+INSTREAM has no authentication or encryption. Restrict daemon socket access to
+the service account and bind TCP only to loopback if using TCP.
+
+Maintain ClamAV and its signatures (for example, via FreshClam). Configure
+`StreamMaxLength` to at least 8 MiB, the application's upload limit. Scans have
+a 30-second absolute deadline and bounded replies. Errors, unavailable daemons
+and unexpected responses leave uploads pending, never downloadable. The
+authenticated `POST /api/clinical/upload-scan` route accepts `{"id":"upload-id"}`.
+The server automatically sweeps up to ten eligible uploads sequentially every
+five seconds, without overlapping sweeps. Failures remain quarantined and use
+persisted exponential retry delays from 30 seconds up to one hour. Restart keeps
+retry timing; suspended tenants are not scanned. Shutdown waits for the active
+scan before closing the database. The manual route remains available.
+`/api/health` reports uploadScanning and degrades when the oldest pending file
+is over 15 minutes old. Alert on `northstar_upload_scan_oldest_age_seconds > 900`,
+and monitor `northstar_uploads_pending_scan`, `northstar_uploads_retrying_scan`
+and `northstar_upload_scanner_configured`. A monitor must be configured at the
+site; adding metrics does not deliver an alert by itself.
+Filenames are not transmitted and raw daemon replies are not stored.
+
+Before enabling uploads at a site, exercise a harmless file, the standard EICAR
+test fixture and a stopped daemon using synthetic patients. Confirm clean files
+are filed once, flagged bytes are removed, and unavailable scanning leaves
+content quarantined. Automated protocol tests do not establish signature
+freshness or actual detection performance. Antivirus does not guarantee safe
+documents; retain the application's content-type and download protections.
+
+Protocol: [official ClamAV INSTREAM documentation](https://docs.clamav.net/manual/Usage/ClamdProtocol.html).
 
 For the person holding the pager. Deployment steps first, then the failures
 worth having written down before they happen.
@@ -9,7 +60,7 @@ mistake — please fix it here. The hazards those mechanisms exist to prevent,
 with severity and the test that pins each one, live in
 [CLINICAL-SAFETY.md](CLINICAL-SAFETY.md).
 
-**Portage carries personal health information. Two rules apply to every
+**Northstar carries personal health information. Two rules apply to every
 paragraph below:** never paste a message body, a chart entry or a patient
 identifier into a ticket, a chat channel or a search engine; and never work
 around a refusal by disabling the thing that refused. A consent check, a
@@ -24,22 +75,27 @@ The escape hatch is break-glass, which is loud and recorded — see
 - [Deploying](#deploying)
   - [What a node needs](#what-a-node-needs)
   - [First install](#first-install)
-  - [Approving a clinical score](#approving-a-clinical-score)
   - [Upgrading](#upgrading)
+  - [The patient portal](#the-patient-portal)
+  - [Upgrading a site installed as Portage](#upgrading-a-site-installed-as-portage)
   - [Rolling back](#rolling-back)
 - [Daily and weekly](#daily-and-weekly)
 - [Incidents](#incidents)
   - [`/api/health` says degraded](#apihealth-says-degraded)
   - [A channel is stalled](#a-channel-is-stalled)
   - [A feed has gone silent](#a-feed-has-gone-silent)
+  - [A channel cannot reach its source](#a-channel-cannot-reach-its-source)
   - [Dead letters](#dead-letters)
   - [The disk is full](#the-disk-is-full)
   - [The engine will not start](#the-engine-will-not-start)
   - [The engine crashed](#the-engine-crashed)
+  - [A caller reports a fault id](#a-caller-reports-a-fault-id)
   - [Chain verification fails](#chain-verification-fails)
+  - [The database contradicts itself](#the-database-contradicts-itself)
   - [A clinician cannot see a record they need](#a-clinician-cannot-see-a-record-they-need)
   - [Break-glass queues are not emptying](#break-glass-queues-are-not-emptying)
   - [A credential is compromised](#a-credential-is-compromised)
+  - [Expiries that are not dates](#expiries-that-are-not-dates)
   - [Restoring from backup](#restoring-from-backup)
   - [How long it takes, and how much you lose](#how-long-it-takes-and-how-much-you-lose)
 - [Escalating](#escalating)
@@ -52,9 +108,9 @@ The escape hatch is break-glass, which is loud and recorded — see
 
 - **Node 22.18 or later.** 24.x is the production target: `node:sqlite` is no
   longer flagged experimental there, and 22.x prints a warning on every boot.
-- **A local filesystem for `PORTAGE_DATA`.** Not NFS, not SMB, not a network
+- **A local filesystem for `NORTHSTAR_DATA`.** Not NFS, not SMB, not a network
   block device with write caching you cannot reason about. SQLite's durability
-  guarantee is only as good as the filesystem's `fsync`, and Portage's
+  guarantee is only as good as the filesystem's `fsync`, and Northstar's
   acknowledgement means *durably queued* — a lie at this layer makes it a lie
   all the way up.
 - **Disk**: roughly 4 KB per message stored, plus backups. Size for the
@@ -65,36 +121,49 @@ The escape hatch is break-glass, which is loud and recorded — see
 ### First install
 
 ```bash
-git clone https://github.com/ThomasGenua/healthsystem.git portage
-cd portage
+git clone https://github.com/ThomasGenua/healthsystem.git northstar
+cd northstar
 npm ci
-npm run typecheck && npm test    # complete suite; do not deploy a node that fails one
+npm run typecheck && npm test    # 1172 tests; do not deploy a node that fails one
 
-export PORTAGE_DATA=/var/lib/portage
-export PORTAGE_PORT=8686
+export NORTHSTAR_DATA=/var/lib/northstar
+export NORTHSTAR_PORT=8686
 node src/server.ts
 ```
 
 Then, before any real feed is pointed at it:
 
-1. **Set `PORTAGE_AUTH_MODE`.** It defaults to `apikey`. `off` exists for
+1. **Set `NORTHSTAR_AUTH_MODE`.** It defaults to `apikey`. `off` exists for
    development and must never reach a machine that can see a real feed.
    The patient boundary additionally requires `oauth` and a configured OIDC
    issuer; API keys and authentication-off mode can never act as patients.
 2. **Issue an admin key** and store it in whatever your site uses for secrets,
    not in a shell history. See [API keys](../README.md#api-keys).
-3. **Turn on TLS** (`PORTAGE_TLS_CERT` / `_KEY`), and mutual TLS if the
-   destinations support it (`PORTAGE_TLS_CLIENT_CA`).
-4. **Set `PORTAGE_BACKUP_DIR`** to something on a different physical device
-   than `PORTAGE_DATA`, and **set `PORTAGE_BACKUP_REMOTE`** to a destination
+3. **Turn on TLS** (`NORTHSTAR_TLS_CERT` / `_KEY`), and mutual TLS if the
+   destinations support it (`NORTHSTAR_TLS_CLIENT_CA`).
+
+   A node holding its own certificate sends `Strict-Transport-Security` with
+   it, for a year by default (`NORTHSTAR_HSTS_MAX_AGE`, `0` to send none).
+   **If you terminate TLS at a proxy instead, set HSTS there** — requests
+   arrive here as plain HTTP and the engine will not send it, because the only
+   evidence to the contrary would be a forwarded header anyone who can reach
+   the port could write, and that is not a thing to decide a year of
+   HTTP refusal on.
+
+   Note it is a year *that browsers remember*. Lower it before shipping if this
+   hostname may ever have to serve plain HTTP again. The engine never sends
+   `includeSubDomains` or `preload`: both reach hostnames this deployment may
+   not own, and belong at the edge where the rest of the domain is configured.
+4. **Set `NORTHSTAR_BACKUP_DIR`** to something on a different physical device
+   than `NORTHSTAR_DATA`, and **set `NORTHSTAR_BACKUP_REMOTE`** to a destination
    that is not this machine (`s3://bucket/prefix` or `sftp://user@host/path`)
-   with `PORTAGE_BACKUP_KEY_FILE` pointing at a 32-byte key that lives
+   with `NORTHSTAR_BACKUP_KEY_FILE` pointing at a 32-byte key that lives
    somewhere this host dying does not take with it. A backup on the disk
    that failed is not a backup; a key that only this machine can read
-   unlocks nothing after it dies. `npm run backup -- --init-key /etc/portage/backup.key`
+   unlocks nothing after it dies. `npm run backup -- --init-key /etc/northstar/backup.key`
    writes one; store a copy off-box before the first real feed.
-5. **Decide retention deliberately.** `PORTAGE_REDACT_AFTER_DAYS` and
-   `PORTAGE_PURGE_AFTER_DAYS` are unset by default and affect the *message
+5. **Decide retention deliberately.** `NORTHSTAR_REDACT_AFTER_DAYS` and
+   `NORTHSTAR_PURGE_AFTER_DAYS` are unset by default and affect the *message
    log only* — never the chart, medications, allergies, orders, results or
    referrals. An active legal hold on the tenant skips the whole sweep:
    messages are not patient-keyed. See [What retention does not touch](../README.md#what-retention-does-not-touch).
@@ -103,54 +172,19 @@ Then, before any real feed is pointed at it:
 7. **Declare `expectMessageEverySec` on every channel you would notice the
    absence of.** Silence detection is off unless declared, and silence is the
    failure most likely to run for days unnoticed.
-
-Clinical scores remain disabled after these steps. That is healthy default
-state, not a degraded node. Enable only those reviewed for this deployment as
-described next.
-
-### Approving a clinical score
-
-First inspect all ten gates:
-
-```bash
-curl -sS -H "authorization: Bearer $ADMIN_KEY" \
-  http://localhost:8686/api/clinical/score-approvals
-```
-
-An independent clinical reviewer must settle the population, source version,
-units, licensing and local use before the operator records the decision. The
-request deliberately repeats the implementation version: approving “CURB-65”
-in the abstract must not silently approve different code after an upgrade.
-
-```bash
-curl -sS -X POST \
-  -H "authorization: Bearer $ADMIN_KEY" \
-  -H "content-type: application/json" \
-  http://localhost:8686/api/clinical/score-approval \
-  --data '{
-    "score": "curb-65",
-    "implementationVersion": "portage-1",
-    "clinicalOwner": "Dr Jane Example",
-    "approvedPopulation": "Adults presenting to Example Hospital with community-acquired pneumonia",
-    "reviewedAt": "2026-08-15T00:00:00Z",
-    "reviewDue": "2027-08-15T00:00:00Z",
-    "licensingAcceptedBy": "Example Hospital clinical governance board",
-    "reason": "Clinical governance minute CGB-2026-14"
-  }'
-```
-
-Never copy the example names or dates into a real approval. They are evidence,
-not configuration filler. The review-due date closes the gate automatically;
-an implementation-version change also closes it. To stop use immediately
-without deleting the decision history:
-
-```bash
-curl -sS -X POST \
-  -H "authorization: Bearer $ADMIN_KEY" \
-  -H "content-type: application/json" \
-  http://localhost:8686/api/clinical/score-disable \
-  --data '{"score":"curb-65","reason":"steward guidance changed; review required"}'
-```
+8. **Decide whether orders leave on their own.** With an order route declared
+   to transmit and a `lab-order` destination on an enabled channel, placed
+   orders are swept onto the outbound queue every minute — the delay between
+   a clinician placing an order and the laboratory being able to see it, so
+   it is set against how long a patient takes to walk to the draw station.
+   `NORTHSTAR_ORDER_DISPATCH_INTERVAL_MS` changes it;
+   `NORTHSTAR_ORDER_DISPATCH_INTERVAL_MS=0` turns automatic send off, leaving
+   `POST /api/clinical/order-send` as the only way out. Set the `0`
+   explicitly if that is the decision: it should read as a decision rather
+   than as something nobody configured. Note that one enabled `lab-order`
+   destination per tenant is the supported shape — with two, the sweep cannot
+   tell which laboratory a route's destination label means, and refuses to
+   guess (H-169).
 
 ### Upgrading
 
@@ -164,14 +198,14 @@ v0.3.0 file and exercises the whole platform against the result.
 curl -sS -X POST -H "authorization: Bearer $ADMIN_KEY" http://localhost:8686/api/backup
 
 # 2. Stop the engine. SIGTERM; it drains.
-systemctl stop portage
+systemctl stop northstar
 
 # 3. Update, and re-run the suite against the new code on this machine.
-git fetch --tags && git checkout v0.7.0
+git fetch --tags && git checkout v0.9.0
 npm ci && npm run typecheck && npm test
 
 # 4. Start. Watch the log: the migration announces each table it rebuilds.
-systemctl start portage
+systemctl start northstar
 curl -sS http://localhost:8686/api/health
 ```
 
@@ -182,16 +216,205 @@ audit chain). An upgrade that produced tables without their constraints
 is worse than one that failed to open — the site runs, and double-books — so
 the verification step is the point of the exercise, not paperwork.
 
+Score approvals from the draft score-provenance schema are translated on open,
+including their population, review and licensing evidence and supersession
+history. Their free-text clinical owners are not directory identities, so those
+approvals remain disabled until a new decision names a registered practitioner.
+Existing approvals from main retain their decisions; missing evidence stays null
+rather than being invented.
+
+Inspect `GET /api/clinical/score-governance` and the per-score
+`score-governance-history?score=curb-65` after upgrade. Record a new decision with
+`POST /api/clinical/score-approve`, supplying `score`, `clinicalOwner` (the
+practitioner directory ID), `reviewDue` and a written `reason`. To also record
+the draft PR's review evidence, supply all four of `implementationVersion`,
+`approvedPopulation`, `reviewedAt` and `licensingAcceptedBy`; the version must
+match the catalogue and the review must precede a future review deadline.
+The retained `POST /api/clinical/score-approval` route requires those four fields.
+Withdrawal remains `POST /api/clinical/score-disable`; renewal and withdrawal
+append a decision rather than rewriting the history.
+
+### Upgrading a site installed as Portage
+
+Northstar was called Portage. Nothing about that rename requires you to change
+anything: **an existing site upgrades with no configuration changes at all.**
+This section is what you may optionally tidy afterwards, and the two things you
+must not do casually.
+
+Everything below keeps working, indefinitely, and is read alongside the new
+spelling:
+
+| Still works | Current spelling | Where it lives |
+|---|---|---|
+| `PORTAGE_*` environment variables | `NORTHSTAR_*` | your unit file or `.env` |
+| `data/portage.db` | `data/northstar.db` | the data directory |
+| `portage-<stamp>.db` snapshots | `northstar-<stamp>.db` | the backup directory |
+| `portage_*` Prometheus series | `northstar_*` | scrape config, dashboards, alert rules |
+| `portage/admin` scope | `northstar/admin` | issued tokens, IdP config |
+| `portage_tenant`, `portage_organization`, `portage_practitioner` claims | `northstar_*` | your identity provider |
+
+Where both spellings are set, the `NORTHSTAR_*` one wins, so you can move one
+variable at a time. The engine lists the legacy variables still in play once at
+boot; that line is informational, not a deprecation warning.
+
+**Do not rename the database file while the engine is running.** If you want it
+under the new name, stop the engine first and move all three files together —
+the database, its `-wal`, and its `-shm`. A `-wal` left behind belongs to a
+database that is no longer there, and applying it to another one is how a
+restore produces a chart that never existed:
+
+```bash
+systemctl stop northstar
+cd /var/lib/northstar
+for ext in "" -wal -shm; do [ -e "portage.db$ext" ] && mv "portage.db$ext" "northstar.db$ext"; done
+systemctl start northstar
+```
+
+If you leave it alone, the engine finds it and says so at boot. An existing
+file always wins over the preferred name — the alternative is SQLite creating
+an empty `northstar.db` beside your real one and the site coming up healthy
+with no patients in it.
+
+**Do not change what goes out on the wire without agreeing it first.** MSH-3 on
+outbound acknowledgements is still `PORTAGE`, because it is the receiving
+application name each sending facility has configured at *their* end. Change it
+unilaterally and their engine rejects your acknowledgements — visible to them
+as messages that were never acknowledged, and not visible to you at all. When
+every partner has scheduled the change, set `NORTHSTAR_HL7_APPLICATION`.
+
+Metrics are exposed under both prefixes, so existing dashboards and alert rules
+keep working untouched. Move them when convenient; a renamed metric does not
+break a rule loudly, it just evaluates against a series that no longer exists.
+
+### The patient portal
+
+`GET /me` is the patient and caregiver application. It is served from one
+file, loads nothing from anywhere else, and talks only to `/patient/*` — the
+OAuth surface that was already there. Nothing about it can widen a grant.
+
+**Clinic sign-in**, using the server-side authorization-code client:
+
+```bash
+NORTHSTAR_AUTH_MODE=apikey+oauth
+NORTHSTAR_OIDC_ISSUER=https://login.example.ca/realms/clinic
+NORTHSTAR_OIDC_AUDIENCE=northstar-prod     # required; the engine refuses to start without it
+NORTHSTAR_PUBLIC_ORIGIN=https://patients.example.ca
+NORTHSTAR_PORTAL_CLIENT_ID=northstar-patient-portal
+NORTHSTAR_PORTAL_CLIENT_SECRET_FILE=/run/secrets/northstar-portal-client
+NORTHSTAR_PORTAL_SCOPES='openid patient/*.read'
+```
+
+Register the exact redirect URI `https://patients.example.ca/auth/portal/callback`
+at the identity provider. It must publish OIDC discovery with S256 PKCE,
+support `client_secret_basic`, and issue signed JWT access tokens for the
+configured API audience and ID tokens for the portal client. Both tokens
+must identify the same subject. Configure patient scopes and the tenant claim
+at the provider; sign-in does not create patient grants. Protect the secret
+file with OS permissions and manage rotation at the provider.
+
+The patient selects **Sign in with your clinic**, authenticates at that
+provider, and returns to `/me`. The server exchanges the code and validates
+issuer, audience, signature, nonce, subject and expiry. Tokens stay in memory;
+the browser receives an opaque Secure/HttpOnly host-only cookie. Patient writes
+and logout require the exact public Origin and a session-bound CSRF token.
+Cookies cannot authorize admin or FHIR routes. Bearer API clients keep their
+existing authorization path.
+
+Sessions end after 15 minutes without a patient API request, at token expiry,
+after at most eight hours, on logout, or when this process restarts. There is
+no refresh-token storage or silent renewal. Logout ends the Northstar session,
+not the provider's SSO session. Pending logins expire after five minutes.
+Pending logins and active sessions are each bounded to 1,000 entries.
+
+Terminate TLS at the configured public origin, protect the backend listener,
+and preserve the browser's Origin header. Forwarded host headers never decide
+the redirect URL. Origin must contain no path or trailing slash. All login
+settings are required together; invalid or insecure configuration fails boot.
+Without a login client the portal explains that clinic sign-in is unavailable.
+Manual token entry is available only with the development issuer.
+Use `node --test --import ./test/exit-watchdog.ts test/portal-login.test.ts test/portal-browser.test.ts`
+for a synthetic rehearsal; set `NORTHSTAR_REQUIRE_BROWSER=1` to refuse a skipped
+browser test. A real provider still needs a site-specific acceptance run.
+
+**In development**, where you have no provider yet:
+
+```bash
+node scripts/portal-demo.ts            # synthetic people, a released result, a held one
+NORTHSTAR_DEV_IDP=on npm start
+open http://localhost:8686/me
+```
+
+`NORTHSTAR_DEV_IDP=on` runs a synthetic issuer at `/dev-idp`. The engine
+still validates its tokens over JWKS exactly as it validates a real
+provider's — there is no branch in the gate for development — so what you see
+working is the production path with a different issuer behind it.
+
+Three things constrain it, and none is a setting:
+
+- It **refuses to start beside a real issuer.** `NORTHSTAR_DEV_IDP=on` and
+  `NORTHSTAR_OIDC_ISSUER` together is a boot failure, not a warning. There is
+  no half-and-half deployment.
+- Its **signing key is generated at boot and never written down.** No key file
+  exists, and every token it has ever issued stops verifying when the process
+  exits.
+- It **cannot invent authority.** The sign-in list is exactly the OAuth
+  subjects that already hold a live grant in `NORTHSTAR_DEV_IDP_TENANT`
+  (default `default`). If nobody has been enrolled, nobody can sign in, and
+  the page says so rather than showing a broken picker.
+
+| Variable | Meaning |
+|---|---|
+| `NORTHSTAR_DEV_IDP` | `on` to run the synthetic issuer. Anything else, including unset, and `/dev-idp/*` returns 404. |
+| `NORTHSTAR_DEV_IDP_TENANT` | Which custodian's grants the picker lists. Defaults to `default`. |
+| `NORTHSTAR_OIDC_AUDIENCE` | Reused as the audience for synthetic tokens. Defaults to `northstar-development`. |
+
+**Pre-visit intake and uploads (item 60)** need a questionnaire to answer and,
+to see a file leave quarantine, a scanner:
+
+```bash
+node scripts/portal-demo.ts            # also publishes a "pre-visit" questionnaire
+NORTHSTAR_DEV_IDP=on NORTHSTAR_DEV_MALWARE_SCANNER=on npm start
+```
+
+`NORTHSTAR_DEV_MALWARE_SCANNER=on` wires `SyntheticScanner`
+(`src/patient/intake.ts`) in place of a real antivirus integration. It
+recognizes exactly the EICAR test string — the harmless file antivirus
+vendors publish for testing detection pipelines — and nothing else. Without
+it, an uploaded file stays `pending-scan` forever and cannot be downloaded or
+filed onto the chart, which is the correct behaviour for a deployment that
+has not configured a real scanner, not a bug in the demo. **Never set this in
+production.** Unlike `NORTHSTAR_DEV_IDP`, nothing here refuses to start
+alongside a real configuration, because a real scanner has no equivalent
+environment variable to check against — it is wired in code, by passing a
+real `MalwareScanner` to `Engine`. Left on by mistake, the risk is not a
+stuck queue: it is every upload except a literal EICAR test file coming back
+"clean" from a pattern match that examined nothing, which is worse than no
+scanner at all. Configure a real `MalwareScanner` for anything but a
+demonstration.
+
+**What the portal still is not.** There is no identity-proofing and no ONE ID:
+a named clerk at the clinic writes how they checked who somebody is, and that
+is what creates a grant. The page says so in both languages, in its footer,
+where somebody reading it will see it. It carries no WCAG or AODA conformance
+claim — it has landmarks, a skip link, visible focus, labelled controls and a
+live region, and none of that is a substitute for testing with a real screen
+reader and a real user.
+
+A token lives in `sessionStorage` while a tab is open. That is the ordinary
+compromise for a page with no server session, and it is one of the reasons
+this is not a certified portal: a deployment that needs one puts a
+confidential client in front of it.
+
 ### Rolling back
 
-Portage's migrations move forward only. **A database opened by a newer version
+Northstar's migrations move forward only. **A database opened by a newer version
 may not be readable by an older one**, so rolling back the code is not enough:
 
 ```bash
-systemctl stop portage
+systemctl stop northstar
 git checkout v0.4.0 && npm ci
-# restore the pre-upgrade backup over PORTAGE_DATA — see Restoring, below
-systemctl start portage
+# restore the pre-upgrade backup over NORTHSTAR_DATA — see Restoring, below
+systemctl start northstar
 ```
 
 Messages that arrived after the backup was taken are lost from the log by this,
@@ -206,7 +429,7 @@ call for help.
 | When | What | How |
 | --- | --- | --- |
 | Continuously | `degraded`, dead letters, silent channels | alert on `/metrics` |
-| Daily | A backup exists, is recent, verified, and has left the machine | `remoteBackup` on `/api/health`; `portage_backup_remote_ok` on `/metrics` |
+| Daily | A backup exists, is recent, verified, and has left the machine | `remoteBackup` on `/api/health`; `northstar_backup_remote_ok` on `/metrics` |
 | Daily | Break-glass queues are being drained | `GET /api/clinical/break-glass` |
 | Weekly | Chain verification across all channels | `GET /api/chain/verify`, `GET /api/audit/verify` |
 | Weekly | Unacknowledged results and open referrals past their deadline | `GET /api/clinical/results`, `/referrals` |
@@ -241,7 +464,7 @@ snapshots are the only ones you have. Then go to the matching section below.
 
 ### A channel is stalled
 
-Work is arriving and not leaving. The destination is the suspect, not Portage.
+Work is arriving and not leaving. The destination is the suspect, not Northstar.
 
 ```bash
 curl -sS -H "authorization: Bearer $ADMIN_KEY" \
@@ -266,8 +489,53 @@ declared `expectMessageEverySec`.
 
 A dead ADT interface and a quiet night are indistinguishable from here, so this
 is a phone call to the sending site, not something to diagnose locally. Check
-first that the listener is actually up (`GET /api/channels`) so you are not
-calling them about your own outage.
+`failingChannels` first — below — so you are not calling them about our outage.
+
+### A channel cannot reach its source
+
+`/api/health` reports `signals.failingChannels`, and a channel there with
+`degrading: true` is why the engine is degraded.
+
+```json
+{ "channelId": "lab-in", "stage": "read", "consecutive": 47,
+  "kind": "Error ENOENT", "failingForSec": 3820, "degrading": true }
+```
+
+Read `stage` first, because it decides who you call:
+
+- **`read`** — our end cannot reach theirs. The drop directory is unmounted,
+  the polling query throws, the SFTP host refuses the connection. Nothing is
+  arriving and nothing will until somebody acts. `degrading` turns on after
+  three consecutive failed reads, which is past coincidence on any cadence.
+- **`item`** — the source answered and one thing on it could not be handled.
+  The link is up and the rest of the traffic is flowing, so this never
+  degrades the engine. Usually one stuck file, and it usually repeats on every
+  poll because it is not archived until it succeeds.
+
+`kind` is the exception class and its system code (`Error ENOENT`,
+`Error ECONNREFUSED`), which is normally enough to name the fault. The full
+message — and, for an `item` failure, the file it was on — is on the
+authenticated channel listing, not on the open health endpoint:
+
+```bash
+curl -sS -H "authorization: Bearer $ADMIN_KEY" \
+  http://localhost:8686/api/channels | jq '.[] | select(.sourceFailure)'
+```
+
+`sourceFailure.faultId` is the same id the log line carries, so a line in
+yesterday's log can be tied to the record it belongs to.
+
+There is nothing to acknowledge and nothing to reset. The record is cleared by
+a poll that reads the source and handles everything on it, so remount the
+volume or fix the credentials and the signal clears itself. If it does not,
+the source is still failing — check the detail again rather than the signal.
+
+A channel you deliberately disabled stops being reported without losing its
+record, so re-enabling one does not start from a clean slate it has not earned.
+
+`northstar_channel_source_failures{channel,stage}` is the same count in
+Prometheus. Alert on `stage="read"` above three; `stage="item"` is a ticket,
+not a page.
 
 ### Dead letters
 
@@ -287,14 +555,14 @@ same failure and tells you nothing new. Fix the cause, then replay.
 
 ### The disk is full
 
-Portage refuses writes rather than half-writing them, and recovers on its own
+Northstar refuses writes rather than half-writing them, and recovers on its own
 once space is freed — this is exercised by `npm run diskfulltest` and nightly
 in CI. So the engine is not the problem; the disk is.
 
-1. Free space. Old backups in `PORTAGE_BACKUP_DIR` are usually the largest
-   thing that is safe to delete, and `PORTAGE_BACKUP_KEEP` governs how many are
+1. Free space. Old backups in `NORTHSTAR_BACKUP_DIR` are usually the largest
+   thing that is safe to delete, and `NORTHSTAR_BACKUP_KEEP` governs how many are
    retained.
-2. **Do not delete anything inside `PORTAGE_DATA`.** Not the WAL, not the
+2. **Do not delete anything inside `NORTHSTAR_DATA`.** Not the WAL, not the
    journal, not "the big one".
 3. Confirm recovery: `/api/health` should return to `ok` without a restart.
 
@@ -310,7 +578,7 @@ answer.
 - **`no such column: …`** — a migration did not run, which should be
   impossible on a supported path. Do not hand-edit the schema. Take a copy of
   the file, roll back to the previous version, and report it.
-- **Port in use** — something else is on `PORTAGE_PORT`.
+- **Port in use** — something else is on `NORTHSTAR_PORT`.
 
 ### The engine crashed
 
@@ -326,6 +594,97 @@ facade absorbs the duplicate as a no-op.
 
 Then check `GET /api/chain/verify` and move on.
 
+### A caller reports a fault id
+
+A client got `500 {"error": "internal error", "faultId": "<uuid>"}`, and the log
+line for it says only where:
+
+```
+phi Observation: fault 655eee4b-… Error at OrderStore.report (…/orders/store.ts:416:9) <- …
+```
+
+That is deliberate and is not a truncated log. The exception message is the
+part of a fault that can carry a patient in it — a store that says
+`3 medication(s) still undecided: <drug names>` or `result is for <a> but order
+is for <b>` is being helpful to a clinician, not to stdout — and stdout is
+collected by systems nobody treats as holding PHI. So the message stays on the
+audit trail, which does, and the id is the way back to it:
+
+```bash
+curl -sH "authorization: Bearer $OPS" \
+  "$BASE/api/audit?limit=200" |
+  grep 655eee4b
+```
+
+Or in SQL against a copy of the database:
+
+```sql
+SELECT recorded_at, method, path, patient, detail
+  FROM audit_events
+ WHERE tenant_id = 'default' AND detail LIKE 'fault 655eee4b%';
+```
+
+The row carries the whole message, the patient it concerned, the principal and
+the route. Treat what you read there as chart content: it belongs in the
+incident record, not pasted into a ticket, a chat channel, or an upstream bug
+report.
+
+Two things the log line alone still tells you without a lookup: the exception
+class, and the top stack frames — the function and line that raised it, which
+is usually more precise than the route would have been. The route is reported
+as its area only (`/fhir/Patient`, not `/fhir/Patient/NT123456`) for the same
+reason.
+
+If there is no matching audit row, the throw happened before a tenant was
+resolved — a bug in the router or the gate rather than in a store. The stack
+frames in the log line are then the whole of the evidence, and they are enough
+to find it.
+
+### The database contradicts itself
+
+```bash
+npm run invariants                 # the configured data directory
+node scripts/invariants.ts <path>  # a specific file — a restored backup, say
+```
+
+Read-only, so it is safe against a running node. Run it against a **snapshot
+before you restore it**, too: a backup carrying a cross-tenant reference
+carries it into whatever you restore it onto.
+
+```
+0  every registered invariant holds
+1  at least one is violated
+2  at least one could not be evaluated
+3  the database could not be opened
+```
+
+**Exit 2 is not a pass.** It means the registry names a table or column this
+database does not have — an older schema, or a newer one this build predates.
+The report says which checks did not run and why. Treat it as "this database
+has not been checked", not as "this database is fine".
+
+Three things are checked, and they fail differently:
+
+- **A row with no tenant.** It exists, it is in the backups, the retention
+  sweep counts it, and no tenant-bound query can ever return it. Nobody can
+  see it and nothing will delete it.
+- **A reference that resolves nowhere.** Data loss: an order event whose order
+  is gone, a booking whose slot is gone. Usually a partial restore, or a
+  delete run by hand.
+- **A reference that resolves under a different custodian.** This is the
+  serious one and it is reported separately for that reason. A row in one
+  site's chart pointing at another site's record is a disclosure, and no query
+  at either site reports it, because each one only ever looks at its own rows.
+  Escalate to your privacy officer before fixing anything, and preserve the
+  file first — the same handling as a broken chain.
+
+The report names rows so you can find them. What is in those rows is chart
+content: keep the output out of tickets and chat.
+
+There is nothing to acknowledge and nothing that clears itself. Every finding
+here is a repair somebody makes deliberately, with the engine stopped and a
+backup taken first.
+
 ### Chain verification fails
 
 `GET /api/chain/verify?channel_id=` reports the message chain broken, or
@@ -333,7 +692,7 @@ Then check `GET /api/chain/verify` and move on.
 
 This is serious and is **not** a thing to fix by re-verifying until it passes.
 The chain exists to detect exactly two situations: a database that has been
-edited outside Portage, and one whose history has been truncated.
+edited outside Northstar, and one whose history has been truncated.
 
 1. Do not restart the engine. Do not run retention. Do not take a new backup
    over the old one.
@@ -375,7 +734,7 @@ Two things are worth knowing before you reach for break-glass:
   chart is blank" is describing something else; check `/api/health` first.
 - **A `withhold-from-organization` directive withholds from a credential that
   carries no organization.** Credentials carry one now — set at issue
-  time for API keys, from the `organization` (or `portage_organization`) claim
+  time for API keys, from the `organization` (or `northstar_organization`) claim
   for OAuth — and a directive naming one clinic no longer withholds from the
   rest of the territory. A caller whose credential names no organization cannot
   show it is outside the withheld one and is still refused, which fails closed
@@ -424,9 +783,9 @@ that.
 
 ### Sent is not told
 
-`notice_dispatched_at` says Portage handed the notice to the delivery
+`notice_dispatched_at` says Northstar handed the notice to the delivery
 machinery. It does not say the patient received it, and a portal message that
-bounced is neither. Telling them still finishes on a channel Portage does not
+bounced is neither. Telling them still finishes on a channel Northstar does not
 own — a letter, a call, a conversation — so record it once it has happened:
 
 ```bash
@@ -461,7 +820,47 @@ curl -sS -H "authorization: Bearer $ADMIN_KEY" \
 
 If patient data was served to it, that is a privacy incident and follows your
 jurisdiction's breach process, not this document. If the credential is a
-vulnerability in Portage rather than a leaked secret, see [SECURITY.md](../SECURITY.md).
+vulnerability in Northstar rather than a leaked secret, see [SECURITY.md](../SECURITY.md).
+
+### Expiries that are not dates
+
+Boot says `WARNING: tenant <id> has N caregiver grant(s) and M API key(s)
+whose expiry is not a date the clock can compare`.
+
+Before this version an expiry was stored exactly as it was typed and compared
+as text, so one written as `December 31, 2027` or `next year` never lapsed and
+one written as `12/31/2027` never began. Expiries are now read strictly — a
+date like `2027-12-31`, or a time with its zone — and a stored one that does
+not start like a date is treated as already past. Those grants and keys
+stopped working at the upgrade. Nothing was deleted, and the text that was
+typed is still on the row.
+
+Find them, in the data directory:
+
+```bash
+sqlite3 northstar.db "
+  SELECT tenant_id, id, patient_id, subject_id, expires_at FROM patient_authority
+   WHERE revoked_at IS NULL AND expires_at IS NOT NULL
+     AND expires_at NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*';
+  SELECT tenant_id, id, name, expires_at FROM api_keys
+   WHERE revoked_at IS NULL AND expires_at IS NOT NULL
+     AND expires_at NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*';"
+```
+
+For a caregiver grant, find out from the typed text — and from the patient or
+whoever recorded it — what end was meant. Revoke the grant
+(`/api/clinical/authority-revoke`) and grant it again in person, with that
+date. Do not edit the row: a grant's history is the record of who could see
+the chart, and when.
+
+A pending enrolment request made before this version with such an expiry is
+not counted at boot, because it is not access yet. Attesting it is refused
+with the reason; decline it and request it again with a date.
+
+For an API key, issue a new one with an `expiresAt` that is a date, deploy it,
+then revoke the old one (`DELETE /api/keys/<id>`). Do not rotate it: rotation
+gives the old key a fresh end for the overlap, which would bring a key whose
+end nobody can read back to life for a week.
 
 ### Restoring from backup
 
@@ -469,21 +868,21 @@ If the disk that held the database is still there and you are rolling back
 an upgrade or undoing a bad write, the local snapshot is enough:
 
 ```bash
-systemctl stop portage                         # nothing may hold the file
-npm run restore -- --from /var/lib/portage/backups
-systemctl start portage
+systemctl stop northstar                         # nothing may hold the file
+npm run restore -- --from /var/lib/northstar/backups
+systemctl start northstar
 curl -sS http://localhost:8686/api/health
 ```
 
 If the disk, the machine or the building is gone, the local directory is
-gone with it. Fetch the off-machine copy — this needs `PORTAGE_BACKUP_KEY_FILE`
+gone with it. Fetch the off-machine copy — this needs `NORTHSTAR_BACKUP_KEY_FILE`
 to be present on the replacement host, which is why that file must not have
 lived only on the dead one:
 
 ```bash
 npm run restore -- --from remote
 # or a specific name, with or without the .enc suffix
-npm run restore -- --from remote --snapshot portage-2026-08-19T14-00-00.db
+npm run restore -- --from remote --snapshot northstar-2026-08-19T14-00-00.db
 ```
 
 `npm run restore -- --snapshot <file>` picks a specific local file. The
@@ -522,13 +921,13 @@ not from when you type the command.
 | What failed | What you still have | RPO |
 | --- | --- | --- |
 | Process crash, bad upgrade | The local snapshot | time since the last local snapshot |
-| The disk, the machine, the building | The last verified replica at `PORTAGE_BACKUP_REMOTE` | time since the last *successful* replication |
+| The disk, the machine, the building | The last verified replica at `NORTHSTAR_BACKUP_REMOTE` | time since the last *successful* replication |
 | The disk, and no remote was configured | Nothing | everything |
 
 A daily snapshot means a 24-hour RPO for a crash. The same cadence against a
 dead disk is only real if the last replica left the machine and
-`portage_backup_remote_ok` is 1. Alert on that gauge going to 0, and on
-`portage_backup_remote_age_seconds` growing past your cadence. A snapshot of
+`northstar_backup_remote_ok` is 1. Alert on that gauge going to 0, and on
+`northstar_backup_remote_age_seconds` growing past your cadence. A snapshot of
 a 96 MB database costs about 2.5 seconds against a live engine, so if 24
 hours of loss is not acceptable at your site, run it hourly — the cost is
 not the reason to hold back.
@@ -547,10 +946,10 @@ Escalate immediately, before further diagnosis, for any of:
 - patient data served to the wrong tenant, or to a credential that should not
   have seen it
 - a backup that will not restore
-- any suspicion that the database file has been modified outside Portage
+- any suspicion that the database file has been modified outside Northstar
 
 For these, preserving the current state matters more than restoring service.
 Copy the database file and the backups somewhere read-only **first**.
 
-A suspected vulnerability in Portage itself goes through private disclosure —
+A suspected vulnerability in Northstar itself goes through private disclosure —
 see [SECURITY.md](../SECURITY.md) — not a public issue.

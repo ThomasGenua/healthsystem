@@ -53,7 +53,7 @@ async function fakeIdp(): Promise<{
       const header = b64({ alg: "RS256", kid: "patient-key", typ: "JWT" });
       const payload = b64({
         iss: issuer,
-        aud: "portage-patient",
+        aud: "northstar-patient",
         sub: subject,
         scope,
         exp: Math.floor(Date.now() / 1000) + 300,
@@ -157,7 +157,7 @@ async function boot() {
     .run(inDays(-1), "default", "expired-parent");
 
   const gate = new AuthGate({
-    jwt: new JwtVerifier({ issuer: idp.issuer, audience: "portage-patient" }),
+    jwt: new JwtVerifier({ issuer: idp.issuer, audience: "northstar-patient" }),
   });
   const api = await startApi(engine, 0, "127.0.0.1", { auth: gate });
   const base = `http://127.0.0.1:${api.port}`;
@@ -247,8 +247,8 @@ test("a proxy permission stays narrow", async () => {
   try {
     const appointments = await s.request("proxy-appointments", `/patient/appointments?patient=${P}`);
     assert.equal(appointments.status, 200);
-    const rows = (await appointments.json()) as Array<{ slot: { service: string } }>;
-    assert.equal(rows[0].slot.service, "Results review");
+    const rows = (await appointments.json()) as Array<{ service: string }>;
+    assert.equal(rows[0].service, "Results review");
 
     assert.equal((await s.request("proxy-appointments", `/patient/results?patient=${P}`)).status, 403);
     assert.equal((await s.request("proxy-appointments", `/patient/summary?patient=${P}`)).status, 403);
@@ -285,13 +285,78 @@ test("the patient summary is patient-safe, not the clinician workspace", async (
       ownerId: "dr-tetso",
       by: GP,
     });
+    s.tenant.documents.receive({
+      patientId: P,
+      title: "Cardiology letter",
+      source: "patient-brought",
+      receivedAt: "2026-08-20T10:00:00Z",
+      contentType: "text/plain",
+      data: "SECRET-LETTER-BODY-SHOULD-NOT-APPEAR",
+      by: { authorId: "registration", authorKind: "practitioner" },
+    });
     const res = await s.request("patient-marie", `/patient/summary?patient=${P}`);
     assert.equal(res.status, 200);
     const body = JSON.stringify(await res.json());
     assert.ok(body.includes("Beaulieu"));
     assert.ok(body.includes("Metformin"));
+    assert.ok(body.includes("Cardiology letter"));
+    assert.ok(!body.includes("SECRET-LETTER-BODY-SHOULD-NOT-APPEAR"), "a patient summary lists metadata, not the file");
     assert.ok(!body.includes("Adenocarcinoma"), "held and unacknowledged result values are not in the summary");
     assert.ok(!body.includes("INTERNAL:"), "internal tasks are not a patient chart section");
+  } finally {
+    await s.close();
+  }
+});
+
+test("the after-visit summary needs the summary permission and shows only approved content", async () => {
+  const s = await boot();
+  try {
+    const encounter = s.tenant.encounters.open({
+      patientId: P,
+      class: "in-person",
+      reason: "Diabetes follow-up",
+      by: GP,
+      arrived: true,
+    });
+    const plan = s.tenant.carePlans.record({
+      patientId: P,
+      title: "Diabetes management",
+      goals: ["Lower A1C"],
+      reviewBy: "2027-01-01",
+      escalationCriteria: "Call the clinic if you feel dizzy or your blood sugar reads under 4 mmol/L.",
+      by: { authorId: "dr-tetso", authorKind: "practitioner" },
+    });
+    s.tenant.goals.approve(
+      s.tenant.goals.propose({
+        patientId: P,
+        carePlanId: plan.recordId,
+        description: "A1C under 7%",
+        by: { authorId: "dr-tetso", authorKind: "practitioner" },
+      }).recordId,
+      { authorId: "dr-tetso", authorKind: "practitioner" }
+    );
+    s.tenant.goals.propose({
+      patientId: P,
+      carePlanId: plan.recordId,
+      description: "Not yet agreed suggestion",
+      by: { authorId: "dr-tetso", authorKind: "practitioner" },
+    });
+
+    // Self, with full permissions, sees it.
+    const res = await s.request("patient-marie", `/patient/after-visit-summary?encounter=${encounter.id}`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { plans: Array<{ goals: Array<{ description: string }>; escalationCriteria: string }> };
+    assert.deepEqual(
+      body.plans[0].goals.map((g) => g.description),
+      ["A1C under 7%"]
+    );
+    assert.ok(!JSON.stringify(body).includes("Not yet agreed suggestion"));
+    assert.equal(body.plans[0].escalationCriteria, "Call the clinic if you feel dizzy or your blood sugar reads under 4 mmol/L.");
+
+    // A caregiver with only "appointments" cannot reach it.
+    assert.equal((await s.request("proxy-appointments", `/patient/after-visit-summary?encounter=${encounter.id}`)).status, 403);
+    // Somebody else's chart entirely.
+    assert.equal((await s.request("stranger", `/patient/after-visit-summary?encounter=${encounter.id}`)).status, 403);
   } finally {
     await s.close();
   }
@@ -374,13 +439,30 @@ test("every patient-scoped route goes through the authority-and-permission helpe
   const start = source.indexOf('if (path === "/patient" || path.startsWith("/patient/"))');
   const end = source.indexOf('if (path === "/api/channels"', start);
   const block = source.slice(start, end);
-  const paths = [...new Set([...block.matchAll(/path === "(\/patient\/[a-z-]+)"/g)].map((m) => m[1]))];
+  // Admits "/" and digits, like the identical fix on the /api/clinical/*
+  // scanner in clinical-api.test.ts: a route nested under a subpath — this
+  // file now has two, /patient/intake/draft and /patient/intake/submit — is
+  // invisible to a character class that stops at a hyphen, and a scanner
+  // that silently matches nothing is worse than no scanner.
+  const paths = [...new Set([...block.matchAll(/path === "(\/patient\/[a-z0-9/-]+)"/g)].map((m) => m[1]))];
   assert.ok(paths.length >= 10, `expected the patient routes, got ${paths.length}`);
 
-  for (const path of paths.filter((p) => p !== "/patient/authorities")) {
+  // Two exceptions, both a list of what is on offer rather than an answer
+  // about one patient: /patient/authorities is which charts this subject may
+  // see, and /patient/questionnaires is which forms exist to fill in. Neither
+  // takes a patientId, so there is no authority for patientPhi() to check.
+  const NOT_PATIENT_SCOPED = new Set(["/patient/authorities", "/patient/questionnaires"]);
+
+  // recordPhi() is the same gate for a route that names a record rather than
+  // a patient: it reads the patient off the record and hands over to
+  // patientPhi(). It counts only while that is still what it does.
+  const helper = block.slice(block.indexOf("const recordPhi = "), block.indexOf('if ((path === "/patient"'));
+  assert.match(helper, /return patientPhi\(record\.patient_id, /, "recordPhi() no longer checks the record's own patient through patientPhi()");
+
+  for (const path of paths.filter((p) => !NOT_PATIENT_SCOPED.has(p))) {
     const at = block.indexOf(`path === "${path}"`);
     const next = block.indexOf('path === "/patient/', at + path.length);
     const body = block.slice(at, next < 0 ? undefined : next);
-    assert.match(body, /\bpatientPhi\(/, `${path} can serve a chart without checking its live authority grant`);
+    assert.match(body, /\b(patientPhi|recordPhi)\(/, `${path} can serve a chart without checking its live authority grant`);
   }
 });

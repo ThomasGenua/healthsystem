@@ -7,9 +7,9 @@
 #   ./scripts/gen-dev-certs.sh [outdir]        (default: ./certs)
 #
 # Then:
-#   PORTAGE_TLS_CERT=certs/server.crt \
-#   PORTAGE_TLS_KEY=certs/server.key \
-#   PORTAGE_TLS_CLIENT_CA=certs/ca.crt \
+#   NORTHSTAR_TLS_CERT=certs/server.crt \
+#   NORTHSTAR_TLS_KEY=certs/server.key \
+#   NORTHSTAR_TLS_CLIENT_CA=certs/ca.crt \
 #   npm start
 #
 #   curl --cacert certs/ca.crt --cert certs/client.crt --key certs/client.key \
@@ -23,7 +23,7 @@ mkdir -p "$OUT"
 echo "generating dev CA"
 openssl req -x509 -newkey rsa:2048 -nodes -days "$DAYS" \
   -keyout "$OUT/ca.key" -out "$OUT/ca.crt" \
-  -subj "/CN=Portage Dev CA" 2>/dev/null
+  -subj "/CN=Northstar Dev CA" 2>/dev/null
 
 gen() {
   local name="$1" cn="$2" ext="$3"
@@ -41,7 +41,7 @@ gen() {
 gen server localhost "subjectAltName=DNS:localhost,IP:127.0.0.1
 extendedKeyUsage=serverAuth"
 
-gen client portage-client "extendedKeyUsage=clientAuth"
+gen client northstar-client "extendedKeyUsage=clientAuth"
 
 rm -f "$OUT/ca.srl"
 chmod 600 "$OUT"/*.key
@@ -49,5 +49,5 @@ chmod 600 "$OUT"/*.key
 echo
 echo "wrote to $OUT/:"
 echo "  ca.crt      trust anchor for both sides"
-echo "  server.crt  PORTAGE_TLS_CERT      server.key  PORTAGE_TLS_KEY"
+echo "  server.crt  NORTHSTAR_TLS_CERT      server.key  NORTHSTAR_TLS_KEY"
 echo "  client.crt  curl --cert           client.key  curl --key"

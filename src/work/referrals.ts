@@ -23,6 +23,7 @@
  *   Closing requires an outcome. A referral closed with nothing recorded is
  *   indistinguishable, afterwards, from one abandoned.
  */
+import { refuse } from "../core/refusal.ts";
 import { randomUUID } from "node:crypto";
 import { an } from "../core/text.ts";
 import type { Db } from "../db.ts";
@@ -99,7 +100,7 @@ function list(json: string | null): string[] {
  * What a referral is addressed to, three-valued on purpose.
  *
  * `known` is a service in the directory. `external` is a deliberate referral
- * out to somewhere Portage does not hold — ordinary, and stated rather than
+ * out to somewhere Northstar does not hold — ordinary, and stated rather than
  * inferred. `unverified` is free text nobody checked, which is the state every
  * referral written before the directory existed is in.
  *
@@ -155,7 +156,7 @@ export class ReferralStore {
      */
     toServiceId?: string;
     /**
-     * Declares that this goes somewhere Portage does not hold.
+     * Declares that this goes somewhere Northstar does not hold.
      *
      * A referral out to a southern hospital is ordinary and must not be
      * refused for being unknown. What it must not be is *indistinguishable*
@@ -382,6 +383,21 @@ export class ReferralStore {
     return rows.sort((a, b) => (a.expected_by ?? "").localeCompare(b.expected_by ?? ""));
   }
 
+  /**
+   * Every referral actually sent in a window, whatever has happened to it
+   * since. A draft is not here at any date: nobody is waiting on a referral
+   * that never left.
+   */
+  sentBetween(from: string, to: string): ReferralRow[] {
+    return this.db.sql
+      .prepare(
+        `SELECT * FROM referrals
+          WHERE tenant_id = ? AND status != 'draft' AND created_at >= ? AND created_at <= ?
+          ORDER BY created_at`
+      )
+      .all(this.db.tenantId, from, to) as unknown as ReferralRow[];
+  }
+
   /** Everything still in flight, whether or not it is late yet. */
   open(): ReferralRow[] {
     return this.db.sql
@@ -440,16 +456,27 @@ export class ReferralStore {
     by: Actor,
     extra: { expectedBy?: string; detail?: string; closing?: boolean }
   ): ReferralRow {
-    const from = this.require(referralId).status;
-    const now = new Date().toISOString();
-    this.db.sql
-      .prepare(
-        `UPDATE referrals SET status = ?, expected_by = ?, updated_at = ?, closed_at = ?
-          WHERE tenant_id = ? AND id = ?`
-      )
-      .run(to, extra.expectedBy ?? null, now, extra.closing ? now : null, this.db.tenantId, referralId);
-    this.event(referralId, to, by, { fromStatus: from, toStatus: to, ...(extra.detail ? { detail: extra.detail } : {}) });
-    return this.get(referralId)!;
+    return this.db.transaction(() => {
+      const from = this.require(referralId).status;
+      const now = new Date().toISOString();
+      // The move is conditional on the status it was decided from, so two
+      // transitions racing cannot both apply. Without this the later write
+      // won silently and the referral's own event log recorded two moves out
+      // of the same state — a history that cannot be true.
+      const moved = this.db.sql
+        .prepare(
+          `UPDATE referrals SET status = ?, expected_by = ?, updated_at = ?, closed_at = ?
+            WHERE tenant_id = ? AND id = ? AND status = ?`
+        )
+        .run(to, extra.expectedBy ?? null, now, extra.closing ? now : null, this.db.tenantId, referralId, from);
+      if (moved.changes === 0) {
+        refuse(`referral ${referralId} is no longer ${from}; it moved while this change was being made`, 409);
+      }
+      // Inside the transaction with the move, so a referral can never carry a
+      // status its own event log does not account for.
+      this.event(referralId, to, by, { fromStatus: from, toStatus: to, ...(extra.detail ? { detail: extra.detail } : {}) });
+      return this.get(referralId)!;
+    });
   }
 
   private event(

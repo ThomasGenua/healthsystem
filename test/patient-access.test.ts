@@ -41,8 +41,8 @@ const YEAR = 365 * 86_400_000;
 const inDays = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString();
 
 function portal() {
-  const dir = mkdtempSync(join(tmpdir(), "portage-pa-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-pa-"));
+  const db = new Db(join(dir, "northstar.db"));
   const orders = new OrderStore(db);
   const tasks = new TaskStore(db);
   return {
@@ -52,7 +52,7 @@ function portal() {
     pa: new PatientAccess(db, orders, tasks),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -451,8 +451,8 @@ test("an access or correction request is a receipt for the patient and work for 
 });
 
 test("authority and holds are confined to their tenant", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-pa-iso-"));
-  const root = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-pa-iso-"));
+  const root = new Db(join(dir, "northstar.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");
@@ -481,6 +481,6 @@ test("authority and holds are confined to their tenant", () => {
     assert.equal(north.resultsFor(P).length, 1);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

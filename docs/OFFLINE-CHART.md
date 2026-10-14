@@ -36,7 +36,7 @@ queries — still answer, because taking the allergy check away for the outage
 would be its own hazard. **Expiry is genuinely autonomous**: the first
 request to arrive past the budget purges the cache, and an hourly sweep
 purges the station nobody asks. **Every station response carries
-`x-portage-station-as-of` and `x-portage-station-age-hours`**, so a consumer
+`x-northstar-station-as-of` and `x-northstar-station-age-hours`**, so a consumer
 that never opens the assembled chart still cannot mistake outage data for
 current data without ignoring the response saying so. **A refill to a new
 path destroys the previous cache** rather than orphaning a copy of the record
@@ -59,7 +59,7 @@ asymmetry left in it.
 
 ## 2. The shape: a reading station, not a browser cache
 
-The cache is **a second Portage node in reading-station mode** — the same
+The cache is **a second Northstar node in reading-station mode** — the same
 binary, the same schema, the same stores — running on a machine at the site
 that loses the link (a small server in the nursing station's locked room,
 the same class of machine the primary is).
@@ -147,7 +147,7 @@ Directives ride the snapshot and are evaluated at the station by the same
 `restrictionsFor()` the primary runs. What the cache cannot know is a
 directive **issued after the fill time**. The design's answer:
 
-- The **serving budget** (`PORTAGE_STATION_BUDGET_HOURS`, default 72) is
+- The **serving budget** (`NORTHSTAR_STATION_BUDGET_HOURS`, default 72) is
   the directive-freshness budget. Within it, the station serves — stale on
   its face — accepting the stated residual that a directive issued during
   the outage is enforced only when the link returns. That residual is

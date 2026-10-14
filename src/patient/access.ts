@@ -45,6 +45,8 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "../db.ts";
 import type { OrderStore, ResultRow } from "../orders/store.ts";
 import type { TaskStore } from "../work/tasks.ts";
+import { refuse } from "../core/refusal.ts";
+import { DATE_LIKE, instant } from "../core/instant.ts";
 
 export type Relationship = "self" | "parent-guardian" | "substitute-decision-maker" | "representative";
 export type Extent = "full" | "summary";
@@ -65,6 +67,7 @@ export const PATIENT_PERMISSIONS = [
   "access-log",
   "requests",
   "delegates",
+  "intake",
 ] as const;
 export type PatientPermission = (typeof PATIENT_PERMISSIONS)[number];
 const PROXY_PERMISSIONS = PATIENT_PERMISSIONS.filter((p) => p !== "delegates");
@@ -191,30 +194,31 @@ export class PatientAccess {
     extent?: Extent;
   }): AuthorityRow {
     if (!input.expiresAt) {
-      throw new Error("delegated access needs an expiry; an authority that never ends is the failure this guards against");
+      refuse("delegated access needs an expiry; an authority that never ends is the failure this guards against");
     }
-    if (new Date(input.expiresAt).getTime() <= Date.now()) {
-      throw new Error("that expiry is already past");
+    const expiresAt = instant(input.expiresAt, "an expiry");
+    if (new Date(expiresAt).getTime() <= Date.now()) {
+      refuse("that expiry is already past");
     }
     if (!input.purpose.trim()) {
-      throw new Error("delegated access needs a purpose the patient can review");
+      refuse("delegated access needs a purpose the patient can review");
     }
     if (!Array.isArray(input.permissions) || input.permissions.length === 0) {
-      throw new Error("delegated access needs at least one explicit permission");
+      refuse("delegated access needs at least one explicit permission");
     }
     const unknown = input.permissions.filter((p) => !(PROXY_PERMISSIONS as readonly string[]).includes(p));
     if (unknown.length > 0) {
-      throw new Error(`proxy permission not allowed: ${unknown.join(", ")}`);
+      refuse(`proxy permission not allowed: ${unknown.join(", ")}`);
     }
-    return this.insertGrant({ ...input, expiresAt: input.expiresAt });
+    return this.insertGrant({ ...input, expiresAt });
   }
 
   /** Ends a grant early, with a reason. */
   revoke(authorityId: string, by: Actor & { reason: string }): AuthorityRow {
-    if (!by.reason.trim()) throw new Error("revoking access needs a reason");
+    if (!by.reason.trim()) refuse("revoking access needs a reason");
     const row = this.authority(authorityId);
-    if (!row) throw new Error(`no authority ${authorityId}`);
-    if (row.revoked_at) throw new Error("that access is already revoked");
+    if (!row) refuse(`no authority ${authorityId}`, 404);
+    if (row.revoked_at) refuse("that access is already revoked", 409);
     this.db.sql
       .prepare(
         "UPDATE patient_authority SET revoked_at = ?, revoked_by = ?, revoke_reason = ? WHERE tenant_id = ? AND id = ?"
@@ -234,7 +238,7 @@ export class PatientAccess {
       .prepare(
         `SELECT * FROM patient_authority
           WHERE tenant_id = ? AND subject_id = ? AND patient_id = ? AND revoked_at IS NULL
-            AND (expires_at IS NULL OR expires_at > ?)
+            AND (expires_at IS NULL OR (expires_at GLOB '${DATE_LIKE}' AND expires_at > ?))
           ORDER BY granted_at DESC`
       )
       .all(this.db.tenantId, subjectId, patientId, asOf) as unknown as AuthorityRow[];
@@ -247,10 +251,45 @@ export class PatientAccess {
       .prepare(
         `SELECT * FROM patient_authority
           WHERE tenant_id = ? AND subject_id = ? AND revoked_at IS NULL
-            AND (expires_at IS NULL OR expires_at > ?)
+            AND (expires_at IS NULL OR (expires_at GLOB '${DATE_LIKE}' AND expires_at > ?))
           ORDER BY relationship, granted_at`
       )
       .all(this.db.tenantId, subjectId, asOf) as unknown as AuthorityRow[];
+  }
+
+  /**
+   * Every OAuth subject holding a live grant in this custodian, and the
+   * charts each one reaches.
+   *
+   * Written for the development identity provider, which lists who may sign
+   * in. It is the reverse of `forSubject` and it is deliberately bounded by
+   * the tenant like everything else here: a picker that spanned custodians
+   * would enumerate one clinic's delegates to another's, which is a
+   * disclosure whether or not the environment is a demo.
+   *
+   * The relationship travels with each chart so a caregiver's picker can say
+   * which chart is theirs and which they hold on somebody else's behalf. It
+   * never names a chart the grant does not reach.
+   */
+  liveSubjects(asOf = new Date().toISOString()): Array<{
+    subject: string;
+    patients: Array<{ patientId: string; relationship: string }>;
+  }> {
+    const rows = this.db.sql
+      .prepare(
+        `SELECT subject_id, patient_id, relationship FROM patient_authority
+          WHERE tenant_id = ? AND revoked_at IS NULL
+            AND (expires_at IS NULL OR (expires_at GLOB '${DATE_LIKE}' AND expires_at > ?))
+          ORDER BY subject_id, relationship, patient_id`
+      )
+      .all(this.db.tenantId, asOf) as Array<{ subject_id: string; patient_id: string; relationship: string }>;
+    const by = new Map<string, Array<{ patientId: string; relationship: string }>>();
+    for (const row of rows) {
+      const list = by.get(row.subject_id) ?? [];
+      list.push({ patientId: row.patient_id, relationship: row.relationship });
+      by.set(row.subject_id, list);
+    }
+    return [...by.entries()].map(([subject, patients]) => ({ subject, patients }));
   }
 
   /**
@@ -281,7 +320,7 @@ export class PatientAccess {
     }
     if (authority.relationship === "self") return [...PATIENT_PERMISSIONS];
     const summary: PatientPermission[] = ["summary", "results", "appointments"];
-    return authority.extent === "summary" ? summary : [...summary, "messages", "access-log", "requests"];
+    return authority.extent === "summary" ? summary : [...summary, "messages", "access-log", "requests", "intake"];
   }
 
   /**
@@ -298,7 +337,7 @@ export class PatientAccess {
       .prepare(
         `SELECT * FROM patient_authority
           WHERE tenant_id = ? AND revoked_at IS NULL AND expires_at IS NOT NULL
-            AND expires_at > ? AND expires_at <= ?
+            AND expires_at GLOB '${DATE_LIKE}' AND expires_at > ? AND expires_at <= ?
           ORDER BY expires_at`
       )
       .all(this.db.tenantId, asOf, until) as unknown as AuthorityRow[];
@@ -310,7 +349,7 @@ export class PatientAccess {
       .prepare(
         `SELECT * FROM patient_authority
           WHERE tenant_id = ? AND patient_id = ? AND revoked_at IS NULL
-            AND (expires_at IS NULL OR expires_at > ?)
+            AND (expires_at IS NULL OR (expires_at GLOB '${DATE_LIKE}' AND expires_at > ?))
           ORDER BY relationship, granted_at`
       )
       .all(this.db.tenantId, patientId, asOf) as unknown as AuthorityRow[];
@@ -339,11 +378,12 @@ export class PatientAccess {
     by: Actor;
     reason: string;
   }): void {
-    if (!input.reason.trim()) throw new Error("holding a result needs a reason");
-    if (!input.releaseAt) throw new Error("a hold needs an end; a result held indefinitely is a result withheld");
-    if (new Date(input.releaseAt).getTime() <= Date.now()) throw new Error("that release date is already past");
+    if (!input.reason.trim()) refuse("holding a result needs a reason");
+    if (!input.releaseAt) refuse("a hold needs an end; a result held indefinitely is a result withheld");
+    const releaseAt = instant(input.releaseAt, "a release date");
+    if (new Date(releaseAt).getTime() <= Date.now()) refuse("that release date is already past");
     const r = this.orders.result(input.resultId);
-    if (!r) throw new Error(`no result ${input.resultId}`);
+    if (!r) refuse(`no result ${input.resultId}`, 404);
 
     this.db.sql
       .prepare(
@@ -360,7 +400,7 @@ export class PatientAccess {
         r.patient_id,
         input.reason,
         input.category,
-        input.releaseAt,
+        releaseAt,
         input.by.actorId,
         new Date().toISOString(),
         new Date().toISOString()
@@ -517,12 +557,15 @@ export class PatientAccess {
     by: { subjectId: string; relationship: Relationship };
   }): PatientRequestRow {
     if (input.kind !== "access" && input.kind !== "correction") {
-      throw new Error("a patient request must be access or correction");
+      refuse("a patient request must be access or correction");
     }
-    if (!input.detail.trim()) throw new Error("a patient request needs detail");
+    if (!input.detail.trim()) refuse("a patient request needs detail");
     if (input.kind === "correction" && !input.target?.trim()) {
-      throw new Error("a correction request needs to identify what should be corrected");
+      refuse("a correction request needs to identify what should be corrected");
     }
+    // Not a refusal, here or in the two answers below: a store built without
+    // the inbox is wiring, nothing the caller did, and a fault is what puts
+    // it in the operator's log.
     if (!this.tasks) throw new Error("patient request inbox is not configured");
 
     const id = randomUUID();
@@ -575,38 +618,51 @@ export class PatientAccess {
   }
 
   completeRequest(id: string, by: Actor & { outcome: string }): PatientRequestRow {
-    if (!by.outcome.trim()) throw new Error("completing a patient request needs to say what was provided or corrected");
+    if (!by.outcome.trim()) refuse("completing a patient request needs to say what was provided or corrected");
     const row = this.request(id);
-    if (!row) throw new Error(`no patient request ${id}`);
-    if (row.status !== "submitted") throw new Error(`that patient request is already ${row.status}`);
+    if (!row) refuse(`no patient request ${id}`, 404);
+    if (row.status !== "submitted") refuse(`that patient request is already ${row.status}`, 409);
     if (!this.tasks) throw new Error("patient request inbox is not configured");
     return this.db.transaction(() => {
       this.tasks!.complete(row.task_id, { ...by, evidence: by.outcome.trim() });
       const now = new Date().toISOString();
-      this.db.sql
+      const completed = this.db.sql
         .prepare(
-          "UPDATE patient_requests SET status = 'completed', completed_at = ?, outcome = ? WHERE tenant_id = ? AND id = ?"
+          `UPDATE patient_requests SET status = 'completed', completed_at = ?, outcome = ?
+            WHERE tenant_id = ? AND id = ? AND status = 'submitted'`
         )
         .run(now, by.outcome.trim(), this.db.tenantId, id);
+      // Two people answering one access request would otherwise leave the
+      // later outcome over the earlier, with only one of them told they did it.
+      if (completed.changes === 0) {
+        refuse(`patient request ${id} is no longer submitted; it was answered while this was being applied`, 409);
+      }
       this.requestEvent(id, "completed", by, by.outcome.trim());
       return this.request(id)!;
     });
   }
 
   declineRequest(id: string, by: Actor & { reason: string }): PatientRequestRow {
-    if (!by.reason.trim()) throw new Error("declining a patient request needs a reason");
+    if (!by.reason.trim()) refuse("declining a patient request needs a reason");
     const row = this.request(id);
-    if (!row) throw new Error(`no patient request ${id}`);
-    if (row.status !== "submitted") throw new Error(`that patient request is already ${row.status}`);
+    if (!row) refuse(`no patient request ${id}`, 404);
+    if (row.status !== "submitted") refuse(`that patient request is already ${row.status}`, 409);
     if (!this.tasks) throw new Error("patient request inbox is not configured");
     return this.db.transaction(() => {
       this.tasks!.cancel(row.task_id, { ...by, reason: by.reason.trim() });
       const now = new Date().toISOString();
-      this.db.sql
+      const declined = this.db.sql
         .prepare(
-          "UPDATE patient_requests SET status = 'declined', completed_at = ?, outcome = ? WHERE tenant_id = ? AND id = ?"
+          `UPDATE patient_requests SET status = 'declined', completed_at = ?, outcome = ?
+            WHERE tenant_id = ? AND id = ? AND status = 'submitted'`
         )
         .run(now, by.reason.trim(), this.db.tenantId, id);
+      // A decline racing a completion must not overwrite the fulfilment: the
+      // patient was given their record, and saying otherwise is the wrong way
+      // for this to fail.
+      if (declined.changes === 0) {
+        refuse(`patient request ${id} is no longer submitted; it was answered while this was being applied`, 409);
+      }
       this.requestEvent(id, "declined", by, by.reason.trim());
       return this.request(id)!;
     });

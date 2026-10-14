@@ -71,6 +71,35 @@ export interface LabProfile {
   timezoneOffset?: string;
   /** Preferred coding system when the message does not name one. */
   defaultCodeSystem?: string;
+  /**
+   * Questions this laboratory requires answered before it will run a test,
+   * keyed by the ordered test's code.
+   *
+   * Ask-at-order-entry is not paperwork. A glucose reported against a fasting
+   * reference interval when the patient had breakfast is a wrong result, not a
+   * missing one, and the laboratory cannot tell the difference from the
+   * specimen. Which questions apply is the laboratory's own statement, so it
+   * lives in their profile rather than being inferred from the test code.
+   */
+  askAtOrderEntry?: Record<string, AoeQuestion[]>;
+}
+
+/** A question a laboratory requires answered before it will run a test. */
+export interface AoeQuestion {
+  /** The observation identifier the answer is reported under, e.g. a LOINC code. */
+  code: string;
+  /** How the question reads to whoever has to answer it. */
+  text: string;
+  /**
+   * Whether the laboratory refuses the order without it.
+   *
+   * A question that is not required is still asked and still sent when
+   * answered — the flag decides whether its absence stops the order, not
+   * whether it matters.
+   */
+  required: boolean;
+  /** Units the answer must be in, where the answer is a quantity. */
+  units?: string;
 }
 
 export const GENERIC_LAB_PROFILE: LabProfile = {

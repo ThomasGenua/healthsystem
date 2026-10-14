@@ -1,0 +1,33 @@
+groups:
+  - name: northstar-operations
+    rules:
+      - alert: NorthstarServiceDown
+        expr: up{job="northstar"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: Northstar metrics endpoint unavailable
+      - alert: NorthstarScannerBacklog
+        expr: northstar_upload_scan_oldest_age_seconds > 900
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: Quarantined uploads are older than fifteen minutes
+      - alert: NorthstarDeliveryFailures
+        expr: northstar_dead_letters > 0
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: Delivery dead letters require review
+      - alert: NorthstarBackupFailed
+        expr: (northstar_backup_remote_configured == 1) and (northstar_backup_remote_ok == 0)
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: Configured backup has no verified successful replica
+      - alert: NorthstarBackupStale
+        expr: (northstar_backup_remote_configured == 1) and (northstar_backup_remote_age_seconds > 86400)
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: Verified backup is older than the staging 24-hour threshold

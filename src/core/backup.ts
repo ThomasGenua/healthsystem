@@ -1,15 +1,15 @@
 /**
  * Online backup.
  *
- * Losing this database is the worst thing that can happen to a Portage node.
+ * Losing this database is the worst thing that can happen to a Northstar node.
  * It holds the queue that has not drained yet, the lineage that proves what
  * flowed, the audit trail that proves who read it, and the facade a consumer
  * is reading from. A community site with a week of backlog waiting out a
  * satellite outage has a week of unsent clinical messages in one file.
  *
  * Copying that file is not a backup. The engine runs SQLite in WAL mode, so
- * committed data lives in `portage.db-wal` until a checkpoint folds it in;
- * `cp portage.db` while the process is running yields a torn or stale
+ * committed data lives in `northstar.db-wal` until a checkpoint folds it in;
+ * `cp northstar.db` while the process is running yields a torn or stale
  * snapshot that looks fine until the day it is needed. This uses SQLite's
  * online backup API instead, which takes a consistent snapshot of a live
  * database without stopping writes.
@@ -21,6 +21,7 @@
 import { backup as sqliteBackup } from "node:sqlite";
 import { mkdirSync, statSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { backupFileName, BACKUP_FILE_RE, sortSnapshots } from "./naming.ts";
 import { Db } from "../db.ts";
 import { AuditStore } from "../audit/store.ts";
 
@@ -115,7 +116,7 @@ function dropSidecars(path: string): void {
 /** Takes a verified snapshot of a live database. */
 export async function takeBackup(db: Db, opts: BackupOptions): Promise<BackupResult> {
   mkdirSync(opts.dir, { recursive: true });
-  const path = join(opts.dir, `portage-${opts.stamp ?? fileStamp()}.db`);
+  const path = join(opts.dir, backupFileName(opts.stamp ?? fileStamp()));
   const started = Date.now();
 
   await sqliteBackup(db.sql, path);
@@ -127,11 +128,9 @@ export async function takeBackup(db: Db, opts: BackupOptions): Promise<BackupRes
   return { path, bytes: statSync(path).size, durationMs: Date.now() - started, verified };
 }
 
-/** Keeps the newest `keep` snapshots, by filename, which sorts chronologically. */
+/** Keeps the newest `keep` snapshots, ordered by the stamp their names carry. */
 export function prune(dir: string, keep: number): string[] {
-  const snapshots = readdirSync(dir)
-    .filter((f) => /^portage-.*\.db$/.test(f))
-    .sort();
+  const snapshots = sortSnapshots(readdirSync(dir).filter((f) => BACKUP_FILE_RE.test(f)));
   const doomed = snapshots.slice(0, Math.max(0, snapshots.length - keep));
   for (const f of doomed) {
     try {

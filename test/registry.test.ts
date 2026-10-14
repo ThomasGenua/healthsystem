@@ -44,8 +44,8 @@ const HBA1C_CONTROL: MeasureRule = {
 };
 
 function region() {
-  const dir = mkdtempSync(join(tmpdir(), "portage-reg-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-reg-"));
+  const db = new Db(join(dir, "northstar.db"));
   const record = new ClinicalRecord(db);
   const meds = new MedicationStore(db);
   const orders = new OrderStore(db);
@@ -57,7 +57,7 @@ function region() {
     reg: new Registry(db),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }
@@ -385,8 +385,8 @@ test("an empty cohort reports nothing rather than a rate", () => {
 });
 
 test("registries are confined to their tenant", () => {
-  const dir = mkdtempSync(join(tmpdir(), "portage-reg-iso-"));
-  const root = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-reg-iso-"));
+  const root = new Db(join(dir, "northstar.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");
@@ -408,6 +408,6 @@ test("registries are confined to their tenant", () => {
     assert.equal(north.reg.measure(DIABETES, HBA1C_CONTROL, NOW).numerator, 1);
   } finally {
     root.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

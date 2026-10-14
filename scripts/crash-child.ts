@@ -1,5 +1,5 @@
 /**
- * A Portage engine in its own process, so a test can kill it outright.
+ * A Northstar engine in its own process, so a test can kill it outright.
  *
  * Used by scripts/crashtest.ts. Ingests a batch of messages against a real
  * database file and delivers them to a sink, then stays up. The parent kills

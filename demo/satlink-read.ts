@@ -43,7 +43,7 @@ function step(n: number, title: string): void {
 }
 
 async function main(): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "portage-satlink-read-"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-satlink-read-"));
   const primary = new Db(join(dir, "primary.db"));
   const stationDb = new Db(join(dir, "station.db"));
   const cachePath = join(dir, "cache.db");

@@ -18,6 +18,21 @@ import { readFileSync } from "node:fs";
 const CASE = new URL("../docs/CLINICAL-SAFETY.md", import.meta.url);
 const CITE = /`([^`]+\.test\.ts)`\s+[—-]\s+"([^"]+)"/g;
 
+/**
+ * Whether `src` declares a test called `name`.
+ *
+ * Tolerant of where the name sits, because a declaration carrying options —
+ * `test(\n  "…",\n  { skip: … },\n  async () => {…}\n)` — puts it on its own
+ * line, and the substring check this replaced could not see those at all. That
+ * is the wrong direction for a control to fail in even though it fails closed:
+ * it reports a correct citation as a broken one, and the quickest way to make
+ * that green again is to delete the citation.
+ */
+function declares(src: string, name: string): boolean {
+  const quoted = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(String.raw`\btest\s*\(\s*(["'])${quoted}\1`).test(src);
+}
+
 test("every hazard-log citation points at a test that still exists", () => {
   const text = readFileSync(CASE, "utf8");
   const cites = [...text.matchAll(CITE)].map((m) => ({ file: m[1], name: m[2] }));
@@ -33,8 +48,62 @@ test("every hazard-log citation points at a test that still exists", () => {
       missing.push(`${file} is gone (cited for "${name}")`);
       continue;
     }
-    const found = src.includes(`test("${name}"`) || src.includes(`test('${name}'`);
-    if (!found) missing.push(`${file} has no test("${name}")`);
+    if (!declares(src, name)) missing.push(`${file} has no test("${name}")`);
   }
   assert.deepEqual(missing, [], missing.join("\n"));
+});
+
+test("the citation check finds a test declared across lines", () => {
+  // The check above is only worth running if it can see every form a
+  // declaration takes. It could not: a name on its own line read as a missing
+  // test, which stayed invisible for as long as no hazard happened to cite one
+  // of those.
+  assert.ok(declares('test(\n  "a name",\n  { skip: false },\n  async () => {}\n);', "a name"));
+  assert.ok(declares('test("a name", () => {});', "a name"));
+  assert.ok(declares("test('a name', () => {});", "a name"));
+  // And still says no when the test genuinely is not there, so a green result
+  // above means something.
+  assert.ok(!declares('test("a different name", () => {});', "a name"));
+  assert.ok(!declares('test("a name that goes on", () => {});', "a name"));
+});
+
+test("every hazard has its own identifier", () => {
+  // A hazard id is how a control, a test and a review minute refer to one
+  // hazard rather than another. Two rows sharing an id breaks that: a control
+  // traced to "H-108" is traced to whichever of them the reader happens to
+  // find first, and the safety case stops being able to say which hazard is
+  // mitigated.
+  //
+  // It happens the ordinary way — two branches numbering from the same last
+  // row and both merging — so it is not a mistake anybody makes by being
+  // careless. Nothing here was checking for it, and a duplicate would have
+  // reached `main` looking exactly like a correct log.
+  const text = readFileSync(CASE, "utf8");
+  const ids = [...text.matchAll(/^\| (H-\d+) \|/gm)].map((m) => m[1]);
+  assert.ok(ids.length >= 100, `expected the log to carry many hazards, got ${ids.length}`);
+
+  const seen = new Set<string>();
+  const duplicated = new Set<string>();
+  for (const id of ids) {
+    if (seen.has(id)) duplicated.add(id);
+    seen.add(id);
+  }
+  assert.deepEqual(
+    [...duplicated].sort(),
+    [],
+    "two hazards share an identifier; renumber the later branch rather than merging both"
+  );
+});
+
+test("the hazard numbering has no gaps", () => {
+  // A gap is a hazard that was raised and then removed, which is a decision
+  // somebody should have to make deliberately. Left unnoticed it also reads as
+  // a numbering that can be reused, which is how the duplicate above happens.
+  const text = readFileSync(CASE, "utf8");
+  const numbers = [...text.matchAll(/^\| H-(\d+) \|/gm)].map((m) => Number(m[1])).sort((a, b) => a - b);
+  const gaps: string[] = [];
+  for (let i = 1; i < numbers.length; i++) {
+    if (numbers[i] !== numbers[i - 1] + 1) gaps.push(`H-${numbers[i - 1]} -> H-${numbers[i]}`);
+  }
+  assert.deepEqual(gaps, [], "the hazard log skips a number");
 });

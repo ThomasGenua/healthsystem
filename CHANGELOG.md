@@ -3,56 +3,1046 @@
 Notable changes per release. Dates are the release date; a version is cut when
 a coherent block of capability is finished and tested, not on a calendar.
 
-Portage is pre-1.0: minor versions may change interfaces. Database upgrades are
+Northstar is pre-1.0: minor versions may change interfaces. Database upgrades are
 always forward-compatible and run automatically on open — see
 [Upgrading](docs/RUNBOOK.md#upgrading).
 
 ## Unreleased
 
+**Merged**
+
+- Ported the draft score-provenance approval evidence onto the current
+  directory-backed governance model. Population, review and licensing evidence
+  are retained alongside main's approval history and unit-aware v2 API; score
+  responses and audit rows identify the approval in force. Draft-schema
+  databases retain their evidence but require re-approval with a registered
+  clinical owner before scores can be used.
+
 **Fixed**
 
-- **The not-on-care-team flag never fired on real traffic** (H-106). The
-  privacy office's review joined `principal_id` and required
-  `principal_kind = "practitioner"` — but an HTTP audit row records the
-  *credential* on `principal_id`, with kind `apikey` or `oauth`, and the
-  clinician on `practitioner_id`. So every access through the API was skipped,
-  and the flag that exists to catch a clinician reading a chart they have no
-  part in never fired where it mattered. Worse than silent: the review
-  reported a clean period because it had examined nothing. It now joins
-  `practitioner_id`, the identity `AccessReview` already uses, and a
-  credential naming no practitioner is excluded because it cannot be on a
-  team.
+- **A patient could not ask for their record to be corrected through the
+  portal, and was told "internal error" (H-217).** The store refuses a
+  correction request that does not say what should be corrected, and the
+  portal's form never asked: it sent the kind and the free text and nothing
+  else, so every correction sent through it was refused. Confirmed in a real
+  browser before the fix: "Correct my record", typed and sent, showed
+  "internal error" and filed nothing. The form now asks "What should be
+  corrected" ("Que faut-il corriger") when a correction is chosen, requires
+  it, and sends it. A request for a copy sends nothing extra.
 
-- **A disclosure could outlive the request it answered** (H-107).
-  `fulfillAccess` recorded the disclosure and completed the request as two
-  independent writes. A failure between them left the ledger saying the chart
-  had gone out while the queue said nobody had answered, and a retry recorded
-  a second disclosure for one release. Both writes now share one transaction.
+  The "internal error" was its own defect. `PatientAccess` said every no
+  with a plain error, which the router answers as a fault: 500, a fault line
+  in the log, and an audit row marked as a serious failure. Its 23 refusals
+  are now refusals — 400 for the request, 404 for an id that is not there,
+  409 for a state that has moved on — in unchanged words. That reaches past
+  the portal. A clerk granting a caregiver access in person with an expiry
+  already past, or with a permission a caregiver cannot hold, revoking a
+  grant twice, or answering a patient request somebody already answered,
+  was also answered 500, and now gets the reason. A store built without its
+  review inbox is still a fault, because that is wiring rather than
+  anything the caller did.
 
-  Both fixes were found by a Cursor review that never reached `main`; the
-  branch had gone too stale to merge, so they are ported here with regression
-  tests verified to fail against the unfixed source.
+- **An upload could name any intake form, and naming one switched off its
+  review task (H-216).** An upload that says which form it goes with does not
+  raise its own "somebody looks at this" task; the form's task is meant to
+  cover it. The form id was stored as given. Confirmed before the fix: an
+  upload naming a made-up form id was answered 201, scanned clean, was filed
+  to the chart, and raised no task; the same file with no form named raised
+  one. Another patient's form id was accepted the same way. The form is now
+  looked up and has to be the same patient's, and "no such form" and
+  "another patient's form" get one answer, 404 `no intake submission <id> for
+  this patient`, before anything is stored. The portal never names a form on
+  an upload, so this took another client or a hand-built request. What
+  happens to an upload whose own form is abandoned as a draft is now an open
+  question for the clinical owner (`docs/PILOT-READINESS.md`, question 5).
+
+- **Revoking a delegate answered 500 "internal error" for anything that was
+  not one.** `/patient/delegate-revoke` threw a plain error when the id named
+  no delegate of the chart — a made-up id, another chart's delegate, or the
+  patient's own access — so a patient mistyping an id got a server fault, the
+  log got a fault line, and the audit row was marked a serious failure. All
+  three are now one refusal, 404 `no delegated authority <id> for this
+  patient`. The two "only the patient may review / revoke delegated access"
+  checks had the same fault and now answer 403. A caregiver reaches those
+  only through a grant row that carries `delegates`, which `grantProxy()` will
+  not write but an older or imported row can.
+
+- **A test run could report only part of its results.** `npm test` used
+  `--test-force-exit`, which ends each test file's process with
+  `process.exit()` the moment its last test finishes. A file's results reach
+  the runner over a pipe, pipe writes are asynchronous on Linux, and whatever
+  was still queued was lost — on Node 22 and Node 24 alike, whose runners do
+  the same thing. `test/score-boundaries.test.ts`, 97 tests, reported 43, 46,
+  55, 30, 30, 32, 97, 66, 53 and 63 across ten runs; whole-suite runs came
+  back 1572 and 1547 short of 1575. A failing test in the lost part still
+  failed the run, because the exit code was already set — 25 runs out of 25
+  — but in 23 of them without saying which test or why. Earlier notes put
+  the loss at one result; it was up to dozens.
+
+  The flag is gone. Each file finishes on its own, which is when every
+  result has actually been delivered, and `test/exit-watchdog.ts`, loaded
+  into every file, fails any file still alive ten seconds after its last
+  test and names what is holding it open. So the reason #84 added the flag
+  still holds: a test that fails with a listener open cannot hang the run. It
+  now takes ten seconds instead of under one, and says "Holding it open:
+  TCPServerWrap" instead of nothing.
+
+  Neither the flag nor the watchdog could end a test that never finishes,
+  since both act after a file's last test, so the script also sets
+  `--test-timeout` to five minutes — over six times the slowest test, more
+  than twice the whole suite's wall time, and a great deal less than the six
+  hours a hung CI job runs for. `test/test-runner.test.ts` runs the real
+  runner with the `test` script's own flags against fixture files, and fails
+  if results go missing again, if a leak or a stuck test hangs the run, or if
+  the watchdog's own timer ever holds a file open. Six runs of the whole
+  suite, three on each runtime, reported exactly 1582 of 1582 every time.
+
+  The browser tests left a three- and a five-second fallback timer running
+  after Chromium had already exited, holding their process open for exactly
+  that long. Cleared now; the slowest file exits within a tenth of a second
+  of its last test.
+
+- **Stopping the engine could close the database under a poll still
+  waiting on its source.** Clearing a poll's timer does not cancel the
+  `await` inside it. When the far end answered afterwards — a refused
+  connection, say — the poll's failure path wrote to a closed database and
+  threw from inside the handler that catches poll errors: an unhandled
+  rejection after an ordinary shutdown. The shipped server exits straight
+  after `stop()` and so almost never met it; anything that outlives the
+  engine, a test above all, did. `--test-force-exit` had been hiding it by
+  killing the process first. `stop()` now waits for polls already in flight
+  — up to five seconds, since a connect to a host that does not answer can
+  take minutes — and a poll that finishes later records nothing rather than
+  writing to a closed database. Nothing is lost by that: a failed read never
+  moved the channel's cursor, so the next start reads the same place again.
+  It waits on the flag each poll sets when it really starts, not on the
+  latest call: a tick that finds a poll already running returns at once, and
+  a first version that tracked the latest call was tracking those, which the
+  test caught once it let a few ticks pass before stopping.
+
+- **A patient's intake form could claim somebody else's appointment, and that
+  patient then read as prepared.** `appointment_id` is what the clinic board
+  answers "did anything arrive for this visit" from, and it arrived as a
+  field on the request. The portal only ever offers a patient their own
+  upcoming visits — but a screen that offers the right choices is a
+  presentation, not an authorisation boundary. An authenticated patient
+  attaching their own form to another patient's booking was answered 201, and
+  that booking left the "coming in with nothing sent in" panel.
+
+  A named visit is now resolved against the schedule in this tenant and has
+  to be that patient's live booking. "No such appointment" and "somebody
+  else's appointment" are refused in the same words, so the boundary cannot
+  be asked which identifiers exist. An appointment whose start time has
+  passed is deliberately still accepted: somebody filling the form in the
+  waiting room at 09:05 for a 09:00 appointment is the ordinary case, and a
+  clock that close to the line is the wrong thing to refuse a medication list
+  over. H-209.
+
+- **A patient could not complete a questionnaire at all.**
+  `/patient/questionnaires` served the stored row, whose `questions` column
+  is a JSON string, and the screen does `for (const question of
+  q.questions)` — which over a string iterates characters. A two-question
+  form rendered as a hundred and sixty-four nameless text boxes, every one
+  `id="q-undefined"`, the questions never shown, and the answers came back
+  keyed `undefined` so the required-question check refused every submission.
+
+  Nothing caught it because every test on that route asserted a status code,
+  and 200 is what a broken payload returns too — the same gap #107 closed one
+  route along, in the same week, for the same reason. The payload is parsed
+  and narrowed now, and a real browser asserts the controls that render.
+  H-212.
+
+- **Two browser tabs turned one account of a visit into two, the later one
+  older.** `submit()` is idempotent for the same draft, which covers the
+  retry a dropped connection produces. It did not cover a second tab: that
+  tab was painted before the first submitted, holds no draft id, opens a new
+  draft and submits it — two QuestionnaireResponses and two review tasks for
+  one appointment, and the one written second carried the answers the patient
+  typed first. Opening a second draft for a visit that already has a form on
+  file is refused, naming when the first was sent — and the same rule is held
+  again in `submit()`, where the chart document is actually written, so a
+  draft opened before this shipped cannot produce the duplicate either.
+  Scoped to submissions that name a visit: two general concerns with no
+  appointment between them are two things somebody wanted to say. H-210.
+
+- **What a patient typed could disappear without their say-so, three ways.**
+  Every form failure in the portal went to `showError()`, which replaces the
+  whole view — right for a screen that could not load, catastrophic for one
+  somebody has been typing into — and the retry button it offered navigated
+  to Messages from whichever screen you were on. The upload card's size check
+  called it directly, so choosing a photo over the limit destroyed unsaved
+  questionnaire answers on the same screen. And switching the visit selector
+  re-rendered every form from what was saved, silently dropping anything
+  typed and not saved.
+
+  A send failure is now reported inside the form, above the buttons, with
+  `role="alert"`; every field keeps its value and nothing else moves. This
+  applies to every form in the portal. Switching visit with unsaved answers
+  asks first, and Cancel leaves everything as it was. It asks rather than
+  saving the answers to the visit being left or carrying them to the one
+  chosen, because which is right depends on whether the patient picked the
+  wrong visit or is preparing two. H-213.
+
+- **The clinic board's "today" was the UTC day.** At UTC-07:00 the UTC day
+  ends at 17:00 local, and the board was wrong on both sides of that line.
+  Before it, a booking at 18:00 the same local day was already in tomorrow's
+  window and simply absent — and nobody was asked whether those patients had
+  sent anything in, because `expectedWithoutIntake()` only asks about visits
+  the board returned. After it, the board flipped: the morning's patients
+  vanished and tomorrow's appeared as today's, expected and unprepared.
+
+  `NORTHSTAR_CLINIC_TIMEZONE` says where the clinic is — a place like
+  `America/Yellowknife`, which follows daylight saving, or a fixed offset
+  like `-07:00`. One calendar, in `src/schedule/clinic-day.ts`, now answers
+  "what is today" for everything that asks: the board's list, its capacity
+  panel (which had been left on the UTC day beside a list that was not, so
+  one screen counted a different day than it showed), a clinician's worklist
+  and the wall display. Days that are 23 and 25 hours long are, and where
+  clocks change at midnight the day starts when the calendar first reads it.
+  Unset is UTC, exactly as before. Not read from the host clock: a server's
+  time zone is a property of where it is racked. A malformed or unknown value,
+  an abbreviation like `MST` that says nothing reliable about daylight
+  saving, and `Etc/GMT+7` with its inverted sign are all refused when the
+  engine is built. H-211.
+
+  A place name is resolved with the time-zone data compiled into Node — no
+  dependency, but a dependence. Copies differ: Node 24.21 (tzdata 2026c)
+  treats `America/Yellowknife` as `America/Edmonton` and keeps it on
+  UTC-06:00 from November 2026, where Node 22.22 (tzdata 2025c) falls back to
+  UTC-07:00. So the boot log says what the name resolved to, which copy of
+  the rules said so, and what the clinic's clocks read now, and the pilot
+  preflight asks a person to confirm it. The exposure is an hour at the edge
+  of the day — midnight becomes 23:00 or 01:00 — not the seven hours the UTC
+  day was out. H-214.
+
+- **The privacy review read "after hours" on UTC clocks.** Default clinic
+  hours are 07:00–19:00, and at UTC-07:00 that meant midnight to noon
+  locally: a 14:00 read was flagged and a 03:00 one was not, the opposite of
+  the point. With a clinic time zone set, the hour of each read is taken on
+  the clinic's clock — still from the read's own timestamp, never from when
+  the review runs (H-76) — and the finding says whose clock it used. R-19
+  narrows to what remains: one zone per deployment.
 
 **Added**
 
-- **Fail-closed deployment approval for clinical scores.** The formula
-  catalogue is no longer merely a warning attached to a number. Every score is
-  disabled until its tenant records a named clinical owner, approved local
-  population, licensing acceptance, review and review-due dates, a written
-  reason, and the exact Portage implementation version reviewed. Approval,
-  renewal and disable are append-only decisions. Expiry, disable, or a formula
-  version change refuses calculation with HTTP 409.
+- **The package builds the same twice, and the digests are published
+  (item 19).** `npm run repro` packs two independent checkouts of HEAD and
+  fails unless they are byte-identical; CI runs it before packing the tarball
+  it publishes, and writes a `SHA256SUMS` of that tarball and the SBOM into
+  both the artifact and the run summary.
 
-  Complete hand-supplied calculations now require the exact governed unit for
-  every measured input. Chart-derived scores compare the unit stored on every
-  source observation and treat a wrong or absent unit as unavailable; no
-  implicit clinical conversion is performed. Successful responses and the
-  hash-chained access trail name the approval id, implementation version,
-  clinical owner and review-due date. `test/score-governance.test.ts` and the
-  API/chart regression tests pin the gate. Hazards H-109 and H-111.
+  Two checkouts rather than one tree packed twice, because the usual cause of
+  a difference is a timestamp and a second pack of the same tree sees the same
+  mtimes. The detector was checked against a build deliberately made
+  unreproducible — a `prepack` step writing the clock into a file — and
+  reports both digests and exits non-zero, so a pass means something.
+
+  This closes the gap the previous entry wrote down rather than hid: an
+  attestation says where a tarball came from, which is not the same as anyone
+  being able to produce it. What is now measured, and what is not, is in
+  `docs/STATE_OF_THE_ART_ROADMAP.md` under 56 — identical across two
+  checkouts five hours apart, across a shallow clone and a full one, and
+  across npm 10 and npm 11; **not** measured across platforms, architectures,
+  locales or Node majors, and never rebuilt by anyone outside this project,
+  which is the only thing that would make "verifiable" mean what a reader
+  assumes.
+
+- **A patient's intake form now says which visit it is for, and the board
+  can ask who is coming in unprepared.** Two halves of one thing.
+
+  The portal's intake screen asks once which upcoming appointment the forms
+  are for — soonest first, cancelled and past ones excluded, preselected
+  only when there is a single choice to get wrong — and a draft is keyed to
+  the visit it prepares for, so the same questionnaire answered for Thursday
+  and for next month are two forms rather than one overwriting the other.
+
+  `ClinicBoard.expectedWithoutIntake()` then answers what #106 deliberately
+  left out: who is expected today with nothing sent in to read. A clinician
+  meets somebody without the medication list and history they would have
+  had, and where this visit is the only one for months that is the
+  difference between a consultation and a guess.
+
+  It is asked **per visit**. A form submitted before the last appointment
+  says nothing about this one, and counting it would tell a clinician they
+  had a current medication list when they do not. A form attached to no
+  visit covers no visit — null is not a wildcard here, for the reason it is
+  not one in a patient-scoped search: a visit showing as unprepared when a
+  form exists somewhere is recoverable; one showing as ready when nothing
+  was sent for it is not.
+
+- **Intake submissions nobody has read, and how much work is open, are on the
+  clinic board.** Both queries existed and no screen called either, so the
+  capability was there and nothing surfaced it. `attention()` now carries
+  `intakeAwaitingReview` from `IntakeSubmissions.open()`, oldest first, and
+  `workload()` answers from `TaskStore.load()`.
+
+  The intake panel is the sharper of the two. A patient sits down before
+  their visit and writes out what they are taking and what has changed;
+  until a clinician reads it, the visit proceeds on what the chart said last
+  time — and a board with no intake panel looks exactly like a clinic where
+  every submission has been read.
+
+  Both panels are absent rather than empty when their source is not wired,
+  which is the rule the board already worked under: an empty panel and a
+  quiet day look the same, and only one of them is true. A task source that
+  cannot count reports nothing, not zero.
+
+  Half the intake question remains, and it turned out not to be wiring — see
+  item 66 of `docs/PATIENT-WORKFLOWS-ROADMAP.md`. Asking who is expected
+  today and has *not* submitted needs the portal to record which appointment
+  an intake belongs to; it does not, so every submission has a null
+  `appointment_id` and a panel built on it today would name every expected
+  patient every day.
+
+- **A CycloneDX SBOM per CI run, the tarball beside it, and build provenance
+  on the default branch (item 20, roadmap 56).** Generated by `npm sbom`,
+  which the package manager already in use provides, so the project whose
+  dependency posture is the point gains no dependency to describe its
+  dependencies. Both are uploaded as build artifacts; on the default branch
+  only, `actions/attest-build-provenance` attests them, because minting a
+  claim for every push to every branch would fill the store with statements
+  about trees nobody released.
+
+  **What SLSA level that reaches is not claimed**, here or in the roadmap.
+  The definition that would settle it cannot be fetched from the environment
+  this was written in, and a level recalled from memory is the kind of
+  unverified conformance claim `docs/STATE_OF_THE_ART_ROADMAP.md` exists to
+  refuse. It records a builder, a commit and a workflow. Reproducibility is
+  not addressed at all: two runs make two tarballs and nobody has checked
+  they match.
+
+  The document also corrects a claim the README has been making. "No required
+  runtime dependencies" is true, and "required" was carrying it: the `sqlpoll`
+  and `sftp` drivers are optional dependencies, lazily imported so nothing
+  loads them otherwise — but `npm ci` installs them and 41 transitive packages
+  by default. A site that polls no database and collects from no SFTP server
+  can use `npm ci --omit=optional` and have an empty tree. Naming that is what
+  the SBOM is for, and `test/supply-chain.test.ts` fails if it stops naming it.
+
+  The same test pins the version across the three places that state it —
+  `package.json`, `src/version.ts` and the SBOM's root component — so a
+  release that bumps one and forgets another fails instead of shipping a
+  CapabilityStatement and an SBOM that disagree about which build is running.
+
+- **`Strict-Transport-Security`, on the nodes that can honestly send it
+  (item 16).** A node holding its own certificate sends it with every
+  response, a year by default and `NORTHSTAR_HSTS_MAX_AGE` to change or
+  disable it. A node behind a TLS-terminating proxy sends nothing: the
+  requests arrive as plain HTTP, and the only evidence otherwise would be a
+  forwarded header anyone who can reach the port is able to write — which is
+  the wrong thing to decide a year of refused HTTP on. That deployment sets
+  HSTS at the proxy, where the TLS it is asserting actually ends.
+
+  Never `includeSubDomains`, never `preload`, and neither configurable. Both
+  reach hostnames this deployment may not own — a sibling serving something
+  else over HTTP goes dark — and `preload` is close to irreversible once a
+  browser ships the list. A site that wants either is deciding about a whole
+  domain rather than about this process.
+
+**Changed**
+
+- **Continuous integration is disabled, at the repository owner's request.**
+  All four workflows — `ci.yml`, `monitoring.yml`, `resilience.yml`,
+  `staging.yml` — keep every job, step, action pin and assertion they had.
+  What was removed is their automatic triggers: `push`, `pull_request`, and
+  the nightly `schedule` on the resilience rehearsals. `workflow_dispatch`
+  stays on all four, so any of them can still be started deliberately from
+  the Actions tab.
+
+  Nothing was weakened to achieve it. No `continue-on-error`, no `if: false`,
+  no swallowed exit code, no skipped or deleted test, no deleted workflow
+  file. Started by hand today, each workflow runs what it always ran and
+  fails on what it always failed on. CI was green when it was switched off —
+  the last automatic run of every workflow on `main` concluded `success` —
+  so this disables a passing pipeline rather than burying a failing one.
+
+  The consequence worth naming: `ci.yml`'s `supply-chain` job minted a
+  CycloneDX SBOM, the packed tarball, and a signed build provenance
+  attestation over both on the default branch. While CI is off, **no new
+  attestations are minted**. Existing ones stay valid for the commits they
+  cover; a release cut during this period should start `CI` by hand on the
+  release commit. `docs/CI-DISABLED.md` is the record — what was switched
+  off, what deliberately was not, what now has to be run by hand, and the
+  exact trigger blocks to paste back.
+
+  Two sentences that said CI runs these checks were corrected rather than
+  left standing: the **Contributing** note in `README.md`, and
+  `docs/CLINICAL-SAFETY.md` §4 on the hazard-identifier check. The second is
+  the one that matters — that check is the only coordination between
+  branches allocating hazard identifiers, and with nothing running it,
+  two branches cut from the same revision will both claim the next number
+  and each look correct alone.
+
+**Security**
+
+- **A caregiver's access, or an API key, could be given an end the clock
+  never reached (H-30).** An expiry was stored exactly as it was typed and
+  compared as text against the clock. `December 31, 2027` sorts after every
+  timestamp, so a grant written that way never lapsed — the delegated access
+  that never ends which H-30 exists to prevent. `next year` is not a date at
+  all, and was accepted, because `new Date("next year")` is NaN and NaN is
+  never "already past". `12/31/2027` sorts before every timestamp, so that
+  grant never began, and a time with an offset ended early by the offset —
+  one written for 17:00 at `-07:00` ended at 17:00 UTC, seven hours early.
+  Confirmed before the fix: grants written `December 31, 2027` and `next
+  year` were live in 2030, and an API key issued with `next year` was stored
+  as typed and verified, and sorts after every timestamp there will be. An
+  expiry is now read strictly — a calendar date such as `2027-12-31`, or a
+  time with its zone — and stored in one canonical UTC form; anything else is
+  refused. That covers caregiver grants, enrolment requests (at the desk,
+  not weeks later at attestation, which now also refuses an end already
+  gone), API keys and result holds. A grant or key stored before this with
+  an end that does not start like a date is treated as already past, and
+  boot says how many there are; `docs/RUNBOOK.md`, "Expiries that are not
+  dates", says how to find and re-record them. Calendar dates and offset
+  times written correctly before this still compare exactly as they did.
+
+- **A signed-in patient could find out whether somebody else's record
+  existed by asking for it by id (H-215).** Five portal routes name a record
+  rather than a patient: reading or replying to a message thread
+  (`/patient/thread`, `/patient/thread-reply`), a visit's after-visit summary
+  (`/patient/after-visit-summary`), sending in an intake form
+  (`/patient/intake/submit`) and downloading an upload (`/patient/upload`).
+  They answered 404 when the record did not exist and 403 when it was on a
+  chart the caller held no grant for, and decided which before checking
+  anybody's authority. Confirmed before the fix: another patient's real
+  message thread was 403, a made-up id was 404 `no message thread <id>`.
+  Nothing inside a record was disclosed and the ids are random, so this could
+  not list what a clinic holds, but an id seen on a shared screen or in a
+  forwarded link could be confirmed. Now a record the caller may not read gets
+  403 `not authorized for this patient resource` whether it exists or not —
+  the answer a chart with no grant, or a patient id that does not exist, has
+  always had — byte for byte, including for the owner's own mistyped id. The
+  audit trail still tells the two apart: an attempt on a real record is
+  refused against its patient, there and in that patient's own access log;
+  an attempt on a missing one is on the audit trail with the id asked for.
+
+## 0.9.0 — 2026-09-16
+
+A release about the work between visits, and about the console that shows it.
+
+Items 58 to 67 are here: a patient and caregiver application at `/me` rather
+than chrome, pre-visit intake with a quarantine that means it, structured care
+plans and an after-visit summary, a longitudinal chart that refuses to draw a
+trend across units it cannot compare, discharge lists taken from the chart
+instead of typed into a form, handoffs that are not complete until somebody
+accepts them, a clinic board, notices sent to an address somebody checked, and
+outreach that cannot contact the same person twice. Then six measures of
+whether any of it helped — which keep "unknown" out of the numerator rather
+than counting it as success, because a rate that folds the unconfirmed into
+the good news is the one number that makes a struggling clinic look fine.
+
+And a security fix that reads as pedantry until you watch it run. The console
+put patient identifiers inside JavaScript, escaped them, and was wrong to
+think that was enough: an attribute holding script is HTML-decoded before the
+script is parsed, so an escaped apostrophe is an apostrophe again by the time
+it reaches the string it was supposed to stay inside. A patient identifier is
+whatever PID-3 of an unauthenticated message said it was. Neither page puts a
+value anywhere it will be parsed any more, and both are now served under a
+policy that refuses inline script outright — two controls that would have to
+fail together.
+
+Alongside it, the first work aimed at running this somewhere rather than
+testing it: sign-in for the portal that keeps the tokens on the server,
+upload scanning that fails closed, a preflight that checks a node against the
+pilot readiness list, and a staging deployment with alert rules and an outage
+drill that verifies recovery instead of assuming it.
+
+**Added**
+
+- **Clinic portal sign-in, with the tokens kept server-side.** `/me` gains
+  optional OIDC code/PKCE sign-in handled by the server: the browser holds an
+  opaque HttpOnly/Secure cookie that authorizes only patient routes, never a
+  token. A cookie-authenticated write or a logout requires both the exact
+  public origin and a session-bound CSRF token, and a session ends on idle
+  time, token expiry, logout or a process restart — logging out here does not
+  end the upstream SSO session, which is said rather than implied. Hazards
+  H-203, H-204 and H-205, and a real-browser journey in
+  `test/portal-browser.test.ts`.
+
+- **Patient uploads are scanned, and the scan fails closed.** A quarantined
+  upload is passed to ClamAV by a background worker and stays quarantined
+  unless the scanner returns clean — an unreachable or erroring scanner leaves
+  the file quarantined rather than releasing it.
+
+- **A pilot preflight, a reproducible localhost staging deployment, and local
+  alert monitoring.** `scripts/pilot-preflight.ts` checks a node against
+  `docs/PILOT-READINESS.md` before anybody relies on it; `deploy/staging/`
+  carries a Dockerfile and compose files that stand the thing up with smoke
+  checks; and the monitoring compose adds Prometheus alert rules with their
+  own rule tests, plus a scripted outage drill that verifies recovery rather
+  than assuming it.
+
+- **Both pages are served under a Content-Security-Policy (item 16).**
+  `default-src 'none'`, and a `script-src` naming a sixteen-byte nonce minted
+  per response and never `'unsafe-inline'` — so an injected `<script>` or
+  handler attribute is refused by the browser even if a later interpolation
+  puts one back. Deliberately the second line rather than the first: the first
+  is that neither page interpolates into script at all now, and the two fail
+  independently. Everything that is not one of those two pages — JSON, the
+  metrics text, an error body written from the router's catch — carries the
+  empty policy, `nosniff` and `no-referrer`, set before routing so the error
+  paths are covered too. `style-src` keeps `'unsafe-inline'`: both pages style
+  elements with a `style` attribute, a nonce cannot cover those, and with
+  `img-src` limited to `data:` there is no URL for injected CSS to reach.
+  1495 tests.
+
+- **Six workflow-effectiveness metrics that preserve "unknown" rather than
+  fold it into success, reusing the release-and-suppression machinery item
+  67's own text asked for and this session had wrongly claimed did not
+  exist (item 67).** `src/population/effectiveness.ts`: time to clinician
+  review, unresolved discharge follow-up, referral completion, notification
+  failures, missed appointments, and staff task burden — each a thin layer
+  over one existing store extended with exactly one new date-range query
+  method (`IntakeSubmissions.submittedBetween()`,
+  `Discharges.itemsRaisedBetween()`, `ReferralStore.sentBetween()`,
+  `PatientNotices.deliveriesBetween()`, `Schedule.bookingsBetween()`,
+  `TaskStore.createdBetween()`), each with its own stated exclusions (a
+  discharge item marked not-needed, a declined or cancelled referral, a
+  cancelled appointment, a cancelled task — a deliberate outcome, not a
+  failure, in every case).
+
+  **Two metrics have a genuine unknown, and it is preserved rather than
+  guessed.** A notification whose delivery state is `unknown` or an
+  unreceipted `provider-accepted` is neither a success nor a failure — the
+  same distinction `notice.ts`'s `DeliveryState` already draws (H-183),
+  reused rather than re-decided. A booking still `booked` well past its
+  appointment time, with no attendance outcome recorded, is the same kind
+  of honest gap. The other four metrics have none: "still open" is a real
+  answer, not an unknown, and correctly weighs the rate down the way a
+  never-done care gap already does in `registry.ts`.
+
+  **Nothing here defaults a target duration.** How long counts as "on time"
+  for a review, or "overdue" for a missing appointment outcome, is a
+  caller-supplied, required argument in both metrics that need one — the
+  same discipline `Trends.staleness()` already holds a clinical interval to
+  in item 63.
+
+  `src/population/release.ts` gains `releaseWorkflowMeasure()`, reusing the
+  same private small-cell and complementary-suppression helpers
+  `releaseMeasure()`/`releaseGaps()` already use rather than a second
+  implementation. Seven clinician routes, reading as POST for the same
+  reason `/api/clinical/gaps` already does. Twenty-one of twenty-one
+  mutations killed. Hazard log gains H-201 and H-202.
+
+  **Corrects this session's own earlier mistake, again:** the item-64 entry
+  above already noted that `src/population/release.ts` predates this
+  roadmap and was wrongly claimed missing; this entry is where that
+  correction's promise — that item 67 would reuse it — is kept.
+
+- **Travelling-clinic arrangements that are never marked confirmed on hope
+  (item 65).** `src/schedule/arrangements.ts`'s `Arrangements` covers the
+  six kinds the item names — transport, accommodation, interpreter, escort,
+  equipment, accessibility — each owned by somebody and moving through
+  `needed → requested → confirmed`, with `cancelled` beside all three.
+
+  **Two paths reach `confirmed`, and both require evidence.** `confirm()`
+  is manual coordination and refuses without a written account of how it
+  was checked. `requestExternally()` talks to a configured
+  `ExternalCoordinator` (a real integration point; `SyntheticExternalCoordinator`
+  is the demonstration stand-in, the same shape as intake.ts's
+  `SyntheticScanner`) and marks confirmed only when the external system's
+  own answer says so — a request merely sent becomes `requested`, never
+  `confirmed`, the same distinction item 59's delivery states already had
+  to draw for a notification handed to a gateway.
+
+  **A changed visit does not silently strand what was arranged.** The two
+  routes that are the only real callers of `Clinics.cancelVisit()` and
+  `rescheduleVisit()` in this codebase now also call
+  `Arrangements.reviewAfterVisitChange()`, which raises one reassignment
+  task per live arrangement on the changed visit — never guessing which
+  ones are actually voided, since that is not a fact this module can know,
+  only asking a person to look.
+
+  Seven clinician routes, all through the existing `phi()`/`phiFor()`
+  gateway. Nineteen of nineteen mutations killed; the one that first
+  survived (an external coordinator answering with no reference) needed a
+  deliberately-misbehaving test double, since the synthetic coordinator
+  always returns a usable one. Hazard log gains H-199 and H-200.
+
+- **Outreach campaigns behind a governed, versioned eligibility rule, with
+  duplicate outreach prevented by the schema (item 64).**
+  `src/population/eligibility.ts` gives a `CohortRule` + `CareGapRule` pair
+  its own publish-only home — the same insert-a-new-version,
+  never-edit shape `Questionnaires.publish()` already established: a
+  campaign built from version 3 of a rule still means version 3 forever,
+  whatever a clinician later publishes as version 4.
+
+  `src/population/outreach.ts`'s `OutreachCampaigns.create()` snapshots
+  `Registry.gaps()` against a published rule into a campaign and one item
+  per gap member, frozen at that moment rather than a live join. **Two
+  campaigns cannot both call the same patient about the same gap**: a
+  partial unique index on `(tenant, patient, eligibility_rule_id)` while an
+  item is open enforces this at the schema level, so it holds even under
+  concurrent campaign creation — `create()` catches the constraint and
+  quietly moves on to whoever is left. An item's status guards mirror item
+  61's goals/actions: assignment, a contact attempt, a response, a booking
+  and completion each need the item in the right prior state; three
+  unanswered attempts surface it as `unreachable` without trapping it there
+  (a later attempt that connects still moves it forward); **completion
+  needs a booking already on file**, so a care gap cannot read as closed on
+  staff say-so with nothing behind it; exclusion needs a written reason;
+  and every contact attempt is checked against `PatientContacts.reachable()`
+  — the same consent-and-verification honesty item 59 built for a
+  notification, applied here rather than re-decided.
+
+  Fourteen clinician routes, all through the existing `phi()` gateway. No
+  patient route — this is a staff worklist, not a portal screen.
+
+  Twenty-two of twenty-five mutations killed outright; the other three are
+  documented equivalent mutants (a redundant status filter, an
+  unreachable numeric boundary, and a catch-guard SQLite cannot let any
+  reachable input distinguish), not chased with contrived tests.
+
+  **Correction:** an earlier pass at item 67 (below) claimed small-cell
+  suppression did not exist in this codebase. It does —
+  `src/population/release.ts`, already merged — and item 67 will reuse it,
+  as its own text originally asked.
+
+- **A longitudinal timeline and validated trends, that refuse to invent a
+  conversion nobody has validated (item 63).** `src/clinical/timeline.ts`
+  merges results, vitals, procedures, immunizations, encounters, and
+  approved-or-better care-plan goals and actions into one chronological
+  read, each entry carrying `sourceRecordId` back to its record. A
+  corrected result contributes its current version only — a new
+  `OrderStore.currentResultsFor()` excludes anything superseded at the SQL
+  level — and a merely-proposed goal or action is not yet an event in a
+  patient's history.
+
+  `src/clinical/trends.ts` builds a series per result code
+  (`OrderStore.resultSeries()`, every version of one code including
+  corrections) or per vital kind. **A vital series reuses the existing
+  validated measurement contract** for real unit conversion; **a result
+  series does not invent one** — there is no molar-mass table in this
+  codebase for arbitrary lab analytes, and asserting an equivalence nobody
+  has verified is exactly the silent rescaling that contract exists to
+  stop. Two points in different units are marked "not comparable" rather
+  than plotted on one guessed scale. `Trends.staleness()` never defaults
+  an expected interval; the caller supplies one or the call is refused.
+
+  Ten mutations, all ten caught by a test.
+
+- **Structured care-plan goals and actions, and an after-visit summary that
+  cannot say more than a clinician agreed to (item 61).** `src/clinical/
+  goals.ts` gives a care plan `Goal` and `Task` (action) entries of their
+  own on the append-only record, each carrying five states — proposed,
+  approved, completed, declined, superseded — internal vocabulary matching
+  the item's own words rather than forced into FHIR's `Goal.lifecycleStatus`
+  codes, which have neither "superseded" nor "approved"/"declined".
+  Revising a goal or action supersedes the old entry with a `supersededBy`
+  pointer and writes a new one, rather than editing the original: the old
+  text survives, verbatim, next to what replaced it. An action carries a
+  responsible person, a due date, a progress note, and an optional link to
+  an existing task, appointment, order or referral, validated against the
+  real store when one is wired in.
+
+  **`src/clinical/avs.ts` assembles the after-visit summary from approved and
+  completed content only** — a proposed suggestion nobody agreed to and a
+  declined one are excluded by the same filter for both, not a downstream
+  check somebody could apply to one and forget on the other. Escalation
+  criteria are quoted verbatim from a clinician's own words on the plan, or
+  the summary says plainly that none was provided — nothing here generates
+  a plausible-sounding paragraph to fill a blank field. Orders from the
+  visit are included because `encounter_id` is a real, checkable link;
+  referrals and prescriptions are deliberately left out rather than
+  attributed to a visit by guessing from timing.
+
+  Eleven mutations, all eleven caught by a test.
+
+- **Pre-visit intake and patient uploads (item 60).** A patient can now answer
+  a versioned questionnaire, raise a concern, and describe a medication
+  change before a visit — saved as a draft that resumes after a dropped
+  connection instead of forking a second one, and submitted exactly once even
+  when the submit request is retried. `src/patient/intake.ts`:
+  `Questionnaires.publish()` never edits a version, only adds one, so an
+  answer from March still shows the question actually asked after April's
+  revision. `IntakeSubmissions.submit()` freezes the draft onto the chart as a
+  `QuestionnaireResponse`, attributed to the patient or their proxy, and
+  raises the same `portal-submission` review task item 58 already built a
+  worklist for.
+
+  **A proposed medication change is testimony, not a chart update.** It is
+  stored on the submission and read by a clinician on the review task;
+  nothing in this module touches `MedicationStore`. Collapsing "the patient
+  mentioned starting this" into "the patient is on this" is exactly the
+  failure a clinician's separate reconciliation exists to prevent.
+
+  **A file stays quarantined until something scans it — including forever.**
+  `Uploads.receive()` never marks a file clean; only a configured
+  `MalwareScanner`'s verdict does, and a deployment with none configured
+  leaves every upload `pending-scan` indefinitely rather than defaulting to
+  safe. An infected verdict deletes the bytes from the row on the spot. The
+  bundled `SyntheticScanner` recognizes the EICAR test string and nothing
+  else, and is wired only behind `NORTHSTAR_DEV_MALWARE_SCANNER=on` — loud,
+  explicit, opt-in, the same shape as the development identity provider.
+
+  The portal gained an eighth tab, "Before your visit," in both languages,
+  through the same loading/error/empty and double-submit machinery every
+  other screen already uses. A new `"intake"` patient permission gates six
+  new `/patient/*` routes through the existing `patientPhi()` boundary, and
+  five clinician routes go through the existing `phi()`/`phiFor()` gateway.
+
+  Along the way, the `/api/clinical/*` and `/patient/*` route-audit scanners
+  both had the same blind spot: a character class that could not match a `/`
+  or a digit, so a route nested under a subpath was invisible to the check
+  built to guarantee every route leaves an audit row. Two of this increment's
+  own routes — `/patient/intake/draft` and `/patient/intake/submit` — would
+  have been exempt on the strength of their own name, the identical failure
+  the `/api/clinical/*` scanner's comments already record having had once.
+  Both are fixed.
+
+- **Routing that reads the handoff record instead of an owner column.** The
+  previous increment could answer who was accountable for anything; nothing
+  asked it. `TaskStore.inbox()` and `Discharges.openFollowUps()` now route
+  through `Handoffs.effectiveOwners()`, so work somebody handed away leaves
+  their list and arrives on the other person's **on acceptance and not
+  before** — the two statements the handoff record exists to separate,
+  arriving one layer down as an inbox that would otherwise still show work
+  that had moved. `TaskStore.heldBy()` and `Discharges.accountableFor()` are
+  the single answer to ask for; `owner_id` is now only who it started with.
+
+  `effectiveOwners()` returns **overrides only**, which is what makes coverage
+  revert by arithmetic: when the window closes the subject stops appearing in
+  the map and the store falls back to the column it always had. Writing the
+  coverer into the owner column on accept would need a sweep to write it back,
+  and a sweep that does not run leaves a locum owning a list they stopped
+  watching in March. Coverage sits on top of whoever holds the work, so a
+  reassignment accepted during a night's cover is what the work goes back to
+  at dawn — not the clinician who gave it away before the cover began.
+
+- **A discharge list taken from the chart, not typed into a form.** A form
+  records what somebody remembered at the end of a shift. The four things that
+  actually go wrong after a visit — an unacknowledged result, an unfinished
+  medication reconciliation, no follow-up booked, a referral still open — are
+  computable at the moment the encounter closes, so `discharges.open()` takes
+  the snapshot and what a clinician does afterwards is resolve items rather
+  than remember them. `outstandingFor()` exposes the same list *before* the
+  visit closes, which is the only moment somebody can still act on it with the
+  patient in front of them.
+
+  A discharge cannot be closed while anything is outstanding — a button that
+  makes the list go away is worse than no list, because it produces a record
+  saying the follow-up was completed. Resolving an item needs a written
+  resolution. The snapshot survives its own resolution, because the question
+  asked six months later is what was outstanding when this person went home. A
+  follow-up item is raised only where the disposition implies one, so a
+  patient admitted to hospital is not added to a clinic list nobody will read.
+  One snapshot per encounter, enforced by a unique index.
+
+- **Handoffs that are not complete until somebody accepts them.** "I handed it
+  over" and "somebody has it" are different statements, and only the second is
+  true of a transfer nobody answered. A handoff is proposed and then accepted;
+  until it is accepted **the person who proposed it is still accountable**,
+  answered from the record by `accountableFor()` rather than from a column
+  somebody has to remember to update. Only the person it was offered to may
+  accept or decline; only the proposer may withdraw. One live proposal per
+  subject, so two people cannot each be offered the same work and each accept
+  it.
+
+  **Coverage is a different thing** and needs an end date, with no default —
+  when it ends is the safeguard, exactly as with a delegated patient-access
+  grant, and a locum who covered a list in March must not still be covering it
+  in November. Accountability reverts when the window closes without anybody
+  acting, and coverage sits on top of whoever holds the work, so a transfer
+  underneath it is respected when it lapses.
+
+- **Two more views on the clinic board.** `attention()` now carries unaccepted
+  handoffs — every row is work two people may each believe the other is
+  holding — and open discharge follow-ups with a count of what is still loose,
+  alongside who is covering for whom right now. Both were absent rather than
+  empty in the previous increment because the workflow underneath them did not
+  exist; it does now. Intake status is still absent, and still for that reason.
+
+- **A clinic board, and a separate one for the wall.** `worklist()` answers
+  what a clinician owes somebody. The front desk asks a different question —
+  who is here, how long have they been waiting, which rooms are free, who has
+  fallen through — and `board` answers that.
+
+  The wall rendering is the point. A waiting-room display is read by everybody
+  in the room, continuously, and nobody records that they did; in a small
+  community that is the most consequential disclosure this software can make.
+  So `publicBoard()` returns a separate type with three fields — a per-visit
+  token, a state, and minutes waited — and there is no field an identifier
+  could go in. Built by construction rather than by omission, because a
+  redaction somebody has to remember is one somebody eventually forgets. The
+  token is derived per booking rather than counted, so it does not tell the
+  room how many people are ahead, and its alphabet leaves out 0/O and 1/I/L. A
+  finished visit leaves the wall.
+
+  Every row states why it is where it is: `here and waiting 20 minutes past
+  their appointment`, `urgent priority, …`, `1 of 2 seats open, next at 14:00`.
+  Staff argue about the order of a waiting room, and a stated rule is one
+  somebody can disagree with where an unexplained sort is one they work around.
+
+  Two things it refuses to claim. A room with nothing scheduled reports that,
+  not that it is free. And `progressKnown` is false on every row, because the
+  encounter model has one `in-progress` state covering both "in the waiting
+  room" and "with the clinician" — putting the second on a board for somebody
+  doing the first is exactly the number the front desk is being asked about.
+
+  `attention()` carries the patients nobody could reach — the follow-up tasks
+  the notice machinery opens — including ones somebody has picked up but not
+  finished, via a new `TaskStore.openOfKind()`. Recently-discharged patients
+  and unaccepted handoffs are the two views not here: both need a discharge
+  and handoff workflow that does not exist, and an empty panel is
+  indistinguishable from a quiet day.
+
+- **Patients can be told there is something waiting, at an address somebody
+  checked.** The engine could already publish a notice onto a channel; it had
+  no way to say where. `patient_index` carries a phone and an email copied out
+  of an ADT feed — what a sending system believes, not an address this clinic
+  verified — and sending to that is how a result notice reaches a number
+  mistyped four years ago.
+
+  `patient_contacts` holds addresses that are unusable until two separate
+  people have done two separate things, both recorded by name: a clerk writes
+  at least twelve characters saying how they checked the address belongs to
+  this patient, and the patient agrees to be contacted there. Consent cannot
+  be recorded against an unchecked address. Withdrawal keeps the row rather
+  than deleting it. Quiet hours need the zone they are in — 21:00 is a
+  different instant in Iqaluit and Vancouver — and a window that wraps
+  midnight is read as wrapping. Language is nullable and null means unstated,
+  never English.
+
+- **Five delivery states, and the queue's success is not one of them.** A
+  destination returning 2xx means a gateway took the request, which is
+  `provider-accepted` and nothing more. Only a receipt reaches `delivered`, so
+  with no receipt path configured an attempt stays accepted forever — the true
+  answer rather than an optimistic one. A receipt this build cannot read is
+  `unknown`, neither delivered nor failed, and joins the failures on the
+  follow-up queue. Attempts silent past a threshold a deployment names can be
+  chased too; this does not guess the threshold.
+
+  A contact inside its quiet hours is held rather than dropped, and
+  `releaseHeld()` re-checks consent before sending, so a hold cannot become a
+  way past a withdrawal. One notice reaches one address once, enforced by a
+  partial unique index and handled as idempotence rather than a conflict. When
+  nothing can be sent at all, a `patient-contact` task opens on the unassigned
+  queue — a patient nobody could reach is somebody's job, not a row on a list.
+
+  The words that go out are the same for every kind: the clinic has an update,
+  sign in to read it. No kind, no summary, no identifier, and the outbound
+  message is not tagged with the patient it concerns, so an address and a
+  chart are never put together in the outbound log. "You have a new result" on
+  a lock screen is clinical information arriving through the feature built to
+  send none.
+
+- **Reading a notice in the portal is recorded separately from delivering
+  it.** A patient signing in and looking is the strongest evidence available
+  and it is about a person, where a gateway's opinion is about a phone. It
+  deliberately changes no delivery state and does not set `told`, which stays
+  a human writing down that they spoke to somebody.
+
+- **`GET /me` is a patient and caregiver application, not chrome.** The
+  `/patient/*` OAuth API was already complete and already tested; what was
+  missing was something to use it with. `/me` now signs in, switches between
+  the charts a caregiver holds, and has screens for results, appointments,
+  medications, messages, care team, access history and access/correction
+  requests — each with its own loading, error and empty state.
+
+  Nothing underneath it changed: no new patient route, no new permission, no
+  relaxation of a grant check. If the portal can see it, an authorised `curl`
+  could already see it.
+
+  Whose chart is being viewed sits in a band above the content on every
+  screen, with the relationship beside it and a proxy grant marked as one. A
+  tab the grant does not cover is not drawn, and the router will not route to
+  one either, so a pasted URL cannot reach a screen the grant does not cover.
+  A held result renders as held with the clinician's reason and the expected
+  date; the API sends no value for one, so there is nothing to leak. A grant
+  that expires or is revoked while a tab is open produces a sentence saying
+  the chart is no longer shared, not a blank screen.
+
+  English and French, both complete — a test compares the two key sets and
+  fails on a string that exists in one. Landmarks, a skip link, visible focus,
+  labelled controls and a live region. One file, no framework, no CDN, a
+  20-second request timeout: satellite and cellular links are the ordinary
+  condition this is deployed into, and a blocked CDN is a blank page. **No
+  browser-driven test and no assistive-technology test**, so no WCAG or AODA
+  claim — see `docs/PROVINCIAL.md` §20.
+
+- **A development identity provider, for demonstrating the portal without
+  production credentials.** `NORTHSTAR_DEV_IDP=on` runs a synthetic issuer at
+  `/dev-idp`. Northstar stays a resource server: there is no branch in the
+  gate for development, and its tokens are validated over JWKS exactly as a
+  real provider's are, so what a demo exercises is the production path with a
+  different issuer behind it.
+
+  It refuses to start beside `NORTHSTAR_OIDC_ISSUER` rather than warning; its
+  signing key is generated at boot and never written down; and it lists only
+  subjects that already hold a live grant, so it cannot create authority that
+  a named clerk did not. `node scripts/portal-demo.ts` seeds synthetic people,
+  a released result and a held one. See [The patient
+  portal](docs/RUNBOOK.md#the-patient-portal).
+
+- **`docs/PATIENT-WORKFLOWS-ROADMAP.md`** classifies items 58–67 against the
+  repository with file references. An earlier version of this entry claimed
+  item 67's premise was wrong — that it assumes small-cell suppression
+  exists to be reused, and it does not. That claim was itself wrong: a
+  working `src/population/release.ts` predates this roadmap, found on
+  closer look while starting item 64's routes above. The correction is
+  recorded in full in the roadmap doc's item 64 and item 67 sections.
+
+- **`npm run invariants` checks the database against what it is supposed to be
+  true of itself.** The schema declares no foreign keys, so
+  `PRAGMA foreign_keys = ON` enforces nothing; the tenant boundary is a column
+  every query is expected to name rather than a database. Both are held up by
+  application code, and the structural test that reads the source can only say
+  the queries written so far are scoped — not that the rows obey it. A restore
+  that merged two sites' snapshots, an edit outside the engine, or a one-off
+  migration script produces a database no source scan can speak for.
+
+  The inspection reads the data: every row carries a tenant, every populated
+  reference resolves, and it resolves inside its own tenant. An orphan and a
+  reference resolving under another custodian are different findings, because
+  one is data loss and the other is a disclosure. It is read-only, so it runs
+  against a live node or against a snapshot before restoring it, and exits 1
+  on a violation and 2 on a check it could not evaluate — because an
+  unevaluated check is not a pass. See [The database contradicts
+  itself](docs/RUNBOOK.md#the-database-contradicts-itself).
+
+- **A hazard identifier can no longer be spent twice** (`npm run hazardcheck`,
+  run by CI on every pull request). Identifiers are allocated by taking the
+  highest in the log and adding one, which is a counter with nobody holding
+  it: two branches taken from a log ending at H-162 both allocate H-163, and
+  each is perfectly consistent on its own — no duplicate, no gap, nothing for
+  the existing guards to see. The collision exists only between them.
+
+  What happens at the merge is the part worth preventing. If the two rows
+  land on adjacent lines, git offers them as alternatives, which is a menu
+  with no right answer: keep both and two rows share an identifier, so a
+  control traced to H-163 is traced to whichever a reader finds first; keep
+  one and a hazard is *gone* from the safety case — its analysis, its control
+  and its evidence — leaving a log that still reads as clean, gapless and
+  duplicate-free, with the missing row missing the way an unwritten row is
+  missing. Nothing caught that second case. If instead the rows land far
+  enough apart to merge cleanly, the duplicate arrives silently and surfaces
+  later on a branch nobody is watching.
+
+  The check compares a revision against two references, because the two
+  questions need different ones: a **rename** is judged against the base
+  branch's tip, since a number meaning different things on the two sides is a
+  collision whenever the tip acquired it; a **removal** against the point the
+  branch was taken, since an identifier the tip gained afterwards is
+  *expected* to be absent. A first version asked both against the tip and
+  reported six hazards as deleted that were merely newer than the branch.
+
+  A hazard's cause, control and evidence are expected to be refined in place
+  and none of that is checked. Its name is its identity.
+
+- **Placed orders now leave for the laboratory on their own.** The dispatch
+  sweep existed but nothing called it. It now runs inside the engine on a
+  timer: default every minute, `NORTHSTAR_ORDER_DISPATCH_INTERVAL_MS` to
+  change it, `0` to send only when somebody presses
+  `POST /api/clinical/order-send`. An order placed in clinic reaches the
+  laboratory over MLLP, and the acknowledgement lands back on the order,
+  with nobody pressing anything.
+
+  Wiring a sweep to a clock is three questions a function nobody calls never
+  has to answer, and two of the answers are safety controls:
+
+  - It sends only for **active** tenants. Suspension stops credentials at the
+    gate, and a timer is not at the gate — without this, a suspended
+    custodian's orders would keep being transmitted to a laboratory on behalf
+    of an organisation whose relationship with the patient has ended. Hazard
+    H-168.
+  - It sends only through a `lab-order` destination on an **enabled** channel.
+    A reading station runs a full engine over a restored copy of the primary's
+    database, with every channel disabled at fill time so it does not become a
+    second engine (H-39). A sweep that ignored that flag would resend every
+    placed order in the snapshot from a machine that is not the record.
+    Hazard H-167.
+  - With **two** `lab-order` destinations it sweeps neither and says why. A
+    route names its laboratory as a label a human wrote; a channel names its
+    destinations as queue identifiers; nothing maps one to the other. That is
+    invisible with one laboratory and arbitrary with two, and a requisition
+    delivered to the wrong laboratory is a disclosure rather than a delay.
+    Hazard H-169.
+
+- **Properties that hold across every instrument, not just the thresholds
+  somebody wrote down.** A risk score is a sum of things that make a patient
+  worse, so finding one more of them cannot make the total smaller — a
+  constraint no individual boundary test states, and one an implementation can
+  violate while passing all of them. Adding any positive criterion, stepping
+  any graded criterion up, and moving any numeric criterion in its declared
+  direction of risk are all asserted never to lower a score, across all ten
+  instruments. Structural properties come with them: an additive score equals
+  the sum of the components it publishes, a score is a function of its input
+  alone, removing any one required input withholds the number entirely, and a
+  higher total never lands in a safer band. Where the shape genuinely bends it
+  is named rather than skipped: NEWS2 scores derangement in both directions,
+  so its respiratory rate, blood pressure, heart rate and temperature are
+  asserted to *be* U-shaped, and MELD-Na's components are asserted not to sum,
+  because they are the working of a logarithmic formula rather than addends.
+  These establish implementation behaviour only; the last test asserts the
+  assurance state is still unreviewed, with no clinical owner and no review
+  date. Hazard H-156.
+
+- **Every clinical score is disabled until somebody accountable approves it
+  here.** Correct arithmetic is not permission to act on the number: an
+  instrument derived in one population, implemented from a paper and never
+  looked at by anybody at this site is a calculator, and a calculator wired
+  into a chart returning a band and an interpretation is indistinguishable at
+  the point of care from a decision somebody stands behind. `score_approvals`
+  records that decision, and its absence is the default — the empty table is
+  the safe state, not an unconfigured one.
+
+  Nothing can be invented. The review date is supplied and never computed from
+  an interval, because a date the system picked is not a commitment anybody
+  made. The clinical owner must resolve to a practitioner the tenant's own
+  directory holds and has not retired. A reason of at least twelve characters
+  is required to approve or to disable — the same bar as breaking the glass.
+  The operator who records the decision is a separate column from the
+  clinician who owns it, because they are usually different people and a
+  record that conflates them can answer neither question afterwards.
+
+  An approval stops being one in four ways, each disabling the score and none
+  of them self-clearing: it passes its review date, the implementation version
+  it was granted for stops matching the arithmetic the build runs, its owner
+  is retired, or somebody withdraws it. `ScoreGovernance.expiring(withinDays,
+  asOf)` reports what is due and what is already past; reading it renews
+  nothing. The table is append-only, so a withdrawal supersedes an approval
+  without erasing it and "who allowed this, and what did they know" survives
+  the reversal. Approvals are tenant-scoped, so one site's decision cannot
+  enable another's score. `POST /api/clinical/score` and `/score/v2` refuse
+  with 403 unless a decision in force permits use, and there is deliberately
+  no route that enables more than one score at a time. Hazard H-159.
+  1061 tests.
+
+- **A registry for every standard this deployment claims to conform to.**
+  The conformance packs under `conformance/` are hand-written and say nothing
+  about their own provenance: which published release they came from, at what
+  version, or whether the bytes have changed since. Every implementation
+  guide, terminology release, security profile and schema is now recorded
+  with its canonical URL, package identifier, exact version, FHIR version,
+  licence, publication status and a checksum, and nothing is in force until
+  an operator activates it with a written reason.
+
+  `checksumVerified` is the column that carries the weight: a hash copied
+  from a release note proves the release note said it, so the flag is set
+  only by hashing an artifact actually in hand. Activation in production is
+  refused when the checksum is unverified, when the publication status is
+  ballot, draft or unknown, or when the version names a moving target such as
+  `current` — each being a reason the claim cannot be checked later. An
+  operator may override in writing; the reason is recorded on the row and
+  appears beside the package everywhere it is read, including on the
+  generated conformance page. The database keeps at most one active version
+  of a package per tenant, because two versions of one guide in force at once
+  is a question nobody can answer about which rules applied to a resource.
+
+  The public conformance page is generated from the registry rather than
+  written by hand, so it cannot drift from what is installed, and it carries
+  each package's outstanding caveats rather than only the claim.
+
+- **`docs/STATE_OF_THE_ART_ROADMAP.md`**, recording for each target standard
+  the current capability, the exact version intended, implementation status,
+  the evidence behind it, the external validation still required, and the
+  rollback path. Nothing in this repository may promote a capability past
+  `SELF_TESTED`; the two statuses above it record events that happen outside
+  this codebase.
 
 - **Governed provenance for every clinical risk score.** A result now carries
-  the exact instrument and Portage implementation versions, original source,
+  the exact instrument and Northstar implementation versions, original source,
   intended population, exclusions, required units, calculation time and a
   copy of the supplied inputs. The assurance state is deliberately machine
   readable and unresolved: source-linked golden vectors exercise the
@@ -63,7 +1053,955 @@ always forward-compatible and run automatically on open — see
   the historical 2016 OPTN formula, not current MELD 3.0, and NEWS2 implements
   Scale 1 only. `test/score-provenance.test.ts` requires one governed
   definition and one source-linked vector per scorer and keeps those caveats
-  attached to the API result. Hazards H-108 through H-110.
+  attached to the API result. Hazards H-139 through H-141.
+
+- **A measurement contract, so a score knows what scale its numbers are on.**
+  `POST /api/clinical/score/v2` takes a value together with its UCUM unit —
+  `{ "value": 98.6, "unit": "[degF]" }` — instead of a bare number whose unit
+  was spelled into the parameter name (`temperatureC`) and restated as prose
+  in the catalogue, with nothing comparing either to what the caller sent.
+  Equivalent labels are accepted unchanged: `Cel`, `°C` and `degC` are one
+  scale, and refusing `mmHg` where UCUM writes `mm[Hg]` would be pedantry with
+  a clinical cost. A real conversion — Fahrenheit to Celsius, hours to days,
+  µmol/L to mmol/L — happens once at the ingestion boundary, never inside a
+  scorer, and is returned with the score so the arithmetic can be checked
+  rather than trusted. A mismatch needing a fact about the substance rather
+  than the units is refused, not guessed: bilirubin in µmol/L against a mg/dL
+  threshold needs a molar mass, and BUN in mg/dL is not urea in mmol/L.
+  v1 is unchanged and still supported. The chart is the other ingestion
+  boundary and now has the same check: a vital recorded in a convertible unit
+  is converted and shows its working, one in a unit that cannot be read is
+  reported unavailable like a stale value, and one recorded before this
+  contract — carrying no unit at all — is used, with the evidence saying the
+  record stated no scale rather than implying one was checked. Hazards H-144
+  and H-145, and H-140's control is now enforced rather than declared.
+  1025 tests.
+
+- **A domain for every score input, distinct from the instrument's
+  thresholds.** A supplied value that no measurement could have produced —
+  a negative age or length of stay, a saturation outside 0-100, a CIWA-Ar
+  item of 3.5, `NaN` from a caller's own arithmetic — now refuses with a 400
+  naming the value and the domain, before any arithmetic and before the
+  missing-input check. It previously joined the missing-input list, which
+  reported a caller defect as a clinical data gap and sent somebody to
+  collect a measurement that was never absent. Absent inputs are unchanged:
+  `undefined` and `null` still refuse as missing, and a criterion stated
+  absent still scores zero. Domains are keyed by input name, so `ageYears`
+  cannot mean one thing in CURB-65 and another in HAS-BLED, and are
+  definitional rather than clinical — a percentage cannot exceed 100, a
+  count cannot be fractional, nothing is colder than absolute zero — so no
+  bound here can move a real patient between bands. Blood pressures, heart
+  and respiratory rates and laboratory concentrations are deliberately
+  unbounded above, because implausibility is a judgement about a patient
+  rather than a fact about a unit. Below, on and above probes now cover every
+  numeric criterion and band edge in all ten instruments. Hazards H-142 and
+  H-143. 962 tests.
+
+- **An order placed here is no longer assumed to be with a laboratory.**
+  `OrderStore.place()` wrote `status = 'placed'` and recorded an event.
+  Nothing sent the requisition anywhere, because until an outbound ordering
+  interface exists there is nothing to send it to. The chart showed "placed",
+  the worklist showed it awaiting a result, and `awaitingResult()` would
+  eventually list it as overdue — which reads as a slow laboratory. The
+  laboratory had never heard of it.
+
+  This is the third silence, and the earliest: `orders.ts` opens on an order
+  never resulted and a result never read, and this one comes before both. It
+  is also worse than the dispense silence it resembles. A prescription with no
+  dispense record may still have been collected; the pharmacy may simply not
+  report. Here *we* are the sender, so the absence is not ambiguous and not
+  somebody else's — it is ours, and it is knowable.
+
+  Transmission is now its own fact. A site declares per category whether
+  orders leave and to whom, with a detail saying how or why not, so "we print
+  the requisition" is distinguishable from "the interface is stuck" — the two
+  call for opposite actions and rendered identically before. Each attempt to
+  hand an order over is appended, never updated, and **only an acknowledgement
+  from the far end means a laboratory holds the order.** Sent, rejected and
+  failed each say what they are instead: a rejection says the order is not
+  with them and needs correcting; a transport failure says to treat it as not
+  sent. The state rides on the order row rather than being a second call a
+  caller has to remember, because a guarantee that depends on every screen
+  remembering holds until one screen forgets.
+
+  `notWithFiller()` lists placed orders no laboratory has acknowledged. On a
+  site with no outbound interface that is every open order, which is the
+  correct and uncomfortable answer.
+
+  `GET /api/clinical/order-transmission`, `GET
+  /api/clinical/orders-not-with-filler`, `POST
+  /api/clinical/order-transmission-record`, and `GET`/`POST
+  /api/orders/routing` — the last kept out of `/api/clinical/` because it
+  serves site configuration rather than patient data. Hazards H-128 to H-131.
+
+  This is the honesty half; the message that does the telling is below.
+
+- **The outbound order message** (`src/orders/outbound.ts`). `buildOml()`
+  turns a placed order into an OML^O21 a laboratory's engine will accept, or
+  says exactly what stopped it and builds nothing.
+
+  The module is built around refusing, because the dangerous failure here is
+  not a rejected message. A blank patient identifier is rejected, and somebody
+  fixes it. A *plausible* one is accepted and matched, and the specimen is
+  drawn against somebody else's chart with nothing raising an error. So the
+  assigning authority must be declared on the profile and the patient must
+  carry an identifier under it; a birth date is required because it is what a
+  laboratory verifies against, and names are not unique in a community of four
+  hundred people; the timezone is declared rather than read from this machine,
+  since a server in one zone sending for a clinic in another is ordinary in the
+  north. A draft is refused — a draft is a clinician thinking, and sending it
+  books a collection for a test nobody ordered — and so is a cancelled order.
+  Every missing field is reported at once, because an integration analyst
+  commissioning an interface wants one list rather than five round trips.
+
+  Building and sending are separate, so a message can be produced and shown to
+  a laboratory's analyst during commissioning without anything reaching a wire.
+  That is exactly how the first conversation with Dynacare or LifeLabs goes.
+
+  Hazards H-132 to H-134.
+
+- **Orders are sent, and the acknowledgement is correlated** (`src/orders/send.ts`).
+  The piece that makes the rest of this move: build, hand to the transport,
+  read what came back, record it. Every step can fail in a way that must not
+  read as success, so each has its own outcome — a refused build records
+  nothing at all ("we tried and the line was down" and "we never had enough to
+  send" are different conversations), a throwing transport is `failed` which
+  reads as *not sent*, and a negative acknowledgement is `rejected`.
+
+  The attempt is written down **before** the send. A process dying between the
+  socket and the database would otherwise leave an order reading as never sent
+  while a laboratory holds it, and a clinician resending produces two
+  requisitions for one specimen.
+
+  `interpretAck()` checks MSA-2 before MSA-1. That is the field an
+  implementation skips: MSA-1 says *an* acknowledgement was positive, and only
+  MSA-2 says it was about **this** message. Acknowledgements arrive on
+  connections carrying other traffic and a slow far end answers a previous
+  message after this one went out — so a perfectly positive AA carrying
+  somebody else's control id is `failed`, never `acknowledged`. A code the
+  parser does not recognise is not assumed positive either, and a commit
+  accept says it is one, because holding a message is not accepting an order.
+  Hazards H-135 and H-137.
+
+- **The laboratory is told when an order is cancelled** (H-136). `cancel()`
+  set the order to cancelled here and nothing told anyone. A laboratory that
+  acknowledged it still held the requisition, so the specimen was still
+  collected, the test still run, and a result came back for a test the chart
+  said nobody wanted — against a patient who may have been told it was called
+  off.
+
+  That is the original problem mirrored. The first was the record claiming a
+  laboratory had something it did not; this is a laboratory having something
+  the record says it does not, and it is the more urgent of the two because it
+  ends with a needle.
+
+  Cancellation goes as ORC-1 `CA` naming the same placer order number, since a
+  cancellation naming a different requisition cancels nothing. Its
+  acknowledgement is tracked separately from the order's, because an order can
+  be acknowledged *and* its cancellation unsent — the dangerous combination,
+  and the one that reads as fine if you only ask once.
+  `cancelledButStillWithFiller()` lists every order cancelled here that no
+  laboratory has confirmed withdrawing. A cancellation is refused for an order
+  nobody cancelled, which would stop a test somebody is waiting for.
+
+- **Ask-at-order-entry, and the answer that is never invented**
+  (`LabProfile.askAtOrderEntry`, `OmlContext.aoeAnswers`). A laboratory
+  requires certain questions answered before it will run certain tests —
+  fasting status, last menstrual period, a weight for a creatinine clearance.
+
+  It looks like paperwork and is not. A glucose reported against a fasting
+  reference interval when the patient had breakfast is a **wrong** result
+  rather than a missing one: the number is real, the interval is real, and the
+  pairing is false. Nothing in the specimen records whether anybody ate, so
+  neither the laboratory nor the chart can detect it afterwards.
+
+  That makes the accommodating implementation the dangerous one. Defaulting
+  "fasting: no" produces an order that sends cleanly and a result that files
+  cleanly, with the reference interval chosen by a program rather than by a
+  patient. So an unanswered required question stops the order, listed
+  alongside every other missing field, and whitespace is not an answer.
+
+  Questions are declared per test code on the laboratory's own profile rather
+  than inferred from the code: a potassium that demanded a fasting answer would
+  train people to answer without reading, which is how the answers that matter
+  stop being read. Only declared questions are sent, and an answer to a
+  question this laboratory did not ask is dropped rather than smuggled
+  through — an unasked observation invites an interpretation this end cannot
+  predict. Answers ride as OBX after the OBR they qualify, and an unanswered
+  optional question sends no segment at all, because an OBX with an empty
+  value asserts that somebody answered and said nothing.
+
+  Hazards H-146 and H-147.
+
+- **Placed orders go out on their own** (`src/orders/dispatch.ts`, the
+  `lab-order` destination). A sweep finds orders nobody has sent, builds each,
+  and puts it on **the ordinary delivery queue** — the same one carrying every
+  other outbound message, with its retries, its ordering and its dead-letter
+  queue. A second queue beside that one would be a second thing to monitor and
+  a second set of failures nobody had seen before.
+
+  The acknowledgement comes back to the order it answers: the destination
+  correlates it by MSA-2 before believing it, records the outcome, and treats a
+  refusal as permanent so a requisition the laboratory has already rejected is
+  not resent — each retry would write a fresh rejection onto the chart.
+
+  **The enqueue and the record of that handover commit in one transaction.**
+  Two writes would leave a window where a crash puts an order on the queue that
+  still reads as never sent, and the next sweep enqueues it again. That is not
+  a duplicate message; it is two requisitions for one specimen — two
+  collections booked, or a patient drawn twice, or a result reported against an
+  order the clinician cannot find.
+
+  Only orders that have gone nowhere at all are swept. Rejected and failed are
+  answers somebody has to read, not conditions to retry silently. An order that
+  cannot be built is reported with its missing fields and left where it is
+  visible, rather than queued to dead-letter; the sweep runs again, so one that
+  could not be built this morning goes out this afternoon once the answer is
+  recorded, with no intervention.
+
+  Hazards H-164 to H-166.
+
+- **A message the far end refused is no longer retried** (H-156,
+  `PermanentFailure`). Every delivery failure was treated as transient, so a
+  message rejected with an HTTP 4xx, or answered `AE`/`AR` by a receiving
+  application, went round the whole backoff schedule before dead-lettering.
+  The same bytes get the same answer, so none of those attempts could succeed.
+
+  The cost that matters is not the wasted attempts. **An ordered destination
+  stops at a blocked head**, so one permanently rejected message held up every
+  message queued behind it for the full retry cycle — results and
+  registrations arriving late because of a message that was never going to
+  land — and delayed the dead letter a human has to act on by the same amount.
+
+  A failure that would fail identically on a retry now dead-letters on the
+  first attempt, and the dead letter says it was not retried and why, since a
+  dead letter with one attempt on it otherwise reads as a retry loop that
+  failed to run. Transient failures keep the existing backoff: 5xx, timeouts,
+  refused connections, and the two 4xx statuses that explicitly ask to be
+  retried — 408 and 429. Reading a rate limit as permanent would discard a
+  message a retry would have delivered.
+
+- **The outbound order path is reachable** (`POST /api/clinical/order-send`,
+  `POST /api/clinical/order-cancel-send`). Four merged changes built a message,
+  a transmission model, an acknowledgement reading and a cancellation, and
+  nothing could call any of it: every order read as "not sent" and was,
+  correctly and permanently, because there was no way to send one.
+
+  The route declaration now carries what a send needs — endpoint, the four MSH
+  identities, the clinic's timezone offset and the laboratory profile — and
+  **all of it is checked when the declaration is made, not when somebody
+  presses send.** A route that promises to carry orders and cannot is a promise
+  the record makes on a site's behalf, and the moment it is discovered should
+  not be the moment a specimen is sitting in a fridge. A site that has declared
+  it does not transmit needs none of it and is not made to invent an endpoint.
+
+  **The connection is read from the declared route, never from the request.**
+  The caller names the order, and may supply ask-at-order-entry answers and
+  specimen detail; it may not name a destination. Anybody who could would be
+  able to direct a named patient's requisition, with their identifiers and
+  clinical indication, to a host of their choosing. A route naming a profile
+  that is not loaded refuses rather than falling back to a generic reading,
+  because a message built against a guess is the failure the profile exists to
+  prevent.
+
+  Sending is an access to the chart — the message is built from it — so it goes
+  through the same patient-directive check as any other read, and is audited
+  either way, with the acknowledgement outcome in the detail.
+
+  Hazards H-153 to H-155.
+
+- **The specimen travels with the order, when there is one** (`SpecimenDetail`,
+  SPM on the outbound message). Type, collection time, tube identifier and
+  source site.
+
+  The design decision is the absence. Most orders are placed before anybody
+  draws anything — the clinician orders now, phlebotomy happens later — so an
+  order at that moment has no specimen, and **no specimen means no segment**.
+  The accommodating implementation invents one, filling the collection time
+  with the order time or with now because it makes the message look complete.
+
+  That invention is dangerous in a specific way: a timed test is defined by
+  when it was drawn. A vancomycin trough drawn an hour after the dose is not a
+  trough; a cortisol at four in the afternoon is not a morning cortisol. The
+  value is interpreted against the time, so a stamped-wrong time produces a
+  valid-looking result for a test that was never performed as ordered, and
+  nothing downstream can recover the difference from the tube.
+
+  So a collection time is never defaulted; a specimen asserted without a type
+  or a time refuses the message; a time that is not a time refuses it; and a
+  time later than the moment of sending refuses it, because that is a typing
+  error and forwarding it makes it the time the result is read against. A time
+  *earlier* than the order is accepted — drawing first and entering the order
+  afterwards is ordinary practice. Optional fields stay absent rather than
+  empty: a tube with no barcode is real, and an empty field asserting "no
+  source site" is a different claim from not saying.
+
+  Hazards H-151 and H-152.
+
+- **A patient summary that can leave the building.** `POST
+  /api/clinical/patient-summary-export` produces a FHIR document bundle shaped
+  after the International Patient Summary, with a manifest and a signature
+  binding the two. Distinct from `/patient/summary`, which is a patient
+  reading their own chart and is unchanged.
+
+  The point is what an empty section means somewhere nobody can ask a
+  follow-up question. An empty allergy list can mean the patient has none,
+  that nobody asked, that somebody asked and the answer is unknown, that a
+  directive withholds it, or that this system holds no such record — five
+  facts that render identically, where a reader supplies the most comfortable
+  one. Each empty section now carries a coded `emptyReason` and, because the
+  mapping to FHIR's vocabulary is lossy, this system's own word beside it. A
+  status the mapping does not recognise becomes `unavailable`, never
+  `nilknown`: a state added later must not silently assert that a patient has
+  none of something.
+
+  The manifest states what is not known as well as what is. Terminology
+  release versions are reported as `unrecorded`, because `term_concepts`
+  stores a system and a code and nothing about which release they came from —
+  omitting the field would let a reader assume they had been checked. It names
+  the profile pack that validated the document and says that passing a
+  working-subset pack is not conformance, lists the implementation guides the
+  conformance registry holds active, and states that the document is *not*
+  IPS-conformant: no IPS package has been fetched and nothing has been
+  validated against the published profiles.
+
+  Export refuses without `NORTHSTAR_SUMMARY_SIGNING_KEY`. An unsigned summary
+  cannot be told from one edited after it left, and this is the copy that
+  leaves. Verification catches either half being altered.
+
+  **PS-CA is not implemented.** The specification for this work referred to an
+  official Canadian package supplied to the project; none was supplied. The
+  existing `conformance/ps-ca.json` remains what it says it is — a hand-written
+  working subset — and no Canadian conformance is claimed from it.
+
+- **FHIR Provenance, kept distinct from the audit trail.** `audit_events` is
+  hash-chained and answers who reached a record and whether they were allowed
+  to. It is the wrong shape for the question asked after something goes wrong
+  about the data rather than the people: where did this value come from. An
+  audit row can say a laboratory feed wrote something at 04:12; it cannot say
+  this potassium was produced by mapping version 3 from message 8812, or that
+  this entry arrived in a migration rather than from a prescriber.
+
+  Every persisted FHIR write now records lineage — the target and the version
+  it produced, the activity, the actor and organization where one was stated,
+  the source message or resource, and the transformation or clinical rule with
+  its version. `GET /fhir/Provenance?target=Type/id` returns it as FHIR
+  resources, and the lineage survives the resource being overwritten, so a
+  superseded value's origin is still reconstructable after a correction.
+  `forSource` answers the other direction: everything one bad feed produced.
+
+  Two decisions worth naming. A write nothing described is recorded as
+  **unattributed** rather than attributed to whoever was nearby — a lineage
+  naming the wrong author is worse than one admitting it does not know,
+  because the first is believed. And a redelivery of identical content records
+  **nothing further**, so a replayed message does not make one result look
+  like two reports of the same value.
+
+  Provenance is deliberately not hash-chained. The audit trail is chained
+  because its claim is that nothing was removed from it; provenance makes no
+  such claim, and chaining it would imply a completeness guarantee that a
+  write path recording none would quietly break.
+
+- **A FHIR search can be scoped to one chart.** `fhir_resources` recorded a
+  resource's type, id and JSON and nothing about whose record it was, so the
+  only way to answer "everything about this person" was to read every row and
+  parse it. The patient reference is now lifted out at write time into a
+  column, with `?patient=` on the search and a matching index.
+
+  What its absence means is the load-bearing decision: a row whose patient
+  could not be determined is **excluded** from a patient-scoped search, never
+  included. Null is not a wildcard. If the extraction misses a reference
+  spelling the result is a record that fails to appear — visible and
+  conservative — rather than one appearing on the wrong chart. An unscoped
+  search is unchanged, so nothing an existing caller sees is narrowed, and the
+  unattributed resource is still readable there rather than silently gone.
+
+  Databases written before the column gain it on open and the references are
+  recovered from the stored JSON, which is the only place they ever were. The
+  backfill is idempotent and leaves a resource it cannot attribute alone
+  rather than guessing at one.
+
+  The patient-facing surface is deliberately not this: a patient or proxy is
+  still served by `/patient/*`, where an authority grant is checked per chart.
+  This scoping is for staff and system callers already authorised broadly, so
+  there is one boundary to get right rather than two.
+
+- **FHIR search pagination.** `_count` (bounded to 100) and `_offset`, with
+  `Bundle.link` carrying self, next and previous, so a client can page without
+  constructing URLs itself.
+
+- **The capability statement claims an implementation guide only where the
+  conformance registry says that guide is in force.** `instantiates` is
+  generated from the active packages rather than written literally, so the
+  statement cannot name a guide the deployment never installed — the same
+  failure as a hand-written conformance page, in the artifact a partner reads
+  first.
+
+**Fixed**
+
+- **The portal's appointments screen showed an em-dash and nothing else.**
+  `GET /patient/appointments` served the store's `{ booking, slot }` pairs,
+  and `screenAppointments` reads `startsAt`, `service`, `resourceId` and
+  `status` off the row. All four were `undefined`, so `fmtDate(undefined)`
+  made every card heading `"—"` and the meta line filtered down to empty.
+
+  A patient could see *that* they had appointments and not when, where, with
+  whom, or whether one had been cancelled — on the screen whose only job is
+  to say when to come in, and at a clinic where the answer may be "the plane
+  on Thursday". It rendered cards rather than an empty state, so it did not
+  look broken either.
+
+  The payload is now flattened to what the screen reads, and narrowed while
+  it was being written. The pair carried every column of both rows, so a
+  patient was also being handed `booked_by`, `correlation_id`, `referral_id`
+  and `cancelled_by` — staff identifiers and internal bookkeeping they never
+  asked for.
+
+  Nothing caught this because every test on the route asserted a status
+  code, and 200 is what a broken payload returns too. The tests added here
+  assert what the screen puts in front of somebody: that the heading is a
+  date and not the placeholder for not having one, that a row carries an id
+  something can be attached to, and that no bookkeeping key appears at any
+  depth. The fixture is part of the story — its docstring said "and an
+  appointment" and it booked none, so there was never an appointment to
+  assert about.
+
+- **An offer nobody answered could be accepted months later, and the work
+  vanished from both lists.** A handoff proposal had no lifetime: `accept`
+  checked only that the status was still `proposed`. So a clinician offers a
+  follow-up, hears nothing, sees it sitting unaccepted and deals with the
+  patient themselves — and months later the other clinician clears an old
+  notification, accepts, and the item leaves the proposer's list for somebody
+  with no memory of the offer. Neither of them is watching it after that.
+  Measured on an offer backdated 245 days: accepted cleanly, owner moved,
+  proposer's inbox emptied. Hazard H-208.
+
+  A proposal now lapses a week after it was made, and the refusal says how
+  old it is and to offer it again. Lapsing is computed from `proposed_at` and
+  never written, so as with coverage there is no sweep whose failure would
+  leave March's offer live in November.
+
+  It narrows what can be accepted and nothing else: accountability stays with
+  the proposer, which is where it has been all along — and that is what makes
+  a default window safe here where coverage refuses one. Coverage with no end
+  *extends* somebody's responsibility, so a human has to name the date.
+  Declining and withdrawing still work on a lapsed offer, because accepting
+  is the only answer that moves work, and a system that would not let anybody
+  close a stale offer leaves the board carrying it forever.
+
+- **A clinician on leave kept the results nobody was watching.** The handoff
+  record decides whose worklist an item is on, but each store has to consult
+  it, and nothing failed when one did not. `TaskStore.inbox` consulted it;
+  `OrderStore.unacknowledged` and `PatientMessaging.inbox` filtered their own
+  owner column directly.
+
+  So a clinician who transferred their patients and went on leave kept every
+  outstanding result on their orders, and every reply they owed a patient,
+  while the colleague who had accepted accountability saw none of it.
+  Measured before the fix, with one transfer accepted and a potassium of
+  7.1 reported: `unacknowledged` returned **1 for the clinician on leave and
+  0 for the one who was there**. The result is not lost, unacknowledged or
+  overdue in any report — it is addressed to somebody who is not coming in.
+  Hazard H-207.
+
+  Both now answer through the record, and the owner column is left recording
+  who the work started with. `responsibleFor()` joins `heldBy()` and
+  `accountableFor()` as the single answer callers should ask for.
+
+  The second of those two was found by the guard rather than by hand.
+  `src/work/ownership.ts` names every owner column in the schema as routed or
+  excused with a written reason, and `test/ownership-routing.test.ts` checks
+  all three claims against the schema and the source: an unlisted column
+  fails, a claim to route that nothing consults fails, and an excuse fails the
+  moment a SELECT filters a worklist by that column. That last check failed on
+  its first run against `PatientMessaging.inbox` — which this change had
+  already excused, in writing, with a reason that was not true.
+
+- **The first operator key is issued under the development identity provider
+  too.** It was issued only on the `apikey` path, so a demo came up with a
+  working portal and no way into the clinic side of it — which is half the
+  journey, and the half that shows the patient's question arriving on the
+  worklist. The boot banner also reported `NORTHSTAR_AUTH_MODE` rather than
+  what was actually enforcing.
+
+- **The tenant-isolation scan was reading 4 of the 81 statements in `db.ts`.**
+  It stripped comments with one regex and matched strings with another, and
+  neither knows whether a character is inside a string. `SCHEMA` contains the
+  SQL comment `-- The conformance packs in conformance/*.json`; that `/*`
+  opened a block comment as far as the stripper was concerned, the nearest
+  close was 270 lines below, and blanking everything between took the
+  backticks delimiting `SCHEMA` and `INDEXES` with it — so every string
+  boundary in the file from there on was off by one, and code was read as
+  string content and string content as code.
+
+  The effect was that the test its own header calls "the test the isolation
+  actually rests on" had never read the schema or the core query layer, and
+  reported no offenders, which is what a check that reads almost nothing looks
+  like from outside. There is one scanner now: a single pass that tracks
+  whether it is in a line comment, a block comment, or a string of each kind,
+  and follows `${…}` so a nested template literal does not end the outer one.
+  A statement that builds its table name is now held to the same standard as
+  an unscoped one, since a scan that cannot read the table name cannot vouch
+  for it, and a floor on the statement count in `db.ts` fails loudly if the
+  tokenizer loses its place again.
+
+  With the whole file visible there was exactly one statement to declare — the
+  schema rebuild, which copies a table and so genuinely crosses every tenant.
+  The code was clean; the check could not see it.
+
+- **One MLLP frame could hold the engine's only thread for days.** `parseHl7`
+  trimmed trailing carriage returns with `.replace(/\r+$/, "")`, which is
+  quadratic when a non-CR character follows the run: the engine restarts the
+  greedy match at every position in it and `$` fails every time. Measured, 20k
+  carriage returns took 325ms and 400k took 130 seconds; the MLLP frame limit
+  is 16 MiB and MLLP has no authentication. The trim is gone rather than
+  rewritten — the empty-segment filter on the next line already removed exactly
+  what it removed, linearly.
+
+- **`\X..\` with a payload that is not hex no longer becomes a NUL.**
+  `parseInt("zz", 16)` is NaN and `String.fromCharCode(NaN)` is U+0000, so a
+  malformed escape put a NUL character inside a name or an identifier — stored
+  by SQLite, serialised by JSON, and unequal to the string anybody typed ever
+  after. A payload that is not an even number of hex digits is now left exactly
+  as it arrived, like every other escape the decoder does not know.
+
+- **An impossible date is no date.** `hl7DateToIso` reformatted whatever digits
+  it matched, so `20261301` became `2026-13-01` and `20260231` became
+  `2026-02-31` — Invalid Date to every reader downstream, out of a field that
+  looks populated. The month, the day against that month in that year, and the
+  clock are checked; anything impossible returns the empty string this function
+  already used for "no usable date". Offsets are still dropped, which is
+  deliberate and documented.
+
+- **An acknowledgement no longer carries fields the sender put there.**
+  `buildAck` escaped everything it copied from the received message except
+  MSH-10, MSH-9.2, MSH-11 and MSH-12, and `getHl7` returns values already
+  unescaped — so a control identifier containing `\F\` came back as a live
+  field separator and produced `MSA|AA|MSG|AE|INJECTED|`.
+
+- **A malformed request body is 400, and an oversized one is 413.** Ninety-seven
+  `JSON.parse(await readBody(req))` calls in the router are unguarded, so a body
+  that was not JSON reached the net underneath as a `SyntaxError` and was
+  answered 500 — telling a client to retry a request that fails identically
+  every time. A `SyntaxError` there is now 400 (it also covers a channel
+  `pattern` that is not a regular expression), and the body-size limit rejects
+  with a refusal carrying 413 instead of a fault.
+
+- **An interface that cannot reach its source no longer reports itself
+  healthy.** Every inbound poll — filedrop, dbpoll, sqlpoll, sftp — caught its
+  own exception, printed it and returned, and the guard around `readdirSync`
+  did not even print. Nothing was written down. `/api/health` is assembled from
+  the delivery queue and from cadences a channel declared, and an unreachable
+  source puts nothing in the queue, so a drop directory unmounted since Tuesday
+  produced `ok: true, degraded: false` — and a channel that declared no cadence
+  reported healthy for as long as its source stayed away.
+
+  A failed poll is now recorded per channel, durably and tenant-scoped, with a
+  run length. Three consecutive failed reads degrade the health check and raise
+  `northstar_channel_source_failures{channel,stage}`. Reading the source and
+  handling one thing on it are separate stages, because they are different
+  phone calls: a bad file is reported and never degrades the interface. A pass
+  that reads and handles everything clears the record, so recovery needs no
+  acknowledgement, and a channel somebody disabled stops being reported without
+  losing its history. See [A channel cannot reach its
+  source](docs/RUNBOOK.md#a-channel-cannot-reach-its-source).
+
+  The open health endpoint publishes the exception class, its system code and
+  the count; the message — and the name of the file it was on, which a sending
+  system routinely derives from an accession or a chart number — stays on the
+  authenticated channel listing.
+
+  Also fixed while here: `Promise.resolve(poll()).catch(…)` evaluates `poll()`
+  before there is a promise to attach the handler to, so a synchronous throw
+  escaped the interval callback and would have taken the process down. Every
+  poll guards itself today, which is what made it a latent one.
+
+- **The order sweep warned about the same misconfiguration once a minute,
+  forever.** A tenant the sweep refuses to act for — two `lab-order`
+  destinations, so it cannot tell which laboratory a route means — had its
+  reason written to the log on every pass. At the default cadence that is
+  about 1,440 identical lines a day, for as long as it takes somebody to
+  change the configuration. That is not emphasis; it is how a log stops being
+  read, and how the one line that mattered gets scrolled past. The comment
+  above the code said as much and the code did it anyway.
+
+  A refusal is now reported when it starts, again if it changes into a
+  different refusal, and once more when it clears — the last of those being
+  worth a line of its own, because an operator who has just fixed something
+  should be told it took rather than having to infer it from a warning that
+  stopped appearing.
+
+- **A cancelled order was still collected, because only the chart was told.**
+  Automatic dispatch swept placed orders and not withdrawals of them. The
+  sweep's list selects orders whose status is `placed` or `in-progress`, so a
+  cancelled order left that list the moment it was cancelled — and the branch
+  in `dispatch.ts` that builds a withdrawal could not be reached from it. The
+  code read as though it handled both.
+
+  What that looks like in a clinic: the order reads as cancelled everywhere
+  somebody here would look. The chart says so. The clinician saw it. The
+  patient was told it was called off. A laboratory four hundred kilometres
+  away still holds the requisition, so the specimen is collected, the test is
+  run and billed, and a result arrives for a test the chart says nobody
+  wanted. Unlike an order that never left — which appears on a worklist built
+  to show exactly that — nothing showed this.
+
+  Withdrawals now go out on the same clock and through the same door as the
+  orders. The list they come from asks whether a laboratory *could* act on
+  the order rather than whether one acknowledged it, so an order still
+  sitting in the outbound queue is withdrawn too: waiting for the
+  acknowledgement means the withdrawal is always a step behind the thing it
+  is chasing, and withdrawing an order a laboratory never received costs an
+  application reject somebody can read, while the other way costs a patient a
+  needle. Enqueued behind the order on the same ordered key, so ORC-1 NW is
+  read before ORC-1 CA. Hazard H-170.
+
+- **A backup destination on Windows went somewhere else, quietly.** `fs:` and
+  `file://` destinations were parsed by slicing the scheme off and requiring a
+  leading `/`. `C:\backups` has no leading slash, so an absolute Windows path
+  was refused as relative; and `file:///C:/backups` sliced down to
+  `/C:/backups`, which is not a path — the backups landed in a directory named
+  `C:` at the root of the current drive. Both failures hit the one setting
+  whose whole job is to put backups somewhere other than the machine holding
+  the database. Parsing now goes through `fileURLToPath`, which knows the
+  drive-letter and percent-encoding rules, and absoluteness is checked with
+  the rules of the platform being targeted rather than of POSIX. Hazard H-158.
+
+- **An expired reading station answered 500 instead of 503.** The first
+  request past the serving budget destroys the cache, and `rmSync`'s `force`
+  suppresses a missing file but not a locked one: on Windows, deleting a
+  database another handle still holds throws EPERM, and the throw escaped into
+  the request. The station's deliberate refusal — with the remedy an operator
+  needs — became a generic fault. Refusing to serve is the guarantee and
+  destroying the file is the tidying that usually accompanies it, so a failed
+  purge is now reported rather than thrown, and the manifest is left unpurged
+  rather than claiming a destruction that did not happen. Hazard H-157.
+
+- **Platform-dependent logic is now testable from either platform.** CI runs
+  on Ubuntu only, so every Windows branch was unexecuted — which shows up as a
+  green build on a machine that never took the branch, and failures found on
+  somebody's laptop. Encryption-at-rest detection takes the platform as a
+  parameter, so its Linux path is exercised from any host instead of being
+  skipped into a "cannot check" branch. Temporary-directory cleanup across the
+  suite retries, which is inert on Linux and rides out the brief EPERM while a
+  Windows handle or virus scanner still holds a file.
+
+- **A medication reconciliation could be completed twice.** The status check
+  and the count of undecided items ran outside the transaction and the write
+  did not name the state they had read, so two clinicians completing the same
+  reconciliation both passed the guard and both wrote — two people each told
+  it was done, and a record naming only the second. The checks now run inside
+  the transaction and the write is conditional on the reconciliation still
+  being open.
+
+- **A referral's status and its event log could disagree.** `transition()`
+  moved the status and appended the event as two writes outside any
+  transaction, so a failure between them left a referral in a state its own
+  history did not account for — and that history is what the stalled-referral
+  review reads. Both writes now commit together or not at all.
+
+- **Lifecycle writes name the state they expect.** Result acknowledgement,
+  referral transitions, reconciliation completion and prescription
+  acknowledge/fail update conditionally on the status their check read, and a
+  write that changes no rows refuses with 409 rather than silently succeeding.
+  A score's approval chain is kept linear by the database as well as by the
+  code: one root decision per score, and one successor per decision, so a
+  score cannot acquire two current approvals. Hazards H-160 and H-161.
+
+- **A blood pressure reported no unit, however carefully it was recorded.**
+  `Vitals.parse` read the unit off the top-level `valueQuantity`, which a
+  component-valued observation does not have, so the one vital always written
+  with a unit was the one vital whose unit was invisible. It is now read from
+  the components.
+
+- **A versioned clinical route was exempt from the audit-row guarantee.** The
+  test that discovers routes by reading `admin.ts` matched
+  `[a-z/-]+`, so `/api/clinical/score/v2` did not match at all — and the
+  scanner went on reporting a healthy 139 routes while covering 139 of 140.
+  The character class now admits digits. This is the second time that class
+  has been too narrow; the first was the "/" that exempted nested paths.
+
+- **Two HL7 fields were one position out** (H-133). The indication was landing
+  in OBR-14, Specimen Received Date/Time, and the ordering provider in OBR-17,
+  Order Callback Phone Number. Neither is a message that fails: a laboratory
+  parses it and files clinical information as a timestamp.
+
+  The cause was positional arrays, where a run of empty separators is
+  uncountable by eye and one too many shifts everything after it. Segments are
+  now built from explicit HL7 field numbers, so `{ 13: indication }` is OBR-13
+  and can be checked against a specification without counting. Found by
+  dumping the bytes of a built message rather than by rereading the array,
+  which had already been read twice.
+
+- **A superseded transmission attempt could override the one that superseded
+  it** (H-130). Attempts were ordered by timestamp with a tiebreak on a random
+  UUID, and a send with the acknowledgement answering it lands in the same
+  millisecond on a fast link — so the later attempt was whichever identifier
+  happened to sort last, and a rejected order reported as acknowledged about
+  half the time. That is the precise inversion the mechanism exists to
+  prevent. Ordering is now an autoincrementing sequence.
+
+  Caught as an intermittent failure in its own new tests: three runs gave 0, 0
+  and 1 failures. Diagnosed rather than re-run, and pinned by a test that
+  writes twenty attempts inside one millisecond and asserts the timestamps
+  really did collide, so it cannot pass by accident.
+
+- **The worklist called an order nobody sent a laboratory being slow** (H-148).
+  "Orders awaiting a result" was built from orders past their expected date
+  without asking whether anybody had ever received them. On a site with no
+  outbound interface — which is every site until one is commissioned — an
+  order appeared there, went overdue, and read as a slow laboratory. The
+  clinician telephones a department that has never heard of it, is told there
+  is nothing, and has no reason to suspect the requisition never left. The
+  test stays undone while looking chased.
+
+  The transmission work made that knowable and then left it unsaid, which is
+  the worse half: the record knew, and the screen did not. The section now
+  holds only orders a laboratory plausibly has — acknowledged, or at a site
+  that has declared its requisitions travel on paper with the specimen — and
+  everything else appears under **"Orders no laboratory has"**. Different
+  headings because they need different actions: one is a telephone call, the
+  other is a send. It is drawn from `notWithFiller()` rather than from
+  `awaitingResult()`, so an unsent order appears when it is placed rather than
+  only once it is already late; an order nobody sent does not become worth
+  knowing about on the day it was due.
+
+- **The cancelled-orders list could not be read** (H-149). The store answered
+  "which orders did we cancel that a laboratory still holds" and nothing asked
+  it — no route, no worklist section, no screen. That is the most urgent list
+  in the ordering work, the one where the specimen is still due to be taken
+  from a patient who was told the test was called off, and it was reachable
+  only by a caller who already knew to look. Now an audited route
+  (`GET /api/clinical/orders-cancelled-still-with-filler`) and a named
+  worklist section.
+
+- **A chase list that would have become wallpaper** (H-150). `notWithFiller()`
+  listed orders at sites that had declared they do not transmit, forever. A
+  site that prints its requisitions has answered the question, so every open
+  order there sat on the list permanently and the genuinely unsent order in
+  among them would not have been seen. Declared non-transmitting sites are
+  excluded; undeclared ones are not, because nobody has said, and there every
+  order is a real question.
+
+- **An interface that cannot reach its source no longer reports itself
+  healthy.** Every inbound poll — filedrop, dbpoll, sqlpoll, sftp — caught its
+  own exception, printed it and returned, and the guard around `readdirSync`
+  did not even print. Nothing was written down. `/api/health` is assembled from
+  the delivery queue and from cadences a channel declared, and an unreachable
+  source puts nothing in the queue, so a drop directory unmounted since Tuesday
+  produced `ok: true, degraded: false` — and a channel that declared no cadence
+  reported healthy for as long as its source stayed away.
+
+  A failed poll is now recorded per channel, durably and tenant-scoped, with a
+  run length. Three consecutive failed reads degrade the health check and raise
+  `northstar_channel_source_failures{channel,stage}`. Reading the source and
+  handling one thing on it are separate stages, because they are different
+  phone calls: a bad file is reported and never degrades the interface. A pass
+  that reads and handles everything clears the record, so recovery needs no
+  acknowledgement, and a channel somebody disabled stops being reported without
+  losing its history. See [A channel cannot reach its
+  source](docs/RUNBOOK.md#a-channel-cannot-reach-its-source).
+
+  The open health endpoint publishes the exception class, its system code and
+  the count; the message — and the name of the file it was on, which a sending
+  system routinely derives from an accession or a chart number — stays on the
+  authenticated channel listing.
+
+  Also fixed while here: `Promise.resolve(poll()).catch(…)` evaluates `poll()`
+  before there is a promise to attach the handler to, so a synchronous throw
+  escaped the interval callback and would have taken the process down. Every
+  poll guards itself today, which is what made it a latent one.
+
+- **A fault no longer prints a patient into the operator's log.** Stores write
+  their input into the exceptions they throw, because that is what makes an
+  error actionable — `3 medication(s) still undecided: <drug names>`, `result
+  is for <a> but order <o> is for <b>`. Those are plain `Error`s, so
+  `mapStoreError` classified them as faults, and a fault printed its message to
+  `console.error` and, from the net under the router, sent it back to the
+  caller. Both messages are reached by ordinary refusals: finishing a
+  reconciliation early, filing a result on the wrong order.
+
+  A fault now says where and never what. The log gets the exception class, the
+  top stack frames and an opaque `faultId`; the caller gets `{"error":
+  "internal error", "faultId": …}`; the message goes to the audit trail behind
+  that id, which is the sink built to hold it. The route is logged as its area,
+  because `/fhir/Patient/<id>` and `/patient/<id>/summary` name a patient in
+  the path. See [A caller reports a fault
+  id](docs/RUNBOOK.md#a-caller-reports-a-fault-id) for turning an id back into
+  the row.
+
+  A decision is not logged at all, so the two stores above now refuse rather
+  than throw — which also stops a 500 telling a client to retry a request that
+  will be refused every time. The cross-chart result refusal additionally stops
+  naming the *other* patient: somebody filing onto the wrong chart is told
+  their identifier does not match, not whose chart it is. The trail row still
+  carries both.
+
+- **Every clinical lifecycle write now names the state it decided from.** A
+  previous change fixed six of these; this is the rest of the class. Encounter
+  arrival, closure and cancellation, order placement and completion, paper
+  hand-out and cancellation of a prescription, booking cancellation, patient
+  access-request completion and decline, and directive revocation all read a
+  row, decided against its status, and then wrote an update naming only the
+  row. Between the two steps the row could move, so a later writer overwrote
+  whatever had happened in between and both callers were told they had
+  succeeded.
+
+  Each update now names the status it expects and refuses when it changes no
+  rows. Which way each one fails is the part that matters: a visit cancelled
+  after the patient arrived is refused rather than erasing that they attended;
+  a decline racing a completion on an access request must not report a record
+  as withheld when it was sent; a revocation that lost the race must not tell
+  the caller it lifted a directive it did not. Order completion is the one
+  exception that returns quietly rather than refusing — it runs as a side
+  effect of filing a result, and the order having been closed meanwhile is an
+  ordinary outcome rather than a fault.
+
+- **A structural check exempted routes that used the more explicit guard.**
+  The test asserting every patient-scoped clinical route consults the
+  directive check matched `phi(` and not `phiFor(` — the form that takes the
+  patient explicitly rather than reading it from the query, and runs the same
+  check. A route using it read as one that bypassed the check. This is the
+  second scanner in this file found too narrow; the first was the character
+  class that exempted versioned paths from the audit guarantee.
+
+- **A FHIR search could return the same resource on two pages, and skip
+  others.** Stored resources were ordered by `updated_at` alone, which has
+  second granularity — so a bulk load writes dozens of resources sharing one
+  timestamp, and SQLite specifies no order among rows equal under the ORDER
+  BY. Paging through such a run repeats some resources and omits others, with
+  no error and a correct-looking total: a client reading a patient's
+  observations gets a chart with holes in it. The ordering now carries a
+  tiebreak on id, so it is specified rather than incidental.
+
+**Security**
+
+- **An identifier the admin console rendered could execute as script in the
+  browser of whoever opened the page.** Every id was interpolated into a
+  single-quoted `onclick`, and `esc()` escaping an apostrophe to `&#39;` does
+  not help there: an attribute value is HTML-decoded before the JavaScript in
+  it is parsed, so the entity is an apostrophe again by the time it reaches
+  the string literal it was meant to stay inside. The comment above `esc()`
+  reasoned that its callers were "uuids or charset-validated"; a patient
+  identifier is neither. It is whatever PID-3 of the message said, nothing
+  validates its charset, and an MLLP source has nothing to authenticate with —
+  so anyone able to reach a channel port could run script carrying the API key
+  that console keeps in browser storage and attaches to every request.
+
+  `test/ui-xss.test.ts` already drove a real browser against hostile message
+  content, and already carried the payloads for this. What it had never done
+  was put one in an identifier, so it proved that names and reasons escaped
+  and said nothing about the forty-odd handlers. It does now, and the canary
+  fired three times before the fix.
+
+  The fix is structural rather than more escaping. All 65 inline handlers are
+  gone: a handler is named in a `data-` attribute and bound through one
+  delegated listener per event kind, so an identifier is read back through
+  `.dataset` as a string and is never parsed. `esc()` stays exactly right for
+  what is left, which is attribute values and text. `SECURITY.md` also
+  withdraws its claim that hardening headers on the console were out of scope
+  "where no session or credential is at stake" — one always was. Hazard H-206.
+
+- **CI actions are pinned to a commit rather than a tag (item 20).** A tag is
+  a pointer its owner can move, and these steps hold a checkout of this
+  repository and a token, so a repointed tag would be an unreviewed change
+  running with that access. This also moves off `actions/checkout@v4` and
+  `actions/setup-node@v4`, which every run was reporting as targeting the
+  deprecated Node 20 runtime.
+
+- **`NORTHSTAR_OIDC_AUDIENCE` is now required when OAuth is enabled, and a
+  site without it will not boot.** It was optional, and an absent audience
+  skipped the check entirely: every token the configured issuer had ever
+  signed was accepted, including tokens minted for a different application in
+  the same directory. An identity provider serves many resource servers, so a
+  token for the expenses system, signed by the same Entra or Keycloak tenant,
+  was a valid Northstar token — and the deployments that never set the
+  variable were exactly the ones running without the check.
+
+  **Breaking, deliberately.** A site that cannot start is a site somebody
+  fixes; one that starts and honours another application's tokens is not. Set
+  `NORTHSTAR_OIDC_AUDIENCE` to the identifier this deployment is registered
+  under at the issuer. A token carrying no `aud` claim at all is now refused
+  for the same reason as one naming somebody else. Hazard H-162.
+
+- **`.well-known/smart-configuration`**, generated from what this deployment
+  is configured with. Northstar is a resource server — it validates tokens and
+  does not issue them — so the document advertises the site's own
+  authorization server, and lists only capabilities this end actually
+  enforces. A discovery document claiming a capability the server does not
+  have is how a client comes to trust a check that never runs.
+
+- **SMART launch context is surfaced and type-checked.** `patient`,
+  `encounter` and `fhirUser` are read from the token and exposed on the
+  verified result, with a structured value dropped rather than carried around
+  as though it were an identifier. It is not yet required: a patient token is
+  bound to a chart here through an explicit authority grant, which is the
+  stronger control, and demanding a launch claim as well would refuse tokens
+  that are already correctly constrained.
+
+## 0.8.0 — 2026-08-27
+
+A release about what the record admits it does not know. 0.7.0 stopped the
+system trusting a silence on the way out; this one stops it manufacturing
+confidence on the way in.
+
+Ten validated instruments now score risk, and refuse to when an input is
+missing — because the arithmetic that treats an undrawn urea as a normal one
+makes a patient read as safer for having been less investigated. Feeding those
+same instruments from the chart adds the second version of that failure, a
+value that is present but old, so every input carries a clock and a NEWS2 built
+from this morning's observations refuses rather than describing a patient who
+may since have deteriorated. A laboratory harness reads a vendor's own messages
+before anybody trusts the interface, and states in the report what a clean run
+does not establish. Documents, procedures and care plans stop being notes and
+become facts with structure, which is what makes their absence visible.
+Enrolment is attested by a named clerk who writes how they checked, rather than
+inferred from a token.
+
+And the product is now called Northstar — a rename carried out on the
+principle that it must not move anything a running site depends on. The
+database, the backups, the environment, the tenant claim, the metrics and the
+wire all still answer to their old names, because every one of those failures
+would have been silent.
+
+**Added**
+
+- **Patient-supplied documents as chart facts, not notes.** They write onto
+  the existing append-only clinical record as `DocumentReference` with
+  category `patient-supplied`, so the notes module will not read them as SOAP.
+  A title, a source and a received date are required; the bytes are optional.
+  Lists and the patient summary carry metadata only. HTML, SVG and
+  executables are refused; a payload over 256 KiB is refused. An empty panel
+  is `never-received`, not none. Locking `DocumentReference` withholds both
+  clinic notes and patient-supplied documents. Not a portal, not a virus
+  scanner, not WCAG. Hazards H-124 to H-127. 846 tests.
+
+- **Procedures and care plans as first-class chart stores.** They write
+  onto the existing append-only clinical record. A completed procedure
+  needs the date it was performed; a not-done procedure needs twelve
+  characters of reason. An empty procedure panel is `never-recorded`, not
+  none. A care plan needs a goal and a review date (`reviewBy`, not faked
+  as `period.end`); completing it needs a written outcome and revoking it
+  needs a written reason, both as amendments. An active plan past its
+  review date is a worklist item, service-wide like a stalled referral.
+  Visit assembly gives procedures their own section. The patient summary
+  carries procedures and active care plans. Not CDS, not a specialty
+  procedure library, not a provincial care-plan product. Hazards H-118 to
+  H-123. 839 tests.
+
+- **Clinic-attested enrolment, and notices that publish fact rather than the
+  chart.** Binding an OAuth subject to a chart is no longer `grantSelf` with
+  nothing on the record saying how the clerk knew. A named person writes, in
+  their own words, how they checked — twelve characters, same bar as breaking
+  glass — and only then does the existing grant path run. A pending row is
+  not authority. `GET /me` still does not enrol anyone; there is no
+  `/patient/enrol`. Proxy enrolments still need an expiry, a purpose and
+  explicit permissions. Completing an access request queues a notice whose
+  payload is the fact, never a result value. Dispatching that notice onto the
+  same configured channel as break-glass is not recording that the patient
+  was told. No channel is a visible failure, not a quiet skip. Not
+  identity-proofing, not ONE ID, not a certified portal, not WCAG. Hazards
+  H-114 to H-117. 826 tests.
 
 - **Risk scores computed from the chart, with a clock on every input**
   (`src/clinical/score-from-chart.ts`, `POST /api/clinical/chart-score`).
@@ -119,7 +2057,7 @@ always forward-compatible and run automatically on open — see
   and calling the result a vendor interface is the failure `labs/README.md`
   exists to refuse. Hazard H-103.
 
-- **Ten implemented published clinical risk scores** — CURB-65, CHA₂DS₂-VASc, HAS-BLED,
+- **Ten validated clinical risk scores** — CURB-65, CHA₂DS₂-VASc, HAS-BLED,
   Wells for PE, HEART, MELD-Na, CIWA-Ar, Charlson, LACE and NEWS2, in
   `src/clinical/scores.ts`, with `POST /api/clinical/score`.
 
@@ -144,8 +2082,115 @@ always forward-compatible and run automatically on open — see
   high score is a prompt to address modifiable risk, not a reason to withhold
   anticoagulation. Hazards H-100 through H-102.
 
-  This is decision support, not a decision, and Portage is not a certified
+  This is decision support, not a decision, and Northstar is not a certified
   medical device.
+
+**Changed**
+
+- **Portage is now Northstar.** The product, the documentation, the admin UI
+  and the package name. Release notes below this entry keep the old name,
+  because that is what those versions shipped as.
+
+  **An existing site upgrades with no configuration changes at all.** That is
+  the part worth stating plainly, because almost nothing about a rename fails
+  loudly, and every one of these would have been silent:
+
+  - **The database.** SQLite creates what it cannot open. A build looking for
+    `northstar.db` in a directory holding `portage.db` does not error — it
+    makes an empty database, and the site comes up healthy with no patients in
+    it. An existing file now always wins over the preferred name, whichever
+    name it carries, and opening one under its old name is announced at boot.
+    Renaming it is an operator step taken with the engine stopped, documented
+    with the `-wal` and `-shm` sidecars that have to move with it.
+
+  - **Backups.** The snapshot listers matched a filename prefix. Changing it
+    would have made every existing snapshot invisible at once — nothing to
+    restore, and a reading-station check reporting no recent backup, for a site
+    whose snapshots were sitting right there. Both prefixes are matched on
+    every read path. Ordering moved off the filename at the same time: a plain
+    sort puts `northstar-` before `portage-`, which would have placed today's
+    snapshot at the oldest end of the list, handed a restore a two-month-old
+    database, and had retention delete the newest file it had.
+
+  - **Environment variables.** `PORTAGE_*` is read alongside `NORTHSTAR_*`, the
+    new name winning where both are set, so a unit file can migrate one line at
+    a time. Reading only the new names would not have thrown; the values would
+    have gone absent, and absent means TLS off, encryption unasserted,
+    authentication unconfigured, on a site that had configured all three.
+
+  - **Identity.** `portage_tenant`, `portage_organization` and
+    `portage_practitioner` are still accepted, and are not scheduled for
+    removal — the claim name lives in somebody's Keycloak realm, not in this
+    repository. An unread tenant claim arrives as an absence rather than an
+    error, and every downstream check would then decide tenancy on nothing.
+    That is the one failure here that ends with one site reading another's
+    charts. `portage/admin` likewise still grants admin, because the scope is
+    inside tokens already issued.
+
+  - **Metrics.** Every series is exposed under both `northstar_*` and
+    `portage_*`. A renamed metric does not break an alerting rule loudly — the
+    series stops existing, the rule evaluates against no data, and the alert
+    watching for a dead-letter backlog quietly never fires again.
+
+  - **The wire.** MSH-3 on outbound acknowledgements is still `PORTAGE`. It is
+    not branding: it is the receiving-application name each sending facility
+    typed into their own interface configuration, and changing it unilaterally
+    has their engine reject our acknowledgements — visible at their end as
+    messages never acknowledged, and not visible at ours at all. It moves when
+    a deployment sets `NORTHSTAR_HL7_APPLICATION`, having agreed the change
+    with the sites on the other end.
+
+  Two identifier namespaces also keep their spelling: the audit-export URN
+  `urn:portage:principal:*`, and the `https://portage.dev/fhir/NamingSystem/*`
+  systems the shipped mappings stamp onto resource identifiers. A namespace
+  identifier exists to be stable. Moving them would give resources created
+  either side of the rename different identifier systems, so the same
+  observation ingested twice would stop matching itself and file as two — and
+  audit exports from before and after would no longer be comparable. Both name
+  an identifier scheme, not the product.
+
+  Hazards H-108 to H-113, `docs/RUNBOOK.md` → "Upgrading a site installed as
+  Portage", and `test/rename-compat.test.ts`, whose regressions were checked
+  against the unfixed source.
+
+**Fixed**
+
+- **The not-on-care-team flag never fired on real traffic** (H-106). The
+  privacy office's review joined `principal_id` and required
+  `principal_kind = "practitioner"` — but an HTTP audit row records the
+  *credential* on `principal_id`, with kind `apikey` or `oauth`, and the
+  clinician on `practitioner_id`. So every access through the API was skipped,
+  and the flag that exists to catch a clinician reading a chart they have no
+  part in never fired where it mattered. Worse than silent: the review
+  reported a clean period because it had examined nothing. It now joins
+  `practitioner_id`, the identity `AccessReview` already uses, and a
+  credential naming no practitioner is excluded because it cannot be on a
+  team.
+
+- **A disclosure could outlive the request it answered** (H-107).
+  `fulfillAccess` recorded the disclosure and completed the request as two
+  independent writes. A failure between them left the ledger saying the chart
+  had gone out while the queue said nobody had answered, and a retry recorded
+  a second disclosure for one release. Both writes now share one transaction.
+
+  Both fixes were found by a Cursor review that never reached `main`; the
+  branch had gone too stale to merge, so they are ported here with regression
+  tests verified to fail against the unfixed source.
+
+- **The README claimed the clinical platform had no user interface.** It has
+  had a chart, a worklist, break-glass and the privacy inbox for two releases,
+  and a patient access page in English and French. An understatement is still
+  an inaccuracy, and the Status section is load-bearing precisely because its
+  caveats are meant to be exact. It now says which parts have a screen and
+  which are API-only.
+
+- **Nothing checked that the reported capability version was the shipped one.**
+  Three files carry the version at a release and only `src/version.ts` is read
+  at runtime, so forgetting it failed no build and no test — it shipped a
+  CapabilityStatement telling every federation partner it was talking to the
+  previous release. `src/version.ts` and `package.json` are now pinned to each
+  other, and to what the statement actually reports, rather than to a literal
+  that would be a third place to forget.
 
 ## 0.7.0 — 2026-08-26
 

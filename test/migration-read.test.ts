@@ -24,8 +24,8 @@ const OPS = { actorId: "migration-operator" };
 const P = "OLD-1001";
 
 function site() {
-  const dir = mkdtempSync(join(tmpdir(), "portage-read-"));
-  const db = new Db(join(dir, "portage.db"));
+  const dir = mkdtempSync(join(tmpdir(), "northstar-read-"));
+  const db = new Db(join(dir, "northstar.db"));
   const clinical = new ClinicalRecord(db);
   const meds = new MedicationStore(db, { check: () => [] });
   return {
@@ -35,7 +35,7 @@ function site() {
     mig: new Migration(db, { clinical, meds }),
     cleanup: () => {
       db.close();
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
 }

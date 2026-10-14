@@ -22,6 +22,7 @@
  * question a serious review asks.
  */
 import type { ClinicalEntry, ClinicalRecord } from "./record.ts";
+import { isPatientSuppliedContent } from "./documents.ts";
 
 export type NoteStatus = "draft" | "signed";
 
@@ -177,6 +178,7 @@ export class ClinicalNotes {
     if (!root) return [];
     const out = [{ entry: root, note: JSON.parse(root.content) as NoteContent }];
     for (const e of this.record.chart(root.patient_id, { entryType: "DocumentReference" })) {
+      if (!isClinicalNoteEntry(e)) continue;
       const note = JSON.parse(e.content) as NoteContent;
       if (note.addendumTo === recordId) out.push({ entry: e, note });
     }
@@ -187,6 +189,7 @@ export class ClinicalNotes {
   forPatient(patientId: string, opts: { encounterId?: string } = {}): Array<{ entry: ClinicalEntry; note: NoteContent }> {
     return this.record
       .chart(patientId, { entryType: "DocumentReference", ...opts })
+      .filter((entry) => isClinicalNoteEntry(entry))
       .map((entry) => ({ entry, note: JSON.parse(entry.content) as NoteContent }))
       .reverse();
   }
@@ -202,6 +205,18 @@ export class ClinicalNotes {
     const current = this.record.current(recordId);
     if (!current) throw new Error(`no note ${recordId}`);
     if (current.status === "entered-in-error") throw new Error("this note is marked entered-in-error");
+    if (!isClinicalNoteEntry(current)) throw new Error("this record is not a clinical note");
     return JSON.parse(current.content) as NoteContent;
+  }
+}
+
+/** A SOAP/consult note, not a letter the patient brought in. */
+export function isClinicalNoteEntry(entry: ClinicalEntry): boolean {
+  try {
+    const c = JSON.parse(entry.content) as Record<string, unknown>;
+    if (isPatientSuppliedContent(c)) return false;
+    return typeof c.noteType === "string" && c.sections !== null && typeof c.sections === "object";
+  } catch {
+    return false;
   }
 }

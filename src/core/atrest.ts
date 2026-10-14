@@ -25,11 +25,12 @@
  * volume presented by a hypervisor, or an encrypted EBS volume, both look like
  * a plain block device from inside. `unknown` is therefore a distinct outcome
  * from `off`, and an operator who knows better can assert it with
- * `PORTAGE_ENCRYPTED_AT_REST=yes` — which is recorded as an assertion rather
+ * `NORTHSTAR_ENCRYPTED_AT_REST=yes` — which is recorded as an assertion rather
  * than a finding, because that is what it is.
  */
 import { readFileSync, realpathSync } from "node:fs";
 import { platform } from "node:os";
+import { readEnv } from "./naming.ts";
 
 export type AtRestState = "encrypted" | "not-encrypted" | "unknown" | "asserted";
 
@@ -105,26 +106,32 @@ export function encryptionAtRest(
   // Injectable so the no-mount-found path can be reached at all: every real
   // Linux box has "/" covering every path, so that branch is unreachable
   // from a live mount table and would otherwise go untested.
-  mounts?: MountEntry[]
+  mounts?: MountEntry[],
+  // Injectable for the same reason one step out. The detection logic is
+  // Linux-only, so on any other host every test of it asserted the "cannot
+  // check" branch instead — the checks passed on Windows by not running.
+  // Naming the platform lets both paths be exercised from either.
+  os: string = platform(),
+  resolvePath: (path: string) => string = realpathSync
 ): AtRestReport {
-  const asserted = (env.PORTAGE_ENCRYPTED_AT_REST ?? "").toLowerCase();
+  const asserted = (readEnv("ENCRYPTED_AT_REST", env) ?? "").toLowerCase();
   if (asserted === "yes" || asserted === "true" || asserted === "1") {
     return {
       state: "asserted",
       detail:
-        "encryption at rest asserted by PORTAGE_ENCRYPTED_AT_REST; not verified here, and recorded as an operator's assertion",
+        "encryption at rest asserted by NORTHSTAR_ENCRYPTED_AT_REST; not verified here, and recorded as an operator's assertion",
     };
   }
 
-  if (platform() !== "linux") {
+  if (os !== "linux") {
     return {
       state: "unknown",
-      detail: `cannot check encryption at rest on ${platform()}; set PORTAGE_ENCRYPTED_AT_REST=yes once the volume is confirmed`,
+      detail: `cannot check encryption at rest on ${os}; set NORTHSTAR_ENCRYPTED_AT_REST=yes once the volume is confirmed`,
     };
   }
 
   try {
-    const resolved = realpathSync(dataDir);
+    const resolved = resolvePath(dataDir);
     const mount = mountFor(resolved, mounts ?? parseMounts(readFileSync("/proc/mounts", "utf8")));
     if (!mount) {
       return { state: "unknown", detail: `no mount found covering ${resolved}` };
@@ -146,7 +153,7 @@ export function encryptionAtRest(
         "The database holds charts, allergies, results and the audit trail in plain text; " +
         "an encrypted volume is the control that fits a single-file store. " +
         "If the volume is encrypted somewhere this cannot see — a hypervisor or a cloud volume — " +
-        "set PORTAGE_ENCRYPTED_AT_REST=yes to record that.",
+        "set NORTHSTAR_ENCRYPTED_AT_REST=yes to record that.",
     };
   } catch (err) {
     return { state: "unknown", detail: `could not determine encryption at rest: ${(err as Error).message}` };

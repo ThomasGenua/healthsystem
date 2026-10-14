@@ -30,7 +30,7 @@
  *
  * ## Sent is not received
  *
- * Portage does not know how to talk to a pharmacy network and should not
+ * Northstar does not know how to talk to a pharmacy network and should not
  * pretend to. A transmission is published onto a channel the deployment
  * configures, and the delivery machinery carries it — ordered, retried,
  * dead-lettered — exactly like every other clinical message. What comes back
@@ -485,9 +485,15 @@ export class Prescribing {
     if (row.status !== "draft" && row.status !== "failed") {
       refuse(`${an(row.status)} prescription cannot be handed out on paper`);
     }
-    this.db.sql
-      .prepare("UPDATE prescriptions SET status = 'handed-out' WHERE tenant_id = ? AND id = ?")
+    const handed = this.db.sql
+      .prepare(
+        `UPDATE prescriptions SET status = 'handed-out'
+          WHERE tenant_id = ? AND id = ? AND status IN ('draft', 'failed')`
+      )
       .run(this.db.tenantId, prescriptionId);
+    if (handed.changes === 0) {
+      refuse(`prescription ${prescriptionId} is no longer a draft or a failed transmission`, 409);
+    }
     this.event(prescriptionId, "handed-out", by, by.reason ?? "given to the patient on paper");
     return this.get(prescriptionId)!;
   }
@@ -498,14 +504,20 @@ export class Prescribing {
     if (row.status !== "transmitted") {
       refuse(`${an(row.status)} prescription cannot be acknowledged`);
     }
-    this.db.sql
-      .prepare(
-        `UPDATE prescriptions SET status = 'acknowledged', acknowledged_at = ?, acknowledged_by = ?
-          WHERE tenant_id = ? AND id = ?`
-      )
-      .run(new Date().toISOString(), by.actorId, this.db.tenantId, prescriptionId);
-    this.event(prescriptionId, "acknowledged", by, by.detail ?? null);
-    return this.get(prescriptionId)!;
+    return this.db.transaction(() => {
+      // Acknowledgements arrive on connections carrying other traffic, and two
+      // for one prescription is a real shape. Conditional on the transmitted
+      // state, so the second is refused rather than overwriting the first.
+      const acked = this.db.sql
+        .prepare(
+          `UPDATE prescriptions SET status = 'acknowledged', acknowledged_at = ?, acknowledged_by = ?
+            WHERE tenant_id = ? AND id = ? AND status = 'transmitted'`
+        )
+        .run(new Date().toISOString(), by.actorId, this.db.tenantId, prescriptionId);
+      if (acked.changes === 0) refuse(`prescription ${prescriptionId} is no longer awaiting a pharmacy`, 409);
+      this.event(prescriptionId, "acknowledged", by, by.detail ?? null);
+      return this.get(prescriptionId)!;
+    });
   }
 
   /** The pharmacy rejected it, or the transmission never arrived. */
@@ -515,11 +527,19 @@ export class Prescribing {
     if (row.status !== "transmitted") {
       refuse(`${an(row.status)} prescription is not awaiting a pharmacy`);
     }
-    this.db.sql
-      .prepare("UPDATE prescriptions SET status = 'failed', failure_reason = ? WHERE tenant_id = ? AND id = ?")
-      .run(by.reason.trim(), this.db.tenantId, prescriptionId);
-    this.event(prescriptionId, "failed", by, by.reason.trim());
-    return this.get(prescriptionId)!;
+    return this.db.transaction(() => {
+      const failed = this.db.sql
+        .prepare(
+          `UPDATE prescriptions SET status = 'failed', failure_reason = ?
+            WHERE tenant_id = ? AND id = ? AND status = 'transmitted'`
+        )
+        .run(by.reason.trim(), this.db.tenantId, prescriptionId);
+      // A failure racing an acknowledgement must not overwrite it: the
+      // pharmacy holding the script is the fact that matters.
+      if (failed.changes === 0) refuse(`prescription ${prescriptionId} is no longer awaiting a pharmacy`, 409);
+      this.event(prescriptionId, "failed", by, by.reason.trim());
+      return this.get(prescriptionId)!;
+    });
   }
 
   /**
@@ -582,12 +602,13 @@ export class Prescribing {
     if (!by.reason.trim()) refuse("cancelling a prescription needs a reason");
     const row = this.require(prescriptionId);
     if (row.status === "cancelled") refuse("that prescription is already cancelled");
-    this.db.sql
+    const cancelled = this.db.sql
       .prepare(
         `UPDATE prescriptions SET status = 'cancelled', cancelled_at = ?, cancel_reason = ?
-          WHERE tenant_id = ? AND id = ?`
+          WHERE tenant_id = ? AND id = ? AND status != 'cancelled'`
       )
       .run(new Date().toISOString(), by.reason.trim(), this.db.tenantId, prescriptionId);
+    if (cancelled.changes === 0) refuse(`prescription ${prescriptionId} was cancelled while this was being applied`, 409);
     this.event(prescriptionId, "cancelled", by, by.reason.trim());
     return this.get(prescriptionId)!;
   }

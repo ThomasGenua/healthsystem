@@ -1,8 +1,13 @@
 # Provincial primary-care platform — what exists and what does not
 
+**2026-09-09 update:** [PILOT-READINESS.md](PILOT-READINESS.md) records the
+current launch gaps and verification. The portal now has optional server-side
+OIDC code/PKCE sign-in and a Chromium regression journey. References below to
+the absence of browser tests describe the earlier assessment, not this increment.
+
 This is a map of the 23-section provincial EMR specification against this
-repository. It is not a bid response and it is not a claim that Portage is
-that platform. Portage is a health integration engine with a growing clinical
+repository. It is not a bid response and it is not a claim that Northstar is
+that platform. Northstar is a health integration engine with a growing clinical
 record. The specification is the destination; this file is the honest
 distance.
 
@@ -18,13 +23,13 @@ though it did.
 |---|---|---|
 | 1 | Patient, encounter, task, note and audit models | Present |
 | 2 | Authorization and tenant isolation | Present |
-| 3 | Longitudinal chart and documentation | **This increment:** demographics, immunizations, vitals, care team, coverage, today's appointments on the worklist. Problems, notes, meds, allergies, orders, results, referrals, consent were already here. Documentation is SOAP/templates as structured notes, not a full specialty-template library. |
+| 3 | Longitudinal chart and documentation | **This increment:** demographics, immunizations, vitals, procedures, care plans, patient-supplied documents (metadata; bytes optional and capped), care team, coverage, today's appointments on the worklist. Problems, notes, meds, allergies, orders, results, referrals, consent were already here. Documentation is SOAP/templates as structured notes, not a full specialty-template library. A letter the patient brought in is not a SOAP note. |
 | 4 | Durable inbox, task and referral workflows | Present |
 | 5 | Scheduling and patient messaging | Scheduling is present, including travelling-clinic visits and a waitlist whose order is stated policy ([#39](https://github.com/ThomasGenua/healthsystem/issues/39)). **Patient messaging is present as a durable clinic record** (threads, inbox, close-with-reason). Not a portal, not email, not a claim that anything was delivered. |
 | 6 | FHIR integration service | Present (R4 facade, mappings, subscriptions) |
 | 7 | Laboratory and provincial-system sandboxes | **Inbound result bridge present, vendor interfaces absent.** An ORU^R01 closes the order it answers, deduplicates retransmissions, supersedes on correction, ignores stale preliminaries and holds unidentifiable results for a person. Dialects are configuration (`labs/`). **No Dynacare, LifeLabs, OLIS, DHDR, HRM, eConsult or ONE ID interface has exchanged a message**, and none is claimed — that needs a conformance guide, a sandbox, credentials and a signed test result. |
 | 8 | Medication and result management | Present. Pharmacy transmission ([#40](https://github.com/ThomasGenua/healthsystem/issues/40)) is done as a lifecycle: draft / transmitted / acknowledged / handed-out / failed / cancelled, with a refusal on double transmission and chase lists for each way it is lost. **No pharmacy network interface has exchanged a message** — the transmission publishes onto a channel a deployment configures. |
-| 9 | Patient access | **Backend boundary present; `GET /me` is chrome, not a portal.** `/patient/*` is OAuth-only; every chart is bound through an active grant with explicit proxy scope, purpose and expiry. Patient-safe summary, held results, appointments, messages, delegates, access log, access/correction requests. `/me` has English/French copy, a skip link and landmarks, and says it is not certified. No identity-proofing enrolment, notifications or WCAG/AODA claim. |
+| 9 | Patient access | **Backend boundary present; clinic-attested enrolment present; `GET /me` is now a working application.** `/patient/*` is OAuth-only; every chart is bound through an active grant with explicit proxy scope, purpose and expiry. Binding a subject requires a named clerk to write how they checked identity (twelve characters); a pending enrolment is not authority. Notices publish fact onto a configured channel; dispatching is not telling. Patient-safe summary, held results, appointments, messages, delegates, access log, access/correction requests. `/me` is a mobile-first EN/FR application over those same routes: sign-in, a caregiver chart switcher with the active chart always visible, and screens for results, appointments, medications, messages, care team, access history and requests, each with loading, error and empty states. A tab the grant does not cover is not drawn. A development identity provider (`NORTHSTAR_DEV_IDP=on`) mints tokens the ordinary verifier validates ordinarily; it refuses to run beside a real issuer and cannot create authority. Still not identity-proofing, not ONE ID, not WCAG/AODA, with synthetic-data browser coverage but no independent accessibility validation. |
 | 10 | Population-health reporting | Partial (cohorts, gaps, measures). Equity, outreach campaigns and burden measures are not. |
 | 11 | Privacy, security and assurance operations | **Privacy office present.** Reviews, flags that cannot be closed by forgetting them, legal holds that skip the retention sweep, incidents that cannot close without saying whether patients were told, access clocks, disclosures, an in-code assurance catalogue (BACKUP-02 stays partial), findings, restore-drill exercises, a subprocessor register that refuses an active vendor with no region. `GET /api/audit/review` joins the trail to a practitioner so an officer can see who looked and whether anything clinical linked them. Directives, break-glass and the audit chain were already here. Not a SIEM, not a PIA tracker, not a signed assurance programme. After-hours is UTC. |
 | 12 | Source-linked AI assistance | **Deliberately later.** |
@@ -36,8 +41,8 @@ though it did.
 
 | § | Ask | What is here | What is not |
 |---|---|---|---|
-| 1 | Complete longitudinal chart | Append-only log; demographics (incl. language/telecom); coverage/eligibility history; care team; problems; allergies; meds; immunizations; vitals; results; encounters; notes; referrals; consent; provenance and amendment | Procedures/care plans as first-class stores; patient-uploaded documents; substitute decision-makers beyond proxy grants; specialty coding libraries |
-| 2 | Clinician workspace | Assembled chart + worklist: today's appointments, results, referrals, tasks, overdue orders, incomplete reconciliations. Queues ordered by urgency/abnormality, not arrival | Waiting-room board, care-gap queue, recently discharged, high-risk follow-up, delegated-workload view, configurable ranking across all item kinds |
+| 1 | Complete longitudinal chart | Append-only log; demographics (incl. language/telecom); coverage/eligibility history; care team; problems; allergies; meds; immunizations; vitals; procedures; care plans; patient-supplied documents as chart facts (title, source, received date; bytes optional, allowlisted, capped); results; encounters; notes; referrals; consent; provenance and amendment | A portal for patients to upload files; a document-management product; virus scanning; WCAG PDFs; substitute decision-makers beyond proxy grants; specialty coding libraries; a provincial care-plan product |
+| 2 | Clinician workspace | Assembled chart + worklist: today's appointments, results, referrals, tasks, overdue orders, incomplete reconciliations, care plans past their review date. Queues ordered by urgency/abnormality, not arrival | Waiting-room board, care-gap queue, recently discharged, high-risk follow-up, delegated-workload view, configurable ranking across all item kinds |
 | 3 | Documentation | Draft / revise / sign / co-sign / addendum; SOAP and free sections; encounter-scoped notes | Voice dictation, macros, collaborative drafting, billing codes, patient-friendly AVS, PDF export |
 | 4 | Orders and results | Order → result → acknowledge; critical clocks; correction does not inherit ack; unsolicited matching; inbound ORU bridge with deduplication, identity holds and a reconciliation report | Electronic requisitions *out* to a laboratory; a proven Dynacare/LifeLabs interface; trend UI; automatic patient notification |
 | 5 | Medications | Current vs prescribed; allergy/interaction check; reconciliation; override with record; prescription transmission lifecycle with double-dispense refusal, controlled-substance safeguard and chase lists | A pharmacy network interface that has actually exchanged a message; formulary/coverage; dosage calculators; renewal request workflow |
@@ -46,7 +51,7 @@ though it did.
 | 8 | Inbox and tasks | Unified stores; evidence to close; unassigned list; escalation/deadline on referrals and results; patient-message threads on the worklist | Forms, privacy-request and portal-submission queues as first-class item kinds |
 | 9 | Referrals | Closed-loop statuses, stalled chase, redirect with correlation, required documents | Specialist directory beyond the local one; eReferral/eConsult networks; wait-time reporting product |
 | 10 | Scheduling | Slots, bookings, DNA follow-up, diary, today's list; travelling-clinic visits as one thing; a waitlist ordered by priority then waited-longest then most-bumped, with offers that resolve as accepted, declined or unreachable | Online booking, reminders, rooms/resources, group visits, clinic status board |
-| 11 | Patient and caregiver access | Separate patient/proxy OAuth API; explicit delegated scope/purpose/expiry; result release/visible holds; appointments; durable messages; access log; delegate review/revoke; access and correction requests; `GET /me` EN/FR chrome with landmarks | Identity-proofing enrolment; a certified portal; caregiver UX; document downloads; delivery to a phone or inbox the patient owns; WCAG/AODA claim |
+| 11 | Patient and caregiver access | Separate patient/proxy OAuth API; clinic-attested enrolment (written method, pending is not a grant); explicit delegated scope/purpose/expiry; result release/visible holds; appointments; durable messages; access log; delegate review/revoke; access and correction requests; notices as fact on a channel (dispatch ≠ told); **a working EN/FR application at `GET /me` with caregiver chart switching**, and a development identity provider for demonstrating it | Identity-proofing / ONE ID; a certified portal; document downloads and uploads; delivery to a phone or inbox the patient owns; WCAG/AODA claim; any browser-driven or assistive-technology test |
 | 12 | Population health | Cohort, gap, measure with honest denominators | Outreach campaigns, equity stratification, burden measures, governed exports |
 | 13 | Multi-tenant provincial architecture | Tenant isolation, shared schema, no per-clinic fork | Provincial config baseline overlays, feature flags, conformance monitoring, tenant rollback product |
 | 14 | Interoperability | HL7 v2, FHIR R4, REST, OAuth/SMART, mTLS, idempotent delivery, DLQ | ONE ID, OLIS, DHDR, HRM, eConsult, pharmacy networks, contract-test harness for those |
@@ -102,6 +107,10 @@ configuration and the reconciliation report says what it had to assume.
 
 ## What this increment added
 
+**Patient-supplied documents as chart facts, not notes.** `DocumentReference` already stores SOAP notes. A specialist letter the patient brought in writes the same entry type with category `patient-supplied`, so the notes module will not read it as unsigned clinic text. A title, a source (`patient-brought` / `patient-submitted` / `clinic-scanned`) and a received date are required; the bytes are optional, because recording that paper arrived is ordinary and pretending it was scanned would be a second, false claim. Lists and the patient summary carry metadata only. HTML, SVG and executables are refused; a payload over 256 KiB is refused. An empty panel is `never-received`, not none. Locking `DocumentReference` withholds both clinic notes and patient-supplied documents, on purpose. Not a portal, not a virus scanner, not WCAG. Hazards H-124 to H-127.
+
+**Procedures and care plans as first-class chart stores.** They write onto the existing append-only clinical record — no new SQL table. A completed procedure needs the date it was performed; a not-done procedure needs twelve characters of reason. An empty procedure panel is `never-recorded`, not none. A care plan needs a goal and a review date (stored as `reviewBy`, not faked as `period.end`); completing it needs a written outcome and revoking it needs a written reason, both as amendments. An active plan past its review date is a worklist item, service-wide like a stalled referral. Visit assembly gives procedures their own section rather than folding them into findings. The patient summary carries procedures and active care plans, not the clinician worklist. Not CDS, not a specialty procedure library, not a provincial care-plan product. Hazards H-118 to H-123.
+
 **Laboratory result bridge.** An inbound ORU^R01 now closes the order it
 answers rather than only landing on the FHIR facade. Identity is by identifier
 only; an unidentifiable or ambiguous result is held for a person. A
@@ -119,8 +128,10 @@ appointments, messages, access log, delegate review/revoke and durable
 access/correction requests are mounted. An access/correction request is also
 a privacy task on the clinic's unassigned inbox.
 
-The JSON API is not a patient application. `GET /me` is chrome. Identity-proofing enrolment,
-notification delivery and accessibility testing remain.
+`GET /me` is a working patient application over the authorized JSON API, with clinic sign-in and a synthetic-data browser regression. It does not itself enrol anyone or establish independent accessibility certification.
+Clinic-attested enrolment is a named clerk writing a method; it is not identity-proofing
+and not ONE ID. Notices publish fact onto a channel; dispatching is not telling.
+Accessibility testing remains.
 
 **Privacy office.** Reviews, legal holds, incidents, access clocks, disclosures
 and an assurance catalogue a finding cannot close by forgetting. Privacy-office
@@ -134,7 +145,7 @@ appointments) is already on `main`.
 
 - A complete provincial EMR
 - A Dynacare or LifeLabs interface (the ORU bridge exists; no vendor message has ever been exchanged)
-- A patient portal application (`GET /me` is chrome; the patient/proxy JSON boundary exists)
+- A **certified** patient portal (`GET /me` is a working application; it is not identity-proofed, not ONE ID, not WCAG-tested, and has synthetic-data browser tests rather than independent accessibility certification)
 - AI drafting or summarization
 - Certified Ontario profiles or ONE ID
 - 99.8% multi-region availability

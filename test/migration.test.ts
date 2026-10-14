@@ -65,13 +65,13 @@ CREATE TABLE deliveries (
 `;
 
 function legacyDb(): { dir: string; path: string; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "portage-v030-"));
-  const path = join(dir, "portage.db");
+  const dir = mkdtempSync(join(tmpdir(), "northstar-v030-"));
+  const path = join(dir, "northstar.db");
   const old = new DatabaseSync(path);
   old.exec("PRAGMA journal_mode = WAL;");
   old.exec(V030);
   old.close();
-  return { dir, path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return { dir, path, cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
 
 test("a database from before retention existed is brought up to the current schema", () => {

@@ -35,6 +35,7 @@
  */
 import { Refusal } from "../core/refusal.ts";
 import type { MeasureResult, CareGap, Unclassified } from "./registry.ts";
+import type { WorkflowMeasureResult } from "./effectiveness.ts";
 
 export const DEFAULT_SUPPRESSION_THRESHOLD = 5;
 
@@ -170,6 +171,66 @@ export function releaseMeasure(measure: MeasureResult, asOf: string, opts: Relea
     ruleId: measure.ruleId,
     name: measure.name,
     asOf,
+    cells,
+    rate,
+    caveat,
+    method: { threshold: k, suppressedCells, note: METHOD_NOTE },
+    containsPatientLevelData: false,
+  };
+}
+
+export interface WorkflowMeasureRelease {
+  kind: "workflow-measure";
+  metricId: string;
+  name: string;
+  from: string;
+  to: string;
+  asOf: string;
+  cells: ReleasedCell[];
+  rate: number | null;
+  caveat: string | null;
+  method: ReleaseMethod;
+  containsPatientLevelData: false;
+}
+
+/**
+ * One of item 67's six effectiveness metrics, releasable.
+ *
+ * The same shape as `releaseMeasure()`, on purpose: the item's own text asks
+ * to reuse the aggregate-release and small-cell protections this file
+ * already has, not to build a second set for a second kind of denominator.
+ * The denominator here is what was in scope for the window (submissions,
+ * referrals, bookings, deliveries, or tasks) rather than a clinical cohort,
+ * but a small count of either still names people, so it is folded the same
+ * way.
+ */
+export function releaseWorkflowMeasure(measure: WorkflowMeasureResult, opts: ReleaseOptions): WorkflowMeasureRelease {
+  requireDestination(opts.recipient, opts.purpose);
+  const k = resolveThreshold(opts.threshold);
+
+  const denominator = cell("in scope", measure.denominator, k);
+  const numerator = cell("counted", measure.numerator, k);
+  const complement = cell("not counted", measure.denominator - measure.numerator, k);
+  suppressComplementarily(numerator, complement);
+  const unclassified = cell("could not be classified", measure.unclassified.length, k);
+
+  const cells = [denominator, numerator, complement, unclassified];
+  const suppressedCells = cells.filter((c) => c.suppressed).length;
+
+  const rate = numerator.suppressed || denominator.suppressed ? null : measure.rate;
+  const caveat = numerator.suppressed
+    ? "rate withheld: publishing it would undo the suppression of the counts beneath it"
+    : unclassified.suppressed && measure.caveat
+      ? "some cases could not be classified either way; their count is suppressed as a small cell, and they remain in the denominator, not excluded from it"
+      : measure.caveat;
+
+  return {
+    kind: "workflow-measure",
+    metricId: measure.metricId,
+    name: measure.name,
+    from: measure.from,
+    to: measure.to,
+    asOf: measure.asOf,
     cells,
     rate,
     caveat,

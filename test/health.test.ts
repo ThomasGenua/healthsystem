@@ -142,19 +142,24 @@ test("metrics are exposed in Prometheus text format", async () => {
     assert.match(res.headers.get("content-type") ?? "", /text\/plain/);
     const text = await res.text();
 
-    for (const name of [
-      "portage_channels",
-      "portage_messages_total",
-      "portage_deliveries",
-      "portage_fhir_resources",
-      "portage_dead_letters",
-      "portage_oldest_queued_age_seconds",
-      "portage_audit_events_total",
-      "portage_chain_length",
-      "portage_backup_remote_configured",
-      "portage_backup_remote_ok",
-      "portage_backup_remote_age_seconds",
-    ]) {
+    // Both prefixes, every series. A renamed metric does not break an alerting
+    // rule loudly — the series stops existing, the rule evaluates against no
+    // data, and the alert watching for a dead-letter backlog quietly never
+    // fires again. The old names stay until somebody has moved the dashboards.
+    const series = [
+      "channels",
+      "messages_total",
+      "deliveries",
+      "fhir_resources",
+      "dead_letters",
+      "oldest_queued_age_seconds",
+      "audit_events_total",
+      "chain_length",
+      "backup_remote_configured",
+      "backup_remote_ok",
+      "backup_remote_age_seconds",
+    ];
+    for (const name of series.flatMap((n) => [`northstar_${n}`, `portage_${n}`])) {
       assert.match(text, new RegExp(`^# HELP ${name} `, "m"), `${name} needs a HELP line`);
       assert.match(text, new RegExp(`^# TYPE ${name} `, "m"), `${name} needs a TYPE line`);
       assert.match(text, new RegExp(`^${name}[{ ]`, "m"), `${name} needs a sample`);

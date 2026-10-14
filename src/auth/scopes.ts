@@ -41,7 +41,7 @@ export function effectiveScopes(granted: Iterable<string>): Set<Scope> {
 /**
  * SMART on FHIR scopes map onto the three above. A token minted by an identity
  * provider speaks `system/Patient.read`, not `read`, so translate rather than
- * demanding callers configure Portage-specific scope names in their IdP.
+ * demanding callers configure Northstar-specific scope names in their IdP.
  *
  * Both SMART v1 (`.read` / `.write` / `.*`) and v2 (`.rs` / `.cud` / `.cruds`)
  * verb syntax are accepted.
@@ -53,9 +53,14 @@ export function scopesFromSmart(raw: Iterable<string>): Set<Scope> {
       out.add(s);
       continue;
     }
-    // portage/admin is the escape hatch for operator tokens, since SMART has
-    // no notion of "administer the interface engine".
-    if (s === "portage/admin" || s === "system/*.admin") {
+    // northstar/admin is the escape hatch for operator tokens, since SMART
+    // has no notion of "administer the interface engine". `portage/admin` is
+    // the pre-rename spelling and stays accepted: the scope is a string inside
+    // tokens that have already been issued and inside identity-provider
+    // configuration this repository does not control, so dropping it would not
+    // fail a token — it would silently demote an operator to no admin rights
+    // and turn every administrative call into a 403 nobody could explain.
+    if (s === "northstar/admin" || s === "portage/admin" || s === "system/*.admin") {
       out.add("admin");
       continue;
     }
@@ -100,6 +105,8 @@ export function scopesFromSmart(raw: Iterable<string>): Set<Scope> {
  * authenticate against everything else.
  */
 export function requiredScope(method: string, path: string): Scope | null {
+  if (method === "GET" && ["/auth/portal", "/auth/portal/login", "/auth/portal/callback"].includes(path)) return null;
+  if (method === "POST" && path === "/auth/portal/logout") return null;
   if (method === "GET" && (path === "/" || path === "/ui" || path === "/me")) return null;
   if (method === "GET" && path === "/api/health") return null;
   // Metrics carry counters, ages and channel ids — no patient data — and a
@@ -107,6 +114,18 @@ export function requiredScope(method: string, path: string): Scope | null {
   // liveness is.
   if (method === "GET" && path === "/metrics") return null;
   if (method === "GET" && path === "/fhir/metadata") return null;
+
+  // The development identity provider, where one is running. An issuer's
+  // discovery, key and token endpoints are unauthenticated by definition —
+  // they are what a client uses *before* it has a credential — so these are
+  // open in exactly the way the real provider's are.
+  //
+  // Nothing is trusted because it came from here. The engine reaches these
+  // over HTTP as `JwtVerifier` reaches any JWKS, and a token from them is
+  // checked the same way a token from Entra is. The provider only exists at
+  // all when NORTHSTAR_DEV_IDP=on, which server.ts refuses to combine with a
+  // configured issuer; when it is off these paths 404 like any other.
+  if (path === "/dev-idp" || path.startsWith("/dev-idp/")) return null;
 
   if (path === "/patient" || path.startsWith("/patient/")) return "patient";
   if (path.startsWith("/api/")) return "admin";

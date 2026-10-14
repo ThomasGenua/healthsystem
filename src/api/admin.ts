@@ -46,9 +46,10 @@
  *   GET /api/conformance/capability?pack=
  * Subscriptions: GET|POST /fhir/Subscription, GET|DELETE /fhir/Subscription/:id
  * Admin UI:     GET / (single-file, no build step)
- * Patient shell: GET /me (EN/FR chrome; not a certified portal)
+ * Patient shell: GET /me (EN/FR chrome; not a certified portal; does not enrol)
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { randomBytes } from "node:crypto";
 import { encryptionAtRest } from "../core/atrest.ts";
 import { createServer as createSecureServer } from "node:https";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -63,14 +64,31 @@ import { CHART_TYPES, WORKLIST_TYPES } from "../workspace/summary.ts";
 import { VISIT_TYPES } from "../workspace/visit.ts";
 import type { EncounterClass } from "../clinical/encounters.ts";
 import { DIRECTORY_KINDS, type PartyKind } from "../directory/store.ts";
-import { mapStoreError, refuse } from "../core/refusal.ts";
+import { errorBody, logFault, mapStoreError, refuse, routeArea } from "../core/refusal.ts";
 import type { MigrationRecordType, SourceRecord } from "../migrate/run.ts";
 import type { AuthorityRow, PatientPermission } from "../patient/access.ts";
+import type { Question } from "../patient/intake.ts";
 import { DISPENSE_OUTCOMES, type DispenseOutcome } from "../meds/prescribe.ts";
 import { readFhirBundle, readFhirNdjson } from "../migrate/read-fhir.ts";
 import { score as computeScore, SCORE_IDS } from "../clinical/scores.ts";
+import { ingest, MEASURED_FIELDS, SCORE_MEASUREMENTS, type Measurement } from "../clinical/measurement.ts";
+import type { ScoreId } from "../clinical/score-definitions.ts";
 import { requireScoreUnits, type ScoreAuthorization } from "../clinical/score-governance.ts";
+import type { PublicationStatus } from "../conformance/standards.ts";
+import { buildSummary, emptyReasonFor, type SummarySection } from "../clinical/summary.ts";
 import { news2FromChart, curb65FromChart } from "../clinical/score-from-chart.ts";
+import { VITAL_KINDS } from "../clinical/vitals.ts";
+import { ATTEMPT_OUTCOMES } from "../population/outreach.ts";
+import {
+  timeToClinicianReview,
+  unresolvedFollowUp,
+  referralCompletion,
+  notificationFailures,
+  missedAppointments,
+  staffTaskBurden,
+  type WorkflowMeasureResult,
+} from "../population/effectiveness.ts";
+import { releaseWorkflowMeasure } from "../population/release.ts";
 import { AuthGate } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
 import { VERSION } from "../version.ts";
@@ -83,6 +101,11 @@ import type { ChannelConfig, MappingDoc, MessageRow } from "../types.ts";
 import type { ChannelDocument } from "../core/channel-versions.ts";
 import { validateChannel } from "../core/engine.ts";
 import { Refusal } from "../core/refusal.ts";
+import type { DevIdentityProvider } from "../auth/dev-idp.ts";
+import type { PortalLogin } from "../auth/portal-login.ts";
+import { readEnv } from "../core/naming.ts";
+import { sendOrder, sendOrderCancellation } from "../orders/send.ts";
+import type { SpecimenDetail } from "../orders/outbound.ts";
 
 let UI_HTML: string | null = null;
 function uiHtml(): string {
@@ -90,7 +113,7 @@ function uiHtml(): string {
     try {
       UI_HTML = readFileSync(new URL("./ui.html", import.meta.url), "utf8");
     } catch {
-      UI_HTML = "<h1>Portage</h1><p>ui.html not found</p>";
+      UI_HTML = "<h1>Northstar</h1><p>ui.html not found</p>";
     }
   }
   return UI_HTML;
@@ -100,12 +123,98 @@ let PATIENT_HTML: string | null = null;
 function patientHtml(): string {
   if (PATIENT_HTML === null) {
     try {
-      PATIENT_HTML = readFileSync(new URL("./patient.html", import.meta.url), "utf8");
+      PATIENT_HTML = readFileSync(new URL("./portal.html", import.meta.url), "utf8");
     } catch {
-      PATIENT_HTML = "<h1>Portage</h1><p>patient.html not found</p>";
+      PATIENT_HTML = "<h1>Northstar</h1><p>portal.html not found</p>";
     }
   }
   return PATIENT_HTML;
+}
+
+/* The policy the two HTML pages are served under.
+
+   `default-src 'none'`, and then only what the page genuinely needs: its own
+   single inline script, carrying the nonce minted for this one response; its
+   own API, on its own origin; and the `data:` favicon. No external script, no
+   frame, no form post, no base rewrite.
+
+   Because `script-src` names only a nonce and never 'unsafe-inline', the
+   browser refuses an injected `<script>` and an injected handler attribute
+   alike. That is the second line rather than the first — the first is that
+   neither page interpolates anything into script any more, which is what the
+   handler table in `ui.html` is for — but the two fail independently, and a
+   policy earns its keep on the day the escaping does not.
+
+   `style-src 'unsafe-inline'` is deliberate. Both pages style elements with a
+   `style` attribute, a nonce cannot cover those, and `style-src-attr` is not
+   carried by every browser this has to run in. It costs little here: with
+   `img-src` limited to `data:` and `default-src 'none'`, injected CSS has no
+   URL to send anything to. */
+const pageCsp = (nonce: string): string =>
+  [
+    "default-src 'none'",
+    `script-src 'nonce-${nonce}'`,
+    "style-src 'unsafe-inline'",
+    "connect-src 'self'",
+    "img-src data:",
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+  ].join("; ");
+
+/* Everything that is not one of those two pages: JSON, the metrics text, an
+   error body. None of it is a document, so the empty policy is the right one.
+   It costs nothing and it is what keeps a response from being framed, or
+   rendered as a page, if a content type is ever wrong. */
+const API_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'";
+
+/**
+ * The HSTS header for a node that terminates TLS itself, or null for one that
+ * does not.
+ *
+ * Sent only when this process holds the certificate, because that is the only
+ * case where it knows the response actually travelled over TLS. Behind a proxy
+ * that terminates TLS the requests arrive here as plain HTTP, and the only
+ * evidence to the contrary would be an `X-Forwarded-Proto` header that anyone
+ * who can reach the port can write. Trusting that to decide a header which
+ * tells browsers to refuse HTTP for a year is the wrong way round — so a
+ * proxied deployment sets HSTS at the proxy, which is where the TLS it is
+ * asserting actually ends. `docs/RUNBOOK.md` says so.
+ *
+ * No `includeSubDomains` and no `preload`, neither of them configurable here.
+ * Both reach hostnames this deployment may not own — a sibling on the same
+ * parent domain, serving something else over HTTP, goes dark — and `preload`
+ * is close to irreversible once a browser ships the list. A site that wants
+ * either is making a decision about a whole domain, not about this process,
+ * and should make it at the edge where the rest of that domain is configured.
+ */
+export function hstsHeader(env: NodeJS.ProcessEnv = process.env): string | null {
+  const configured = readEnv("HSTS_MAX_AGE", env);
+  // A year, the conventional value and what any later preload submission
+  // would require. Browsers remember it: a site that may need to serve plain
+  // HTTP again should lower this before it ships, not after.
+  if (configured === undefined) return "max-age=31536000";
+  if (!/^\d+$/.test(configured.trim())) {
+    throw new Error(`NORTHSTAR_HSTS_MAX_AGE must be a whole number of seconds, or 0 to send no header; got "${configured}"`);
+  }
+  const seconds = Number(configured.trim());
+  return seconds === 0 ? null : `max-age=${seconds}`;
+}
+
+/** Serves one of the two pages under a nonce minted for this response. */
+function sendHtml(res: ServerResponse, page: string): void {
+  // Sixteen bytes, freshly per response. A nonce that repeats across
+  // responses, or that a caller can predict, is one an injected script can
+  // carry — which would leave the policy reading as enforcement while
+  // enforcing nothing.
+  const nonce = randomBytes(16).toString("base64");
+  const html = page.replaceAll("{{nonce}}", nonce);
+  res.writeHead(200, {
+    "content-type": "text/html; charset=utf-8",
+    "content-length": Buffer.byteLength(html),
+    "content-security-policy": pageCsp(nonce),
+  });
+  res.end(html);
 }
 
 const MAX_BODY = 25 * 1024 * 1024;
@@ -143,6 +252,17 @@ export interface ApiOptions {
    * copy of the primary's. Absent is the ordinary case — the primary.
    */
   station?: ReadingStation;
+  /**
+   * A development identity provider, when one is running.
+   *
+   * Present only where `NORTHSTAR_DEV_IDP=on`, which `server.ts` refuses to
+   * combine with a configured issuer. Its routes are mounted like any other
+   * and its tokens are validated by the ordinary verifier over the ordinary
+   * JWKS fetch; there is no branch anywhere in the gate for it.
+   */
+  devIdp?: DevIdentityProvider;
+  /** Optional server-side OIDC client; cookie credentials are confined to /patient/*. */
+  portalLogin?: PortalLogin;
 }
 
 export function startApi(engine: Engine, port: number, host = "0.0.0.0", options: ApiOptions = {}): Promise<ApiHandle> {
@@ -152,9 +272,44 @@ export function startApi(engine: Engine, port: number, host = "0.0.0.0", options
   // independent.
   const limiter = new RateLimiter(options.rateLimit);
   const remote = options.remote;
+  // Computed once, and only for a node holding its own certificate. Reading
+  // the environment here rather than per request also means a malformed value
+  // stops the node at boot instead of on the first call.
+  const hsts = options.tls ? hstsHeader() : null;
   const handler = (req: IncomingMessage, res: ServerResponse): void => {
-    void route(engine, req, res, gate, limiter, remote, options.station).catch((err) => {
-      send(res, 500, { error: err instanceof Error ? err.message : "internal error" });
+    // Set before routing, so they hold for every answer including the ones the
+    // catch below writes. A route serving a document replaces the policy with
+    // its own; nothing replaces the other two.
+    res.setHeader("content-security-policy", API_CSP);
+    res.setHeader("x-content-type-options", "nosniff");
+    res.setHeader("referrer-policy", "no-referrer");
+    if (hsts) res.setHeader("strict-transport-security", hsts);
+    void route(engine, req, res, gate, limiter, remote, options.station, options.devIdp, options.portalLogin).catch((err) => {
+      // The net under the router, for a throw no route caught. It used to
+      // send the exception message to the caller, which made it the one
+      // path where a fault from any store — including the ones that name a
+      // medication or a second patient — was quoted verbatim to whoever
+      // asked. There is no tenant here and so no trail row to put the
+      // message on, so a fault's message goes nowhere: the caller and the
+      // log get the same id, and the code path is in the frames.
+      //
+      // A refusal that escaped a route keeps its own status and words. It
+      // was written to be read by the caller, and answering it with 500
+      // would tell a client to retry a request that will be refused again.
+      // A body that is not JSON, and a channel `pattern` that is not a
+      // regular expression, both arrive here as SyntaxError. Ninety-seven
+      // `JSON.parse(await readBody(req))` calls in this router are not
+      // individually guarded, and do not need to be: the answer is the same
+      // for every one of them, and it is the caller's, not ours. Answering
+      // 500 told a client to retry a request that fails identically every
+      // time it is retried.
+      if (err instanceof SyntaxError) {
+        send(res, 400, { error: "malformed request body: expected JSON" });
+        return;
+      }
+      const mapped = mapStoreError(err);
+      logFault(`${req.method ?? "?"} ${routeArea(new URL(req.url ?? "/", "http://localhost").pathname)}`, mapped, err);
+      send(res, mapped.status, errorBody(mapped));
     });
   };
   const server = options.tls ? createSecureServer(options.tls.serverOptions, handler) : createServer(handler);
@@ -202,7 +357,9 @@ async function route(
   gate: AuthGate,
   limiter: RateLimiter,
   remote?: RemoteBackup,
-  station?: ReadingStation
+  station?: ReadingStation,
+  devIdp?: DevIdentityProvider,
+  portalLogin?: PortalLogin
 ): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname.replace(/\/+$/, "") || "/";
@@ -211,7 +368,15 @@ async function route(
   // One gate, ahead of every route. The router below is a flat if-chain with
   // no middleware layer, so this is the only place a check cannot be
   // forgotten when a route is added.
-  const auth = await gate.check(method, path, req.headers);
+  if (path.startsWith("/patient/") || path.startsWith("/auth/portal") || path === "/me") {
+    res.setHeader("cache-control", "no-store");
+    res.setHeader("referrer-policy", "no-referrer");
+  }
+  const sessionRefusal = portalLogin?.attach(req, path);
+  const authenticated = await gate.check(method, path, req.headers);
+  const auth = sessionRefusal && authenticated.ok
+    ? { ...sessionRefusal, principal: authenticated.principal }
+    : authenticated;
 
   // Every store this request touches comes from the caller's tenant, resolved
   // from the credential and never from anything on the request itself — a
@@ -292,20 +457,51 @@ async function route(
     return send(res, auth.status, { error: auth.error });
   }
 
+  if (portalLogin && await portalLogin.handle(req, res, path, url)) return;
+  if (method === "GET" && path === "/auth/portal") return send(res, 200, { enabled: false, authenticated: false });
+
   if (method === "GET" && (path === "/" || path === "/ui")) {
-    const html = uiHtml();
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(html) });
-    res.end(html);
+    sendHtml(res, uiHtml());
     return;
   }
 
   // Static chrome, no PHI. Chart access is /patient/* plus OAuth. Unauthenticated
   // GETs must not be audited as a reach for a patient record.
   if (method === "GET" && path === "/me") {
-    const html = patientHtml();
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(html) });
-    res.end(html);
+    sendHtml(res, patientHtml());
     return;
+  }
+
+  // The development identity provider. Absent unless one was constructed, in
+  // which case these 404 like any unrouted path — there is no half-enabled
+  // state where the endpoints answer but the tokens do not verify.
+  if (path === "/dev-idp" || path.startsWith("/dev-idp/")) {
+    if (!devIdp) return send(res, 404, { error: "no development identity provider is running" });
+    if (method === "GET" && path === "/dev-idp/.well-known/openid-configuration") {
+      return send(res, 200, devIdp.openidConfiguration());
+    }
+    if (method === "GET" && path === "/dev-idp/.well-known/jwks.json") {
+      return send(res, 200, devIdp.jwks());
+    }
+    if (method === "GET" && path === "/dev-idp/subjects") {
+      // Who the clinic has already granted a chart to. This provider cannot
+      // create authority, so an empty list means nobody has been enrolled —
+      // which is the correct state for a fresh database and is said as such
+      // rather than shown as a broken picker.
+      return send(res, 200, { subjects: devIdp.subjects(), issuer: devIdp.issuer });
+    }
+    if (method === "POST" && path === "/dev-idp/token") {
+      const body = JSON.parse(await readBody(req)) as { subject?: string };
+      if (!body.subject) return send(res, 400, { error: "subject required" });
+      try {
+        return send(res, 200, devIdp.issue(body.subject));
+      } catch (err) {
+        // A subject whose grant expired or was revoked between the picker
+        // being drawn and the button being pressed. Refused, not minted.
+        return send(res, 400, { error: err instanceof Error ? err.message : "cannot issue" });
+      }
+    }
+    return send(res, 404, { error: "not found" });
   }
 
   if (method === "GET" && path === "/api/health") {
@@ -319,7 +515,7 @@ async function route(
       configured: false,
       ok: false,
       detail:
-        "no PORTAGE_BACKUP_REMOTE; a snapshot that never leaves this machine does not survive the failures that need a restore",
+        "no NORTHSTAR_BACKUP_REMOTE; a snapshot that never leaves this machine does not survive the failures that need a restore",
     };
     return send(res, 200, {
       ok: true,
@@ -332,10 +528,18 @@ async function route(
       // A configured remote whose last replica failed counts too: local
       // snapshots still exist, but the copy that survives the machine does
       // not, and that is an incident rather than a posture.
+      // A source nothing can be read from counts too, and it is the failure
+      // that used to be invisible: a poll caught its own exception, printed
+      // it and returned, so a channel whose far end had been unreachable for
+      // days sat here reporting a clean bill of health. One bad file is
+      // reported without degrading — the link is up, and the message
+      // pipeline already owns that.
       degraded:
+        Boolean(engine.uploadScanWorker?.status().degraded) ||
         stalled.length > 0 ||
         signals.deadLetters > 0 ||
         signals.silentChannels.length > 0 ||
+        signals.failingChannels.some((c) => c.degrading) ||
         Boolean(remote?.isDegraded()),
       stats: db.stats(),
       signals: { ...signals, stalledChannels: stalled, stalledAfterSec: stalledAfter },
@@ -348,6 +552,7 @@ async function route(
       // configured-and-failed is an incident and already folded into
       // `degraded` above.
       remoteBackup: remoteStatus,
+      uploadScanning: engine.uploadScanWorker?.status() ?? { configured: false },
     });
   }
 
@@ -362,36 +567,63 @@ async function route(
       fhir: Record<string, number>;
     };
     const lines: string[] = [];
+    // Every series is exposed twice: once as `northstar_*` and once under the
+    // pre-rename `portage_*`.
+    //
+    // A metric name is not branding — it is the string in somebody's dashboard
+    // query and, more importantly, in their alerting rules. A renamed metric
+    // does not break an alert loudly; the series simply stops existing, the
+    // rule evaluates against no data, and the alert that was watching for a
+    // dead-letter backlog quietly never fires again. The duplicate costs a few
+    // hundred bytes per scrape and keeps every existing rule working until the
+    // dashboards have been moved by hand.
     const metric = (name: string, help: string, type: string, samples: Array<[string, number]>): void => {
-      lines.push(`# HELP ${name} ${help}`, `# TYPE ${name} ${type}`);
-      for (const [labels, value] of samples) lines.push(`${name}${labels} ${value}`);
+      for (const full of [`northstar_${name}`, `portage_${name}`]) {
+        lines.push(`# HELP ${full} ${help}`, `# TYPE ${full} ${type}`);
+        for (const [labels, value] of samples) lines.push(`${full}${labels} ${value}`);
+      }
     };
 
-    metric("portage_channels", "Configured channels.", "gauge", [["", stats.channels]]);
-    metric(
-      "portage_messages_total",
+    metric("channels", "Configured channels.", "gauge", [["", stats.channels]]);
+    const scans = engine.uploadScanWorker?.status();
+    metric("upload_scanner_configured", "Automatic upload scanning configured.", "gauge", [["", scans ? 1 : 0]]);
+    if (scans) {
+      metric("uploads_pending_scan", "Quarantined uploads awaiting scanning.", "gauge", [["", scans.pending]]);
+      metric("uploads_retrying_scan", "Pending uploads with prior scan attempts.", "gauge", [["", scans.retrying]]);
+      metric("upload_scan_oldest_age_seconds", "Age of oldest quarantined upload.", "gauge", [["", scans.oldestAgeSec]]);
+    }
+    metric("messages_total",
       "Messages ingested, by status.",
       "counter",
       Object.entries(stats.messages).map(([k, v]) => [`{status="${k}"}`, v] as [string, number])
     );
-    metric(
-      "portage_deliveries",
+    metric("deliveries",
       "Deliveries by state.",
       "gauge",
       Object.entries(stats.deliveries).map(([k, v]) => [`{state="${k}"}`, v] as [string, number])
     );
-    metric(
-      "portage_fhir_resources",
+    metric("fhir_resources",
       "Resources in the FHIR facade, by type.",
       "gauge",
       Object.entries(stats.fhir).map(([k, v]) => [`{resource_type="${k}"}`, v] as [string, number])
     );
-    metric("portage_dead_letters", "Deliveries in the dead-letter queue.", "gauge", [["", signals.deadLetters]]);
-    metric("portage_oldest_queued_age_seconds", "Age of the oldest undelivered message.", "gauge", [
+    metric("dead_letters", "Deliveries in the dead-letter queue.", "gauge", [["", signals.deadLetters]]);
+    // Labelled by channel and stage and nothing else. `kind` is an exception
+    // class and would be a fine label, but a metric name plus its labels is
+    // the one part of a scrape that is stored forever and copied into every
+    // dashboard, and an unbounded label set is how a leak starts.
+    metric("channel_source_failures",
+      "Consecutive failures reading a channel's source (stage=read) or handling one thing on it (stage=item).",
+      "gauge",
+      signals.failingChannels.map(
+        (c) =>
+          [`{channel="${c.channelId.replace(/"/g, "")}",stage="${c.stage}"}`, c.consecutive] as [string, number]
+      )
+    );
+    metric("oldest_queued_age_seconds", "Age of the oldest undelivered message.", "gauge", [
       ["", signals.oldestQueuedAgeSec ?? 0],
     ]);
-    metric(
-      "portage_channel_oldest_queued_age_seconds",
+    metric("channel_oldest_queued_age_seconds",
       "Age of the oldest undelivered message, per channel.",
       "gauge",
       signals.stalledChannels.map(
@@ -403,8 +635,7 @@ async function route(
     // counter: the question is "how long has it been quiet", and an alert is a
     // threshold on it. Only channels that declared a cadence appear, so this
     // never invents an expectation an operator did not set.
-    metric(
-      "portage_channel_last_message_age_seconds",
+    metric("channel_last_message_age_seconds",
       "Seconds since a channel last received a message.",
       "gauge",
       engine
@@ -413,8 +644,7 @@ async function route(
         .filter((e): e is readonly [string, number] => e[1] !== null)
         .map(([id, age]) => [`{channel="${id.replace(/"/g, "")}"}`, age] as [string, number])
     );
-    metric(
-      "portage_channel_silent",
+    metric("channel_silent",
       "1 when a channel has gone longer than its declared cadence without a message.",
       "gauge",
       signals.silentChannels.map((c) => [`{channel="${c.channelId.replace(/"/g, "")}"}`, 1] as [string, number])
@@ -432,11 +662,10 @@ async function route(
     // and walking every chain each time would cost more as the log grew —
     // worst exactly where the log is largest. The length is the signal; the
     // walk belongs on /api/chain/verify, where an operator asks for it.
-    metric("portage_audit_events_total", "Entries on the access audit chain.", "counter", [
+    metric("audit_events_total", "Entries on the access audit chain.", "counter", [
       ["", tenant.audit.count()],
     ]);
-    metric(
-      "portage_chain_length",
+    metric("chain_length",
       "Messages on each channel's hash chain.",
       "counter",
       engine
@@ -447,19 +676,17 @@ async function route(
     const remoteStatus = remote?.status() ?? {
       configured: false,
       ok: false,
-      detail: "no PORTAGE_BACKUP_REMOTE",
+      detail: "no NORTHSTAR_BACKUP_REMOTE",
     };
-    metric("portage_backup_remote_configured", "1 when an off-machine backup destination is configured.", "gauge", [
+    metric("backup_remote_configured", "1 when an off-machine backup destination is configured.", "gauge", [
       ["", remoteStatus.configured ? 1 : 0],
     ]);
-    metric(
-      "portage_backup_remote_ok",
+    metric("backup_remote_ok",
       "1 when the last off-machine replica was verified. 0 if unconfigured, never attempted, or last attempt failed.",
       "gauge",
       [["", remoteStatus.ok ? 1 : 0]]
     );
-    metric(
-      "portage_backup_remote_age_seconds",
+    metric("backup_remote_age_seconds",
       "Seconds since the last verified off-machine replica. -1 if none.",
       "gauge",
       [["", remoteAgeSec(remoteStatus)]]
@@ -587,6 +814,9 @@ async function route(
     }
     const subject = auth.principal.id;
     const access = tenant.patientAccess;
+    // One wording for every "you may not read this", so that no route can
+    // phrase it differently for a record that exists and one that does not.
+    const NOT_AUTHORIZED = "not authorized for this patient resource";
 
     const authorityView = (row: AuthorityRow) => ({
       id: row.id,
@@ -626,7 +856,7 @@ async function route(
             detail: authority ? `patient grant lacks ${permission}` : "no live patient authority",
           });
         });
-        return send(res, 403, { error: "not authorized for this patient resource" });
+        return send(res, 403, { error: NOT_AUTHORIZED });
       }
 
       let value: T;
@@ -650,7 +880,7 @@ async function route(
         });
       } catch (err) {
         const mapped = mapStoreError(err);
-        if (mapped.outcome === 8) console.error(`patient ${resourceType}: ${mapped.detail}`);
+        logFault(`patient ${resourceType}`, mapped, err);
         tenant.db.transaction(() => {
           access.logAccess({
             patientId,
@@ -669,9 +899,36 @@ async function route(
             detail: mapped.detail,
           });
         });
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
       return send(res, status, value);
+    };
+
+    // For a route that names a record by its own id rather than naming a
+    // patient. The record says whose it is, and that patient's grant is the
+    // one checked — a query string cannot nominate whose authority applies.
+    //
+    // A missing record gets the answer patientPhi() gives a caller with no
+    // grant on the chart, which is also the answer a patient id that does
+    // not exist has always had. These routes used to say 404 for "not there"
+    // and 403 for "not yours", and said it before checking anybody's
+    // authority, so anyone signed in to the portal could learn whether a
+    // message thread, a visit, a form or a file existed by asking for it.
+    // Now the status and the body are the same either way. The trail still
+    // records which it was; the caller cannot tell.
+    const recordPhi = <R extends { patient_id: string }, T>(
+      record: R | undefined,
+      named: string,
+      permission: PatientPermission,
+      resourceType: string,
+      action: string,
+      produce: (authority: AuthorityRow, record: R) => T
+    ): void => {
+      if (!record) {
+        audit({ action: verbToAction(method), outcome: 4, resourceType, detail: `no ${named}` });
+        return send(res, 403, { error: NOT_AUTHORIZED });
+      }
+      return patientPhi(record.patient_id, permission, resourceType, action, (authority) => produce(authority, record));
     };
 
     if ((path === "/patient" || path === "/patient/authorities") && method === "GET") {
@@ -717,6 +974,20 @@ async function route(
           items: tenant.immunizations.forPatient(patientId),
         },
         latestVitals: tenant.vitals.latest(patientId),
+        procedures: {
+          status: tenant.procedures.historyStatus(patientId),
+          items: tenant.procedures.forPatient(patientId),
+        },
+        carePlans: {
+          status: tenant.carePlans.historyStatus(patientId),
+          active: tenant.carePlans.active(patientId),
+        },
+        documents: {
+          // Metadata only. Lists never carry the payload — a patient summary
+          // is not a file download, and this is not a portal.
+          status: tenant.documents.historyStatus(patientId),
+          items: tenant.documents.forPatient(patientId),
+        },
         careTeam: tenant.careTeam.forPatient(patientId),
         coverage: tenant.coverage.current(patientId) ?? null,
       }));
@@ -728,13 +999,53 @@ async function route(
       return patientPhi(patientId, "results", "DiagnosticReport", "view-results", () => access.resultsFor(patientId));
     }
 
+    if (path === "/patient/after-visit-summary" && method === "GET") {
+      // Gated on "summary", not a new permission: a plan's approved goals
+      // and actions are exactly the kind of content /patient/summary already
+      // serves for the same chart, and a caregiver trusted with one is
+      // trusted with the other.
+      const encounterId = url.searchParams.get("encounter");
+      if (!encounterId) return send(res, 400, { error: "encounter required" });
+      // The encounter's own patient decides whose authority is checked, the
+      // same way /patient/thread reads it from the thread rather than trusting
+      // a caller-supplied id — a query string cannot nominate whose grant applies.
+      return recordPhi(tenant.encounters.get(encounterId), `encounter ${encounterId}`, "summary", "CarePlan", "view-after-visit-summary", () =>
+        tenant.avs.build(encounterId)
+      );
+    }
+
     if (path === "/patient/appointments" && method === "GET") {
       const patientId = url.searchParams.get("patient");
       if (!patientId) return send(res, 400, { error: "patient required" });
+      // Flattened, because the store returns { booking, slot } pairs and the
+      // only caller -- the portal's appointments screen -- reads `startsAt`,
+      // `service`, `resourceId` and `status` off the row. It read them off
+      // the pair and got undefined for all four, so every card rendered an
+      // em-dash and an empty line: a patient could see that they had
+      // appointments and not when, where, with whom, or whether one had been
+      // cancelled.
+      //
+      // Narrowed at the same time. The pair carries every column of both
+      // rows, so the old shape handed a patient `booked_by`,
+      // `correlation_id`, `referral_id` and `cancelled_by` -- staff
+      // identifiers and internal bookkeeping they never asked for. What is
+      // here is what the screen shows, plus what somebody needs to act on it.
       return patientPhi(patientId, "appointments", "Appointment", "view-appointments", () =>
-        tenant.schedule.appointmentsForPatient(patientId, {
-          includeCancelled: url.searchParams.get("cancelled") === "true",
-        })
+        tenant.schedule
+          .appointmentsForPatient(patientId, {
+            includeCancelled: url.searchParams.get("cancelled") === "true",
+          })
+          .map(({ booking, slot }) => ({
+            id: booking.id,
+            startsAt: slot.starts_at,
+            endsAt: slot.ends_at,
+            service: slot.service,
+            resourceId: slot.resource_id,
+            resourceKind: slot.resource_kind,
+            status: booking.status,
+            reason: booking.reason,
+            ...(booking.cancelled_at ? { cancelledAt: booking.cancelled_at } : {}),
+          }))
       );
     }
 
@@ -749,9 +1060,7 @@ async function route(
     if (path === "/patient/thread" && method === "GET") {
       const id = url.searchParams.get("id");
       if (!id) return send(res, 400, { error: "id required" });
-      const thread = tenant.messaging.get(id);
-      if (!thread) return send(res, 404, { error: `no message thread ${id}` });
-      return patientPhi(thread.patient_id, "messages", "Communication", "view-message-thread", () => ({
+      return recordPhi(tenant.messaging.get(id), `message thread ${id}`, "messages", "Communication", "view-message-thread", (_, thread) => ({
         thread,
         messages: tenant.messaging.messages(id),
       }));
@@ -788,9 +1097,7 @@ async function route(
     if (path === "/patient/thread-reply" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as { id?: string; body?: string };
       if (!body.id || !body.body) return send(res, 400, { error: "id and body required" });
-      const thread = tenant.messaging.get(body.id);
-      if (!thread) return send(res, 404, { error: `no message thread ${body.id}` });
-      return patientPhi(thread.patient_id, "messages", "Communication", "reply-to-message", (authority) =>
+      return recordPhi(tenant.messaging.get(body.id), `message thread ${body.id}`, "messages", "Communication", "reply-to-message", (authority) =>
         tenant.messaging.reply(body.id!, {
           body: body.body!,
           authorKind: authority.relationship === "self" ? "patient" : "proxy",
@@ -811,7 +1118,12 @@ async function route(
       const patientId = url.searchParams.get("patient");
       if (!patientId) return send(res, 400, { error: "patient required" });
       return patientPhi(patientId, "delegates", "Consent", "view-delegates", (authority) => {
-        if (authority.relationship !== "self") throw new Error("only the patient may review delegated access");
+        // Refusals, not faults. grantProxy() will not give a caregiver
+        // "delegates", so this is reached only by a grant row that carries it
+        // anyway — an older or imported one. As plain errors, this and its
+        // twin in /patient/delegate-revoke answered that caregiver 500
+        // "internal error", logged a fault and marked the trail row serious.
+        if (authority.relationship !== "self") refuse("only the patient may review delegated access", 403);
         return access.whoCanSee(patientId).map(authorityView);
       });
     }
@@ -822,10 +1134,12 @@ async function route(
         return send(res, 400, { error: "patient, authority and reason required" });
       }
       return patientPhi(body.patient, "delegates", "Consent", "revoke-delegate", (self) => {
-        if (self.relationship !== "self") throw new Error("only the patient may revoke delegated access");
+        if (self.relationship !== "self") refuse("only the patient may revoke delegated access", 403);
         const delegated = access.authority(body.authority!);
+        // One answer for an id that does not exist, another patient's grant
+        // and the patient's own: none of them is a delegate of this chart.
         if (!delegated || delegated.patient_id !== body.patient || delegated.relationship === "self") {
-          throw new Error("that is not a delegated authority for this patient");
+          refuse(`no delegated authority ${body.authority} for this patient`, 404);
         }
         return authorityView(
           access.revoke(body.authority!, {
@@ -870,11 +1184,138 @@ async function route(
       );
     }
 
+    // Item 60: pre-visit intake and patient uploads. Everything below goes
+    // through patientPhi() exactly like the rest of this block — a caregiver
+    // with the "intake" permission can draft and submit on the patient's
+    // behalf; one without it cannot, the same as any other section here.
+    if (path === "/patient/questionnaires" && method === "GET") {
+      // Not itself PHI — a list of forms offered, not an answer to one — so
+      // this is available to any authenticated patient-portal subject rather
+      // than gated per patient, the same way /patient/authorities is.
+      //
+      // `questions` is parsed here rather than served as the column holds
+      // it. The store keeps a JSON string, the screen does `for (const
+      // question of q.questions)`, and `for...of` over a string iterates
+      // characters — so a two-question form rendered as a hundred and
+      // sixty-odd nameless text boxes, every one of them `id="q-undefined"`,
+      // and the answers came back keyed `undefined` so the required-question
+      // check refused every submission. A patient could not complete a
+      // questionnaire at all. Nothing caught it because every test on this
+      // route asserted a status code, and 200 is what a broken payload
+      // returns too — the same gap #107 closed on /patient/appointments.
+      //
+      // Narrowed while it was being fixed, for the same reason: a patient is
+      // offered a form, not the row behind it. `status`, `published_by`,
+      // `published_at` and the tenant are clinic bookkeeping.
+      return send(res, 200, {
+        questionnaires: tenant.questionnaires.list().map((q) => ({
+          id: q.id,
+          version: q.version,
+          title: q.title,
+          questions: JSON.parse(q.questions) as Question[],
+        })),
+      });
+    }
+
+    if (path === "/patient/intake" && method === "GET") {
+      const patientId = url.searchParams.get("patient");
+      if (!patientId) return send(res, 400, { error: "patient required" });
+      return patientPhi(patientId, "intake", "QuestionnaireResponse", "view-intake", () => tenant.intake.forPatient(patientId));
+    }
+
+    if (path === "/patient/intake/draft" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        questionnaireId?: string;
+        appointmentId?: string;
+        answers?: Record<string, unknown>;
+        concern?: string;
+        proposedMeds?: { change?: string; description?: string }[];
+      };
+      if (!body.patient) return send(res, 400, { error: "patient required" });
+      return patientPhi(
+        body.patient,
+        "intake",
+        "QuestionnaireResponse",
+        "save-intake-draft",
+        (authority) =>
+          tenant.intake.saveDraft({
+            patientId: body.patient!,
+            ...(body.questionnaireId ? { questionnaireId: body.questionnaireId } : {}),
+            ...(body.appointmentId ? { appointmentId: body.appointmentId } : {}),
+            ...(body.answers ? { answers: body.answers } : {}),
+            ...(body.concern !== undefined ? { concern: body.concern } : {}),
+            ...(body.proposedMeds ? { proposedMeds: body.proposedMeds as { change: "started" | "stopped" | "changed"; description: string }[] } : {}),
+            by: { actorId: subject, actorKind: authority.relationship === "self" ? "patient" : "proxy" },
+          }),
+        201
+      );
+    }
+
+    if (path === "/patient/intake/submit" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      return recordPhi(tenant.intake.find(body.id), `intake submission ${body.id}`, "intake", "QuestionnaireResponse", "submit-intake", (authority) =>
+        tenant.intake.submit(body.id!, { actorId: subject, actorKind: authority.relationship === "self" ? "patient" : "proxy" })
+      );
+    }
+
+    if (path === "/patient/uploads" && method === "GET") {
+      const patientId = url.searchParams.get("patient");
+      if (!patientId) return send(res, 400, { error: "patient required" });
+      return patientPhi(patientId, "intake", "DocumentReference", "view-uploads", () => tenant.uploads.forPatient(patientId));
+    }
+
+    if (path === "/patient/upload" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        submissionId?: string;
+        filename?: string;
+        contentType?: string;
+        data?: string;
+      };
+      if (!body.patient || !body.filename || !body.contentType || !body.data) {
+        return send(res, 400, { error: "patient, filename, contentType and data required" });
+      }
+      return patientPhi(
+        body.patient,
+        "intake",
+        "DocumentReference",
+        "upload-document",
+        (authority) =>
+          tenant.uploads.receive({
+            patientId: body.patient!,
+            ...(body.submissionId ? { submissionId: body.submissionId } : {}),
+            filename: body.filename!,
+            contentType: body.contentType!,
+            data: body.data!,
+            by: { actorId: subject, actorKind: authority.relationship === "self" ? "patient" : "proxy" },
+          }),
+        201
+      );
+    }
+
+    if (path === "/patient/upload" && method === "GET") {
+      const id = url.searchParams.get("id");
+      if (!id) return send(res, 400, { error: "id required" });
+      return recordPhi(tenant.uploads.find(id), `upload ${id}`, "intake", "DocumentReference", "download-upload", () => tenant.uploads.download(id));
+    }
+
     return send(res, 404, { error: "not found" });
   }
 
   if (path === "/api/channels" && method === "GET") {
-    return send(res, 200, engine.listChannels());
+    // Authenticated, so this is where the failure detail lives: the exception
+    // message, and for a bad file its name. `/api/health` is open and carries
+    // the class and the count only.
+    return send(
+      res,
+      200,
+      engine.listChannels().map((c) => {
+        const failure = db.sourceFailure(c.id);
+        return failure ? { ...c, sourceFailure: failure } : c;
+      })
+    );
   }
   if (path === "/api/channels" && method === "POST") {
     const body = await readBody(req);
@@ -1119,8 +1560,8 @@ async function route(
   }
 
   if (path === "/api/backup" && method === "POST") {
-    const dir = process.env.PORTAGE_BACKUP_DIR ?? join(process.cwd(), "backups");
-    const keep = Number(process.env.PORTAGE_BACKUP_KEEP ?? "7");
+    const dir = readEnv("BACKUP_DIR") ?? join(process.cwd(), "backups");
+    const keep = Number(readEnv("BACKUP_KEEP") ?? "7");
     try {
       const result = await takeBackup(db, { dir, keep: Number.isInteger(keep) && keep > 0 ? keep : undefined });
       if (!remote?.configured) {
@@ -1315,8 +1756,8 @@ async function route(
       // Every station response says what it is serving from, so a consumer
       // that never opens the assembled chart still cannot mistake outage
       // data for current data without ignoring the response saying so.
-      res.setHeader("x-portage-station-as-of", stationState.asOf);
-      res.setHeader("x-portage-station-age-hours", String(stationState.ageHours));
+      res.setHeader("x-northstar-station-as-of", stationState.asOf);
+      res.setHeader("x-northstar-station-age-hours", String(stationState.ageHours));
 
       // Break-glass works offline — §6 of the design, and the reason a
       // blanket write refusal would be wrong: a withheld chart mid-emergency
@@ -1360,7 +1801,7 @@ async function route(
             patient: body.patient,
             detail: mapped.detail,
           });
-          return send(res, mapped.status, { error: mapped.error });
+          return send(res, mapped.status, errorBody(mapped));
         }
       }
 
@@ -1368,7 +1809,17 @@ async function route(
       // check and the registry queries are reads that arrive as POST because
       // their input is structured, and refusing them would take the allergy
       // check away for exactly the outage it matters most in.
-      const READS_AS_POST = ["/api/clinical/safety-check", "/api/clinical/gaps", "/api/clinical/measure"];
+      const READS_AS_POST = [
+        "/api/clinical/safety-check",
+        "/api/clinical/gaps",
+        "/api/clinical/measure",
+        "/api/clinical/effectiveness-review",
+        "/api/clinical/effectiveness-follow-up",
+        "/api/clinical/effectiveness-referrals",
+        "/api/clinical/effectiveness-notifications",
+        "/api/clinical/effectiveness-missed-appointments",
+        "/api/clinical/effectiveness-task-burden",
+      ];
       if (method !== "GET" && !READS_AS_POST.includes(path)) {
         audit({
           action: verbToAction(method),
@@ -1476,7 +1927,7 @@ async function route(
       produce: (withheldTypes: ReadonlySet<string>) => T,
       count?: (v: T) => number,
       covers: readonly string[] = [resourceType],
-      auditDetail?: (value: T) => string | undefined
+      detail?: (v: T) => string
     ): void => {
       const patient = subject;
       let withheldTypes: ReadonlySet<string> = new Set();
@@ -1507,9 +1958,9 @@ async function route(
         value = produce(withheldTypes);
       } catch (err) {
         const mapped = mapStoreError(err);
-        if (mapped.outcome === 8) console.error(`phi ${resourceType}: ${mapped.detail}`);
+        logFault(`phi ${resourceType}`, mapped, err);
         audit({ action: verbToAction(method), outcome: mapped.outcome, resourceType, patient, detail: mapped.detail });
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
       audit({
         action: verbToAction(method),
@@ -1517,15 +1968,12 @@ async function route(
         resourceType,
         patient,
         ...(count ? { count: count(value) } : {}),
+        ...(detail ? { detail: detail(value) } : {}),
         // A partly withheld read is not an ordinary one, and the trail is
         // where a privacy office finds out the directive did something. Only
         // the types, never the content: which sections were locked is the
         // narrowest thing that makes the row useful.
-        ...(withheldTypes.size
-          ? { detail: `withheld by patient directive: ${[...withheldTypes].sort().join(", ")}` }
-          : auditDetail
-            ? { detail: auditDetail(value) }
-            : {}),
+        ...(withheldTypes.size ? { detail: `withheld by patient directive: ${[...withheldTypes].sort().join(", ")}` } : {}),
       });
       return send(res, 200, value);
     };
@@ -1545,8 +1993,8 @@ async function route(
       produce: (withheldTypes: ReadonlySet<string>) => T,
       count?: (v: T) => number,
       covers: readonly string[] = [resourceType],
-      auditDetail?: (value: T) => string | undefined
-    ): void => phiFor(patient, resourceType, produce, count, covers, auditDetail);
+      detail?: (v: T) => string
+    ): void => phiFor(patient, resourceType, produce, count, covers, detail);
 
     /**
      * Privacy-office reads and writes. Audits, then sends, like `phi` — but
@@ -1565,7 +2013,7 @@ async function route(
         value = produce();
       } catch (err) {
         const mapped = mapStoreError(err);
-        if (mapped.outcome === 8) console.error(`phiOffice ${resourceType}: ${mapped.detail}`);
+        logFault(`phiOffice ${resourceType}`, mapped, err);
         audit({
           action: verbToAction(method),
           outcome: mapped.outcome,
@@ -1573,7 +2021,7 @@ async function route(
           patient: subject,
           detail: mapped.detail,
         });
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
       audit({
         action: verbToAction(method),
@@ -1672,7 +2120,7 @@ async function route(
       } catch (err) {
         const mapped = mapStoreError(err);
         audit({ action: "R", outcome: mapped.outcome, resourceType: "Composition", patient, detail: mapped.detail });
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
       // One row per member, because each member's record was disclosed and
       // each member's access review must see this read. A single row naming
@@ -1739,7 +2187,7 @@ async function route(
         for (const id of [body.a, body.b]) {
           audit({ action: "C", outcome: mapped.outcome, resourceType: "Patient", patient: id, detail: mapped.detail });
         }
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
     }
     if (path === "/api/clinical/unlink" && method === "POST") {
@@ -1784,7 +2232,7 @@ async function route(
             audit({ action: "U", outcome: mapped.outcome, resourceType: "Patient", patient: id, detail: mapped.detail });
           }
         }
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
     }
     if (path === "/api/clinical/encounters" && method === "GET") {
@@ -1902,6 +2350,173 @@ async function route(
       if (!patient) return send(res, 400, { error: "patient required" });
       return phi("ServiceRequest", () => tenant.orders.forPatient(patient), (rows) => rows.length);
     }
+    // Where one order actually got to, with every attempt behind it. Audited
+    // as a read of the patient because it is one: the state names the order,
+    // the destination and when it went.
+    if (path === "/api/clinical/order-transmission" && method === "GET") {
+      const orderId = url.searchParams.get("order");
+      if (!orderId) return send(res, 400, { error: "order required" });
+      const order = tenant.orders.get(orderId);
+      if (!order) return send(res, 404, { error: `no order ${orderId}` });
+      return phi("ServiceRequest", () => ({
+        order: orderId,
+        transmission: tenant.orders.transmissionState(orderId),
+        attempts: tenant.orders.transmissions(orderId),
+      }));
+    }
+    // Placed orders no laboratory has acknowledged holding. On a site with no
+    // outbound interface this is every open order, which is the correct
+    // answer and the one nothing was saying before.
+    // Cancelled here, still held there. The more urgent of the two lists and,
+    // until now, the only one with no way to be read: the store answered the
+    // question and nothing asked it. A list nobody can reach is a list nobody
+    // reads, which is the failure the list exists to prevent.
+    if (path === "/api/clinical/orders-cancelled-still-with-filler" && method === "GET") {
+      return phi(
+        "ServiceRequest",
+        () => filterByDirective(["ServiceRequest"], tenant.orders.cancelledButStillWithFiller()),
+        (r) => r.rows.length
+      );
+    }
+    if (path === "/api/clinical/orders-not-with-filler" && method === "GET") {
+      return phi(
+        "ServiceRequest",
+        () => filterByDirective(["ServiceRequest"], tenant.orders.notWithFiller()),
+        (r) => r.rows.length
+      );
+    }
+    // Sending an order, and its cancellation. The transmission work has been
+    // reachable only by a caller inside the process until now: every order
+    // read as "not sent" and was, correctly and permanently, because nothing
+    // could send one.
+    //
+    // The connection comes from the route the site declared, never from the
+    // request. A caller who could name their own endpoint could send a
+    // patient's requisition to a host of their choosing.
+    if (
+      (path === "/api/clinical/order-send" || path === "/api/clinical/order-cancel-send") &&
+      method === "POST"
+    ) {
+      const cancelling = path === "/api/clinical/order-cancel-send";
+      const body = JSON.parse(await readBody(req)) as {
+        order?: string;
+        aoeAnswers?: Record<string, string>;
+        specimen?: SpecimenDetail;
+      };
+      if (!body.order) return send(res, 400, { error: "order required" });
+      const order = tenant.orders.get(body.order);
+      if (!order) return send(res, 404, { error: `no order ${body.order}` });
+
+      const routing = tenant.orders.orderRouting(order.category);
+      if (!routing || !routing.transmits) {
+        return send(res, 409, {
+          error:
+            `${order.category} orders are not declared to leave this site, so nothing was sent. ` +
+            "Declare a route first, rather than sending against an undeclared one.",
+          transmission: tenant.orders.transmissionState(order.id),
+        });
+      }
+      const profile = engine.labProfiles.get(routing.profile_id ?? "");
+      if (!profile) {
+        return send(res, 409, {
+          error:
+            `this route builds against laboratory profile ${routing.profile_id}, which is not loaded. ` +
+            "A message built against a profile nobody has is a message built against a guess.",
+        });
+      }
+
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      const actor = { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      // Reading the chart to build the message is reading the chart, so it
+      // goes through the same directive check as any other access.
+      const block = withheld(order.patient_id, ["ServiceRequest", "Patient"]);
+      if (block) {
+        audit({
+          action: "U",
+          outcome: 4,
+          resourceType: "ServiceRequest",
+          patient: order.patient_id,
+          detail: `withheld by patient directive ${block.id}`,
+        });
+        return send(res, 403, {
+          error: "this record is withheld by a patient directive",
+          breakGlass: "POST /api/clinical/break-glass",
+        });
+      }
+
+      const result = await (cancelling ? sendOrderCancellation : sendOrder)(
+        {
+          orders: tenant.orders,
+          patients: tenant.clinical.patientIndex,
+          profile,
+        },
+        order.id,
+        { host: routing.endpoint_host!, port: routing.endpoint_port! },
+        {
+          sendingApplication: routing.sending_application!,
+          sendingFacility: routing.sending_facility!,
+          receivingApplication: routing.receiving_application!,
+          receivingFacility: routing.receiving_facility!,
+          timezoneOffset: routing.timezone_offset!,
+          orderingProvider: {
+            id: order.ordered_by,
+            family: order.ordered_by,
+          },
+          ...(body.aoeAnswers ? { aoeAnswers: body.aoeAnswers } : {}),
+          ...(body.specimen ? { specimen: body.specimen } : {}),
+        },
+        actor
+      );
+      audit({
+        action: "U",
+        outcome: result.sent ? 0 : 4,
+        resourceType: "ServiceRequest",
+        patient: order.patient_id,
+        detail: cancelling
+          ? `cancellation to ${routing.destination}: ${result.sent ? "acknowledged" : "not acknowledged"}`
+          : `order to ${routing.destination}: ${result.sent ? "acknowledged" : "not acknowledged"}`,
+      });
+      // 200 either way: a refusal to send is a real answer about this order,
+      // and the state it carries is the point of asking.
+      return send(res, 200, result);
+    }
+    if (path === "/api/clinical/order-transmission-record" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        order?: string;
+        outcome?: string;
+        destination?: string;
+        controlId?: string;
+        detail?: string;
+      };
+      if (!body.order || !body.outcome || !body.destination || !body.detail) {
+        return send(res, 400, { error: "order, outcome, destination and detail required" });
+      }
+      const order = tenant.orders.get(body.order);
+      if (!order) return send(res, 404, { error: `no order ${body.order}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      try {
+        const row = tenant.orders.recordTransmission(
+          body.order,
+          {
+            outcome: body.outcome as "sent" | "acknowledged" | "rejected" | "failed",
+            destination: body.destination,
+            ...(body.controlId === undefined ? {} : { controlId: body.controlId }),
+            detail: body.detail,
+          },
+          { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" }
+        );
+        audit({
+          action: "U",
+          outcome: 0,
+          resourceType: "ServiceRequest",
+          patient: order.patient_id,
+          detail: `order ${body.outcome} to ${body.destination}`,
+        });
+        return send(res, 200, row);
+      } catch (err) {
+        return send(res, 400, { error: (err as Error).message });
+      }
+    }
     if (path === "/api/clinical/referrals" && method === "GET") {
       return phi(
         "ServiceRequest",
@@ -1923,6 +2538,97 @@ async function route(
         },
         (r) => r.rows.length
       );
+    }
+    // Item 60: the clinician side of pre-visit intake. The patient-facing
+    // routes are under /patient/*, gated by patientPhi() further down; these
+    // are ordinary clinical reads and writes and go through phi()/phiFor()
+    // like any other, because a submission is content about a patient the
+    // same way a note or a vital sign is.
+    if (path === "/api/clinical/intake" && method === "GET") {
+      // Spans patients when nothing narrows it, like the worklist and the
+      // task inbox above — the review queue is a clinic-wide list, not a
+      // per-patient one, until somebody names a patient.
+      return phi(
+        "QuestionnaireResponse",
+        () => (patient ? tenant.intake.forPatient(patient) : tenant.intake.open()),
+        (r) => r.length,
+        ["QuestionnaireResponse"]
+      );
+    }
+    if (path === "/api/clinical/intake-review" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; outcome?: string; note?: string };
+      if (!body.id || !body.outcome || !body.note) return send(res, 400, { error: "id, outcome and note required" });
+      const submission = tenant.intake.get(body.id);
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phiFor(
+        submission.patient_id,
+        "QuestionnaireResponse",
+        () =>
+          tenant.intake.review(body.id!, {
+            outcome: body.outcome as "accepted" | "noted" | "needs-follow-up",
+            note: body.note!,
+            by,
+          }),
+        undefined,
+        ["QuestionnaireResponse"]
+      );
+    }
+    if (path === "/api/clinical/questionnaires" && method === "GET") {
+      return phi("QuestionnaireResponse", () => tenant.questionnaires.list(), (r) => r.length, ["QuestionnaireResponse"]);
+    }
+    if (path === "/api/clinical/questionnaires" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; title?: string; questions?: unknown };
+      if (!body.id || !body.title || !Array.isArray(body.questions)) {
+        return send(res, 400, { error: "id, title and questions[] required" });
+      }
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      try {
+        const published = tenant.questionnaires.publish({
+          id: body.id,
+          title: body.title,
+          questions: body.questions as never,
+          by,
+        });
+        audit({ action: "C", outcome: 0, resourceType: "QuestionnaireResponse", detail: `published ${body.id}/${published.version}` });
+        return send(res, 201, published);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        logFault("questionnaires publish", mapped, err);
+        audit({ action: "C", outcome: mapped.outcome, resourceType: "QuestionnaireResponse", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    if (path === "/api/clinical/uploads" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("DocumentReference", () => tenant.uploads.forPatient(patient), (r) => r.length, ["DocumentReference"]);
+    }
+    if (path === "/api/clinical/upload-scan" && method === "POST") {
+      // scanOne() is async (a real scanner is an external call), and phi()'s
+      // producer is not — so this route does the lookup and the mutation
+      // itself rather than through phi(), the same way any async store call
+      // in this file has to. The verdict returned is clean/infected, not
+      // clinical content, so this does not apply the patient-directive
+      // lockbox the way a read of the filed document later on will.
+      const body = JSON.parse(await readBody(req)) as { id?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      try {
+        const upload = tenant.uploads.get(body.id); // 404s via the catch below if it does not exist
+        const scanned = await tenant.uploads.scanOne(body.id, by);
+        audit({
+          action: "U",
+          outcome: 0,
+          resourceType: "DocumentReference",
+          patient: upload.patient_id,
+          detail: `upload ${body.id} scanned: ${scanned.status}`,
+        });
+        return send(res, 200, scanned);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        logFault("upload scan", mapped, err);
+        audit({ action: "U", outcome: mapped.outcome, resourceType: "DocumentReference", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
     }
     if (path === "/api/clinical/notes" && method === "GET") {
       if (!patient) return send(res, 400, { error: "patient required" });
@@ -1948,6 +2654,38 @@ async function route(
           ...(url.searchParams.get("encounter") ? { encounterId: url.searchParams.get("encounter")! } : {}),
         }),
       }));
+    }
+    if (path === "/api/clinical/procedures" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("Procedure", () => ({
+        status: tenant.procedures.historyStatus(patient),
+        procedures: tenant.procedures.forPatient(patient, {
+          ...(url.searchParams.get("encounter") ? { encounterId: url.searchParams.get("encounter")! } : {}),
+        }),
+      }));
+    }
+    if (path === "/api/clinical/care-plans" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("CarePlan", () => ({
+        status: tenant.carePlans.historyStatus(patient),
+        carePlans: tenant.carePlans.forPatient(patient),
+      }));
+    }
+    if (path === "/api/clinical/patient-documents" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("DocumentReference", () => ({
+        status: tenant.documents.historyStatus(patient),
+        documents: tenant.documents.forPatient(patient, {
+          ...(url.searchParams.get("encounter") ? { encounterId: url.searchParams.get("encounter")! } : {}),
+        }),
+      }));
+    }
+    if (path === "/api/clinical/patient-document" && method === "GET") {
+      const id = url.searchParams.get("id");
+      if (!id) return send(res, 400, { error: "id required" });
+      const row = tenant.documents.get(id);
+      if (!row) return send(res, 404, { error: `no patient-supplied document ${id}` });
+      return phiFor(row.patientId, "DocumentReference", () => row);
     }
     if (path === "/api/clinical/care-team" && method === "GET") {
       if (!patient) return send(res, 400, { error: "patient required" });
@@ -2051,7 +2789,7 @@ async function route(
         return send(res, 200, acknowledged);
       } catch (err) {
         const mapped = mapStoreError(err);
-        if (mapped.outcome === 8) console.error(`acknowledge: ${mapped.detail}`);
+        logFault(`acknowledge`, mapped, err);
         audit({
           action: "U",
           outcome: mapped.outcome,
@@ -2059,7 +2797,7 @@ async function route(
           patient: row.patient_id,
           detail: mapped.detail,
         });
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
       }
     }
     if (path === "/api/clinical/book" && method === "POST") {
@@ -2154,16 +2892,21 @@ async function route(
         undefined,
         "Appointment",
         () => {
-          const r = tenant.clinics.cancelVisit(body.visit!, {
-            actorId: who,
-            actorKind: auth.ok ? auth.principal.kind : "unknown",
-            reason: body.reason!,
-          });
+          const by = { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" };
+          const r = tenant.clinics.cancelVisit(body.visit!, { ...by, reason: body.reason! });
           const filtered = filterByDirective(
             ["Appointment"],
             r.bumped.map((x) => ({ patient_id: x.booking.patient_id, ...x }))
           );
-          return { visit: r.visit, bumped: filtered.rows, withheldCount: filtered.withheldCount };
+          // Item 65: a cancelled visit does not silently strand what was
+          // arranged around it. One reassignment task per live arrangement —
+          // see Arrangements.reviewAfterVisitChange() for why this does not
+          // guess which ones are actually void.
+          const arrangementTasksRaised = tenant.arrangements.reviewAfterVisitChange(body.visit!, {
+            reason: `visit cancelled: ${body.reason!}`,
+            by,
+          }).length;
+          return { visit: r.visit, bumped: filtered.rows, withheldCount: filtered.withheldCount, arrangementTasksRaised };
         },
         (v) => v.bumped.length
       );
@@ -2178,16 +2921,88 @@ async function route(
         undefined,
         "Appointment",
         () => {
-          const r = tenant.clinics.rescheduleVisit(body.visit!, {
-            toFirstDay: body.toFirstDay!,
-            reason: body.reason!,
-            by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
-          });
+          const by = { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" };
+          const r = tenant.clinics.rescheduleVisit(body.visit!, { toFirstDay: body.toFirstDay!, reason: body.reason!, by });
           const filtered = filterByDirective(["Appointment"], r.toTell);
-          return { visit: r.visit, toTell: filtered.rows, withheldCount: filtered.withheldCount };
+          const arrangementTasksRaised = tenant.arrangements.reviewAfterVisitChange(body.visit!, {
+            reason: `visit rescheduled: ${body.reason!}`,
+            by,
+          }).length;
+          return { visit: r.visit, toTell: filtered.rows, withheldCount: filtered.withheldCount, arrangementTasksRaised };
         },
         (v) => v.toTell.length
       );
+    }
+    // Item 65: transport, accommodation, interpreter, escort, equipment and
+    // accessibility arrangements around a travelling-clinic visit.
+    if (path === "/api/clinical/arrangements" && method === "GET") {
+      const visitId = url.searchParams.get("visit");
+      if (!visitId && !patient) return send(res, 400, { error: "visit or patient required" });
+      if (visitId) {
+        return phiFor(undefined, "Appointment", () => tenant.arrangements.forVisit(visitId), (r) => r.length);
+      }
+      return phi("Appointment", () => tenant.arrangements.forPatient(patient!), (r) => r.length);
+    }
+    if (path === "/api/clinical/arrangements" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { visit?: string; patient?: string; kind?: string; detail?: string };
+      if (!body.visit || !body.kind || !body.detail) return send(res, 400, { error: "visit, kind and detail required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phiFor(
+        body.patient,
+        "Appointment",
+        () =>
+          tenant.arrangements.request({
+            visitId: body.visit!,
+            ...(body.patient ? { patientId: body.patient } : {}),
+            kind: body.kind as never,
+            detail: body.detail!,
+            by,
+          })
+      );
+    }
+    if (path === "/api/clinical/arrangements-unconfirmed" && method === "GET") {
+      return phi("Appointment", () => tenant.arrangements.unconfirmed(), (r) => r.length);
+    }
+    if (path === "/api/clinical/arrangement-assign" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; ownerId?: string };
+      if (!body.id || !body.ownerId) return send(res, 400, { error: "id and ownerId required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phi("Appointment", () => tenant.arrangements.assign(body.id!, body.ownerId!, by));
+    }
+    if (path === "/api/clinical/arrangement-confirm" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; evidence?: string };
+      if (!body.id || !body.evidence) return send(res, 400, { error: "id and evidence required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phi("Appointment", () => tenant.arrangements.confirm(body.id!, { evidence: body.evidence!, by }));
+    }
+    if (path === "/api/clinical/arrangement-request-external" && method === "POST") {
+      // requestExternally() is async (a real integration is a network call),
+      // so — like upload-scan above — this does the lookup and the mutation
+      // itself rather than through phi(), and audits by hand around it.
+      const body = JSON.parse(await readBody(req)) as { id?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      try {
+        const arrangement = await tenant.arrangements.requestExternally(body.id, by);
+        audit({
+          action: "U",
+          outcome: 0,
+          resourceType: "Appointment",
+          detail: `arrangement ${body.id} requested externally: ${arrangement.status}`,
+        });
+        return send(res, 200, arrangement);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        logFault("arrangement request-external", mapped, err);
+        audit({ action: "U", outcome: mapped.outcome, resourceType: "Appointment", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    if (path === "/api/clinical/arrangement-cancel" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; reason?: string };
+      if (!body.id || !body.reason) return send(res, 400, { error: "id and reason required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phi("Appointment", () => tenant.arrangements.cancel(body.id!, { reason: body.reason!, by }));
     }
     if (path === "/api/clinical/waitlist" && method === "GET") {
       const service = url.searchParams.get("service");
@@ -2479,14 +3294,22 @@ async function route(
         }))
       );
     }
+    // Binding a subject goes through clinic-attested enrolment. A grant
+    // with no written method is how the wrong OAuth account reads a chart
+    // for years. This is not identity-proofing and not GET /me.
     if (path === "/api/clinical/authority-self" && method === "POST") {
-      const body = JSON.parse(await readBody(req)) as { patient?: string; subject?: string };
-      if (!body.patient || !body.subject) return send(res, 400, { error: "patient and subject required" });
+      const body = JSON.parse(await readBody(req)) as { patient?: string; subject?: string; method?: string };
+      if (!body.patient || !body.subject || !body.method) {
+        return send(res, 400, { error: "patient, subject and method required" });
+      }
       const who = auth.ok ? auth.principal.id : "unauthenticated";
       return phiFor(body.patient, "Consent", () =>
-        tenant.patientAccess.grantSelf(body.patient!, body.subject!, {
-          actorId: who,
-          actorKind: auth.ok ? auth.principal.kind : "unknown",
+        tenant.enrolment.attestInPerson({
+          patientId: body.patient!,
+          subjectId: body.subject!,
+          relationship: "self",
+          method: body.method!,
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
         })
       );
     }
@@ -2498,6 +3321,7 @@ async function route(
         expiresAt?: string;
         permissions?: PatientPermission[];
         purpose?: string;
+        method?: string;
       };
       if (
         !body.patient ||
@@ -2505,21 +3329,23 @@ async function route(
         !body.relationship ||
         !body.expiresAt ||
         !body.permissions ||
-        !body.purpose
+        !body.purpose ||
+        !body.method
       ) {
         return send(res, 400, {
-          error: "patient, subject, relationship, expiresAt, permissions and purpose required",
+          error: "patient, subject, relationship, expiresAt, permissions, purpose and method required",
         });
       }
       const who = auth.ok ? auth.principal.id : "unauthenticated";
       return phiFor(body.patient, "Consent", () =>
-        tenant.patientAccess.grantProxy({
+        tenant.enrolment.attestInPerson({
           patientId: body.patient!,
           subjectId: body.subject!,
           relationship: body.relationship!,
           expiresAt: body.expiresAt!,
           permissions: body.permissions!,
           purpose: body.purpose!,
+          method: body.method!,
           by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
         })
       );
@@ -2536,6 +3362,99 @@ async function route(
           actorKind: auth.ok ? auth.principal.kind : "unknown",
           reason: body.reason!,
         })
+      );
+    }
+    if (path === "/api/clinical/enrolments" && method === "GET") {
+      const status = url.searchParams.get("status") as "pending" | "attested" | "declined" | null;
+      if (patient) {
+        return phi("Consent", () =>
+          tenant.enrolment.list({ patientId: patient, ...(status ? { status } : {}) })
+        );
+      }
+      return phi("Consent", () => tenant.enrolment.list(status ? { status } : {}), (rows) => rows.length);
+    }
+    if (path === "/api/clinical/enrolment" && method === "GET") {
+      const id = url.searchParams.get("id");
+      if (!id) return send(res, 400, { error: "id required" });
+      const row = tenant.enrolment.get(id);
+      if (!row) return send(res, 404, { error: `no enrolment ${id}` });
+      return phiFor(row.patient_id, "Consent", () => row);
+    }
+    if (path === "/api/clinical/enrolment-request" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        subject?: string;
+        relationship?: "self" | "parent-guardian" | "substitute-decision-maker" | "representative";
+        purpose?: string;
+        permissions?: PatientPermission[];
+        expiresAt?: string;
+      };
+      if (!body.patient || !body.subject || !body.relationship) {
+        return send(res, 400, { error: "patient, subject and relationship required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(body.patient, "Consent", () =>
+        tenant.enrolment.request({
+          patientId: body.patient!,
+          subjectId: body.subject!,
+          relationship: body.relationship!,
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+          ...(body.purpose ? { purpose: body.purpose } : {}),
+          ...(body.permissions ? { permissions: body.permissions } : {}),
+          ...(body.expiresAt ? { expiresAt: body.expiresAt } : {}),
+        })
+      );
+    }
+    if (path === "/api/clinical/enrolment-attest" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; method?: string };
+      if (!body.id || !body.method) return send(res, 400, { error: "id and method required" });
+      const row = tenant.enrolment.get(body.id);
+      if (!row) return send(res, 404, { error: `no enrolment ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(row.patient_id, "Consent", () =>
+        tenant.enrolment.attest(body.id!, {
+          method: body.method!,
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+        })
+      );
+    }
+    if (path === "/api/clinical/enrolment-decline" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; reason?: string };
+      if (!body.id || !body.reason) return send(res, 400, { error: "id and reason required" });
+      const row = tenant.enrolment.get(body.id);
+      if (!row) return send(res, 404, { error: `no enrolment ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(row.patient_id, "Consent", () =>
+        tenant.enrolment.decline(body.id!, {
+          reason: body.reason!,
+          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
+        })
+      );
+    }
+    if (path === "/api/clinical/patient-notices" && method === "GET") {
+      const status = url.searchParams.get("status") as "queued" | "dispatched" | "failed" | "told" | null;
+      if (patient) {
+        return phi("AuditEvent", () =>
+          tenant.notices.list({ patientId: patient, ...(status ? { status } : {}) })
+        );
+      }
+      return phi("AuditEvent", () => tenant.notices.list(status ? { status } : {}), (rows) => rows.length);
+    }
+    if (path === "/api/clinical/patient-notice-dispatch" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      const existing = tenant.notices.get(body.id);
+      if (!existing) return send(res, 404, { error: `no patient notice ${body.id}` });
+      return phiFor(existing.patient_id, "AuditEvent", () => tenant.notices.dispatch(body.id!));
+    }
+    if (path === "/api/clinical/patient-notice-told" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      const existing = tenant.notices.get(body.id);
+      if (!existing) return send(res, 404, { error: `no patient notice ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(existing.patient_id, "AuditEvent", () =>
+        tenant.notices.markTold(body.id!, { actorId: who })
       );
     }
     if (path === "/api/clinical/patient-requests" && method === "GET") {
@@ -2567,13 +3486,20 @@ async function route(
       const who = auth.ok ? auth.principal.id : "unauthenticated";
       if (path.endsWith("-complete")) {
         if (!body.outcome) return send(res, 400, { error: "outcome required" });
-        return phiFor(row.patient_id, "Task", () =>
-          tenant.patientAccess.completeRequest(body.request!, {
+        return phiFor(row.patient_id, "Task", () => {
+          const done = tenant.patientAccess.completeRequest(body.request!, {
             actorId: who,
             actorKind: auth.ok ? auth.principal.kind : "unknown",
             outcome: body.outcome!,
-          })
-        );
+          });
+          tenant.notices.queue({
+            patientId: done.patient_id,
+            kind: "request-completed",
+            aboutId: done.id,
+            summary: `Your ${done.kind} request was completed. Reference ${done.id}.`,
+          });
+          return done;
+        });
       }
       if (!body.reason) return send(res, 400, { error: "reason required" });
       return phiFor(row.patient_id, "Task", () =>
@@ -2584,45 +3510,212 @@ async function route(
         })
       );
     }
-    if (path === "/api/clinical/score-approvals" && method === "GET") {
-      return phiOffice("ClinicalScoreApproval", () => tenant.scoreGovernance.list(), (rows) => rows.length);
+    // Read-first: the panel shows every score and its state, and the two
+    // actions each need a written reason. There is deliberately no route that
+    // enables more than one score, because "enable all" is the request nobody
+    // should be able to satisfy in a single click.
+    // The shareable copy, as distinct from /patient/summary which is the
+    // patient reading their own chart. This one leaves the building, so it
+    // carries a manifest saying what was in it, what was empty and why, and a
+    // signature binding the two.
+    if (path === "/api/clinical/patient-summary-export" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { patient?: string };
+      if (!body.patient) return send(res, 400, { error: "patient required" });
+      const patientId = body.patient;
+      return phiFor(patientId, "Composition", () => {
+        const allergyStatus = tenant.meds.allergyStatus(patientId);
+        const allergies = tenant.meds.allergies(patientId).filter((a) => a.kind !== "no-known-allergies");
+        const meds = tenant.meds.current(patientId);
+        const immunizationStatus = tenant.immunizations.historyStatus(patientId);
+        const immunizations = tenant.immunizations.forPatient(patientId);
+        const procedureStatus = tenant.procedures.historyStatus(patientId);
+        const procedures = tenant.procedures.forPatient(patientId);
+
+        const section = (title: string, code: string, entries: unknown[], status: string): SummarySection => ({
+          title,
+          code,
+          entries: entries as Array<Record<string, unknown>>,
+          status,
+          ...(entries.length === 0 ? { emptyReason: emptyReasonFor(status) } : {}),
+        });
+
+        const { bundle, manifest } = buildSummary(
+          patientId,
+          (tenant.clinical.patientIndex.get(patientId) ?? null) as Record<string, unknown> | null,
+          [
+            section("Allergies and intolerances", "48765-2", allergies, allergyStatus),
+            // Medications have no "nobody asked" state here: an empty list
+            // means none are recorded, which is not the same as none taken.
+            section("Medication summary", "10160-0", meds, meds.length > 0 ? "documented" : "never-recorded"),
+            section("Immunizations", "11369-6", immunizations, immunizationStatus),
+            section("Procedures", "47519-4", procedures, procedureStatus),
+          ],
+          {
+            tenantId: tenant.tenantId,
+            terminologySystems: () =>
+              (
+                tenant.db.sql
+                  .prepare("SELECT DISTINCT system FROM term_concepts ORDER BY system")
+                  .all() as Array<{ system: string }>
+              ).map((r) => r.system),
+            activeGuides: () => tenant.standards.active().map((p) => `${p.packageId}@${p.version}`),
+          },
+          readEnv("SUMMARY_SIGNING_KEY")
+        );
+        return { bundle, manifest };
+      });
     }
-    if (path === "/api/clinical/score-approval" && method === "POST") {
+    if (path === "/api/clinical/standards" && method === "GET") {
+      return phiOffice("Bundle", () => ({
+        statement: tenant.standards.conformanceStatement(),
+        registered: tenant.standards.list(),
+      }));
+    }
+    if (path === "/api/clinical/standards-register" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        canonicalUrl?: string;
+        packageId?: string;
+        version?: string;
+        publicationStatus?: PublicationStatus;
+        fhirVersion?: string;
+        license?: string;
+        checksum?: string;
+      };
+      if (!body.canonicalUrl || !body.packageId || !body.version || !body.publicationStatus) {
+        return send(res, 400, { error: "canonicalUrl, packageId, version and publicationStatus are required" });
+      }
+      const entry = tenant.standards.register({
+        canonicalUrl: body.canonicalUrl,
+        packageId: body.packageId,
+        version: body.version,
+        publicationStatus: body.publicationStatus,
+        ...(body.fhirVersion ? { fhirVersion: body.fhirVersion } : {}),
+        ...(body.license ? { license: body.license } : {}),
+        ...(body.checksum ? { checksum: body.checksum } : {}),
+      });
+      audit({
+        action: "C",
+        outcome: 0,
+        resourceType: "Bundle",
+        detail:
+          `standards package registered: ${entry.packageId}@${entry.version} (${entry.canonicalUrl}), ` +
+          `status ${entry.publicationStatus}, checksum ${entry.checksum ?? "none"}, unverified`,
+      });
+      return send(res, 200, { entry, objections: tenant.standards.objections(entry) });
+    }
+    if (path === "/api/clinical/standards-activate" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; reason?: string; override?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      const entry = tenant.standards.activate({
+        id: body.id,
+        reason: body.reason ?? "",
+        by: who,
+        ...(body.override ? { override: body.override } : {}),
+      });
+      audit({
+        action: "U",
+        outcome: 0,
+        resourceType: "Bundle",
+        detail:
+          `standards package activated: ${entry.packageId}@${entry.version}, by ${who}` +
+          (entry.overrideReason ? `, over objections: ${entry.overrideReason}` : ""),
+      });
+      return send(res, 200, entry);
+    }
+    const scoreDetail = (value: { authorization: ScoreAuthorization }) =>
+      `score ${value.authorization.scoreId} implementation ${value.authorization.implementationVersion} ` +
+      `approval ${value.authorization.approvalId} owner ${value.authorization.clinicalOwner} ` +
+      `review due ${value.authorization.reviewDue}`;
+    if (path === "/api/clinical/score-approvals" && method === "GET") {
+      return phiOffice("RiskAssessment", () => tenant.scoreGovernance.all(), (rows) => rows.length);
+    }
+    if (path === "/api/clinical/score-governance" && method === "GET") {
+      const within = Number(url.searchParams.get("expiringWithinDays") ?? 30);
+      return phiOffice("RiskAssessment", () => ({
+        scores: tenant.scoreGovernance.all({
+          ...(Number.isInteger(within) && within >= 0 ? { expiringWithinDays: within } : {}),
+        }),
+        note:
+          "Every score is disabled until somebody accountable approves it here. Approval is a local decision about " +
+          "this site and is not clinical validation of the instrument.",
+      }));
+    }
+    if (path === "/api/clinical/score-governance-history" && method === "GET") {
+      const id = url.searchParams.get("score");
+      if (!id) return send(res, 400, { error: `score required; one of ${SCORE_IDS.join(", ")}` });
+      if (!(SCORE_IDS as readonly string[]).includes(id)) return send(res, 400, { error: `unknown score ${id}` });
+      return phiOffice("RiskAssessment", () => ({ score: id, history: tenant.scoreGovernance.history(id as ScoreId) }));
+    }
+    if (path === "/api/clinical/score-governance-expiring" && method === "GET") {
+      const within = Number(url.searchParams.get("withinDays") ?? 30);
+      if (!Number.isInteger(within) || within < 0) {
+        return send(res, 400, { error: "withinDays must be a whole number of days" });
+      }
+      return phiOffice("RiskAssessment", () => ({ withinDays: within, scores: tenant.scoreGovernance.expiring(within) }));
+    }
+    if ((path === "/api/clinical/score-approve" || path === "/api/clinical/score-approval") && method === "POST") {
       const body = JSON.parse(await readBody(req)) as {
         score?: string;
-        implementationVersion?: string;
         clinicalOwner?: string;
+        reviewDue?: string;
+        reason?: string;
+        implementationVersion?: string;
         approvedPopulation?: string;
         reviewedAt?: string;
-        reviewDue?: string;
         licensingAcceptedBy?: string;
-        reason?: string;
       };
+      if (!body.score) return send(res, 400, { error: `score required; one of ${SCORE_IDS.join(", ")}` });
       const who = auth.ok ? auth.principal.id : "unauthenticated";
-      return phiOffice("ClinicalScoreApproval", () =>
-        tenant.scoreGovernance.approve({
-          scoreId: body.score ?? "",
-          implementationVersion: body.implementationVersion ?? "",
-          clinicalOwner: body.clinicalOwner ?? "",
-          approvedPopulation: body.approvedPopulation ?? "",
-          reviewedAt: body.reviewedAt ?? "",
-          reviewDue: body.reviewDue ?? "",
-          licensingAcceptedBy: body.licensingAcceptedBy ?? "",
-          reason: body.reason ?? "",
-          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
-        })
-      );
+      const kind = auth.ok ? auth.principal.kind : "unknown";
+      const row = tenant.scoreGovernance.approve({
+        scoreId: body.score as ScoreId,
+        clinicalOwnerId: body.clinicalOwner ?? "",
+        reviewDue: body.reviewDue ?? "",
+        reason: body.reason ?? "",
+        by: { id: who, kind },
+        ...(path === "/api/clinical/score-approval" || body.implementationVersion !== undefined ||
+            body.approvedPopulation !== undefined || body.reviewedAt !== undefined || body.licensingAcceptedBy !== undefined
+          ? { evidence: {
+              implementationVersion: body.implementationVersion ?? "",
+              approvedPopulation: body.approvedPopulation ?? "",
+              reviewedAt: body.reviewedAt ?? "",
+              licensingAcceptedBy: body.licensingAcceptedBy ?? "",
+            } }
+          : {}),
+      });
+      audit({
+        action: "U",
+        outcome: 0,
+        resourceType: "RiskAssessment",
+        // Names the decision, never a patient or an input: an approval is a
+        // statement about an instrument, and nothing about anybody's chart.
+        detail:
+          `score ${row.scoreId} approved: implementation ${row.implementationVersion}, approval ${row.id}, ` +
+          `supersedes ${row.supersedes ?? "none"}, clinical owner ${row.clinicalOwnerId}, ` +
+          `review due ${row.reviewDue}, recorded by ${row.recordedBy.id}`,
+      });
+      return send(res, 200, row);
     }
     if (path === "/api/clinical/score-disable" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as { score?: string; reason?: string };
+      if (!body.score) return send(res, 400, { error: `score required; one of ${SCORE_IDS.join(", ")}` });
       const who = auth.ok ? auth.principal.id : "unauthenticated";
-      return phiOffice("ClinicalScoreApproval", () =>
-        tenant.scoreGovernance.disable({
-          scoreId: body.score ?? "",
-          reason: body.reason ?? "",
-          by: { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" },
-        })
-      );
+      const kind = auth.ok ? auth.principal.kind : "unknown";
+      const row = tenant.scoreGovernance.disable({
+        scoreId: body.score as ScoreId,
+        reason: body.reason ?? "",
+        by: { id: who, kind },
+      });
+      audit({
+        action: "U",
+        outcome: 0,
+        resourceType: "RiskAssessment",
+        detail:
+          `score ${row.scoreId} disabled: implementation ${row.implementationVersion}, approval ${row.id}, ` +
+          `supersedes ${row.supersedes ?? "none"}, recorded by ${row.recordedBy.id}`,
+      });
+      return send(res, 200, row);
     }
     if (path === "/api/clinical/score" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as { score?: string; patient?: string; input?: unknown; units?: unknown };
@@ -2632,18 +3725,74 @@ async function route(
       // still a clinical question about a patient, and it audits like one.
       const resource = "RiskAssessment";
       const produce = () => {
-        const authorization = tenant.scoreGovernance.requireEnabled(body.score!);
+        // Arithmetic is not permission. A score nobody accountable has
+        // approved for this site does not compute here, and the empty
+        // approvals table is the safe default rather than an unconfigured
+        // one.
+        const authorization = tenant.scoreGovernance.requireEnabled(body.score as ScoreId);
         const result = computeScore(body.score!, body.input ?? {});
-        const units = result.complete ? requireScoreUnits(body.score!, body.units) : Object.freeze({});
+        const units = result.complete && body.units !== undefined ? requireScoreUnits(body.score!, body.units) : Object.freeze({});
         return { ...result, authorization, units };
       };
-      const detail = (value: { authorization: ScoreAuthorization }) =>
-        `score ${value.authorization.scoreId} implementation ${value.authorization.implementationVersion} ` +
-        `approval ${value.authorization.approvalId} owner ${value.authorization.clinicalOwner} ` +
-        `review due ${value.authorization.reviewDue}`;
       return body.patient
-        ? phiFor(body.patient, resource, produce, undefined, [resource], detail)
-        : phi(resource, produce, undefined, [resource], detail);
+        ? phiFor(body.patient, resource, produce, undefined, [resource], scoreDetail)
+        : phi(resource, produce, undefined, [resource], scoreDetail);
+    }
+    // v2 takes measurements rather than bare numbers: the unit travels with
+    // the value instead of being spelled into the parameter name and restated
+    // as prose in the catalogue. v1 above is unchanged and stays supported —
+    // a caller already sending `ureaMmolL` is not broken by this.
+    if (path === "/api/clinical/score/v2" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        score?: string;
+        patient?: string;
+        measurements?: Record<string, Measurement>;
+        input?: Record<string, unknown>;
+      };
+      if (!body.score) return send(res, 400, { error: `score required; one of ${SCORE_IDS.join(", ")}` });
+
+      // The point of v2 is that a measured value states its unit. Letting one
+      // in through `input` would reinstate exactly the untyped path this
+      // endpoint exists to replace, so it is refused by name rather than
+      // quietly preferred or overwritten.
+      const smuggled = Object.keys(body.input ?? {}).filter((k) => MEASURED_FIELDS.has(k));
+      if (smuggled.length > 0) {
+        const named = smuggled
+          .map((f) => {
+            const as = Object.entries(SCORE_MEASUREMENTS).find(([, m]) => m.field === f);
+            return as ? `${f} (send as measurements.${as[0]})` : f;
+          })
+          .join(", ");
+        return send(res, 400, {
+          error:
+            `${named} carries a unit and must be sent under measurements, not input. ` +
+            "input is for criteria that have no unit: booleans and graded categories.",
+        });
+      }
+
+      const resource = "RiskAssessment";
+      const produce = () => {
+        const governance = tenant.scoreGovernance.require(body.score as ScoreId);
+        const { input, ingestion } = ingest(body.measurements ?? {});
+        const result = computeScore(body.score!, { ...(body.input ?? {}), ...input });
+        // The approval in force travels with the number, so a consumer holding
+        // a stored result can tell what it was allowed under.
+        return {
+          ...result,
+          ingestion,
+          authorization: tenant.scoreGovernance.requireEnabled(body.score as ScoreId),
+          governance: {
+            status: governance.status,
+            approvalId: governance.approval?.id ?? null,
+            approvedVersion: governance.approval?.implementationVersion ?? null,
+            reviewDue: governance.approval?.reviewDue ?? null,
+            clinicalOwner: governance.approval?.clinicalOwnerDisplay ?? null,
+          },
+        };
+      };
+      return body.patient
+        ? phiFor(body.patient, resource, produce, undefined, [resource], scoreDetail)
+        : phi(resource, produce, undefined, [resource], scoreDetail);
     }
     if (path === "/api/clinical/chart-score" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as {
@@ -2659,24 +3808,13 @@ async function route(
       const deps = { vitals: tenant.vitals, clinical: tenant.clinical };
       const supplied = (body.supplied ?? {}) as never;
       const options = body.maxAgeHours === undefined ? {} : { maxAgeHours: body.maxAgeHours };
-      return phiFor(
-        body.patient,
-        "RiskAssessment",
-        () => {
-          const authorization = tenant.scoreGovernance.requireEnabled(body.score!);
-          const chart =
-            body.score === "news2"
-              ? news2FromChart(deps, body.patient!, supplied, options)
-              : curb65FromChart(deps, body.patient!, supplied, options);
-          return { ...chart, authorization };
-        },
-        undefined,
-        ["RiskAssessment"],
-        (value) =>
-          `score ${value.authorization.scoreId} implementation ${value.authorization.implementationVersion} ` +
-          `approval ${value.authorization.approvalId} owner ${value.authorization.clinicalOwner} ` +
-          `review due ${value.authorization.reviewDue}`
-      );
+      return phiFor(body.patient, "RiskAssessment", () => {
+        const authorization = tenant.scoreGovernance.requireEnabled(body.score as ScoreId);
+        const chart = body.score === "news2"
+          ? news2FromChart(deps, body.patient!, supplied, options)
+          : curb65FromChart(deps, body.patient!, supplied, options);
+        return { ...chart, authorization };
+      }, undefined, ["RiskAssessment"], scoreDetail);
     }
     if (path === "/api/clinical/prescriptions" && method === "GET") {
       if (!patient) return send(res, 400, { error: "patient required" });
@@ -3078,7 +4216,163 @@ async function route(
       } catch (err) {
         const mapped = mapStoreError(err);
         audit({ action: "R", outcome: mapped.outcome, resourceType: "MeasureReport", detail: mapped.detail });
-        return send(res, mapped.status, { error: mapped.error });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    // Item 67: whether the workflows built for items 58-66 help, over a
+    // stated window. Reads as POST because the input is structured, the
+    // same reason /api/clinical/gaps and /api/clinical/measure are.
+    if (path === "/api/clinical/effectiveness-review" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { from?: string; to?: string; targetWithinHours?: number; asOf?: string };
+      if (!body.from || !body.to || !body.targetWithinHours) {
+        return send(res, 400, { error: "from, to and targetWithinHours required" });
+      }
+      try {
+        const result = timeToClinicianReview(
+          tenant.intake,
+          { from: body.from, to: body.to, target: { withinHours: body.targetWithinHours } },
+          body.asOf
+        );
+        audit({ action: "R", outcome: 0, resourceType: "MeasureReport", detail: `time to clinician review, ${body.from} to ${body.to}` });
+        return send(res, 200, result);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        audit({ action: "R", outcome: mapped.outcome, resourceType: "MeasureReport", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    if (path === "/api/clinical/effectiveness-follow-up" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { from?: string; to?: string; asOf?: string };
+      if (!body.from || !body.to) return send(res, 400, { error: "from and to required" });
+      try {
+        const result = unresolvedFollowUp(tenant.discharges, { from: body.from, to: body.to }, body.asOf);
+        audit({ action: "R", outcome: 0, resourceType: "MeasureReport", detail: `unresolved follow-up, ${body.from} to ${body.to}` });
+        return send(res, 200, result);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        audit({ action: "R", outcome: mapped.outcome, resourceType: "MeasureReport", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    if (path === "/api/clinical/effectiveness-referrals" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { from?: string; to?: string; asOf?: string };
+      if (!body.from || !body.to) return send(res, 400, { error: "from and to required" });
+      try {
+        const result = referralCompletion(tenant.referrals, { from: body.from, to: body.to }, body.asOf);
+        audit({ action: "R", outcome: 0, resourceType: "MeasureReport", detail: `referral completion, ${body.from} to ${body.to}` });
+        return send(res, 200, result);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        audit({ action: "R", outcome: mapped.outcome, resourceType: "MeasureReport", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    if (path === "/api/clinical/effectiveness-notifications" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { from?: string; to?: string; asOf?: string };
+      if (!body.from || !body.to) return send(res, 400, { error: "from and to required" });
+      try {
+        const result = notificationFailures(tenant.notices, { from: body.from, to: body.to }, body.asOf);
+        audit({ action: "R", outcome: 0, resourceType: "MeasureReport", detail: `notification failures, ${body.from} to ${body.to}` });
+        return send(res, 200, result);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        audit({ action: "R", outcome: mapped.outcome, resourceType: "MeasureReport", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    if (path === "/api/clinical/effectiveness-missed-appointments" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { from?: string; to?: string; outcomeGraceHours?: number; asOf?: string };
+      if (!body.from || !body.to || !body.outcomeGraceHours) {
+        return send(res, 400, { error: "from, to and outcomeGraceHours required" });
+      }
+      try {
+        const result = missedAppointments(
+          tenant.schedule,
+          { from: body.from, to: body.to, outcomeGraceHours: body.outcomeGraceHours },
+          body.asOf
+        );
+        audit({ action: "R", outcome: 0, resourceType: "MeasureReport", detail: `missed appointments, ${body.from} to ${body.to}` });
+        return send(res, 200, result);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        audit({ action: "R", outcome: mapped.outcome, resourceType: "MeasureReport", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    if (path === "/api/clinical/effectiveness-task-burden" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { from?: string; to?: string; ownerId?: string; asOf?: string };
+      if (!body.from || !body.to) return send(res, 400, { error: "from and to required" });
+      try {
+        const result = staffTaskBurden(tenant.tasks, { from: body.from, to: body.to, ...(body.ownerId ? { ownerId: body.ownerId } : {}) }, body.asOf);
+        audit({ action: "R", outcome: 0, resourceType: "MeasureReport", detail: `staff task burden, ${body.from} to ${body.to}` });
+        return send(res, 200, result);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        audit({ action: "R", outcome: mapped.outcome, resourceType: "MeasureReport", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    if (path === "/api/clinical/effectiveness-release" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        metric?: "review" | "follow-up" | "referrals" | "notifications" | "missed-appointments" | "task-burden";
+        from?: string;
+        to?: string;
+        targetWithinHours?: number;
+        outcomeGraceHours?: number;
+        ownerId?: string;
+        asOf?: string;
+        recipient?: string;
+        purpose?: string;
+        threshold?: number;
+      };
+      if (!body.metric || !body.from || !body.to) return send(res, 400, { error: "metric, from and to required" });
+      if (!body.recipient || !body.purpose) {
+        return send(res, 400, { error: "a release needs a recipient and a purpose somebody can weigh afterwards" });
+      }
+      try {
+        let result: WorkflowMeasureResult;
+        switch (body.metric) {
+          case "review":
+            if (!body.targetWithinHours) return send(res, 400, { error: "targetWithinHours required for metric=review" });
+            result = timeToClinicianReview(tenant.intake, { from: body.from, to: body.to, target: { withinHours: body.targetWithinHours } }, body.asOf);
+            break;
+          case "follow-up":
+            result = unresolvedFollowUp(tenant.discharges, { from: body.from, to: body.to }, body.asOf);
+            break;
+          case "referrals":
+            result = referralCompletion(tenant.referrals, { from: body.from, to: body.to }, body.asOf);
+            break;
+          case "notifications":
+            result = notificationFailures(tenant.notices, { from: body.from, to: body.to }, body.asOf);
+            break;
+          case "missed-appointments":
+            if (!body.outcomeGraceHours) return send(res, 400, { error: "outcomeGraceHours required for metric=missed-appointments" });
+            result = missedAppointments(tenant.schedule, { from: body.from, to: body.to, outcomeGraceHours: body.outcomeGraceHours }, body.asOf);
+            break;
+          case "task-burden":
+            result = staffTaskBurden(tenant.tasks, { from: body.from, to: body.to, ...(body.ownerId ? { ownerId: body.ownerId } : {}) }, body.asOf);
+            break;
+          default:
+            return send(res, 400, { error: `unknown metric ${body.metric}` });
+        }
+        const released = releaseWorkflowMeasure(result, {
+          recipient: body.recipient,
+          purpose: body.purpose,
+          ...(body.threshold !== undefined ? { threshold: body.threshold } : {}),
+        });
+        audit({
+          action: "R",
+          outcome: 0,
+          resourceType: "MeasureReport",
+          detail:
+            `de-identified release to ${body.recipient} for ${body.purpose}: ` +
+            `threshold ${released.method.threshold}, ${released.method.suppressedCells} cell(s) suppressed`,
+        });
+        return send(res, 200, released);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        audit({ action: "R", outcome: mapped.outcome, resourceType: "MeasureReport", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
       }
     }
     if (path === "/api/clinical/safety-check" && method === "POST") {
@@ -3242,6 +4536,427 @@ async function route(
           ...(body.unit ? { unit: body.unit } : {}),
           ...(body.systolic !== undefined ? { systolic: body.systolic } : {}),
           ...(body.diastolic !== undefined ? { diastolic: body.diastolic } : {}),
+          ...(body.encounter ? { encounterId: body.encounter } : {}),
+        })
+      );
+    }
+    if (path === "/api/clinical/procedure-record" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        procedure?: string;
+        status?: "completed" | "in-progress" | "not-done";
+        performedAt?: string;
+        procedureCode?: string;
+        procedureSystem?: string;
+        reason?: string;
+        encounter?: string;
+      };
+      if (!body.patient || !body.procedure) {
+        return send(res, 400, { error: "patient and procedure required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(body.patient, "Procedure", () =>
+        tenant.procedures.record({
+          patientId: body.patient!,
+          procedure: body.procedure!,
+          by: { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown" },
+          ...(body.status ? { status: body.status } : {}),
+          ...(body.performedAt ? { performedAt: body.performedAt } : {}),
+          ...(body.procedureCode ? { procedureCode: body.procedureCode } : {}),
+          ...(body.procedureSystem ? { procedureSystem: body.procedureSystem } : {}),
+          ...(body.reason ? { reason: body.reason } : {}),
+          ...(body.encounter ? { encounterId: body.encounter } : {}),
+        })
+      );
+    }
+    if (path === "/api/clinical/care-plan-record" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        title?: string;
+        goals?: string[];
+        reviewBy?: string;
+        status?: "draft" | "active";
+        description?: string;
+        encounter?: string;
+        escalationCriteria?: string;
+      };
+      if (!body.patient || !body.title || !body.reviewBy || !Array.isArray(body.goals)) {
+        return send(res, 400, { error: "patient, title, goals and reviewBy required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(body.patient, "CarePlan", () =>
+        tenant.carePlans.record({
+          patientId: body.patient!,
+          title: body.title!,
+          goals: body.goals!,
+          reviewBy: body.reviewBy!,
+          by: { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown" },
+          ...(body.status ? { status: body.status } : {}),
+          ...(body.description ? { description: body.description } : {}),
+          ...(body.encounter ? { encounterId: body.encounter } : {}),
+          ...(body.escalationCriteria ? { escalationCriteria: body.escalationCriteria } : {}),
+        })
+      );
+    }
+    // Item 61: structured goals and actions on a care plan, and the
+    // after-visit summary assembled from the ones a clinician approved.
+    if (path === "/api/clinical/goals" && method === "GET") {
+      const carePlanId = url.searchParams.get("carePlan");
+      if (!patient && !carePlanId) return send(res, 400, { error: "patient or carePlan required" });
+      return phi(
+        "Goal",
+        () => (carePlanId ? tenant.goals.forPlan(carePlanId) : tenant.goals.forPatient(patient!)),
+        (r) => r.length
+      );
+    }
+    if (path === "/api/clinical/goal-propose" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        carePlan?: string;
+        description?: string;
+        reviewBy?: string;
+      };
+      if (!body.patient || !body.carePlan || !body.description) {
+        return send(res, 400, { error: "patient, carePlan and description required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(
+        body.patient,
+        "Goal",
+        () =>
+          tenant.goals.propose({
+            patientId: body.patient!,
+            carePlanId: body.carePlan!,
+            description: body.description!,
+            ...(body.reviewBy ? { reviewBy: body.reviewBy } : {}),
+            by: { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown" },
+          })
+      );
+    }
+    if (path === "/api/clinical/goal-approve" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      const goal = tenant.goals.get(body.id);
+      if (!goal) return send(res, 404, { error: `no goal ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(goal.patientId, "Goal", () =>
+        tenant.goals.approve(body.id!, { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown" })
+      );
+    }
+    if (path === "/api/clinical/goal-decline" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; reason?: string };
+      if (!body.id || !body.reason) return send(res, 400, { error: "id and reason required" });
+      const goal = tenant.goals.get(body.id);
+      if (!goal) return send(res, 404, { error: `no goal ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(goal.patientId, "Goal", () =>
+        tenant.goals.decline(body.id!, { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown", reason: body.reason! })
+      );
+    }
+    if (path === "/api/clinical/goal-complete" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; outcome?: string };
+      if (!body.id || !body.outcome) return send(res, 400, { error: "id and outcome required" });
+      const goal = tenant.goals.get(body.id);
+      if (!goal) return send(res, 404, { error: `no goal ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(goal.patientId, "Goal", () =>
+        tenant.goals.complete(body.id!, { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown", outcome: body.outcome! })
+      );
+    }
+    if (path === "/api/clinical/goal-revise" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; description?: string; reviewBy?: string; reason?: string };
+      if (!body.id || !body.reason) return send(res, 400, { error: "id and reason required" });
+      const goal = tenant.goals.get(body.id);
+      if (!goal) return send(res, 404, { error: `no goal ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(goal.patientId, "Goal", () =>
+        tenant.goals.revise(body.id!, {
+          ...(body.description ? { description: body.description } : {}),
+          ...(body.reviewBy ? { reviewBy: body.reviewBy } : {}),
+          by: { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown", reason: body.reason! },
+        })
+      );
+    }
+    if (path === "/api/clinical/actions" && method === "GET") {
+      const carePlanId = url.searchParams.get("carePlan");
+      if (!patient && !carePlanId) return send(res, 400, { error: "patient or carePlan required" });
+      return phi(
+        "Task",
+        () => (carePlanId ? tenant.actions.forPlan(carePlanId) : tenant.actions.forPatient(patient!)),
+        (r) => r.length
+      );
+    }
+    if (path === "/api/clinical/action-propose" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        carePlan?: string;
+        goal?: string;
+        description?: string;
+        responsible?: string;
+        dueAt?: string;
+        link?: { kind?: string; id?: string };
+      };
+      if (!body.patient || !body.carePlan || !body.description || !body.responsible) {
+        return send(res, 400, { error: "patient, carePlan, description and responsible required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(
+        body.patient,
+        "Task",
+        () =>
+          tenant.actions.propose({
+            patientId: body.patient!,
+            carePlanId: body.carePlan!,
+            responsibleId: body.responsible!,
+            description: body.description!,
+            ...(body.goal ? { goalId: body.goal } : {}),
+            ...(body.dueAt ? { dueAt: body.dueAt } : {}),
+            ...(body.link && body.link.kind && body.link.id
+              ? { link: { kind: body.link.kind as "task" | "appointment" | "order" | "referral", id: body.link.id } }
+              : {}),
+            by: { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown" },
+          })
+      );
+    }
+    if (path === "/api/clinical/action-approve" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      const action = tenant.actions.get(body.id);
+      if (!action) return send(res, 404, { error: `no action ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(action.patientId, "Task", () =>
+        tenant.actions.approve(body.id!, { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown" })
+      );
+    }
+    if (path === "/api/clinical/action-decline" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; reason?: string };
+      if (!body.id || !body.reason) return send(res, 400, { error: "id and reason required" });
+      const action = tenant.actions.get(body.id);
+      if (!action) return send(res, 404, { error: `no action ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(action.patientId, "Task", () =>
+        tenant.actions.decline(body.id!, { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown", reason: body.reason! })
+      );
+    }
+    if (path === "/api/clinical/action-progress" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; progress?: string };
+      if (!body.id || !body.progress) return send(res, 400, { error: "id and progress required" });
+      const action = tenant.actions.get(body.id);
+      if (!action) return send(res, 404, { error: `no action ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(action.patientId, "Task", () =>
+        tenant.actions.recordProgress(body.id!, {
+          authorId: who,
+          authorKind: auth.ok ? auth.principal.kind : "unknown",
+          progress: body.progress!,
+        })
+      );
+    }
+    if (path === "/api/clinical/action-complete" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; outcome?: string };
+      if (!body.id || !body.outcome) return send(res, 400, { error: "id and outcome required" });
+      const action = tenant.actions.get(body.id);
+      if (!action) return send(res, 404, { error: `no action ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(action.patientId, "Task", () =>
+        tenant.actions.complete(body.id!, {
+          authorId: who,
+          authorKind: auth.ok ? auth.principal.kind : "unknown",
+          outcome: body.outcome!,
+        })
+      );
+    }
+    if (path === "/api/clinical/after-visit-summary" && method === "GET") {
+      const encounterId = url.searchParams.get("encounter");
+      if (!encounterId) return send(res, 400, { error: "encounter required" });
+      const e = tenant.encounters.get(encounterId);
+      if (!e) return send(res, 404, { error: `no encounter ${encounterId}` });
+      return phiFor(e.patient_id, "CarePlan", () => tenant.avs.build(encounterId));
+    }
+    // Item 63: one ordered read across every domain, and a validated series
+    // for one result code or vital kind.
+    if (path === "/api/clinical/timeline" && method === "GET") {
+      if (!patient) return send(res, 400, { error: "patient required" });
+      return phi("Observation", () => tenant.timeline.forPatient(patient), (r) => r.length, [
+        "Observation",
+        "Procedure",
+        "Immunization",
+        "Encounter",
+        "Goal",
+        "Task",
+      ]);
+    }
+    if (path === "/api/clinical/result-trend" && method === "GET") {
+      const code = url.searchParams.get("code");
+      if (!patient || !code) return send(res, 400, { error: "patient and code required" });
+      return phi("Observation", () => tenant.trends.resultSeries(patient, code), (r) => r.points.length);
+    }
+    if (path === "/api/clinical/vital-trend" && method === "GET") {
+      const kind = url.searchParams.get("kind");
+      if (!patient || !kind) return send(res, 400, { error: "patient and kind required" });
+      if (!(VITAL_KINDS as readonly string[]).includes(kind)) {
+        return send(res, 400, { error: `unknown vital kind ${kind}; expected one of ${VITAL_KINDS.join(", ")}` });
+      }
+      return phi("Observation", () => tenant.trends.vitalSeries(patient, kind as (typeof VITAL_KINDS)[number]), (r) => r.points.length);
+    }
+    // Item 64: a care-gap cohort turned into a worked list, behind a
+    // governed, versioned eligibility rule. Duplicate outreach is prevented
+    // by the schema (idx_outreach_open_once), not by anything in this file.
+    if (path === "/api/clinical/eligibility-rules" && method === "GET") {
+      return phi("PlanDefinition", () => tenant.eligibility.list(), (r) => r.length);
+    }
+    if (path === "/api/clinical/eligibility-rules" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; name?: string; cohort?: unknown; gap?: unknown };
+      if (!body.id || !body.name || !body.cohort || !body.gap) {
+        return send(res, 400, { error: "id, name, cohort and gap required" });
+      }
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      try {
+        const published = tenant.eligibility.publish({ id: body.id, name: body.name, cohort: body.cohort as never, gap: body.gap as never, by });
+        audit({ action: "C", outcome: 0, resourceType: "PlanDefinition", detail: `published eligibility rule ${body.id}/${published.version}` });
+        return send(res, 201, published);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        logFault("eligibility rule publish", mapped, err);
+        audit({ action: "C", outcome: mapped.outcome, resourceType: "PlanDefinition", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    if (path === "/api/clinical/outreach-campaigns" && method === "GET") {
+      return phi("Task", () => tenant.outreach.list(), (r) => r.length);
+    }
+    if (path === "/api/clinical/outreach-campaigns" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { eligibilityRuleId?: string; version?: number; name?: string };
+      if (!body.eligibilityRuleId || !body.name) return send(res, 400, { error: "eligibilityRuleId and name required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      try {
+        const created = tenant.outreach.create({ eligibilityRuleId: body.eligibilityRuleId, version: body.version, name: body.name, by });
+        audit({
+          action: "C",
+          outcome: 0,
+          resourceType: "Task",
+          detail: `outreach campaign ${created.campaign.id}: ${created.items.length} item(s)`,
+        });
+        return send(res, 201, created);
+      } catch (err) {
+        const mapped = mapStoreError(err);
+        logFault("outreach campaign create", mapped, err);
+        audit({ action: "C", outcome: mapped.outcome, resourceType: "Task", detail: mapped.detail });
+        return send(res, mapped.status, errorBody(mapped));
+      }
+    }
+    if (path === "/api/clinical/outreach-campaigns-close" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phi("Task", () => tenant.outreach.close(body.id!, by));
+    }
+    if (path === "/api/clinical/outreach-items" && method === "GET") {
+      const campaignId = url.searchParams.get("campaign");
+      if (!campaignId) return send(res, 400, { error: "campaign required" });
+      return phi("Task", () => tenant.outreach.forCampaign(campaignId), (r) => r.length);
+    }
+    if (path === "/api/clinical/outreach-items-unreachable" && method === "GET") {
+      const campaignId = url.searchParams.get("campaign");
+      if (!campaignId) return send(res, 400, { error: "campaign required" });
+      return phi("Task", () => tenant.outreach.unreachable(campaignId), (r) => r.length);
+    }
+    if (path === "/api/clinical/outreach-item-recheck" && method === "GET") {
+      const itemId = url.searchParams.get("item");
+      if (!itemId) return send(res, 400, { error: "item required" });
+      return phi("Task", () => tenant.outreach.recheckEligibility(itemId));
+    }
+    if (path === "/api/clinical/outreach-item-assign" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; staffId?: string };
+      if (!body.id || !body.staffId) return send(res, 400, { error: "id and staffId required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phi("Task", () => tenant.outreach.assign(body.id!, body.staffId!, by));
+    }
+    if (path === "/api/clinical/outreach-item-attempt" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; channel?: string; outcome?: string; note?: string };
+      if (!body.id || !body.channel || !body.outcome) return send(res, 400, { error: "id, channel and outcome required" });
+      if (!(ATTEMPT_OUTCOMES as readonly string[]).includes(body.outcome)) {
+        return send(res, 400, { error: `unknown attempt outcome ${body.outcome}; expected one of ${ATTEMPT_OUTCOMES.join(", ")}` });
+      }
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phi("Task", () =>
+        tenant.outreach.recordAttempt(body.id!, { channel: body.channel!, outcome: body.outcome as (typeof ATTEMPT_OUTCOMES)[number], note: body.note, by })
+      );
+    }
+    if (path === "/api/clinical/outreach-item-attempts" && method === "GET") {
+      const itemId = url.searchParams.get("item");
+      if (!itemId) return send(res, 400, { error: "item required" });
+      return phi("Task", () => tenant.outreach.attemptsFor(itemId), (r) => r.length);
+    }
+    if (path === "/api/clinical/outreach-item-book" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; bookingId?: string };
+      if (!body.id || !body.bookingId) return send(res, 400, { error: "id and bookingId required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phi("Task", () => tenant.outreach.linkBooking(body.id!, body.bookingId!, by));
+    }
+    if (path === "/api/clinical/outreach-item-complete" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string };
+      if (!body.id) return send(res, 400, { error: "id required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phi("Task", () => tenant.outreach.complete(body.id!, by));
+    }
+    if (path === "/api/clinical/outreach-item-exclude" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; reason?: string };
+      if (!body.id || !body.reason) return send(res, 400, { error: "id and reason required" });
+      const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
+      return phi("Task", () => tenant.outreach.exclude(body.id!, { reason: body.reason!, by }));
+    }
+    if (path === "/api/clinical/care-plan-complete" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; outcome?: string };
+      if (!body.id || !body.outcome) return send(res, 400, { error: "id and outcome required" });
+      const plan = tenant.carePlans.get(body.id);
+      if (!plan) return send(res, 404, { error: `no care plan ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(plan.patientId, "CarePlan", () =>
+        tenant.carePlans.complete(body.id!, {
+          authorId: who,
+          authorKind: auth.ok ? auth.principal.kind : "unknown",
+          outcome: body.outcome!,
+        })
+      );
+    }
+    if (path === "/api/clinical/care-plan-revoke" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { id?: string; reason?: string };
+      if (!body.id || !body.reason) return send(res, 400, { error: "id and reason required" });
+      const plan = tenant.carePlans.get(body.id);
+      if (!plan) return send(res, 404, { error: `no care plan ${body.id}` });
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(plan.patientId, "CarePlan", () =>
+        tenant.carePlans.revoke(body.id!, {
+          authorId: who,
+          authorKind: auth.ok ? auth.principal.kind : "unknown",
+          reason: body.reason!,
+        })
+      );
+    }
+    if (path === "/api/clinical/patient-document-record" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as {
+        patient?: string;
+        title?: string;
+        source?: "patient-brought" | "patient-submitted" | "clinic-scanned";
+        receivedAt?: string;
+        contentType?: string;
+        data?: string;
+        encounter?: string;
+      };
+      if (!body.patient || !body.title || !body.source || !body.receivedAt) {
+        return send(res, 400, { error: "patient, title, source and receivedAt required" });
+      }
+      const who = auth.ok ? auth.principal.id : "unauthenticated";
+      return phiFor(body.patient, "DocumentReference", () =>
+        tenant.documents.receive({
+          patientId: body.patient!,
+          title: body.title!,
+          source: body.source!,
+          receivedAt: body.receivedAt!,
+          by: { authorId: who, authorKind: auth.ok ? auth.principal.kind : "unknown" },
+          ...(body.contentType ? { contentType: body.contentType } : {}),
+          ...(body.data !== undefined ? { data: body.data } : {}),
           ...(body.encounter ? { encounterId: body.encounter } : {}),
         })
       );
@@ -3720,6 +5435,44 @@ async function route(
   if (method === "GET" && path === "/api/scores") {
     return send(res, 200, { scores: SCORE_IDS });
   }
+  // Whether orders of a category leave this site, and to whom. Site
+  // configuration rather than patient data, so it is not under /api/clinical/
+  // for the same reason the score catalogue is not.
+  if (path === "/api/orders/routing" && method === "GET") {
+    const categories = ["lab", "imaging", "procedure", "referral", "other"] as const;
+    return send(res, 200, {
+      routing: categories.map((category) => ({
+        category,
+        declared: tenant.orders.orderRouting(category) ?? null,
+      })),
+    });
+  }
+  if (path === "/api/orders/routing" && method === "POST") {
+    const body = JSON.parse(await readBody(req)) as {
+      category?: string;
+      transmits?: boolean;
+      destination?: string;
+      detail?: string;
+    };
+    if (!body.category || typeof body.transmits !== "boolean" || !body.detail) {
+      return send(res, 400, { error: "category, transmits and detail required" });
+    }
+    const who = auth.ok ? auth.principal.id : "unauthenticated";
+    try {
+      tenant.orders.declareOrderRouting(
+        body.category as "lab" | "imaging" | "procedure" | "referral" | "other",
+        {
+          transmits: body.transmits,
+          ...(body.destination === undefined ? {} : { destination: body.destination }),
+          detail: body.detail,
+        },
+        { actorId: who, actorKind: auth.ok ? auth.principal.kind : "unknown" }
+      );
+      return send(res, 200, { category: body.category, declared: tenant.orders.orderRouting(body.category as "lab") });
+    } catch (err) {
+      return send(res, 400, { error: (err as Error).message });
+    }
+  }
   if (method === "GET" && path === "/api/conformance/capability") {
     const pack = engine.conformance.get(url.searchParams.get("pack") ?? "");
     if (!pack) return send(res, 404, { error: "unknown pack" });
@@ -3858,20 +5611,86 @@ async function route(
     });
   }
 
+  // SMART App Launch discovery. Northstar is a resource server: it validates
+  // tokens, it does not issue them, so this advertises the site's own
+  // authorization server and the capabilities this end actually enforces.
+  // Nothing is listed here that is not implemented — a discovery document
+  // claiming a capability the server does not have is how a client ends up
+  // trusting a check that never runs.
+  if (path === "/.well-known/smart-configuration" && method === "GET") {
+    const smart = gate.smartConfiguration();
+    if (!smart) {
+      return send(res, 404, {
+        error: "this deployment is not configured for OAuth, so it has no SMART configuration to publish",
+      });
+    }
+    res.setHeader("cache-control", "public, max-age=300");
+    return send(res, 200, smart);
+  }
   if (path === "/fhir/metadata" && method === "GET") {
-    return send(res, 200, fhir.capability(baseUrl(req), VERSION));
+    return send(res, 200, fhir.capability(baseUrl(req), VERSION, tenant.standards.active().map((p) => p.canonicalUrl)));
+  }
+
+  // Lineage for one resource. Distinct from /fhir/AuditEvent, which answers
+  // who reached the record rather than where the record came from.
+  m = /^\/fhir\/Provenance$/.exec(path);
+  if (m && method === "GET") {
+    const target = url.searchParams.get("target");
+    if (!target || !target.includes("/")) {
+      return send(res, 400, {
+        resourceType: "OperationOutcome",
+        issue: [{ severity: "error", code: "required", diagnostics: "target is required, as Type/id" }],
+      });
+    }
+    const [targetType, targetId] = target.split("/", 2);
+    const rows = fhir.provenance.forTarget(targetType, targetId);
+    audit({ action: "R", resourceType: "Provenance", resourceId: target, count: rows.length });
+    return send(res, 200, {
+      resourceType: "Bundle",
+      type: "searchset",
+      total: rows.length,
+      entry: rows.map((r) => ({
+        fullUrl: `${baseUrl(req)}/fhir/Provenance/${r.id}`,
+        resource: fhir.provenance.toFhir(r, baseUrl(req) + "/fhir"),
+      })),
+    });
   }
 
   m = /^\/fhir\/([A-Z][A-Za-z]+)$/.exec(path);
   if (m && method === "GET") {
     const type = m[1];
     const identifier = url.searchParams.get("identifier") ?? undefined;
-    const result = fhir.search(type, { identifier, count: num(url.searchParams.get("_count")) });
-    audit({ action: "R", resourceType: type, patient: identifier, count: result.total });
+    const patient = url.searchParams.get("patient") ?? undefined;
+    const count = Math.min(Math.max(num(url.searchParams.get("_count")) ?? 20, 1), 100);
+    const offset = Math.max(num(url.searchParams.get("_offset")) ?? 0, 0);
+    const result = fhir.search(type, { identifier, count, offset, ...(patient ? { patient } : {}) });
+    audit({ action: "R", resourceType: type, patient: patient ?? identifier, count: result.total });
+
+    // Continuation links. A client that pages by re-issuing the search with a
+    // bigger offset needs the ordering to be stable, which is why the store
+    // orders on a tiebreak — without it a page boundary falling inside a run
+    // of identical timestamps repeats some resources and skips others.
+    const page = (at: number): string => {
+      const link = new URL(`${baseUrl(req)}/fhir/${type}`);
+      if (identifier) link.searchParams.set("identifier", identifier);
+      if (patient) link.searchParams.set("patient", patient);
+      link.searchParams.set("_count", String(count));
+      link.searchParams.set("_offset", String(at));
+      return link.toString();
+    };
+    const links: Array<{ relation: string; url: string }> = [{ relation: "self", url: page(offset) }];
+    if (offset + result.resources.length < result.total) {
+      links.push({ relation: "next", url: page(offset + count) });
+    }
+    if (offset > 0) {
+      links.push({ relation: "previous", url: page(Math.max(offset - count, 0)) });
+    }
+
     return send(res, 200, {
       resourceType: "Bundle",
       type: "searchset",
       total: result.total,
+      link: links,
       entry: result.resources.map((r) => ({
         fullUrl: `${baseUrl(req)}/fhir/${type}/${String((r as { id?: unknown }).id ?? "")}`,
         resource: r,
@@ -3928,7 +5747,7 @@ async function route(
  * for a traversal to reach.
  */
 function listFixtures(): Array<{ name: string; content: string }> {
-  const dir = process.env.PORTAGE_FIXTURES ?? join(process.cwd(), "fixtures");
+  const dir = readEnv("FIXTURES") ?? join(process.cwd(), "fixtures");
   if (!existsSync(dir)) return [];
   const out: Array<{ name: string; content: string }> = [];
   for (const name of readdirSync(dir).sort()) {
@@ -4001,7 +5820,12 @@ function readBody(req: IncomingMessage): Promise<string> {
     req.on("data", (c: Buffer) => {
       size += c.length;
       if (size > MAX_BODY) {
-        reject(new Error("body too large"));
+        // A refusal, not a fault: 413 is the status that means do not send
+        // this again, and 500 is the one that means try it once more. The
+        // socket is destroyed at the limit rather than after the response,
+        // so a client may see the reset instead of the status — but nothing
+        // downstream logs this as the engine falling over any more.
+        reject(new Refusal("request body too large", 413));
         req.destroy();
         return;
       }

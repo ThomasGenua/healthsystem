@@ -1,9 +1,17 @@
 /**
- * The patient HTML shell at /me.
+ * The patient application at /me.
  *
- * Not a certified portal. This page is chrome: language, landmarks, an honest
- * banner. Chart access is /patient/* plus OAuth. An unauthenticated GET must
- * not be audited as a reach for a patient record.
+ * This used to be chrome that loaded no chart, and these tests were written
+ * about the chrome. What they actually pin survived it becoming an
+ * application, which is why they are unchanged apart from this note: the page
+ * is served without credentials, it carries its limits in both languages, it
+ * has the landmarks a screen reader needs, and it enrols nobody. A portal
+ * that quietly dropped "there is no identity-proofing" on the day it started
+ * showing results would be the version worth catching.
+ *
+ * Still not a certified portal. Chart access is /patient/* plus OAuth, and an
+ * unauthenticated GET here must not be audited as a reach for a patient
+ * record. The application itself is tested in test/portal.test.ts.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -46,11 +54,39 @@ test("GET /me serves the patient shell without credentials", async () => {
     assert.match(html, /identity-proofing/);
     assert.match(html, /WCAG/);
     assert.match(html, /\/patient\//);
+    assert.match(html, /does not enrol anyone/);
     assert.equal(
       engine.forTenant("default").audit.list({ limit: 10 }).length,
       before,
       "/me is chrome, not a patient-data access"
     );
+  } finally {
+    await close();
+  }
+});
+
+test("GET /me still does not enrol anyone", async () => {
+  // Opening the shell, or guessing /patient/enrol, must not bind a subject.
+  // Clinic attestation is a clerk writing a method, not a page on the internet
+  // naming a chart (H-52).
+  const { engine, base, close } = await boot();
+  try {
+    const html = await (await fetch(`${base}/me`)).text();
+    assert.match(html, /does not enrol anyone/);
+    assert.match(html, /identity-proofing/);
+    assert.match(html, /WCAG/);
+    assert.equal(engine.forTenant("default").enrolment.list().length, 0);
+
+    const guessed = await fetch(`${base}/patient/enrol`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ patient: "NT123456", subject: "anyone" }),
+    });
+    assert.notEqual(guessed.status, 200);
+    assert.notEqual(guessed.status, 201);
+    assert.ok(guessed.status === 401 || guessed.status === 403 || guessed.status === 404);
+    assert.equal(engine.forTenant("default").enrolment.list().length, 0);
+    assert.equal(engine.forTenant("default").patientAccess.whoCanSee("NT123456").length, 0);
   } finally {
     await close();
   }

@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+rule_files: [/etc/prometheus/alerts.yml]
+scrape_configs:
+  - job_name: northstar
+    metrics_path: /metrics
+    static_configs:
+      - targets: [app:8686]
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: [alertmanager:9093]
