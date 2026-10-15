@@ -662,6 +662,14 @@ Allergy, immunization, vital-sign, procedure, care-plan and patient-document sta
 
 ### Governed risk scores
 
+Every score is disabled until locally approved. The governance panel and
+`GET /api/clinical/score-governance` report approvals, expiry and withdrawal;
+`POST /api/clinical/score-approve` requires a registered clinical owner, an
+explicit review date and a written reason. Population, review and source-license
+evidence can also be recorded. The draft `score-approval` and `score-approvals`
+routes remain available; `score-approval` requires that evidence and now names
+the owner by directory ID, not free text. See the [runbook](docs/RUNBOOK.md#upgrading).
+
 `POST /api/clinical/score` computes ten deterministic published instruments;
 `POST /api/clinical/chart-score` can assemble NEWS2 and CURB-65 from the chart
 while refusing stale or unavailable inputs. A number without its definition is
@@ -686,7 +694,13 @@ checked. A mismatch that needs a fact about the substance rather than the units
 is refused instead of guessed: relating bilirubin in µmol/L to a mg/dL
 threshold needs that analyte's molar mass, and choosing one on a caller's
 behalf is the silent rescaling the contract exists to prevent. `POST
-/api/clinical/score` is unchanged and still supported.
+/api/clinical/score` remains supported; an optional `units` map, when supplied
+with a complete calculation, must match every catalogue unit exactly. New
+callers should prefer v2's explicit measurements. Chart-derived inputs retain
+main's conversion evidence and compatibility with older unlabelled readings.
+All three routes return an `authorization` snapshot identifying the exact
+approval, owner, review date and any recorded population/licensing evidence;
+their audit rows identify the implementation and approval without copying inputs.
 
 Inputs are checked against a domain before any arithmetic runs. A domain says
 what a measurement *can* be — a saturation is a percentage, a count of

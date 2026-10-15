@@ -2087,6 +2087,10 @@ CREATE TABLE IF NOT EXISTS score_approvals (
   -- stays legible after the directory renames or retires the person.
   clinical_owner_display TEXT,
   review_due TEXT,
+  approved_population TEXT,
+  reviewed_at TEXT,
+  licensing_accepted_by TEXT,
+  licensing_accepted_at TEXT,
   -- The authenticated operator who recorded the decision, kept separate from
   -- the clinician who owns it. They are frequently not the same person, and a
   -- record that conflates them can answer neither question afterwards.
@@ -2930,6 +2934,10 @@ export interface DbOptions {
  * this column existed".
  */
 const ADDED_COLUMNS: Array<{ table: string; column: string; type: string }> = [
+  { table: "score_approvals", column: "approved_population", type: "TEXT" },
+  { table: "score_approvals", column: "reviewed_at", type: "TEXT" },
+  { table: "score_approvals", column: "licensing_accepted_by", type: "TEXT" },
+  { table: "score_approvals", column: "licensing_accepted_at", type: "TEXT" },
   { table: "intake_uploads", column: "scan_attempts", type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "intake_uploads", column: "scan_retry_at", type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "fhir_resources", column: "patient_id", type: "TEXT" },
@@ -3169,6 +3177,30 @@ export class Db {
    * to stay in step.
    */
   private migrate(): void {
+    const approvalColumns = this.sql.prepare("PRAGMA table_info(score_approvals)").all() as Array<{ name: string }>;
+    if (approvalColumns.some((c) => c.name === "status") && !approvalColumns.some((c) => c.name === "decision")) {
+      this.transaction(() => {
+        this.sql.exec("ALTER TABLE score_approvals RENAME TO score_approvals_legacy");
+        this.sql.exec(SCHEMA);
+        // crosses-tenants: translate the draft approval schema without
+        // dropping any site's history. A free-text owner is not a directory
+        // identity; the governance gate requires a new, registered owner.
+        this.sql.exec(`
+          INSERT INTO score_approvals
+            (tenant_id, id, score_id, implementation_version, decision, reason,
+             clinical_owner_display, review_due, recorded_by_id, recorded_by_kind,
+             supersedes, recorded_at, approved_population, reviewed_at,
+             licensing_accepted_by, licensing_accepted_at)
+          SELECT tenant_id, id, score_id, implementation_version,
+                 CASE status WHEN 'enabled' THEN 'approved' ELSE 'disabled' END,
+                 reason, clinical_owner, review_due, recorded_by, recorded_by_kind,
+                 supersedes, recorded_at, approved_population, reviewed_at,
+                 licensing_accepted_by, licensing_accepted_at
+            FROM score_approvals_legacy;
+          DROP TABLE score_approvals_legacy;
+        `);
+      });
+    }
     for (const { table, column, type } of ADDED_COLUMNS) {
       const cols = this.sql.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
       // An empty result means the table is not there at all, which SCHEMA

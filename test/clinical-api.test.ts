@@ -145,12 +145,18 @@ async function boot() {
   // there is no fixture shortcut that enables a score without a named owner,
   // a review date and a written reason, because there is no such path in the
   // product either.
-  t.scoreGovernance.approve({
-    scoreId: "curb-65",
+  for (const scoreId of ["curb-65", "news2", "has-bled"] as const) t.scoreGovernance.approve({
+    scoreId,
     clinicalOwnerId: "dr-tetso",
     reviewDue: "2027-01-01",
     reason: "synthetic fixture approval for the API tests; not a clinical decision",
     by: { id: "ops", kind: "apikey" },
+    evidence: {
+      implementationVersion: "portage-1",
+      approvedPopulation: "Synthetic test patients only",
+      reviewedAt: "2026-08-01T00:00:00.000Z",
+      licensingAcceptedBy: "test-governance",
+    },
   });
   t.immunizations.record({
     patientId: P,
@@ -202,6 +208,104 @@ test("the assembled chart is served, and the read is on the trail", async () => 
     assert.equal(rows[0].action, "R");
     assert.equal(rows[0].principal_id, s.adminId, "the credential that looked, not a label");
     assert.equal(rows[0].path, "/api/clinical/chart");
+  } finally {
+    await s.close();
+  }
+});
+
+test("clinical score use is approval-gated, unit-bound, and names its approval on the trail", async () => {
+  const s = await boot();
+  try {
+    const unapproved = await fetch(`${s.base}/api/clinical/score`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${s.admin}`, "content-type": "application/json" },
+      body: JSON.stringify({ score: "meld-na", patient: P, input: {} }),
+    });
+    assert.equal(unapproved.status, 403);
+    assert.match(await unapproved.text(), /never been approved/);
+
+    const input = { confusion: false, ureaMmolL: 9, respiratoryRate: 32, systolicBp: 88, diastolicBp: 55, ageYears: 72 };
+    const units = { ureaMmolL: "mmol/L", respiratoryRate: "breaths/min", systolicBp: "mmHg", diastolicBp: "mmHg", ageYears: "completed years" };
+    const wrongUnit = await fetch(`${s.base}/api/clinical/score`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${s.admin}`, "content-type": "application/json" },
+      body: JSON.stringify({ score: "curb-65", patient: P, input, units: { ...units, ureaMmolL: "mg/dL" } }),
+    });
+    assert.equal(wrongUnit.status, 400);
+    assert.match(await wrongUnit.text(), /requires units\.ureaMmolL/);
+
+    const accepted = await fetch(`${s.base}/api/clinical/score`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${s.admin}`, "content-type": "application/json" },
+      body: JSON.stringify({ score: "curb-65", patient: P, input, units }),
+    });
+    assert.equal(accepted.status, 200);
+    const result = (await accepted.json()) as { complete: boolean; authorization: { approvalId: string; implementationVersion: string } };
+    assert.equal(result.complete, true);
+    assert.ok(result.authorization.approvalId);
+    assert.equal(result.authorization.implementationVersion, "portage-1");
+    assert.match(s.trail()[0].detail ?? "", new RegExp(`approval ${result.authorization.approvalId}`));
+    assert.match(s.trail()[0].detail ?? "", /implementation portage-1/);
+
+    for (const route of ["score/v2", "chart-score"]) {
+      const response = await fetch(`${s.base}/api/clinical/${route}`, {
+        method: "POST",
+        headers: { Authorization: "Bearer " + s.admin, "content-type": "application/json" },
+        body: JSON.stringify({ score: "curb-65", patient: P }),
+      });
+      assert.equal(response.status, 200);
+      const value = await response.json() as { authorization: { approvalId: string; approvedPopulation: string } };
+      assert.equal(value.authorization.approvalId, result.authorization.approvalId);
+      assert.equal(value.authorization.approvedPopulation, "Synthetic test patients only");
+      assert.match(s.trail()[0].detail ?? "", new RegExp(`approval ${result.authorization.approvalId}`));
+    }
+
+    s.engine.forTenant("default").scoreGovernance.disable({
+      scoreId: "news2", reason: "withdraw the synthetic approval for this regression", by: { id: "ops", kind: "apikey" },
+    });
+    const withdrawn = await fetch(`${s.base}/api/clinical/chart-score`, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + s.admin, "content-type": "application/json" },
+      body: JSON.stringify({ score: "news2", patient: P }),
+    });
+    assert.equal(withdrawn.status, 403, "chart-derived scores cannot bypass withdrawal");
+  } finally {
+    await s.close();
+  }
+});
+
+test("the retained approval route requires review evidence and a directory identity", async () => {
+  const s = await boot();
+  try {
+    const review = {
+      score: "wells-pe", clinicalOwner: "dr-tetso", implementationVersion: "portage-1",
+      approvedPopulation: "Synthetic test adults only", reviewedAt: "2026-08-01",
+      reviewDue: "2099-08-01", licensingAcceptedBy: "test-governance",
+      reason: "review the retained approval contract",
+    };
+    for (const over of [
+      { licensingAcceptedBy: "" },
+      { clinicalOwner: "Dr Jean Tetso" },
+      { implementationVersion: "portage-0" },
+    ]) {
+      const refused = await fetch(`${s.base}/api/clinical/score-approval`, {
+        method: "POST",
+        headers: { Authorization: "Bearer " + s.admin, "content-type": "application/json" },
+        body: JSON.stringify({ ...review, ...over }),
+      });
+      assert.equal(refused.status, 400);
+    }
+    assert.equal(s.engine.forTenant("default").scoreGovernance.history("wells-pe").length, 0);
+    const accepted = await fetch(`${s.base}/api/clinical/score-approval`, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + s.admin, "content-type": "application/json" },
+      body: JSON.stringify(review),
+    });
+    assert.equal(accepted.status, 200);
+    const row = await accepted.json() as { approvedPopulation: string; licensingAcceptedBy: string; clinicalOwnerId: string };
+    assert.equal(row.approvedPopulation, review.approvedPopulation);
+    assert.equal(row.licensingAcceptedBy, review.licensingAcceptedBy);
+    assert.equal(row.clinicalOwnerId, "dr-tetso");
   } finally {
     await s.close();
   }
@@ -1038,6 +1142,8 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/lab-held": "",
       "/api/clinical/lab-reconcile": "",
       "/api/clinical/lab-resolve": "POST",
+      "/api/clinical/score-approvals": "",
+      "/api/clinical/score-approval": "POST",
       "/api/clinical/score": "POST",
       "/api/clinical/score/v2": "POST",
       "/api/clinical/patient-summary-export": "POST",
@@ -1305,6 +1411,7 @@ test("every clinical route leaves an audit row, including ones added later", asy
         score: "curb-65",
         patient: P,
         input: { confusion: false, ureaMmolL: 9, respiratoryRate: 32, systolicBp: 88, diastolicBp: 55, ageYears: 72 },
+        units: { ureaMmolL: "mmol/L", respiratoryRate: "breaths/min", systolicBp: "mmHg", diastolicBp: "mmHg", ageYears: "completed years" },
       },
       // The same patient through the measurement contract: the units travel
       // with the values instead of being spelled into the parameter names.
@@ -1446,6 +1553,16 @@ test("every clinical route leaves an audit row, including ones added later", asy
         request: requestToExtend.id,
         until: "2027-01-15T00:00:00.000Z",
         reason: "patient asked for more time to collect records",
+      },
+      "/api/clinical/score-approval": {
+        score: "curb-65",
+        implementationVersion: "portage-1",
+        clinicalOwner: "dr-tetso",
+        approvedPopulation: "Synthetic test patients only",
+        reviewedAt: "2026-08-01T00:00:00.000Z",
+        reviewDue: "2099-08-01T00:00:00.000Z",
+        licensingAcceptedBy: "test-governance",
+        reason: "exercise the approval endpoint",
       },
       "/api/clinical/assurance-finding-close": {
         id: findingToClose.id,

@@ -21,12 +21,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Db } from "../src/db.ts";
 import { Directory } from "../src/directory/store.ts";
-import { ScoreGovernance } from "../src/clinical/score-governance.ts";
+import { ScoreGovernance, requireScoreUnits } from "../src/clinical/score-governance.ts";
 import { SCORE_IDS } from "../src/clinical/score-definitions.ts";
 import { Refusal } from "../src/core/refusal.ts";
 
 const OPS = { id: "ops-lachance", kind: "apikey" };
 const FUTURE = "2027-06-30";
+const EVIDENCE = {
+  implementationVersion: "portage-1",
+  approvedPopulation: "Adults presenting locally with community-acquired pneumonia",
+  reviewedAt: "2026-08-01T00:00:00.000Z",
+  licensingAcceptedBy: "clinical-governance-board",
+};
 
 function site() {
   const dir = mkdtempSync(join(tmpdir(), "northstar-gov-"));
@@ -53,6 +59,131 @@ const approve = (s: ReturnType<typeof site>, over: Record<string, unknown> = {})
     by: OPS,
     ...over,
   } as Parameters<ScoreGovernance["approve"]>[0]);
+
+test("authorization preserves population, licensing acceptance and the exact approval", () => {
+  const s = site();
+  try {
+    const row = approve(s, { evidence: EVIDENCE });
+    const authorization = s.gov.requireEnabled("curb-65");
+    assert.equal(authorization.approvalId, row.id);
+    assert.equal(authorization.implementationVersion, EVIDENCE.implementationVersion);
+    assert.equal(authorization.clinicalOwner, "Jean Tetso");
+    assert.equal(authorization.approvedPopulation, EVIDENCE.approvedPopulation);
+    assert.equal(authorization.reviewedAt, EVIDENCE.reviewedAt);
+    assert.equal(authorization.licensingAcceptedBy, EVIDENCE.licensingAcceptedBy);
+    assert.equal(authorization.licensingAcceptedAt, row.recordedAt);
+    const disabled = s.gov.disable({ scoreId: "curb-65", reason: "source licensing requires another review", by: OPS });
+    assert.equal(disabled.supersedes, row.id);
+    assert.equal(disabled.licensingAcceptedAt, row.licensingAcceptedAt);
+    assert.throws(() => s.gov.requireEnabled("curb-65"), /disabled/);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("review evidence cannot approve a different version, missing population or licensing, or invalid dates", () => {
+  const s = site();
+  try {
+    for (const evidence of [
+      { ...EVIDENCE, implementationVersion: "portage-0" },
+      { ...EVIDENCE, approvedPopulation: "" },
+      { ...EVIDENCE, licensingAcceptedBy: "" },
+      { ...EVIDENCE, reviewedAt: "invalid" },
+      { ...EVIDENCE, reviewedAt: "2099-01-01" },
+    ]) assert.throws(() => approve(s, { evidence }), Refusal);
+    assert.throws(() => approve(s, { evidence: EVIDENCE, reviewDue: "2026-08-01" }), /must be in the future/);
+    assert.equal(s.gov.history("curb-65").length, 0);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("explicit units must name every governed scale exactly", () => {
+  const units = {
+    ureaMmolL: "mmol/L", respiratoryRate: "breaths/min",
+    systolicBp: "mmHg", diastolicBp: "mmHg", ageYears: "completed years",
+  };
+  assert.deepEqual(requireScoreUnits("curb-65", units), units);
+  assert.throws(() => requireScoreUnits("curb-65", { ...units, ureaMmolL: "mg/dL" }), /requires units\.ureaMmolL/);
+  const { ureaMmolL: _omitted, ...missing } = units;
+  assert.throws(() => requireScoreUnits("curb-65", missing), /unit was omitted/);
+});
+
+test("opening main's approval schema adds evidence columns without changing existing decisions", () => {
+  const dir = mkdtempSync(join(tmpdir(), "northstar-gov-upgrade-"));
+  const path = join(dir, "northstar.db");
+  let db = new Db(path);
+  try {
+    new Directory(db).addPractitioner({ id: "dr-tetso", family: "Tetso", given: "Jean" });
+    const row = new ScoreGovernance(db).approve({
+      scoreId: "curb-65", clinicalOwnerId: "dr-tetso", reviewDue: FUTURE,
+      reason: "approval before population evidence was recorded", by: OPS,
+    });
+    for (const column of ["approved_population", "reviewed_at", "licensing_accepted_by", "licensing_accepted_at"]) {
+      db.sql.exec(`ALTER TABLE score_approvals DROP COLUMN ${column}`);
+    }
+    db.close();
+    db = new Db(path);
+    const gov = new ScoreGovernance(db);
+    const authorization = gov.requireEnabled("curb-65");
+    assert.equal(authorization.approvalId, row.id);
+    assert.equal(authorization.approvedPopulation, null, "no population evidence is invented");
+    assert.equal(authorization.licensingAcceptedBy, null);
+    assert.equal(gov.history("curb-65").length, 1);
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test("draft approvals retain their evidence on upgrade but need a registered owner before use", () => {
+  const dir = mkdtempSync(join(tmpdir(), "northstar-gov-draft-"));
+  const path = join(dir, "northstar.db");
+  let db = new Db(path);
+  try {
+    new Directory(db).addPractitioner({ id: "dr-tetso", family: "Tetso", given: "Jean" });
+    db.sql.exec(`
+      DROP TABLE score_approvals;
+      CREATE TABLE score_approvals (
+        tenant_id TEXT NOT NULL, id TEXT NOT NULL, score_id TEXT NOT NULL,
+        implementation_version TEXT NOT NULL, status TEXT NOT NULL,
+        clinical_owner TEXT NOT NULL, approved_population TEXT NOT NULL,
+        reviewed_at TEXT NOT NULL, review_due TEXT NOT NULL,
+        licensing_accepted_by TEXT NOT NULL, licensing_accepted_at TEXT NOT NULL,
+        reason TEXT NOT NULL, recorded_by TEXT NOT NULL, recorded_by_kind TEXT NOT NULL,
+        recorded_at TEXT NOT NULL, supersedes TEXT, PRIMARY KEY (tenant_id, id)
+      );
+    `);
+    for (const tenant of ["default", "north"]) {
+      db.sql.prepare("INSERT INTO score_approvals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(tenant, `draft-${tenant}`, "curb-65", "portage-1", "enabled", "Dr Jean Tetso",
+          EVIDENCE.approvedPopulation, EVIDENCE.reviewedAt, FUTURE, EVIDENCE.licensingAcceptedBy,
+          EVIDENCE.reviewedAt, "draft review decision", OPS.id, OPS.kind, EVIDENCE.reviewedAt, null);
+    }
+    db.close();
+    db = new Db(path);
+    const gov = new ScoreGovernance(db);
+    assert.throws(() => gov.requireEnabled("curb-65"), /directory-registered clinical owner/);
+    const row = gov.history("curb-65")[0];
+    assert.equal(row.id, "draft-default");
+    assert.equal(row.approvedPopulation, EVIDENCE.approvedPopulation);
+    assert.equal(row.licensingAcceptedBy, EVIDENCE.licensingAcceptedBy);
+    assert.equal(row.clinicalOwnerDisplay, "Dr Jean Tetso");
+    assert.equal(new ScoreGovernance(db.forTenant("north")).history("curb-65")[0].id, "draft-north");
+    const renewed = gov.approve({
+      scoreId: "curb-65", clinicalOwnerId: "dr-tetso", reviewDue: FUTURE,
+      reason: "re-reviewed with a directory-registered owner", by: OPS, evidence: EVIDENCE,
+    });
+    assert.equal(renewed.supersedes, row.id);
+    assert.equal(gov.requireEnabled("curb-65").approvalId, renewed.id);
+    db.close();
+    db = new Db(path);
+    assert.equal(new ScoreGovernance(db).history("curb-65").length, 2, "upgrade is idempotent");
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
 
 // ── The default ───────────────────────────────────────────────────────────
 

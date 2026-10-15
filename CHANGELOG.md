@@ -9,6 +9,15 @@ always forward-compatible and run automatically on open — see
 
 ## Unreleased
 
+**Merged**
+
+- Ported the draft score-provenance approval evidence onto the current
+  directory-backed governance model. Population, review and licensing evidence
+  are retained alongside main's approval history and unit-aware v2 API; score
+  responses and audit rows identify the approval in force. Draft-schema
+  databases retain their evidence but require re-approval with a registered
+  clinical owner before scores can be used.
+
 **Fixed**
 
 - **A patient could not ask for their record to be corrected through the

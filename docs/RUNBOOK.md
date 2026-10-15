@@ -216,6 +216,24 @@ audit chain). An upgrade that produced tables without their constraints
 is worse than one that failed to open — the site runs, and double-books — so
 the verification step is the point of the exercise, not paperwork.
 
+Score approvals from the draft score-provenance schema are translated on open,
+including their population, review and licensing evidence and supersession
+history. Their free-text clinical owners are not directory identities, so those
+approvals remain disabled until a new decision names a registered practitioner.
+Existing approvals from main retain their decisions; missing evidence stays null
+rather than being invented.
+
+Inspect `GET /api/clinical/score-governance` and the per-score
+`score-governance-history?score=curb-65` after upgrade. Record a new decision with
+`POST /api/clinical/score-approve`, supplying `score`, `clinicalOwner` (the
+practitioner directory ID), `reviewDue` and a written `reason`. To also record
+the draft PR's review evidence, supply all four of `implementationVersion`,
+`approvedPopulation`, `reviewedAt` and `licensingAcceptedBy`; the version must
+match the catalogue and the review must precede a future review deadline.
+The retained `POST /api/clinical/score-approval` route requires those four fields.
+Withdrawal remains `POST /api/clinical/score-disable`; renewal and withdrawal
+append a decision rather than rewriting the history.
+
 ### Upgrading a site installed as Portage
 
 Northstar was called Portage. Nothing about that rename requires you to change
