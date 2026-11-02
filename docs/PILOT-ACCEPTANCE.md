@@ -3,6 +3,9 @@
 No real patient data, live messages, deployment or independent approvals were
 used to produce this checklist. Do not mark an item complete from a unit test.
 
+Use the [decision worksheet](PILOT-DECISIONS.md) to collect provider choices,
+clinical ownership and acceptance scenarios before configuring a pilot site.
+
 | Workstream | Repository progress | Evidence still required |
 |---|---|---|
 | Preflight | Configuration report and optional harmless local scanner probe | Run with real service environment; resolve blockers and review items |

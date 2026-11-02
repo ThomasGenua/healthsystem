@@ -538,11 +538,12 @@ needed a test using a custom, deliberately-misbehaving `ExternalCoordinator`
 rather than the synthetic one, since the synthetic coordinator always
 returns a real reference and so could never exercise that refusal.
 
-**Still missing.** No portal or clinic-workspace screen. `unconfirmed()`
-is not wired into the clinic board (item 66) as its own attention queue the
-way item 66's existing `patient-contact` tasks are — a deployment can find
-outstanding arrangements through `TaskStore.openOfKind("arrangement")`
-today, but nothing renders them as a dedicated panel yet.
+**Workspace read view added.** The console's Arrangements tab now renders
+`unconfirmed()` through an authenticated, directive-filtered queue. It shows
+status, patient/visit, owner and update time, with explicit incomplete, loading,
+error and empty states. It does not confirm, assign or cancel arrangements;
+those remain existing API operations. A patient-facing arrangements screen
+and a clinic-board attention summary are still absent.
 
 ## 66. A clinic operations workspace — **partial**
 
