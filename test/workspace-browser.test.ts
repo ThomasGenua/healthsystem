@@ -40,7 +40,32 @@ test('arrangements workspace distinguishes outstanding, withheld, failed and emp
         writeFileSync(`.pilot-artifacts/workspace/console-${width}.png`, Buffer.from(shot.data, 'base64'));
       }
     }
-    tenant.arrangements.confirm(visible.id, { evidence: 'Synthetic phone confirmation', by });
+    await b.evaluate(`{document.querySelector('details').open=true;const form=document.querySelector('form[data-operation=assign]');form.elements.value.value='nurse-2';form.requestSubmit()}`);
+    await b.wait("document.body.innerText.includes('Responsibility assigned.')");
+    assert.equal(tenant.arrangements.get(visible.id)!.owner_id, 'nurse-2');
+    if (process.env.NORTHSTAR_WORKSPACE_SCREENSHOTS === 'on') {
+      const shot = await b.cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+      writeFileSync('.pilot-artifacts/workspace/arrangement-actions.png', Buffer.from(shot.data, 'base64'));
+    }
+    await b.evaluate(`{window.originalFetch=window.fetch;window.fetch=async()=>new Response(JSON.stringify({error:'Synthetic save outage'}),{status:503});const form=document.querySelector('form[data-operation=confirm]');form.elements.value.value='Confirmed by synthetic transport desk';form.requestSubmit()}`);
+    await b.wait("document.body.innerText.includes('Synthetic save outage')");
+    assert.equal(await b.evaluate("document.querySelector('form[data-operation=confirm]').elements.value.value"), 'Confirmed by synthetic transport desk');
+    assert.equal(tenant.arrangements.get(visible.id)!.status, 'needed');
+    await b.evaluate(`{window.posts=0;window.fetch=(...args)=>{if(args[1]?.method==='POST')window.posts++;return window.originalFetch(...args)};const form=document.querySelector('form[data-operation=confirm]');form.requestSubmit();form.requestSubmit()}`);
+    await b.wait("document.body.innerText.includes('Confirmation saved.')");
+    assert.equal(await b.evaluate('window.posts'), 1, 'a double submit issues one mutation');
+    assert.equal(tenant.arrangements.get(visible.id)!.confirmation_evidence, 'Confirmed by synthetic transport desk');
+    assert.equal(await b.evaluate("document.querySelector('[data-arrangement-count]').dataset.arrangementCount"), '0');
+    await b.evaluate('window.fetch=window.originalFetch;go("Clinic board")');
+    await b.wait("document.body.innerText.includes('Some items are withheld. This count is incomplete.')");
+    assert.ok(await b.evaluate("document.body.innerText.includes('0 visible')"));
+    assert.equal(await b.evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
+    const cancel = tenant.arrangements.request({ visitId: visit.id, patientId: 'PATIENT-A', kind: 'escort', detail: 'Cancel this synthetic support', by });
+    await b.evaluate("document.querySelector('[data-tab=Arrangements]').click()");
+    await b.wait("document.body.innerText.includes('Cancel this synthetic support')");
+    await b.evaluate(`{document.querySelector('details').open=true;const form=document.querySelector('form[data-operation=cancel]');form.elements.value.value='Patient has made other arrangements';form.requestSubmit()}`);
+    await b.wait("document.body.innerText.includes('Cancellation saved.')");
+    assert.equal(tenant.arrangements.get(cancel.id)!.cancelled_reason, 'Patient has made other arrangements');
     await b.evaluate('render()');
     await b.wait('document.body.innerText.includes("No visible outstanding arrangements")');
     assert.ok(await b.evaluate('document.body.innerText.includes("This list is incomplete")'));
