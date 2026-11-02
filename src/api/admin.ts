@@ -108,6 +108,10 @@ import { sendOrder, sendOrderCancellation } from "../orders/send.ts";
 import type { SpecimenDetail } from "../orders/outbound.ts";
 
 let UI_HTML: string | null = null;
+let LANDING_HTML: string | null = null;
+function landingHtml(): string {
+  return LANDING_HTML ??= readFileSync(new URL("./landing.html", import.meta.url), "utf8");
+}
 function uiHtml(): string {
   if (UI_HTML === null) {
     try {
@@ -460,7 +464,11 @@ async function route(
   if (portalLogin && await portalLogin.handle(req, res, path, url)) return;
   if (method === "GET" && path === "/auth/portal") return send(res, 200, { enabled: false, authenticated: false });
 
-  if (method === "GET" && (path === "/" || path === "/ui")) {
+  if (method === "GET" && path === "/") {
+    sendHtml(res, landingHtml());
+    return;
+  }
+  if (method === "GET" && path === "/ui") {
     sendHtml(res, uiHtml());
     return;
   }

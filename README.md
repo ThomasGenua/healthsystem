@@ -114,7 +114,7 @@ Optional, and only if you use the source that needs it: `pg` for a Postgres poll
 npm start
 ```
 
-Boots the engine on port 8686 (override with `NORTHSTAR_PORT`), creates `./data/northstar.db`, registers every mapping in `./mappings`, loads terminology packs from `./terminology` and conformance packs from `./conformance`, and seeds any channel in `./channels` that does not already exist in the database. Four channels ship: ADT to Patient on MLLP 6661, lab ORU to Observation on 6662 (split per OBX), ADT diagnoses to Condition on 6663 (split per DG1), and pharmacy RDE to MedicationRequest on 6664. All four deliver in strict order into the local FHIR facade, so a fresh boot is immediately queryable. The admin UI is at `http://localhost:8686/`.
+Boots the engine on port 8686 (override with `NORTHSTAR_PORT`), creates `./data/northstar.db`, registers every mapping in `./mappings`, loads terminology packs from `./terminology` and conformance packs from `./conformance`, and seeds any channel in `./channels` that does not already exist in the database. Four channels ship: ADT to Patient on MLLP 6661, lab ORU to Observation on 6662 (split per OBX), ADT diagnoses to Condition on 6663 (split per DG1), and pharmacy RDE to MedicationRequest on 6664. All four deliver in strict order into the local FHIR facade, so a fresh boot is immediately queryable. The public landing page is at `http://localhost:8686/`; the admin UI is at `http://localhost:8686/ui` and the patient portal at `/me`.
 
 **The API is authenticated by default.** With no key configured, one is minted at boot and printed once:
 
@@ -1729,7 +1729,7 @@ All of these are engine sources, so everything downstream — pipeline, lineage,
 
 ## Admin UI
 
-`GET /` serves a single-file, no-build UI over the public API: a dashboard with live counts, history charts, an access audit view, channels with hash-chain verification, a channel designer, a mapping editor with live fixtures, a message browser with per-step lineage, the delivery queue with dead-letter replay and discard, a FHIR facade browser, subscription management, terminology lookups, a conformance validator, and a **Privacy** tab over the office queues. It is deliberately thin; anything it does, curl does.
+`GET /ui` serves a single-file, no-build UI over the public API: a dashboard with live counts, history charts, an access audit view, channels with hash-chain verification, a channel designer, a mapping editor with live fixtures, a message browser with per-step lineage, the delivery queue with dead-letter replay and discard, a FHIR facade browser, subscription management, terminology lookups, a conformance validator, and a **Privacy** tab over the office queues. It is deliberately thin; anything it does, curl does.
 
 `GET /me` is a separate English/French patient application. Its public document contains no patient records; chart data is fetched only through authorized patient APIs. It is not a certified portal and does not itself enrol anyone.
 
