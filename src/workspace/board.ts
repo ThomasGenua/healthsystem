@@ -102,8 +102,10 @@ export interface ResourceRow {
 }
 
 import type { SubmissionRow as IntakeSubmissionRow } from "../patient/intake.ts";
+import type { ArrangementRow } from "../schedule/arrangements.ts";
 
 export interface BoardSources {
+  arrangements?: { unconfirmed(): ArrangementRow[] };
   schedule: {
     diary(resourceId: string, from: string, to: string): Array<{ slot: SlotRow; bookings: BookingRow[] }>;
     resourcesWithSlots?(from: string, to: string): Array<{ resourceId: string; kind: string }>;
@@ -324,6 +326,7 @@ export class ClinicBoard {
   attention(opts: { staleAfterHours?: number } = {}, asOf = new Date()): {
     unreachablePatients: { rows: TaskRow[]; because: string };
     intakeAwaitingReview?: { rows: IntakeSubmissionRow[]; because: string };
+    unconfirmedArrangements?: { rows: ArrangementRow[]; because: string };
     unacceptedHandoffs: { rows: Array<HandoffRow & { lapsed: boolean }>; because: string };
     openFollowUps: { rows: Array<DischargeRow & { outstanding: number }>; because: string };
     coveringNow: { rows: HandoffRow[]; because: string };
@@ -371,6 +374,10 @@ export class ClinicBoard {
             },
           }
         : {}),
+      ...(this.sources.arrangements ? { unconfirmedArrangements: {
+        rows: this.sources.arrangements.unconfirmed(),
+        because: "support for the visit has not been confirmed; a request is not a booking",
+      } } : {}),
     };
   }
 

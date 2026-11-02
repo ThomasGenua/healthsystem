@@ -2968,6 +2968,25 @@ async function route(
           })
       );
     }
+    if (path === "/api/clinical/clinic-attention" && method === "GET") {
+      return phiFor(undefined, "Task", () => {
+        const board = tenant.board.attention();
+        // Counts are disclosures too. Do not count a withheld row as visible,
+        // and do not turn an unwired source into a reassuring zero.
+        const summary = (panel: { rows: Array<{ patient_id: string | null }>; because: string } | undefined, covers: string[]) => {
+          if (!panel) return { available: false };
+          const visible = panel.rows.filter(row => !row.patient_id || !withheld(row.patient_id, covers));
+          return { available: true, count: visible.length, withheldCount: panel.rows.length - visible.length, because: panel.because };
+        };
+        return {
+          arrangements: summary(board.unconfirmedArrangements, ["Appointment"]),
+          intake: summary(board.intakeAwaitingReview, ["QuestionnaireResponse", "DocumentReference", "Task"]),
+          unreachable: summary(board.unreachablePatients, ["Task"]),
+          handoffs: summary(board.unacceptedHandoffs, ["Task", "Encounter"]),
+          followUps: summary(board.openFollowUps, ["Task", "Encounter"]),
+        };
+      });
+    }
     if (path === "/api/clinical/arrangements-outstanding" && method === "GET") {
       return phiFor(undefined, "Appointment", () => {
         const all = tenant.arrangements.unconfirmed();
@@ -2980,15 +2999,15 @@ async function route(
     }
     if (path === "/api/clinical/arrangement-assign" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as { id?: string; ownerId?: string };
-      if (!body.id || !body.ownerId) return send(res, 400, { error: "id and ownerId required" });
+      if (typeof body.id !== "string" || typeof body.ownerId !== "string" || !body.id || !body.ownerId.trim()) return send(res, 400, { error: "id and ownerId required" });
       const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
-      return phi("Appointment", () => tenant.arrangements.assign(body.id!, body.ownerId!, by));
+      return phiFor(tenant.arrangements.get(body.id)?.patient_id ?? undefined, "Appointment", () => tenant.arrangements.assign(body.id!, body.ownerId!.trim(), by));
     }
     if (path === "/api/clinical/arrangement-confirm" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as { id?: string; evidence?: string };
-      if (!body.id || !body.evidence) return send(res, 400, { error: "id and evidence required" });
+      if (typeof body.id !== "string" || typeof body.evidence !== "string" || !body.id || !body.evidence.trim()) return send(res, 400, { error: "id and evidence required" });
       const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
-      return phi("Appointment", () => tenant.arrangements.confirm(body.id!, { evidence: body.evidence!, by }));
+      return phiFor(tenant.arrangements.get(body.id)?.patient_id ?? undefined, "Appointment", () => tenant.arrangements.confirm(body.id!, { evidence: body.evidence!, by }));
     }
     if (path === "/api/clinical/arrangement-request-external" && method === "POST") {
       // requestExternally() is async (a real integration is a network call),
@@ -3015,9 +3034,9 @@ async function route(
     }
     if (path === "/api/clinical/arrangement-cancel" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as { id?: string; reason?: string };
-      if (!body.id || !body.reason) return send(res, 400, { error: "id and reason required" });
+      if (typeof body.id !== "string" || typeof body.reason !== "string" || !body.id || !body.reason.trim()) return send(res, 400, { error: "id and reason required" });
       const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
-      return phi("Appointment", () => tenant.arrangements.cancel(body.id!, { reason: body.reason!, by }));
+      return phiFor(tenant.arrangements.get(body.id)?.patient_id ?? undefined, "Appointment", () => tenant.arrangements.cancel(body.id!, { reason: body.reason!, by }));
     }
     if (path === "/api/clinical/waitlist" && method === "GET") {
       const service = url.searchParams.get("service");

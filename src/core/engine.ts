@@ -546,7 +546,7 @@ export class Engine {
     messaging.useOwnershipRecord(handoffs);
     // After encounters, which it reads to tell an arrival from an expectation.
     const board = new ClinicBoard(
-      { schedule, encounters, tasks, discharges, handoffs, intake },
+      { schedule, encounters, tasks, discharges, handoffs, intake, arrangements },
       { clinicDay: this.clinicDay }
     );
     // Built here rather than inline in the view because the key store needs it

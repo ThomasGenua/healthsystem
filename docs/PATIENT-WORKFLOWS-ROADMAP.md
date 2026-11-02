@@ -538,12 +538,15 @@ needed a test using a custom, deliberately-misbehaving `ExternalCoordinator`
 rather than the synthetic one, since the synthetic coordinator always
 returns a real reference and so could never exercise that refusal.
 
-**Workspace read view added.** The console's Arrangements tab now renders
+**Workspace actions and attention summary added.** The console's Arrangements tab renders
 `unconfirmed()` through an authenticated, directive-filtered queue. It shows
 status, patient/visit, owner and update time, with explicit incomplete, loading,
-error and empty states. It does not confirm, assign or cancel arrangements;
-those remain existing API operations. A patient-facing arrangements screen
-and a clinic-board attention summary are still absent.
+error and empty states. Staff can assign responsibility, confirm with written
+evidence, or cancel with a reason. Refused saves retain the entered details;
+patient directives are checked against the arrangement's stored patient.
+The Clinic board tab shows visible outstanding counts alongside intake,
+contact, handoff and follow-up queues, with withheld/unavailable states.
+A patient-facing arrangements screen is still absent.
 
 ## 66. A clinic operations workspace — **partial**
 
