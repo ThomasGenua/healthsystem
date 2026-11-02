@@ -335,7 +335,7 @@ test(
       };
 
       for (const tab of ["Channels", "Messages", "FHIR", "Audit", "Chart", "Worklist", "Break-glass", "Privacy"]) {
-        await cdp("Page.navigate", { url: `${base}/#${tab}` }, S);
+        await cdp("Page.navigate", { url: `${base}/ui#${tab}` }, S);
         // Every tab fills itself from a fetch, so how long that takes is a
         // property of the runner rather than of the page. A fixed wait is
         // therefore a guess that is right on a quiet machine and wrong on a
