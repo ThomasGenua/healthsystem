@@ -1053,6 +1053,7 @@ test("every clinical route leaves an audit row, including ones added later", asy
       "/api/clinical/visit-reschedule": "POST",
       "/api/clinical/arrangements": "POST",
       "/api/clinical/arrangements-unconfirmed": "",
+      "/api/clinical/arrangements-outstanding": "",
       "/api/clinical/arrangement-assign": "POST",
       "/api/clinical/arrangement-confirm": "POST",
       "/api/clinical/arrangement-request-external": "POST",

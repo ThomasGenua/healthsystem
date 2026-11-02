@@ -2968,6 +2968,13 @@ async function route(
           })
       );
     }
+    if (path === "/api/clinical/arrangements-outstanding" && method === "GET") {
+      return phiFor(undefined, "Appointment", () => {
+        const all = tenant.arrangements.unconfirmed();
+        const rows = all.filter(row => !row.patient_id || !withheld(row.patient_id, ["Appointment"]));
+        return { rows, withheldCount: all.length - rows.length };
+      }, result => result.rows.length);
+    }
     if (path === "/api/clinical/arrangements-unconfirmed" && method === "GET") {
       return phi("Appointment", () => tenant.arrangements.unconfirmed(), (r) => r.length);
     }
