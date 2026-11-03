@@ -26,8 +26,8 @@ import { AuditStore } from "../src/audit/store.ts";
 
 /** Two tenants, each holding a patient and a channel of the same name. */
 function twoTenants(): { north: Db; south: Db; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-iso-"));
-  const root = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-iso-"));
+  const root = new Db(join(dir, "healthsystem.db"));
   root.createTenant("north", "Northern Health", "Northern Regional Custodian");
   root.createTenant("south", "Southern Health", "Southern Regional Custodian");
 

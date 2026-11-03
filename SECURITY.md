@@ -1,6 +1,6 @@
 # Security policy
 
-HealthSystems moves and stores personal health information. A defect in it is not an
+HealthSystem moves and stores personal health information. A defect in it is not an
 availability problem with a privacy footnote — a record served to the wrong
 clinician, an audit row that was never written, or a lockbox that reports
 itself in force while enforcing nothing are all, on their own, the failure this
@@ -62,7 +62,7 @@ intentions rather than a contractual SLA:
 You will be credited in the advisory by whatever name you ask for, or not at
 all if you prefer. There is no bug bounty.
 
-## Testing against HealthSystems
+## Testing against HealthSystem
 
 Security research against **your own deployment or a local checkout** is
 welcome and needs no permission. Please do not test against a live deployment
@@ -111,7 +111,7 @@ of the code either: both pages are served under a Content-Security-Policy whose
 
 ## Supported versions
 
-HealthSystems is pre-1.0 and moving quickly. Only the latest minor release receives
+HealthSystem is pre-1.0 and moving quickly. Only the latest minor release receives
 security fixes; there are no long-term support branches. A site running an
 older version should expect to upgrade to receive a fix — `test/migration.test.ts`
 exists precisely so that upgrading is not the risky part.
@@ -155,7 +155,7 @@ discussion, but they will not be treated as advisories:
 - **Medication decision support ships without a broad interaction source.**
   Deterministic published risk instruments are a separate catalogue and carry
   their formula version, population, exclusions, units and an explicit
-  not-independently-clinically-validated assurance state. Nothing in HealthSystems
+  not-independently-clinically-validated assurance state. Nothing in HealthSystem
   uses machine learning. No output should be read as though it did.
 - **An `admin`-scoped key can direct the engine's outbound requests anywhere,
   including a private address.** A channel's HTTP destination is exactly as

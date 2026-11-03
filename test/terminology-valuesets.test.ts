@@ -28,8 +28,8 @@ import {
 const SCT = "http://snomed.info/sct";
 
 function store() {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-term-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-term-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   return {
     db,
     terms: new TerminologyStore(db),

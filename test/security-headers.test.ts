@@ -162,7 +162,7 @@ test("a node that does not terminate TLS sends no HSTS", async () => {
 });
 
 test("a node holding its own certificate sends HSTS, without reaching other hostnames", { skip: !haveOpenssl() }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-hsts-"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-hsts-"));
   const engine = new Engine({ dbPath: ":memory:", tickMs: 15 });
   await engine.start();
   let api: Awaited<ReturnType<typeof startApi>> | undefined;
@@ -209,11 +209,11 @@ test("the HSTS duration is the deployment's to set, and a bad one stops the node
   // A site that may have to serve plain HTTP again has to lower this before it
   // ships, because browsers remember the last value they were given.
   assert.equal(hstsHeader({}), "max-age=31536000");
-  assert.equal(hstsHeader({ HEALTHSYSTEMS_HSTS_MAX_AGE: "600" }), "max-age=600");
+  assert.equal(hstsHeader({ HEALTHSYSTEM_HSTS_MAX_AGE: "600" }), "max-age=600");
   // Zero is how a deployment turns it off, which is different from a typo.
-  assert.equal(hstsHeader({ HEALTHSYSTEMS_HSTS_MAX_AGE: "0" }), null);
+  assert.equal(hstsHeader({ HEALTHSYSTEM_HSTS_MAX_AGE: "0" }), null);
   for (const bad of ["forever", "-1", "1e6", "31536000s", " "]) {
-    assert.throws(() => hstsHeader({ HEALTHSYSTEMS_HSTS_MAX_AGE: bad }), /whole number of seconds/, bad);
+    assert.throws(() => hstsHeader({ HEALTHSYSTEM_HSTS_MAX_AGE: bad }), /whole number of seconds/, bad);
   }
 });
 

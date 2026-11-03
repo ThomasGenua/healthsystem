@@ -1,10 +1,10 @@
 /**
- * Takes a verified snapshot of a HealthSystems database, and replicates it off the
- * machine when HEALTHSYSTEMS_BACKUP_REMOTE is set.
+ * Takes a verified snapshot of a HealthSystem database, and replicates it off the
+ * machine when HEALTHSYSTEM_BACKUP_REMOTE is set.
  *
- *   node scripts/backup.ts [--db data/healthsystems.db] [--out backups] [--keep 7]
- *   node scripts/backup.ts --verify backups/healthsystems-2026-08-07T14-00-00.db
- *   node scripts/backup.ts --init-key /etc/healthsystems/backup.key
+ *   node scripts/backup.ts [--db data/healthsystem.db] [--out backups] [--keep 7]
+ *   node scripts/backup.ts --verify backups/healthsystem-2026-08-07T14-00-00.db
+ *   node scripts/backup.ts --init-key /etc/healthsystem/backup.key
  *
  * Safe to run against a live engine: this uses SQLite's online backup API, not
  * a file copy, which would be torn or stale under WAL. The snapshot is
@@ -50,7 +50,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const dbPath = arg("db") ?? join(process.cwd(), "data", "healthsystems.db");
+  const dbPath = arg("db") ?? join(process.cwd(), "data", "healthsystem.db");
   const dir = arg("out") ?? readEnv("BACKUP_DIR") ?? join(process.cwd(), "backups");
   const keep = arg("keep") ? Number(arg("keep")) : undefined;
   if (keep !== undefined && (!Number.isInteger(keep) || keep < 1)) {
@@ -67,10 +67,10 @@ async function main(): Promise<void> {
         `${result.verified.auditEvents} audit event(s)`
     );
 
-    const remote = RemoteBackup.fromEnv({ ...process.env, HEALTHSYSTEMS_BACKUP_DIR: dir });
+    const remote = RemoteBackup.fromEnv({ ...process.env, HEALTHSYSTEM_BACKUP_DIR: dir });
     if (!remote.configured) {
       console.log(
-        "  local only: no HEALTHSYSTEMS_BACKUP_REMOTE. this snapshot does not survive the disk dying."
+        "  local only: no HEALTHSYSTEM_BACKUP_REMOTE. this snapshot does not survive the disk dying."
       );
       return;
     }

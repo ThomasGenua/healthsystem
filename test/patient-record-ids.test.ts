@@ -35,7 +35,7 @@ import { JwtVerifier } from "../src/auth/jwt.ts";
 import { DevIdentityProvider } from "../src/auth/dev-idp.ts";
 import { SyntheticScanner, Uploads } from "../src/patient/intake.ts";
 
-const AUDIENCE = "healthsystems-test";
+const AUDIENCE = "healthsystem-test";
 const PATIENT = "NT123456";
 const OTHER = "NT999999";
 const CLERK = { actorId: "clerk", actorKind: "practitioner" };

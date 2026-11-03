@@ -1,7 +1,7 @@
 /**
  * A synthetic identity provider, for development only.
  *
- * HealthSystems is a resource server: it validates tokens and does not issue
+ * HealthSystem is a resource server: it validates tokens and does not issue
  * them. That is a deliberate boundary, and the portal must not be the thing
  * that erodes it — so this does not add a sign-in path to the engine. It adds
  * an *issuer*, and the engine goes on validating tokens exactly as it
@@ -19,7 +19,7 @@
  * Three properties, and none of them is a configuration option:
  *
  *   - **It is mutually exclusive with a real issuer.** `server.ts` refuses to
- *     start when `HEALTHSYSTEMS_DEV_IDP=on` and `HEALTHSYSTEMS_OIDC_ISSUER` are both
+ *     start when `HEALTHSYSTEM_DEV_IDP=on` and `HEALTHSYSTEM_OIDC_ISSUER` are both
  *     set. There is no state in which a deployment is half on a real provider
  *     and half on this.
  *   - **The signing key is generated at boot and never written down.** No key
@@ -113,7 +113,7 @@ export class DevIdentityProvider {
       token_endpoint: `${base}/token`,
       subjects_endpoint: `${base}/subjects`,
       id_token_signing_alg_values_supported: ["RS256"],
-      healthsystems_development_provider: true,
+      healthsystem_development_provider: true,
     };
   }
 
@@ -150,7 +150,7 @@ export class DevIdentityProvider {
       // one: a development token that could read the whole FHIR facade would
       // be testing a different boundary than the portal uses.
       scope: "patient/*.read",
-      healthsystems_tenant: who.tenantId,
+      healthsystem_tenant: who.tenantId,
     };
     const signing = `${b64url(header)}.${b64url(claims)}`;
     const signature = cryptoSign("sha256", Buffer.from(signing, "utf8"), this.privateKey).toString("base64url");
@@ -169,7 +169,7 @@ export function devIdpRefusal(env: { devIdp?: string; oidcIssuer?: string }): st
   if ((env.devIdp ?? "").toLowerCase() !== "on") return "not enabled";
   if (env.oidcIssuer) {
     return (
-      "HEALTHSYSTEMS_DEV_IDP=on and HEALTHSYSTEMS_OIDC_ISSUER are mutually exclusive. " +
+      "HEALTHSYSTEM_DEV_IDP=on and HEALTHSYSTEM_OIDC_ISSUER are mutually exclusive. " +
       "The development provider replaces the identity provider; running both would leave half the " +
       "deployment trusting a key generated at boot. Unset one."
     );

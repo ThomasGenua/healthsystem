@@ -594,7 +594,7 @@ CREATE TABLE IF NOT EXISTS referrals (
   to_service TEXT NOT NULL,
   -- The directory service this names, when it names one. Three-valued on
   -- purpose: an id means a known service, to_external = 1 means a deliberate
-  -- referral out to somewhere HealthSystems does not hold, and both NULL means
+  -- referral out to somewhere HealthSystem does not hold, and both NULL means
   -- nobody said which — an unverified free-text target, and a different thing
   -- from a declared external one.
   to_service_id TEXT,
@@ -1186,7 +1186,7 @@ CREATE TABLE IF NOT EXISTS patient_enrolments (
 );
 
 -- A notice the patient is owed, published onto a channel the deployment
--- already uses to reach people. HealthSystems does not know phone numbers or
+-- already uses to reach people. HealthSystem does not know phone numbers or
 -- inboxes and will not invent them. Dispatching is handing the fact to the
 -- delivery machinery; recording that the patient was told is a separate act.
 -- Kinds: enrolment-attested | result-released | request-completed.

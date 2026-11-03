@@ -1,12 +1,12 @@
 /**
  * The product's name, and the parts of a rename that are not cosmetic.
  *
- * HealthSystems was previously Northstar, and before that Portage. Changing a name in prose is free. Changing it
+ * HealthSystem was previously Northstar, and before that Portage. Changing a name in prose is free. Changing it
  * in the places a running deployment depends on is not, because every one of
  * those failures is silent — the engine boots, reports healthy, and is wrong:
  *
  *   - **The database filename.** `node:sqlite` creates what it cannot open. An
- *     engine that starts looking for `healthsystems.db` where `portage.db` is what
+ *     engine that starts looking for `healthsystem.db` where `portage.db` is what
  *     exists does not fail; it makes an empty database and serves a site with
  *     no patients in it. The most dangerous outcome in this file.
  *
@@ -22,7 +22,7 @@
  *     rename that quietly downgrades a site's security posture is worse than
  *     one that crashes.
  *
- * So the new names are what HealthSystems writes and what its documentation says,
+ * So the new names are what HealthSystem writes and what its documentation says,
  * and the old names keep working on the read side. Nothing is dropped in the
  * rename; the compatibility is deliberate, tested, and announced at boot
  * rather than left for somebody to discover.
@@ -34,22 +34,23 @@
  * end. Changing it is a coordinated change with every partner, not a rename,
  * and a site that flipped it unilaterally would have its acknowledgements
  * rejected by a hospital that had not. It stays until a deployment sets
- * `HEALTHSYSTEMS_HL7_APPLICATION`, which is a decision somebody makes with a lab
+ * `HEALTHSYSTEM_HL7_APPLICATION`, which is a decision somebody makes with a lab
  * on the phone. See `docs/RUNBOOK.md`.
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 /** The product name, as it appears to a human. */
-export const PRODUCT = "HealthSystems";
+export const PRODUCT = "HealthSystem";
 
 /** The lowercase form used in filenames, env prefixes and claim names. */
-export const SLUG = "healthsystems";
+export const SLUG = "healthsystem";
 
-/** What HealthSystems was called before, and still answers to. */
+/** What HealthSystem was called before, and still answers to. */
 export const LEGACY_SLUG = "portage";
 export const PREVIOUS_SLUG = "northstar";
-const SNAPSHOT_PREFIXES = `${SLUG}|${PREVIOUS_SLUG}|${LEGACY_SLUG}`;
+const PLURAL_SLUG = "healthsystems";
+const SNAPSHOT_PREFIXES = `${SLUG}|${PLURAL_SLUG}|${PREVIOUS_SLUG}|${LEGACY_SLUG}`;
 
 /**
  * Legacy names that actually supplied a value this process.
@@ -60,7 +61,7 @@ const SNAPSHOT_PREFIXES = `${SLUG}|${PREVIOUS_SLUG}|${LEGACY_SLUG}`;
  */
 const legacyEnvUsed = new Set<string>();
 
-/** Every `NORTHSTAR_*` or `PORTAGE_*` variable that supplied a value, in the order first read. */
+/** Every supported legacy environment variable that supplied a value, in the order first read. */
 export function legacyEnvNamesInUse(): string[] {
   return [...legacyEnvUsed].sort();
 }
@@ -71,15 +72,15 @@ export function resetLegacyEnvTracking(): void {
 }
 
 /**
- * Reads `HEALTHSYSTEMS_<suffix>`, falling back to `NORTHSTAR_<suffix>`, then `PORTAGE_<suffix>`.
+ * Reads `HEALTHSYSTEM_<suffix>`, falling back to `HEALTHSYSTEMS_`, `NORTHSTAR_`, then `PORTAGE_`.
  *
  * The new name wins when both are set, so a deployment can migrate one
  * variable at a time without the old value shadowing the new one.
  */
 export function readEnv(suffix: string, source: NodeJS.ProcessEnv = process.env): string | undefined {
-  const current = source[`HEALTHSYSTEMS_${suffix}`];
+  const current = source[`HEALTHSYSTEM_${suffix}`];
   if (current !== undefined) return current;
-  for (const prefix of ["NORTHSTAR", "PORTAGE"]) {
+  for (const prefix of ["HEALTHSYSTEMS", "NORTHSTAR", "PORTAGE"]) {
     const name = `${prefix}_${suffix}`;
     if (source[name] !== undefined) {
       legacyEnvUsed.add(name);
@@ -95,8 +96,8 @@ export function legacyEnvWarning(): string | null {
   if (names.length === 0) return null;
   return (
     `configured with ${names.length} legacy environment variable${names.length === 1 ? "" : "s"} ` +
-    `(${names.join(", ")}). These still work. Rename them to HEALTHSYSTEMS_* at your convenience; ` +
-    `all supported names are read, and HEALTHSYSTEMS_* takes precedence.`
+    `(${names.join(", ")}). These still work. Rename them to HEALTHSYSTEM_* at your convenience; ` +
+    `all supported names are read, and HEALTHSYSTEM_* takes precedence.`
   );
 }
 
@@ -119,7 +120,7 @@ export interface DbPathChoice {
  * database would not error — SQLite would create the new file and the engine
  * would come up empty, healthy, and serving nobody's chart. So an existing
  * file always wins over the preferred name, and only a genuinely empty data
- * directory gets `healthsystems.db`.
+ * directory gets `healthsystem.db`.
  *
  * Renaming the file is a deliberate step an operator takes with the engine
  * stopped, documented in the runbook alongside the WAL sidecars that have to
@@ -128,7 +129,7 @@ export interface DbPathChoice {
 export function resolveDbPath(dataDir: string): DbPathChoice {
   const preferred = join(dataDir, DB_FILENAME);
   if (existsSync(preferred)) return { path: preferred, legacy: false };
-  for (const filename of [`${PREVIOUS_SLUG}.db`, LEGACY_DB_FILENAME]) {
+  for (const filename of [`${PLURAL_SLUG}.db`, `${PREVIOUS_SLUG}.db`, LEGACY_DB_FILENAME]) {
     const legacy = join(dataDir, filename);
     if (existsSync(legacy)) return { path: legacy, legacy: true };
   }
@@ -139,7 +140,7 @@ export function resolveDbPath(dataDir: string): DbPathChoice {
 export function legacyDbNotice(choice: DbPathChoice): string | null {
   if (!choice.legacy) return null;
   return (
-    `opening the existing database at ${choice.path}. HealthSystems names new databases ` +
+    `opening the existing database at ${choice.path}. HealthSystem names new databases ` +
     `${DB_FILENAME}; this one keeps its name and its data. To rename it, stop the engine and move ` +
     `the file together with its -wal and -shm sidecars — see docs/RUNBOOK.md.`
   );
@@ -151,9 +152,9 @@ export function backupFileName(stamp: string): string {
 }
 
 /**
- * Matches a snapshot under all three supported names.
+ * Matches a snapshot under all four supported names.
  *
- * All three, always, on every read path. A backup taken the day before the upgrade
+ * All four, always, on every read path. A backup taken the day before the upgrade
  * is the one most likely to be needed the day after it, and a lister that
  * matched only the new prefix would report a site with a year of snapshots as
  * having none.
@@ -174,7 +175,7 @@ export const BACKUP_STAMP_RE = new RegExp(
  * `prune()` and `latestSnapshot()` both rely on snapshot filenames sorting
  * chronologically, which they do while every name shares a prefix and carries
  * an ISO stamp. The moment two prefixes coexist that property breaks
- * *silently* and in the worst direction: `healthsystems-` sorts before `portage-`,
+ * *silently* and in the worst direction: `healthsystem-` sorts before `portage-`,
  * so today's snapshot lands at the oldest end of the list. `latestSnapshot()`
  * would hand the restore tool a three-week-old database, and `prune()`, which
  * deletes from the front, would delete this morning's backup and keep the
@@ -198,7 +199,7 @@ export function sortSnapshots(names: string[]): string[] {
 }
 
 /**
- * The application name HealthSystems puts in MSH-3 of the messages it sends.
+ * The application name HealthSystem puts in MSH-3 of the messages it sends.
  *
  * Defaults to `PORTAGE` — the pre-rename value — and that default is the point.
  * MSH-3 is not branding; it is the string a sending facility has typed into
@@ -209,7 +210,7 @@ export function sortSnapshots(names: string[]): string[] {
  * their end, not as an error at ours.
  *
  * So it moves when a deployment moves it, having agreed the change with the
- * sites on the other end, by setting `HEALTHSYSTEMS_HL7_APPLICATION`.
+ * sites on the other end, by setting `HEALTHSYSTEM_HL7_APPLICATION`.
  */
 export function hl7ApplicationName(source: NodeJS.ProcessEnv = process.env): string {
   return readEnv("HL7_APPLICATION", source) ?? "PORTAGE";

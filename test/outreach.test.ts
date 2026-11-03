@@ -28,8 +28,8 @@ const DIABETES: CohortRule = { id: "dm", name: "Diabetes register", conditionCod
 const HBA1C_GAP: CareGapRule = { id: "hba1c", name: "HbA1c overdue", withinDays: 365, satisfiedByResultCodes: ["4548-4"] };
 
 function clinic() {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-outreach-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-outreach-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   const record = new ClinicalRecord(db);
   const orders = new OrderStore(db);
   const schedule = new Schedule(db);

@@ -26,7 +26,7 @@ const PROFILE: LabProfile = {
 };
 
 const CTX: OmlContext = {
-  sendingApplication: "HEALTHSYSTEMS",
+  sendingApplication: "HEALTHSYSTEM",
   sendingFacility: "GNWT",
   receivingApplication: "LABAPP",
   receivingFacility: "STANTON",
@@ -88,7 +88,7 @@ test("a complete order builds, and reads back as a laboratory would read it", ()
 
   const msg = parseHl7(out.message);
   assert.equal(getHl7(msg, "MSH-9"), "OML^O21^OML_O21");
-  assert.equal(getHl7(msg, "MSH-3"), "HEALTHSYSTEMS");
+  assert.equal(getHl7(msg, "MSH-3"), "HEALTHSYSTEM");
   assert.equal(getHl7(msg, "MSH-5"), "LABAPP");
   assert.equal(getHl7(msg, "PID-3.1"), "NT123456");
   assert.equal(getHl7(msg, "PID-3.4"), "JHN", "the authority travels with the identifier, never bare");

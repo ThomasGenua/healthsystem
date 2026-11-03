@@ -25,7 +25,7 @@
  * volume presented by a hypervisor, or an encrypted EBS volume, both look like
  * a plain block device from inside. `unknown` is therefore a distinct outcome
  * from `off`, and an operator who knows better can assert it with
- * `HEALTHSYSTEMS_ENCRYPTED_AT_REST=yes` — which is recorded as an assertion rather
+ * `HEALTHSYSTEM_ENCRYPTED_AT_REST=yes` — which is recorded as an assertion rather
  * than a finding, because that is what it is.
  */
 import { readFileSync, realpathSync } from "node:fs";
@@ -119,14 +119,14 @@ export function encryptionAtRest(
     return {
       state: "asserted",
       detail:
-        "encryption at rest asserted by HEALTHSYSTEMS_ENCRYPTED_AT_REST; not verified here, and recorded as an operator's assertion",
+        "encryption at rest asserted by HEALTHSYSTEM_ENCRYPTED_AT_REST; not verified here, and recorded as an operator's assertion",
     };
   }
 
   if (os !== "linux") {
     return {
       state: "unknown",
-      detail: `cannot check encryption at rest on ${os}; set HEALTHSYSTEMS_ENCRYPTED_AT_REST=yes once the volume is confirmed`,
+      detail: `cannot check encryption at rest on ${os}; set HEALTHSYSTEM_ENCRYPTED_AT_REST=yes once the volume is confirmed`,
     };
   }
 
@@ -153,7 +153,7 @@ export function encryptionAtRest(
         "The database holds charts, allergies, results and the audit trail in plain text; " +
         "an encrypted volume is the control that fits a single-file store. " +
         "If the volume is encrypted somewhere this cannot see — a hypervisor or a cloud volume — " +
-        "set HEALTHSYSTEMS_ENCRYPTED_AT_REST=yes to record that.",
+        "set HEALTHSYSTEM_ENCRYPTED_AT_REST=yes to record that.",
     };
   } catch (err) {
     return { state: "unknown", detail: `could not determine encryption at rest: ${(err as Error).message}` };

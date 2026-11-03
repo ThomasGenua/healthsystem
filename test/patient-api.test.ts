@@ -53,7 +53,7 @@ async function fakeIdp(): Promise<{
       const header = b64({ alg: "RS256", kid: "patient-key", typ: "JWT" });
       const payload = b64({
         iss: issuer,
-        aud: "healthsystems-patient",
+        aud: "healthsystem-patient",
         sub: subject,
         scope,
         exp: Math.floor(Date.now() / 1000) + 300,
@@ -157,7 +157,7 @@ async function boot() {
     .run(inDays(-1), "default", "expired-parent");
 
   const gate = new AuthGate({
-    jwt: new JwtVerifier({ issuer: idp.issuer, audience: "healthsystems-patient" }),
+    jwt: new JwtVerifier({ issuer: idp.issuer, audience: "healthsystem-patient" }),
   });
   const api = await startApi(engine, 0, "127.0.0.1", { auth: gate });
   const base = `http://127.0.0.1:${api.port}`;

@@ -3,7 +3,7 @@
  * working.
  *
  *     node scripts/portal-demo.ts [data-dir]
- *     HEALTHSYSTEMS_DEV_IDP=on npm start
+ *     HEALTHSYSTEM_DEV_IDP=on npm start
  *     open http://127.0.0.1:8686/me
  *
  * Everything written here is invented. The names are obviously not real
@@ -51,7 +51,7 @@ try {
     patientId: PATIENT,
     content: {
       resourceType: "Patient",
-      identifier: [{ system: "urn:healthsystems:demo", value: PATIENT }],
+      identifier: [{ system: "urn:healthsystem:demo", value: PATIENT }],
       name: [{ family: "Testperson", given: ["Sunniva"] }],
       birthDate: "1971-04-02",
       communication: [{ language: { coding: [{ code: "en-CA" }] } }],
@@ -141,7 +141,7 @@ try {
       "",
       "  Then:",
       "",
-      "    HEALTHSYSTEMS_DEV_IDP=on HEALTHSYSTEMS_DEV_MALWARE_SCANNER=on npm start",
+      "    HEALTHSYSTEM_DEV_IDP=on HEALTHSYSTEM_DEV_MALWARE_SCANNER=on npm start",
       `    open ${base}/me`,
       "",
       "  The sign-in page lists exactly those two, because they are who the clinic",

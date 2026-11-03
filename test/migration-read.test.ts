@@ -24,8 +24,8 @@ const OPS = { actorId: "migration-operator" };
 const P = "OLD-1001";
 
 function site() {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-read-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-read-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   const clinical = new ClinicalRecord(db);
   const meds = new MedicationStore(db, { check: () => [] });
   return {

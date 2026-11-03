@@ -40,7 +40,7 @@ function git(args: string[], cwd = ROOT): string {
 
 /** One checkout of `commit`, packed; returns the tarball's digest and name. */
 function packFrom(commit: string, label: string): { digest: string; name: string; dir: string } {
-  const dir = mkdtempSync(join(tmpdir(), `healthsystems-repro-${label}-`));
+  const dir = mkdtempSync(join(tmpdir(), `healthsystem-repro-${label}-`));
   // A local clone, so this works with no network and cannot pick up a
   // different revision than the one being checked.
   execFileSync("git", ["clone", "--quiet", "--no-hardlinks", ROOT, dir], { stdio: ["ignore", "ignore", "pipe"] });

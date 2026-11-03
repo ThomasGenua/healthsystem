@@ -20,8 +20,8 @@ import { Vitals } from "../src/clinical/vitals.ts";
 import { Refusal } from "../src/core/refusal.ts";
 
 function clinic() {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-vitals-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-vitals-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   const record = new ClinicalRecord(db);
   return {
     db,
@@ -150,8 +150,8 @@ test("visit-scoped vitals do not pull the rest of the chart", () => {
 });
 
 test("one custodian's vitals are not another's", () => {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-vitals-iso-"));
-  const root = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-vitals-iso-"));
+  const root = new Db(join(dir, "healthsystem.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");

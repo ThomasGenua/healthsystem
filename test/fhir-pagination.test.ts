@@ -43,8 +43,8 @@ import { FhirStore } from "../src/fhir/store.ts";
 import { StandardsRegistry } from "../src/conformance/standards.ts";
 
 function site() {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-page-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-page-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   return {
     db,
     fhir: new FhirStore(db),

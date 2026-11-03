@@ -60,7 +60,7 @@ function amzDate(d: Date): { stamp: string; date: string } {
 /**
  * URI-encode a single path segment the way SigV4 wants: every byte except
  * unreserved characters, and slashes left intact when `keepSlash` is set so a
- * key like `healthsystems/a.db.enc` stays one path.
+ * key like `healthsystem/a.db.enc` stays one path.
  */
 export function uriEncode(value: string, keepSlash = false): string {
   let out = "";
@@ -95,7 +95,7 @@ function target(cfg: S3Config, key: string, query?: Record<string, string>): { u
     const url = new URL(cfg.endpoint);
     if (url.protocol !== "https:" && !isLoopback(url)) {
       throw new Error(
-        `HEALTHSYSTEMS_BACKUP_S3_ENDPOINT must be https (got ${url.protocol}//${url.host}); ` +
+        `HEALTHSYSTEM_BACKUP_S3_ENDPOINT must be https (got ${url.protocol}//${url.host}); ` +
           "a snapshot is the clinical record, and cleartext is refused except on loopback"
       );
     }

@@ -225,8 +225,8 @@ test("every numeric unit the catalogue requires belongs to an input the contract
 // ── The chart is the other ingestion boundary ─────────────────────────────
 
 function ward() {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-measure-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-measure-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   const clinical = new ClinicalRecord(db);
   const vitals = new Vitals(clinical);
   clinical.record({

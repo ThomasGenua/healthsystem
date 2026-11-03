@@ -17,8 +17,8 @@ const GP = { actorId: "dr-tetso", actorKind: "practitioner" };
 const CLERK = { actorId: "clerk-amaruq", actorKind: "clerk" };
 
 function clinic() {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-arrangements-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-arrangements-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   const clinics = new Clinics(db);
   const tasks = new TaskStore(db);
   return {

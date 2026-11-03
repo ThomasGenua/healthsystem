@@ -65,8 +65,8 @@ CREATE TABLE deliveries (
 `;
 
 function legacyDb(): { dir: string; path: string; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-v030-"));
-  const path = join(dir, "healthsystems.db");
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-v030-"));
+  const path = join(dir, "healthsystem.db");
   const old = new DatabaseSync(path);
   old.exec("PRAGMA journal_mode = WAL;");
   old.exec(V030);

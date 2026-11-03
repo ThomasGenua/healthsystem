@@ -45,8 +45,8 @@ const ANALYSER = "stanton-lab-analyser-3";
 const PAST = "2020-01-01T00:00:00Z";
 
 function ward() {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-ws-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-ws-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   const record = new ClinicalRecord(db);
   const notes = new ClinicalNotes(record);
   const meds = new MedicationStore(db, { check: () => [] });
@@ -523,8 +523,8 @@ test("a worklist section that fails is reported, not swallowed", () => {
 });
 
 test("the summary is confined to its tenant", () => {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-ws-iso-"));
-  const root = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-ws-iso-"));
+  const root = new Db(join(dir, "healthsystem.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");
@@ -586,7 +586,7 @@ test("an order a laboratory acknowledged is awaited; one nobody sent is not", ()
       { transmits: true, destination: "Stanton Laboratory", detail: "MLLP", connection: {
         host: "lab.example",
         port: 6661,
-        sendingApplication: "HEALTHSYSTEMS",
+        sendingApplication: "HEALTHSYSTEM",
         sendingFacility: "GNWT",
         receivingApplication: "LABAPP",
         receivingFacility: "STANTON",

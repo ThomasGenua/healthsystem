@@ -38,9 +38,9 @@ test("every commit is flushed to disk, so an AA survives power loss", () => {
   // lose power, and an AA has already promised the message is safe. FULL is
   // what makes that promise true, and it is what the ingest rate buys —
   // pinned here so it cannot be quietly traded away for throughput.
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-sync-"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-sync-"));
   try {
-    const db = new Db(join(dir, "healthsystems.db"));
+    const db = new Db(join(dir, "healthsystem.db"));
     const journal = db.sql.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
     const sync = db.sql.prepare("PRAGMA synchronous").get() as { synchronous: number };
     assert.equal(journal.journal_mode, "wal");
@@ -56,8 +56,8 @@ test("a failed write is answered with AE, never AA", async () => {
   // sender must be told. Forcing the failure at the SQL layer exercises the
   // same path a full disk does — ingest throws, and the MLLP handler has to
   // turn that into a negative acknowledgement rather than a positive one.
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-fail-"));
-  const engine = new Engine({ dbPath: join(dir, "healthsystems.db"), tickMs: 100_000 });
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-fail-"));
+  const engine = new Engine({ dbPath: join(dir, "healthsystem.db"), tickMs: 100_000 });
   await engine.start();
   try {
     await engine.addChannel(channel);
@@ -91,8 +91,8 @@ test("a failed write is answered with AE, never AA", async () => {
 test("only messages that were acknowledged are actually stored", async () => {
   // The converse of the above: nothing may be persisted that the sender was
   // told had failed, or a retry would duplicate it.
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-acked-"));
-  const engine = new Engine({ dbPath: join(dir, "healthsystems.db"), tickMs: 100_000 });
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-acked-"));
+  const engine = new Engine({ dbPath: join(dir, "healthsystem.db"), tickMs: 100_000 });
   await engine.start();
   try {
     await engine.addChannel({
@@ -123,8 +123,8 @@ test("only messages that were acknowledged are actually stored", async () => {
 });
 
 test("a rejected message leaves the chain intact for the ones that follow", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-chain-"));
-  const engine = new Engine({ dbPath: join(dir, "healthsystems.db"), tickMs: 100_000 });
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-chain-"));
+  const engine = new Engine({ dbPath: join(dir, "healthsystem.db"), tickMs: 100_000 });
   await engine.start();
   try {
     await engine.addChannel({
@@ -153,9 +153,9 @@ test("a nested transaction joins the outer one rather than starting a second", (
   // refuses a second BEGIN outright, so without this the composite either
   // crashes or has to be written non-atomically, and a half-applied composite
   // is precisely the state these stores exist to prevent.
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-tx-"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-tx-"));
   try {
-    const db = new Db(join(dir, "healthsystems.db"));
+    const db = new Db(join(dir, "healthsystem.db"));
     db.upsertChannel("c", "c", true, "{}");
 
     const out = db.transaction(() => {

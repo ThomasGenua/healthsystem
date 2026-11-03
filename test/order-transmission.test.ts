@@ -32,8 +32,8 @@ const GP = { actorId: "dr-tetso", actorKind: "practitioner" };
 const CLERK = { actorId: "clerk-amos", actorKind: "practitioner" };
 
 function site(): { db: Db; orders: OrderStore; place: () => string; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-tx-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-tx-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   const orders = new OrderStore(db);
   return {
     db,
@@ -101,7 +101,7 @@ test("with a route declared, an unsent order says no laboratory holds it", () =>
       { transmits: true, destination: "Stanton Laboratory", detail: "MLLP over the site VPN", connection: {
         host: "lab.example",
         port: 6661,
-        sendingApplication: "HEALTHSYSTEMS",
+        sendingApplication: "HEALTHSYSTEM",
         sendingFacility: "GNWT",
         receivingApplication: "LABAPP",
         receivingFacility: "STANTON",
@@ -291,7 +291,7 @@ test("routing is declared per category, so imaging is not answered by the lab's 
       { transmits: true, destination: "Stanton Laboratory", detail: "MLLP", connection: {
         host: "lab.example",
         port: 6661,
-        sendingApplication: "HEALTHSYSTEMS",
+        sendingApplication: "HEALTHSYSTEM",
         sendingFacility: "GNWT",
         receivingApplication: "LABAPP",
         receivingFacility: "STANTON",
@@ -390,7 +390,7 @@ test("a site that prints its requisitions is not chased forever", () => {
       { transmits: true, destination: "Stanton", detail: "MLLP", connection: {
         host: "lab.example",
         port: 6661,
-        sendingApplication: "HEALTHSYSTEMS",
+        sendingApplication: "HEALTHSYSTEM",
         sendingFacility: "GNWT",
         receivingApplication: "LABAPP",
         receivingFacility: "STANTON",
@@ -420,7 +420,7 @@ test("a route that says it transmits and cannot is refused when it is declared",
     const partial = {
       host: "lab.example",
       port: 6661,
-      sendingApplication: "HEALTHSYSTEMS",
+      sendingApplication: "HEALTHSYSTEM",
       sendingFacility: "GNWT",
       receivingApplication: "LABAPP",
       receivingFacility: "STANTON",
@@ -480,7 +480,7 @@ test("the declared connection is what comes back, so a sender reads it rather th
         connection: {
           host: "lab.example",
           port: 6661,
-          sendingApplication: "HEALTHSYSTEMS",
+          sendingApplication: "HEALTHSYSTEM",
           sendingFacility: "GNWT",
           receivingApplication: "LABAPP",
           receivingFacility: "STANTON",

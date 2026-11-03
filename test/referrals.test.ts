@@ -20,8 +20,8 @@ import { Db } from "../src/db.ts";
 import { ReferralStore } from "../src/work/referrals.ts";
 
 function clinic(): { db: Db; refs: ReferralStore; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-refs-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-refs-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   return {
     db,
     refs: new ReferralStore(db),
@@ -285,8 +285,8 @@ test("a cancelled referral stays on the record and is not chased", () => {
 });
 
 test("referrals are confined to their tenant", () => {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-refs-iso-"));
-  const root = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-refs-iso-"));
+  const root = new Db(join(dir, "healthsystem.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");

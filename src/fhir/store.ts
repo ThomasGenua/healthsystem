@@ -406,8 +406,8 @@ export class FhirStore {
       kind: "instance",
       fhirVersion: "4.0.1",
       format: ["application/fhir+json"],
-      implementation: { description: "HealthSystems FHIR facade", url: `${baseUrl}/fhir` },
-      software: { name: "HealthSystems", version },
+      implementation: { description: "HealthSystem FHIR facade", url: `${baseUrl}/fhir` },
+      software: { name: "HealthSystem", version },
       rest: [
         {
           mode: "server",

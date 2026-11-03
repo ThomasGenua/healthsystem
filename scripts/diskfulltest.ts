@@ -2,10 +2,10 @@
  * Fills the disk under a running engine and checks what senders are told.
  *
  *   # a genuinely small filesystem, so filling it is quick and contained
- *   sudo mkdir -p /mnt/healthsystems-tiny
- *   sudo mount -t tmpfs -o size=1M tmpfs /mnt/healthsystems-tiny
- *   node scripts/diskfulltest.ts --dir /mnt/healthsystems-tiny
- *   sudo umount /mnt/healthsystems-tiny
+ *   sudo mkdir -p /mnt/healthsystem-tiny
+ *   sudo mount -t tmpfs -o size=1M tmpfs /mnt/healthsystem-tiny
+ *   node scripts/diskfulltest.ts --dir /mnt/healthsystem-tiny
+ *   sudo umount /mnt/healthsystem-tiny
  *
  * An AA says the message is on disk. If the engine answers AA when the write
  * failed, the sender believes the message is safe and drops it, and it is
@@ -45,7 +45,7 @@ const adt = (n: number): string =>
   ].join("\r") + "\r";
 
 async function main(): Promise<void> {
-  const engine = new Engine({ dbPath: join(DIR!, "healthsystems.db"), tickMs: 100_000 });
+  const engine = new Engine({ dbPath: join(DIR!, "healthsystem.db"), tickMs: 100_000 });
   await engine.start();
   await engine.addChannel({
     id: "full",
@@ -90,7 +90,7 @@ async function main(): Promise<void> {
 
   const chain = engine.db.verifyChain("full");
   console.log(`  stored: ${engine.db.listMessages({ channelId: "full" }).length} (was ${storedWhileFull} while full)`);
-  console.log(`  db: ${Math.round(statSync(join(DIR!, "healthsystems.db")).size / 1024)} KB`);
+  console.log(`  db: ${Math.round(statSync(join(DIR!, "healthsystem.db")).size / 1024)} KB`);
   console.log(`  chain: ${chain.ok ? `intact (${chain.checked})` : `BROKEN at ${chain.brokenAt}`}`);
 
   const ok = results.AA === 0 && chain.ok && after === "AA";

@@ -27,8 +27,8 @@ const BYTES = "a package tarball, as bytes";
 const SUM = createHash("sha256").update(BYTES).digest("hex");
 
 function site() {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-std-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-std-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   return {
     db,
     reg: new StandardsRegistry(db),

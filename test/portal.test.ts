@@ -27,7 +27,7 @@ import { AuthGate } from "../src/auth/gate.ts";
 import { JwtVerifier } from "../src/auth/jwt.ts";
 import { DevIdentityProvider, devIdpRefusal } from "../src/auth/dev-idp.ts";
 
-const AUDIENCE = "healthsystems-test";
+const AUDIENCE = "healthsystem-test";
 const PATIENT = "NT123456";
 const OTHER = "NT999999";
 
@@ -434,7 +434,7 @@ test("a token this provider did not sign is not a patient token", async () => {
     // point of validating through JWKS is that this fails.
     const impostor = new DevIdentityProvider({
       issuer: s.idp.issuer,
-      audience: "healthsystems-test",
+      audience: "healthsystem-test",
       liveSubjects: () => [{ subject: "urn:dev:tara", tenantId: "default", patients: [] }],
     });
     const forged = impostor.issue("urn:dev:tara").access_token;

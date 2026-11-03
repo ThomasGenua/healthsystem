@@ -33,7 +33,7 @@ const PROFILE: LabProfile = {
 };
 
 const CTX: OmlContext = {
-  sendingApplication: "HEALTHSYSTEMS",
+  sendingApplication: "HEALTHSYSTEM",
   sendingFacility: "GNWT",
   receivingApplication: "LABAPP",
   receivingFacility: "STANTON",

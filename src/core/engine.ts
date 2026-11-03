@@ -228,7 +228,7 @@ export interface EngineOptions {
   /**
    * How often placed orders are swept onto the outbound queue, in
    * milliseconds. `0` sends orders only when somebody presses send. Defaults
-   * to `HEALTHSYSTEMS_ORDER_DISPATCH_INTERVAL_MS`, and to a minute when that is
+   * to `HEALTHSYSTEM_ORDER_DISPATCH_INTERVAL_MS`, and to a minute when that is
    * unset — see `src/orders/sweep.ts` for why a minute.
    */
   orderDispatchIntervalMs?: number;
@@ -252,7 +252,7 @@ export interface EngineOptions {
    * to the deployment's destinations by the same ordered, retried, dead-lettered
    * machinery as any other clinical message.
    *
-   * Deliberately a channel id rather than an address: HealthSystems holds nothing to
+   * Deliberately a channel id rather than an address: HealthSystem holds nothing to
    * reach a patient by, and inventing one for a disclosure notice would send
    * somebody's private business to a stranger.
    */
@@ -690,7 +690,7 @@ export class Engine {
     if (!lock.acquired) {
       const held = lock.heldBy!;
       throw new Error(
-        `another HealthSystems instance owns this database (pid ${held.pid} on ${held.host}, ` +
+        `another HealthSystem instance owns this database (pid ${held.pid} on ${held.host}, ` +
           `last seen ${Math.round(held.ageMs / 1000)}s ago). Two engines on one database duplicate messages. ` +
           `If that process is gone, wait for its claim to expire and start again.`
       );

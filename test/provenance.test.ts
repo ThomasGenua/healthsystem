@@ -25,8 +25,8 @@ import { ProvenanceStore } from "../src/fhir/provenance.ts";
 const P = "NT123456";
 
 function site() {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-prov-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-prov-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   const fhir = new FhirStore(db);
   return {
     db,
@@ -171,7 +171,7 @@ test("a computed result names the rule and the version that produced it", () => 
     s.prov.record({
       target: { type: "RiskAssessment", id: "ra-1", version: 1 },
       activity: "compute",
-      agent: { id: "healthsystems", kind: "system" },
+      agent: { id: "healthsystem", kind: "system" },
       rule: { id: "curb-65", version: "portage-1" },
       source: { kind: "resource", id: "Patient/NT123456" },
     });

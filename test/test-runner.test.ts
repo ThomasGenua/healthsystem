@@ -99,7 +99,7 @@ test("every result a file produces is reported, however many and however fast", 
 });
 
 test("a test that fails with its listener still open fails the run promptly, and says what and why", async () => {
-  const run = await runFixture("leak", { HEALTHSYSTEMS_TEST_EXIT_GRACE_MS: "1500" });
+  const run = await runFixture("leak", { HEALTHSYSTEM_TEST_EXIT_GRACE_MS: "1500" });
   assert.equal(run.killed, false, `the run hung until its deadline (${run.ms}ms): the watchdog did not end it`);
   assert.notEqual(run.code, 0, "a failing test fails the run");
   assert.ok(run.ms < 15_000, `ended after ${run.ms}ms`);
@@ -108,7 +108,7 @@ test("a test that fails with its listener still open fails the run promptly, and
 });
 
 test("a file that closes what it opened exits on its own, and the watchdog says nothing", async () => {
-  const run = await runFixture("clean", { HEALTHSYSTEMS_TEST_EXIT_GRACE_MS: "1500" });
+  const run = await runFixture("clean", { HEALTHSYSTEM_TEST_EXIT_GRACE_MS: "1500" });
   assert.equal(run.killed, false);
   assert.equal(run.code, 0);
   assert.equal(count(run.output, "pass"), 1);

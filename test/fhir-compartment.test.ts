@@ -32,8 +32,8 @@ const P = "NT123456";
 const OTHER = "NT999999";
 
 function site() {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-compartment-"));
-  const path = join(dir, "healthsystems.db");
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-compartment-"));
+  const path = join(dir, "healthsystem.db");
   const db = new Db(path);
   return {
     db,

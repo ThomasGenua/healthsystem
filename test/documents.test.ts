@@ -21,8 +21,8 @@ import { VisitView } from "../src/workspace/visit.ts";
 import { Refusal } from "../src/core/refusal.ts";
 
 function clinic() {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-doc-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-doc-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   const record = new ClinicalRecord(db);
   return {
     db,
@@ -198,8 +198,8 @@ test("a document larger than the cap is refused", () => {
 });
 
 test("one custodian cannot read another's patient-supplied documents", () => {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-doc-iso-"));
-  const root = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-doc-iso-"));
+  const root = new Db(join(dir, "healthsystem.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");

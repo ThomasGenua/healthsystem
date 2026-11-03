@@ -19,8 +19,8 @@ import { Db } from "../src/db.ts";
 import { TaskStore } from "../src/work/tasks.ts";
 
 function desk(): { db: Db; tasks: TaskStore; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-tasks-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-tasks-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   return {
     db,
     tasks: new TaskStore(db),
@@ -277,8 +277,8 @@ test("provenance ties an item back to the message that raised it", () => {
 });
 
 test("inboxes are confined to their tenant", () => {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-tasks-iso-"));
-  const root = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-tasks-iso-"));
+  const root = new Db(join(dir, "healthsystem.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");

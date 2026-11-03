@@ -19,8 +19,8 @@ import { startApi } from "../src/api/admin.ts";
 import { ingestFhir } from "../src/directory/fhir.ts";
 
 function region(): { db: Db; dir: Directory; fhir: FhirStore; cleanup: () => void } {
-  const d = mkdtempSync(join(tmpdir(), "healthsystems-dir-fhir-"));
-  const db = new Db(join(d, "healthsystems.db"));
+  const d = mkdtempSync(join(tmpdir(), "healthsystem-dir-fhir-"));
+  const db = new Db(join(d, "healthsystem.db"));
   const dir = new Directory(db);
   return {
     db,

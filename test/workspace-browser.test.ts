@@ -34,7 +34,7 @@ test('arrangements workspace distinguishes outstanding, withheld, failed and emp
       assert.equal(await b.evaluate('document.body.innerText.includes("SECRET ARRANGEMENT")'), false);
       assert.equal(await b.evaluate('!!window.injected || !!document.querySelector(".arrangements img")'), false);
       assert.equal(await b.evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
-      if (process.env.HEALTHSYSTEMS_WORKSPACE_SCREENSHOTS === 'on') {
+      if (process.env.HEALTHSYSTEM_WORKSPACE_SCREENSHOTS === 'on') {
         mkdirSync('.pilot-artifacts/workspace', { recursive: true });
         const shot = await b.cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
         writeFileSync(`.pilot-artifacts/workspace/console-${width}.png`, Buffer.from(shot.data, 'base64'));
@@ -43,7 +43,7 @@ test('arrangements workspace distinguishes outstanding, withheld, failed and emp
     await b.evaluate(`{document.querySelector('.arrangements details').open=true;const form=document.querySelector('form[data-operation=assign]');form.elements.value.value='nurse-2';form.requestSubmit()}`);
     await b.wait("document.body.innerText.includes('Responsibility assigned.')");
     assert.equal(tenant.arrangements.get(visible.id)!.owner_id, 'nurse-2');
-    if (process.env.HEALTHSYSTEMS_WORKSPACE_SCREENSHOTS === 'on') {
+    if (process.env.HEALTHSYSTEM_WORKSPACE_SCREENSHOTS === 'on') {
       const shot = await b.cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
       writeFileSync('.pilot-artifacts/workspace/arrangement-actions.png', Buffer.from(shot.data, 'base64'));
     }
@@ -94,7 +94,7 @@ test('refreshed portal fits both languages and protects the staff queue', { skip
         await b.wait(`document.documentElement.lang === '${language}'`);
         assert.equal(await b.evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
       }
-      if (process.env.HEALTHSYSTEMS_WORKSPACE_SCREENSHOTS === 'on') {
+      if (process.env.HEALTHSYSTEM_WORKSPACE_SCREENSHOTS === 'on') {
         mkdirSync('.pilot-artifacts/workspace', { recursive: true });
         const shot = await b.cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
         writeFileSync(`.pilot-artifacts/workspace/portal-${width}.png`, Buffer.from(shot.data, 'base64'));

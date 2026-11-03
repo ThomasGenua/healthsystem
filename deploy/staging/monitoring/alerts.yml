@@ -1,32 +1,32 @@
 groups:
-  - name: healthsystems-operations
+  - name: healthsystem-operations
     rules:
-      - alert: HealthSystemsServiceDown
-        expr: up{job="healthsystems"} == 0
+      - alert: HealthSystemServiceDown
+        expr: up{job="healthsystem"} == 0
         for: 1m
         labels: { severity: critical }
         annotations:
-          summary: HealthSystems metrics endpoint unavailable
-      - alert: HealthSystemsScannerBacklog
-        expr: healthsystems_upload_scan_oldest_age_seconds > 900
+          summary: HealthSystem metrics endpoint unavailable
+      - alert: HealthSystemScannerBacklog
+        expr: healthsystem_upload_scan_oldest_age_seconds > 900
         for: 2m
         labels: { severity: warning }
         annotations:
           summary: Quarantined uploads are older than fifteen minutes
-      - alert: HealthSystemsDeliveryFailures
-        expr: healthsystems_dead_letters > 0
+      - alert: HealthSystemDeliveryFailures
+        expr: healthsystem_dead_letters > 0
         for: 2m
         labels: { severity: warning }
         annotations:
           summary: Delivery dead letters require review
-      - alert: HealthSystemsBackupFailed
-        expr: (healthsystems_backup_remote_configured == 1) and (healthsystems_backup_remote_ok == 0)
+      - alert: HealthSystemBackupFailed
+        expr: (healthsystem_backup_remote_configured == 1) and (healthsystem_backup_remote_ok == 0)
         for: 5m
         labels: { severity: critical }
         annotations:
           summary: Configured backup has no verified successful replica
-      - alert: HealthSystemsBackupStale
-        expr: (healthsystems_backup_remote_configured == 1) and (healthsystems_backup_remote_age_seconds > 86400)
+      - alert: HealthSystemBackupStale
+        expr: (healthsystem_backup_remote_configured == 1) and (healthsystem_backup_remote_age_seconds > 86400)
         for: 5m
         labels: { severity: warning }
         annotations:

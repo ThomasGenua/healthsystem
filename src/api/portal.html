@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>HealthSystems — patient access</title>
+<title>HealthSystem — patient access</title>
 <link rel="icon" type="image/x-icon" sizes="16x16 32x32 48x48 64x64" href="/favicon.ico">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
@@ -87,7 +87,7 @@ button.link{min-height:44px}nav a{padding:14px 12px}
 
 <header>
   <div class="bar">
-    <h1>HealthSystems</h1>
+    <h1>HealthSystem</h1>
     <span class="sub" data-t="tagline">Patient access</span>
     <span class="lang">
       <label for="lang" class="skip" data-t="langLabel">Language</label>
@@ -324,7 +324,7 @@ async function api(path, opts){
       signal: controller.signal,
       headers: {
         ...(S.token ? {"authorization": "Bearer " + S.token} : {}),
-        ...(S.session && S.csrf ? {"x-healthsystems-csrf": S.csrf} : {}),
+        ...(S.session && S.csrf ? {"x-healthsystem-csrf": S.csrf} : {}),
         ...(opts && opts.body ? {"content-type":"application/json"} : {}),
         ...((opts||{}).headers||{})
       }
@@ -441,7 +441,7 @@ async function signOut(){
   showLoading();
   if (S.session) {
     try {
-      const response = await fetch("/auth/portal/logout", {method:"POST", headers:{"x-healthsystems-csrf":S.csrf || ""}, signal:AbortSignal.timeout(10000)});
+      const response = await fetch("/auth/portal/logout", {method:"POST", headers:{"x-healthsystem-csrf":S.csrf || ""}, signal:AbortSignal.timeout(10000)});
       if (!response.ok) throw new Error("logout failed");
     } catch { return showError(t("offline"), signOut); }
   }

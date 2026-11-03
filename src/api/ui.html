@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>HealthSystems</title>
+<title>HealthSystem</title>
 <link rel="icon" type="image/x-icon" sizes="16x16 32x32 48x48 64x64" href="/favicon.ico">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
@@ -121,11 +121,11 @@ nav{padding:0 max(24px,calc((100vw - 1280px)/2));gap:24px;background:#fff;align-
 <style>button.act.primary{background:#153451;color:#fff;border-color:#153451}label[for="key-name"]{display:block;font-size:12px;color:var(--dim);margin:18px 0 7px}#key-name{width:min(100%,380px)}.notice{padding:17px;background:#edf8f3;border:1px solid #cce6dd;border-radius:10px}</style></head>
 <body>
 <a class="skip" href="#main">Skip to main content</a>
-<header><h1><a href="/"><span class="brand-star">✦</span>HealthSystems</a></h1><span class="sub">CLINICAL WORKSPACE</span><div class="account"><span class="avatar" aria-hidden="true">T</span><span class="account-email" id="account-email">Administrator</span><button class="signout" id="sign-out" type="button">Sign out</button></div></header>
+<header><h1><a href="/"><span class="brand-star">✦</span>HealthSystem</a></h1><span class="sub">CLINICAL WORKSPACE</span><div class="account"><span class="avatar" aria-hidden="true">T</span><span class="account-email" id="account-email">Administrator</span><button class="signout" id="sign-out" type="button">Sign out</button></div></header>
 <nav id="nav" aria-label="Workspace"></nav>
 <div class="workspace-top" id="workspace-top"><div class="crumb">Workspace / <span id="breadcrumb">Overview</span></div><div class="page-heading"><div><h2 id="page-title">Your workspace, at a glance.</h2><p id="page-description">A clear view of your connections, activity, and next steps.</p></div><span class="live-pill">Local workspace</span></div></div>
 <main id="main" tabindex="-1"><p role="status">Checking your session…</p></main>
-<footer class="workspace-footer"><span>HealthSystems · Connected care</span><div><a href="/privacy">Privacy policy</a><a href="/terms">Terms of service</a><a href="/contact">Help & setup ↗</a></div></footer>
+<footer class="workspace-footer"><span>HealthSystem · Connected care</span><div><a href="/privacy">Privacy policy</a><a href="/terms">Terms of service</a><a href="/contact">Help & setup ↗</a></div></footer>
 <script nonce="{{nonce}}">
 const $=(s,el=document)=>el.querySelector(s);
 /* Escapes apostrophes as well as the usual four, so a value is safe in a
@@ -145,15 +145,15 @@ const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&
 // not fail — it would silently log every clinician out, drop the stored API
 // key, and lose the chart they had open, on the first load after an upgrade.
 const store=(s,k)=>{
-  const cur=s.getItem("healthsystems."+k);
+  const cur=s.getItem("healthsystem."+k);
   if(cur!==null)return cur;
-  for(const prefix of ["northstar.","portage."]){
+  for(const prefix of ["healthsystems.","northstar.","portage."]){
     const old=s.getItem(prefix+k);
-    if(old!==null){try{s.setItem("healthsystems."+k,old);s.removeItem(prefix+k);}catch{}return old;}
+    if(old!==null){try{s.setItem("healthsystem."+k,old);s.removeItem(prefix+k);}catch{}return old;}
   }
   return null;
 };
-const KEY="healthsystems.apikey";
+const KEY="healthsystem.apikey";
 const apiKey=()=>store(localStorage,"apikey")||"";
 const j=async(url,opts={})=>{
   // `allow403` is for the caller that renders a 403 itself. A 403 is two
@@ -447,13 +447,13 @@ window.findPatient=async()=>{
   }catch(e){out.innerHTML=`<p class="err">${esc(e.message||e)}</p>`}
 };
 
-window.openChart=id=>{sessionStorage.setItem("healthsystems.patient",id);$("#pt").value=id;loadChart()};
+window.openChart=id=>{sessionStorage.setItem("healthsystem.patient",id);$("#pt").value=id;loadChart()};
 
 window.loadChart=async()=>{
   const id=$("#pt").value.trim();
   const out=$("#chart");
   if(!id){out.innerHTML="";return}
-  sessionStorage.setItem("healthsystems.patient",id);
+  sessionStorage.setItem("healthsystem.patient",id);
   out.innerHTML=`<p class="none">loading…</p>`;
   let c;
   try{
@@ -547,7 +547,7 @@ window.loadWorklist=async()=>{
   const who=$("#cl").value.trim();
   const out=$("#wl");
   if(!who){out.innerHTML="";return}
-  localStorage.setItem("healthsystems.clinician",who);
+  localStorage.setItem("healthsystem.clinician",who);
   try{
     const {data:w}=await j("/api/clinical/worklist?clinician="+encodeURIComponent(who));
     const {data:res}=await j("/api/clinical/results");
@@ -836,10 +836,10 @@ const SOURCES={
   mllp:[["port","number","6661"],["host","text","0.0.0.0"]],
   http:[["path","text","channel id if blank"]],
   fhir:[["resourceTypes","text","Patient,Observation (blank = all)"]],
-  filedrop:[["dir","text","/var/spool/healthsystems"],["pattern","text","\\\\.hl7$"],["archiveDir","text","optional"],["pollMs","number","2000"],["cron","text","optional, e.g. */5 * * * *"]],
+  filedrop:[["dir","text","/var/spool/healthsystem"],["pattern","text","\\\\.hl7$"],["archiveDir","text","optional"],["pollMs","number","2000"],["cron","text","optional, e.g. */5 * * * *"]],
   dbpoll:[["dbPath","text","/var/lib/lab/results.db"],["query","text","SELECT * FROM r WHERE id > ? ORDER BY id"],["cursorColumn","text","id"],["pollMs","number","2000"],["cron","text","optional"]],
   sqlpoll:[["driver","text","postgres | mysql"],["dsn","text","postgres://user:pw@host:5432/db"],["query","text","SELECT * FROM r WHERE id > ? ORDER BY id"],["cursorColumn","text","id"],["initialCursor","text","0"],["pollMs","number","2000"],["cron","text","optional"]],
-  sftp:[["host","text","sftp.example.org"],["port","number","22"],["username","text","healthsystems"],["password","text",""],["privateKeyPath","text","/etc/healthsystems/id_ed25519"],["dir","text","/outbound"],["pattern","text","\\\\.hl7$"],["archiveDir","text","optional"],["pollMs","number","5000"],["cron","text","optional"]],
+  sftp:[["host","text","sftp.example.org"],["port","number","22"],["username","text","healthsystem"],["password","text",""],["privateKeyPath","text","/etc/healthsystem/id_ed25519"],["dir","text","/outbound"],["pattern","text","\\\\.hl7$"],["archiveDir","text","optional"],["pollMs","number","5000"],["cron","text","optional"]],
 };
 const STEPS={
   "filter.hl7Type":[["allow","text","ADT^A01,ADT^A04"]],
@@ -1113,11 +1113,11 @@ async function showSetup(){
   $('#workspace-top').hidden=true;$('#nav').hidden=true;
   const count=adminSession.activeKeys;
   $('#main').innerHTML=`<section class="key-box"><div class="key-icon" aria-hidden="true">⚿</div><p class="muted" style="text-transform:uppercase;letter-spacing:1.5px;font-size:10px;margin-top:22px">WORKSPACE SETUP · API ACCESS</p><h2>${count?'Your API keys are already set up.':'Let’s set up your first API key.'}</h2><p>${count?`This instance has ${count} active API key${count===1?'':'s'}. Existing keys stay private and cannot be shown again. You can continue with your admin session, or generate a separate key for an integration.`:'Generate an API key before proceeding. Your admin account signs you in; API keys connect your integrations.'}</p><div class="key-state"><span>${count?'✓ API key already generated':'API key generation required'}</span></div><div id="key-output" aria-live="polite"></div><div class="key-actions"><button class="act primary" id="continue-workspace" ${count?'':'disabled'}>Continue to workspace →</button><button class="act" id="setup-generate">Generate a new API key</button></div><p class="muted">You are signed in with your administrator account. Keep generated keys in a secure password manager.</p></section>`;
-  $('#continue-workspace').addEventListener('click',()=>{sessionStorage.setItem('healthsystems.setupConfirmed','yes');openWorkspace()});
+  $('#continue-workspace').addEventListener('click',()=>{sessionStorage.setItem('healthsystem.setupConfirmed','yes');openWorkspace()});
   $('#setup-generate').addEventListener('click',async()=>{await generateKey();if($('#generated-secret')){$('#continue-workspace').disabled=false;$('#setup-generate').disabled=true;$('#setup-generate').textContent='New API key generated'}});
 }
 function openWorkspace(){workspaceReady=true;document.documentElement.dataset.workspaceReady='yes';$('#workspace-top').hidden=false;$('#nav').hidden=false;nav();render()}
-$('#sign-out').addEventListener('click',async()=>{if(!adminSession){localStorage.removeItem(KEY);localStorage.removeItem('northstar.apikey');localStorage.removeItem('portage.apikey');location.assign('/login');return}try{const r=await fetch('/auth/admin/logout',{method:'POST',headers:{'x-csrf-token':adminSession.csrf}});if(!r.ok)throw Error('Could not sign out. Refresh and try again.');for(const prefix of ['healthsystems.','northstar.','portage.'])sessionStorage.removeItem(prefix+'setupConfirmed');location.assign('/login')}catch(e){alert(e.message)}});
+$('#sign-out').addEventListener('click',async()=>{if(!adminSession){localStorage.removeItem(KEY);localStorage.removeItem('healthsystems.apikey');localStorage.removeItem('northstar.apikey');localStorage.removeItem('portage.apikey');location.assign('/login');return}try{const r=await fetch('/auth/admin/logout',{method:'POST',headers:{'x-csrf-token':adminSession.csrf}});if(!r.ok)throw Error('Could not sign out. Refresh and try again.');for(const prefix of ['healthsystem.','healthsystems.','northstar.','portage.'])sessionStorage.removeItem(prefix+'setupConfirmed');location.assign('/login')}catch(e){alert(e.message)}});
 async function boot(){
   try{const r=await fetch('/auth/admin/session');if(r.ok){const s=await r.json();if(s.enabled===false&&s.apiKeyRequired===false){$('#account-email').textContent='Local workspace';$('#sign-out').hidden=true;openWorkspace();return}if(s.authenticated){adminSession=s;$('#account-email').textContent='Administrator';if(s.activeKeys&&store(sessionStorage,"setupConfirmed")==='yes')openWorkspace();else await showSetup();return}}}
   catch{ $('#main').innerHTML='<p class="err" role="alert">Unable to check your session. Refresh to try again.</p>';return }

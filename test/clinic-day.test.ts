@@ -146,11 +146,11 @@ test("a name the runtime treats as another zone says so, with which copy of the 
 
 test("the setting has one name, and the one it replaced is refused rather than ignored", () => {
   assert.equal(resolveClinicTimeZone({}), undefined);
-  assert.equal(resolveClinicTimeZone({ HEALTHSYSTEMS_CLINIC_TIMEZONE: " " }), undefined);
-  assert.equal(resolveClinicTimeZone({ HEALTHSYSTEMS_CLINIC_TIMEZONE: "America/Edmonton" }), "America/Edmonton");
+  assert.equal(resolveClinicTimeZone({ HEALTHSYSTEM_CLINIC_TIMEZONE: " " }), undefined);
+  assert.equal(resolveClinicTimeZone({ HEALTHSYSTEM_CLINIC_TIMEZONE: "America/Edmonton" }), "America/Edmonton");
   assert.equal(resolveClinicTimeZone({ PORTAGE_CLINIC_TIMEZONE: "-07:00" }), "-07:00", "the legacy prefix works as it does everywhere");
   // Ignored, it would read as UTC: a board hours out with nothing to say why.
-  assert.throws(() => resolveClinicTimeZone({ HEALTHSYSTEMS_CLINIC_UTC_OFFSET: "-07:00" }), /renamed before release to HEALTHSYSTEMS_CLINIC_TIMEZONE/);
+  assert.throws(() => resolveClinicTimeZone({ HEALTHSYSTEM_CLINIC_UTC_OFFSET: "-07:00" }), /renamed before release to HEALTHSYSTEM_CLINIC_TIMEZONE/);
 });
 
 // ---------------------------------------------- one calendar for everything
@@ -221,17 +221,17 @@ test("the privacy review uses the engine's clinic clock, and names it on the fin
 test("preflight blocks a pilot that has not said where the clinic is, and never echoes the value", async () => {
   const unset = (await pilotPreflight({})).find((c) => c.id === "clinic-timezone");
   assert.equal(unset?.status, "blocker");
-  assert.equal((await pilotPreflight({ HEALTHSYSTEMS_CLINIC_UTC_OFFSET: "-07:00" })).find((c) => c.id === "clinic-timezone")?.status, "blocker",
+  assert.equal((await pilotPreflight({ HEALTHSYSTEM_CLINIC_UTC_OFFSET: "-07:00" })).find((c) => c.id === "clinic-timezone")?.status, "blocker",
     "the retired name is not quietly accepted");
-  assert.equal((await pilotPreflight({ HEALTHSYSTEMS_CLINIC_TIMEZONE: "Mars/Olympus_Mons" })).find((c) => c.id === "clinic-timezone")?.status, "blocker");
+  assert.equal((await pilotPreflight({ HEALTHSYSTEM_CLINIC_TIMEZONE: "Mars/Olympus_Mons" })).find((c) => c.id === "clinic-timezone")?.status, "blocker");
 
   // Set, it is a review: configuration can say which rules apply, not that
   // they are the clinic's.
-  const zone = (await pilotPreflight({ HEALTHSYSTEMS_CLINIC_TIMEZONE: "America/Edmonton" })).find((c) => c.id === "clinic-timezone")!;
+  const zone = (await pilotPreflight({ HEALTHSYSTEM_CLINIC_TIMEZONE: "America/Edmonton" })).find((c) => c.id === "clinic-timezone")!;
   assert.equal(zone.status, "review");
   assert.ok(zone.detail.includes(`tzdata ${process.versions.tz}`));
   assert.equal(zone.detail.includes("Edmonton"), false, "configuration values are not echoed into a report people paste into tickets");
-  const fixed = (await pilotPreflight({ HEALTHSYSTEMS_CLINIC_TIMEZONE: "-07:00" })).find((c) => c.id === "clinic-timezone")!;
+  const fixed = (await pilotPreflight({ HEALTHSYSTEM_CLINIC_TIMEZONE: "-07:00" })).find((c) => c.id === "clinic-timezone")!;
   assert.equal(fixed.status, "review");
   assert.match(fixed.detail, /does not observe daylight saving/);
 });

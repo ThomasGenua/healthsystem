@@ -25,7 +25,7 @@ export async function pilotPreflight(env: NodeJS.ProcessEnv, probeScanner = fals
   try {
     const zone = resolveClinicTimeZone(env);
     if (zone === undefined) {
-      check("clinic-timezone", false, "Set HEALTHSYSTEMS_CLINIC_TIMEZONE to where the clinic is; unset, the board and worklist use the UTC day and the privacy review reads after hours on UTC clocks.");
+      check("clinic-timezone", false, "Set HEALTHSYSTEM_CLINIC_TIMEZONE to where the clinic is; unset, the board and worklist use the UTC day and the privacy review reads after hours on UTC clocks.");
     } else {
       const day = ClinicDay.parse(zone);
       checks.push({
@@ -38,7 +38,7 @@ export async function pilotPreflight(env: NodeJS.ProcessEnv, probeScanner = fals
       });
     }
   } catch {
-    check("clinic-timezone", false, "HEALTHSYSTEMS_CLINIC_TIMEZONE is not a place or offset this runtime accepts, or a retired name is set; boot refuses it.");
+    check("clinic-timezone", false, "HEALTHSYSTEM_CLINIC_TIMEZONE is not a place or offset this runtime accepts, or a retired name is set; boot refuses it.");
   }
   let scanner: ClamAvScanner | undefined;
   try {
@@ -46,7 +46,7 @@ export async function pilotPreflight(env: NodeJS.ProcessEnv, probeScanner = fals
     check("scanner-config", true, "Local ClamAV endpoint configuration is valid.");
   } catch { check("scanner-config", false, "Configure exactly one valid local ClamAV socket or loopback port."); }
   if (probeScanner && scanner) {
-    try { check("scanner-probe", (await scanner.scan(Buffer.from("HealthSystems synthetic readiness probe"), "probe.txt")).verdict === "clean", "Harmless synthetic scan must return clean; this does not verify signature freshness."); }
+    try { check("scanner-probe", (await scanner.scan(Buffer.from("HealthSystem synthetic readiness probe"), "probe.txt")).verdict === "clean", "Harmless synthetic scan must return clean; this does not verify signature freshness."); }
     catch { check("scanner-probe", false, "Scanner unavailable or unexpected reply; no clinical data was sent."); }
   } else checks.push({ id: "scanner-probe", status: "review", detail: "Run preflight with --probe-scanner to exercise the configured local daemon." });
   for (const [id, detail] of [

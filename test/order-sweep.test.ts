@@ -51,7 +51,7 @@ const PROFILE: LabProfile = {
 const CONNECTION = {
   host: "lab.example",
   port: 6661,
-  sendingApplication: "HEALTHSYSTEMS",
+  sendingApplication: "HEALTHSYSTEM",
   sendingFacility: "GNWT",
   receivingApplication: "LABAPP",
   receivingFacility: "STANTON",
@@ -148,7 +148,7 @@ function site(opts: { channels?: Array<[string, string, boolean, string]>; tenan
 test("the cadence is a minute unless a site says otherwise", () => {
   assert.equal(resolveInterval({}), DEFAULT_INTERVAL_MS);
   assert.equal(DEFAULT_INTERVAL_MS, 60_000, "measured against how fast a patient walks to the draw station");
-  assert.equal(resolveInterval({ HEALTHSYSTEMS_ORDER_DISPATCH_INTERVAL_MS: "5000" }), 5_000);
+  assert.equal(resolveInterval({ HEALTHSYSTEM_ORDER_DISPATCH_INTERVAL_MS: "5000" }), 5_000);
   // The rename left every legacy spelling working, and this one is no
   // exception: an operator's existing environment must not silently change
   // how often their orders leave.
@@ -158,7 +158,7 @@ test("the cadence is a minute unless a site says otherwise", () => {
 test("turning automatic send off is a declaration, not an omission", () => {
   // A site that wants a human to press send should be able to say so, and
   // saying so should look different from never having configured anything.
-  assert.equal(resolveInterval({ HEALTHSYSTEMS_ORDER_DISPATCH_INTERVAL_MS: "0" }), 0);
+  assert.equal(resolveInterval({ HEALTHSYSTEM_ORDER_DISPATCH_INTERVAL_MS: "0" }), 0);
   const s = site();
   try {
     const sweeper = new OrderDispatchSweeper(s.deps, 0);
@@ -177,11 +177,11 @@ test("a cadence that is not a number is refused rather than treated as absent", 
   // Falling back to the default would mean a typo in an operator's
   // environment silently turned automatic send back on.
   assert.throws(
-    () => resolveInterval({ HEALTHSYSTEMS_ORDER_DISPATCH_INTERVAL_MS: "every minute" }),
+    () => resolveInterval({ HEALTHSYSTEM_ORDER_DISPATCH_INTERVAL_MS: "every minute" }),
     /non-negative number of milliseconds/
   );
-  assert.throws(() => resolveInterval({ HEALTHSYSTEMS_ORDER_DISPATCH_INTERVAL_MS: "-1" }), /non-negative/);
-  assert.equal(resolveInterval({ HEALTHSYSTEMS_ORDER_DISPATCH_INTERVAL_MS: "" }), DEFAULT_INTERVAL_MS);
+  assert.throws(() => resolveInterval({ HEALTHSYSTEM_ORDER_DISPATCH_INTERVAL_MS: "-1" }), /non-negative/);
+  assert.equal(resolveInterval({ HEALTHSYSTEM_ORDER_DISPATCH_INTERVAL_MS: "" }), DEFAULT_INTERVAL_MS);
 });
 
 test("the sweep runs at start rather than waiting out the first interval", () => {
@@ -510,7 +510,7 @@ function laboratory(reply: (received: string, controlId: string) => string) {
 }
 
 function ackFor(controlId: string, code = "AA"): string {
-  return `MSH|^~\\&|LABAPP|STANTON|HEALTHSYSTEMS|GNWT|20260902120000||ACK^O21|ACK-1|P|2.5.1\rMSA|${code}|${controlId}`;
+  return `MSH|^~\\&|LABAPP|STANTON|HEALTHSYSTEM|GNWT|20260902120000||ACK^O21|ACK-1|P|2.5.1\rMSA|${code}|${controlId}`;
 }
 
 /** Places one order on a started engine with a lab-order door out. */

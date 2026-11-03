@@ -98,7 +98,7 @@ to activate it in production. See `43` below.
   above must not move on the strength of these tests.
 - **Risk and rollback** — Requiring the audience is a breaking change made
   deliberately: a site that previously ran without one will not boot until
-  `HEALTHSYSTEMS_OIDC_AUDIENCE` is set. Rollback is setting the variable, not
+  `HEALTHSYSTEM_OIDC_AUDIENCE` is set. Rollback is setting the variable, not
   reverting the check. Discovery is additive and read-only.
 
 ## 45. International Patient Access vertical slice

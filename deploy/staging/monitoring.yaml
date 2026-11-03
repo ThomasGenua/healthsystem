@@ -22,10 +22,10 @@ services:
     cap_drop: ["ALL"]
   alert-sink:
     profiles: ["monitoring"]
-    image: healthsystems-staging:local
+    image: healthsystem-staging:local
     command: ["node", "scripts/staging-alert-sink.ts"]
     environment:
-      HEALTHSYSTEMS_SYNTHETIC_ALERT_SINK: "on"
+      HEALTHSYSTEM_SYNTHETIC_ALERT_SINK: "on"
     ports: ["127.0.0.1:19094:9094"]
     read_only: true
     security_opt: ["no-new-privileges:true"]

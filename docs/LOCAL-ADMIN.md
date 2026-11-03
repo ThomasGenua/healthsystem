@@ -3,7 +3,7 @@
 Start the HTTP server and all MLLP listeners on loopback for a local evaluation:
 
 ```powershell
-$env:HEALTHSYSTEMS_HOST = '127.0.0.1'
+$env:HEALTHSYSTEM_HOST = '127.0.0.1'
 npm start
 ```
 
@@ -31,21 +31,21 @@ generation time. Generating a key leaves existing integrations working.
 
 Privacy and terms pages are at `/privacy` and `/terms`. Demo and setup links
 at `/contact` go through `/contact/email` to open a pre-addressed email draft;
-the recipient is kept out of public HTML. `HEALTHSYSTEMS_CONTACT_EMAIL` configures
+the recipient is kept out of public HTML. `HEALTHSYSTEM_CONTACT_EMAIL` configures
 the recipient on the server. The application does not send email on a visitor's
 behalf. The redirect reduces static harvesting; it is not bot-proof.
 
-## HealthSystems upgrade compatibility
+## HealthSystem upgrade compatibility
 
-The application is now HealthSystems. Use `HEALTHSYSTEMS_*` for new configuration.
-Existing `NORTHSTAR_*` and `PORTAGE_*` variables remain supported, in that order
+The application is now HealthSystem. Use `HEALTHSYSTEM_*` for new configuration.
+Existing `HEALTHSYSTEMS_*`, `NORTHSTAR_*` and `PORTAGE_*` variables remain supported, in that order
 after the current prefix. An explicitly empty current value also takes precedence.
 
-An existing `northstar.db` or `portage.db` is opened in place when no
-`healthsystems.db` exists. No database, account, password, or API key is renamed or
-reissued. Backups under all three prefixes remain discoverable and sort by timestamp.
-Current admin sessions accept the previous cookie name; logout clears and revokes
-both names. Browser credentials migrate to `healthsystems.*` on first use.
+An existing `healthsystems.db`, `northstar.db` or `portage.db` is opened in place when no
+`healthsystem.db` exists. No database, account, password, or API key is renamed or
+reissued. Backups under all four prefixes remain discoverable and sort by timestamp.
+Current admin sessions accept both previous cookie names; logout clears and revokes
+all three names. Browser credentials migrate to `healthsystem.*` on first use.
 Patient portal sessions still expire on server restart, as before.
 
 Existing OAuth audiences remain deployment configured. Legacy scope and tenant,
@@ -54,6 +54,6 @@ series and station headers are emitted alongside the new names. HL7 application
 identifiers and existing FHIR provenance identifier systems remain stable for
 connected systems.
 
-The staging Compose project uses HealthSystems branding but explicitly keeps the
-existing `northstar-staging_staging-data` volume. Set `HEALTHSYSTEMS_DATA_VOLUME`
+The staging Compose project uses HealthSystem branding but explicitly keeps the
+existing `northstar-staging_staging-data` volume. Set `HEALTHSYSTEM_DATA_VOLUME`
 only when intentionally selecting another volume; an empty volume is a new install.

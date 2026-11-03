@@ -15,8 +15,8 @@ import { CarePlans } from "../src/clinical/careplans.ts";
 import { Goals, Actions } from "../src/clinical/goals.ts";
 
 function clinic() {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-goals-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-goals-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   const record = new ClinicalRecord(db);
   return {
     db,

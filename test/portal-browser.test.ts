@@ -19,7 +19,7 @@ test("browser: clinic login, held result, message delivery, scoped caregiver cha
     await wait("document.getElementById('whoName').textContent === 'PATIENT-A' && document.body.innerText.includes('4.1')");
     assert.equal(await evaluate("document.body.innerText.includes('SECRET-HELD-VALUE')"), false);
     assert.equal(await evaluate("sessionStorage.getItem('ns.token')"), null);
-    assert.equal(await evaluate("document.cookie.includes('healthsystems-session')"), false, "session must be HttpOnly");
+    assert.equal(await evaluate("document.cookie.includes('healthsystem-session')"), false, "session must be HttpOnly");
     assert.equal(await evaluate("location.search + location.hash"), "");
     await evaluate("document.querySelector('a[href=\"#/messages\"]').click()");
     await wait("!!document.getElementById('subj')");

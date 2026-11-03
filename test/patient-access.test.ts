@@ -41,8 +41,8 @@ const YEAR = 365 * 86_400_000;
 const inDays = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString();
 
 function portal() {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-pa-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-pa-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   const orders = new OrderStore(db);
   const tasks = new TaskStore(db);
   return {
@@ -451,8 +451,8 @@ test("an access or correction request is a receipt for the patient and work for 
 });
 
 test("authority and holds are confined to their tenant", () => {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-pa-iso-"));
-  const root = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-pa-iso-"));
+  const root = new Db(join(dir, "healthsystem.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");

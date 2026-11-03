@@ -17,8 +17,8 @@ import { Coverage } from "../src/clinical/coverage.ts";
 import { Refusal } from "../src/core/refusal.ts";
 
 function clinic() {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-cov-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-cov-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   return {
     db,
     coverage: new Coverage(db),
@@ -72,8 +72,8 @@ test("unknown is a recorded eligibility, not an empty field", () => {
 });
 
 test("one custodian's coverage is not another's", () => {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-cov-iso-"));
-  const root = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-cov-iso-"));
+  const root = new Db(join(dir, "healthsystem.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");

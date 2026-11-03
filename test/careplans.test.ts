@@ -18,8 +18,8 @@ import { CarePlans } from "../src/clinical/careplans.ts";
 import { Refusal } from "../src/core/refusal.ts";
 
 function clinic() {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-plan-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-plan-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   const record = new ClinicalRecord(db);
   return {
     db,
@@ -165,8 +165,8 @@ test("an empty care-plan panel is never-planned, not none", () => {
 });
 
 test("one custodian cannot read another's care plans", () => {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-plan-iso-"));
-  const root = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-plan-iso-"));
+  const root = new Db(join(dir, "healthsystem.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");

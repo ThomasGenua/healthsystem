@@ -1,10 +1,10 @@
 /**
  * The satellite demo. Topology:
  *
- *   [community EMR feed] --MLLP--> HealthSystems --HTTP over satlink--> Meridian (territorial EHR)
+ *   [community EMR feed] --MLLP--> HealthSystem --HTTP over satlink--> Meridian (territorial EHR)
  *
  * Phase A: healthy link, ADT flows end to end.
- * Phase B: outage. The feed keeps sending; HealthSystems keeps acknowledging AA,
+ * Phase B: outage. The feed keeps sending; HealthSystem keeps acknowledging AA,
  *          because an AA certifies durable queueing, not remote delivery.
  *          Nothing reaches Meridian; the queue grows.
  * Phase C: link restored. The queue drains in strict arrival order with no
@@ -57,7 +57,7 @@ async function until(cond: () => boolean, ms: number, label: string): Promise<vo
 }
 
 async function main(): Promise<void> {
-  console.log("HealthSystems satellite demo");
+  console.log("HealthSystem satellite demo");
   console.log("======================\n");
 
   const meridian = await startMeridianSim(0);
@@ -71,7 +71,7 @@ async function main(): Promise<void> {
     bandwidthKbps: BANDWIDTH,
   });
 
-  const dataDir = mkdtempSync(join(tmpdir(), "healthsystems-demo-"));
+  const dataDir = mkdtempSync(join(tmpdir(), "healthsystem-demo-"));
   const engine = new Engine({ dbPath: join(dataDir, "demo.db"), tickMs: 50 });
   engine.registerMapping(
     JSON.parse(readFileSync(new URL("../mappings/adt-patient.json", import.meta.url), "utf8")) as MappingDoc
@@ -108,7 +108,7 @@ async function main(): Promise<void> {
   console.log(
     `satlink latency ${LATENCY}ms jitter ${JITTER}ms loss ${PACKET_LOSS}% ${shaping}  :${link.port}`
   );
-  console.log(`healthsystems MLLP (community side)    :${mllpPort}\n`);
+  console.log(`healthsystem MLLP (community side)    :${mllpPort}\n`);
 
   let sent = 0;
   const feed = async (n: number) => {

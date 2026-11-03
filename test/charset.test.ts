@@ -49,8 +49,8 @@ function channel(charset?: string): ChannelConfig {
 }
 
 async function boot(cfg: ChannelConfig) {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-charset-"));
-  const engine = new Engine({ dbPath: join(dir, "healthsystems.db"), tickMs: 25 });
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-charset-"));
+  const engine = new Engine({ dbPath: join(dir, "healthsystem.db"), tickMs: 25 });
   await engine.start();
   await engine.addChannel(cfg);
   return {

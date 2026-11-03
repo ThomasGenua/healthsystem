@@ -3,11 +3,11 @@
  *
  * No dependency: node:crypto can build a key from a JWK and verify RSA and
  * ECDSA signatures directly. Works against any OIDC provider — Entra ID,
- * Keycloak, Auth0 — by pointing HEALTHSYSTEMS_OIDC_ISSUER at it; nothing here is
+ * Keycloak, Auth0 — by pointing HEALTHSYSTEM_OIDC_ISSUER at it; nothing here is
  * provider-specific.
  *
  * The algorithm is chosen from a fixed table keyed by the token header, so an
- * `alg: none` token, or one naming an algorithm HealthSystems does not implement, is
+ * `alg: none` token, or one naming an algorithm HealthSystem does not implement, is
  * rejected before any key material is touched.
  */
 import { constants, createPublicKey, verify as cryptoVerify, type KeyObject } from "node:crypto";
@@ -22,14 +22,14 @@ export interface OidcConfig {
    * entirely: every token the issuer had signed was accepted, including ones
    * minted for a different application in the same directory. An identity
    * provider serves many resource servers, so a token for the expenses
-   * system, signed by the same Entra tenant, was a valid HealthSystems token —
+   * system, signed by the same Entra tenant, was a valid HealthSystem token —
    * and the deployments most likely to leave it unset are the ones least
    * likely to notice.
    */
   audience: string;
   /** Explicit JWKS URI. Discovered from the issuer when omitted. */
   jwksUri?: string;
-  /** Tolerance for clock drift between HealthSystems and the identity provider. */
+  /** Tolerance for clock drift between HealthSystem and the identity provider. */
   clockSkewSec?: number;
   /** How long a fetched JWKS is reused before refetching. */
   cacheTtlMs?: number;
@@ -72,7 +72,7 @@ function decodeSegment(seg: string): Record<string, unknown> {
 }
 
 /**
- * Reads a deployment-named claim under every spelling HealthSystems has used.
+ * Reads a deployment-named claim under every spelling HealthSystem has used.
  *
  * Order is precedence: the current prefixed name, then the pre-rename one,
  * then the bare convention. Prefixed first because it exists precisely for an
@@ -80,7 +80,7 @@ function decodeSegment(seg: string): Record<string, unknown> {
  * must not shadow it.
  */
 function pickClaim(claims: Record<string, unknown>, name: string): string | undefined {
-  const candidates = [claims[`healthsystems_${name}`], claims[`northstar_${name}`], claims[`portage_${name}`], claims[name]];
+  const candidates = [claims[`healthsystem_${name}`], claims[`healthsystems_${name}`], claims[`northstar_${name}`], claims[`portage_${name}`], claims[name]];
   const found = candidates.find((c) => typeof c === "string" && c.length > 0);
   return typeof found === "string" ? found : undefined;
 }
@@ -104,14 +104,14 @@ export interface VerifiedToken {
    * SMART on FHIR does not standardise this — it standardises what a caller
    * may *do*, not which organization they belong to — so the claim name is a
    * deployment decision rather than something to infer. `organization` is the
-   * common convention; `healthsystems_organization` (or the pre-rename
+   * common convention; `healthsystem_organization` (or the pre-rename
    * `portage_organization`) is the escape hatch for an issuer that already
    * uses `organization` for something else.
    */
   organizationId?: string;
   /**
    * The practitioner the token acts as, from a claim the provider controls.
-   * `practitioner` by convention; `healthsystems_practitioner` or the pre-rename
+   * `practitioner` by convention; `healthsystem_practitioner` or the pre-rename
    * `portage_practitioner` where an issuer already uses that name. Absent for a token that acts as no one.
    */
   practitionerId?: string;
@@ -133,7 +133,7 @@ export class JwtVerifier {
     if (!config.audience || !config.audience.trim()) {
       throw new Error(
         "an OIDC audience is required: without one, every token this issuer has signed is accepted, " +
-          "including tokens minted for other applications in the same directory. Set HEALTHSYSTEMS_OIDC_AUDIENCE " +
+          "including tokens minted for other applications in the same directory. Set HEALTHSYSTEM_OIDC_AUDIENCE " +
           "to the identifier this deployment is registered under."
       );
     }
@@ -243,7 +243,7 @@ export class JwtVerifier {
     // call it; the prefixed names are the escape hatch for one that already
     // uses `tenant` for something else.
     //
-    // `portage_*` is read alongside `healthsystems_*` and is not going away. The
+    // `portage_*` is read alongside `healthsystem_*` and is not going away. The
     // claim name lives in somebody's Keycloak realm or Auth0 rule, not in this
     // repository, and dropping the old spelling would not raise an error — the
     // claim would simply stop being found, and a token that had carried a

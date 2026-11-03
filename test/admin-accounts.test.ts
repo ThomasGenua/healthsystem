@@ -105,21 +105,24 @@ test("legacy admin sessions survive the rebrand and logout revokes both cookie n
   const x = await boot();
   try {
     const first = await x.login();
-    const old = first.headers.get("set-cookie")!.split(";")[0].replace("healthsystems_admin=", "northstar_admin=");
+    const old = first.headers.get("set-cookie")!.split(";")[0].replace("healthsystem_admin=", "northstar_admin=");
+    const plural = old.replace("northstar_admin=", "healthsystems_admin=");
+    assert.equal((await fetch(x.base + "/api/keys", { headers: { cookie: plural } })).status, 200);
     const oldStatus = await first.json() as { csrf: string };
     assert.equal((await fetch(x.base + "/api/keys", { headers: { cookie: old } })).status, 200);
     const second = await x.login();
     const current = second.headers.get("set-cookie")!.split(";")[0];
-    assert.match(current, /^healthsystems_admin=/);
+    assert.match(current, /^healthsystem_admin=/);
     const metrics = await (await fetch(x.base + "/metrics", { headers: { cookie: current } })).text();
-    for (const prefix of ["healthsystems", "northstar", "portage"]) assert.match(metrics, new RegExp(`^${prefix}_channels 0$`, "m"));
+    for (const prefix of ["healthsystem", "healthsystems", "northstar", "portage"]) assert.match(metrics, new RegExp(`^${prefix}_channels 0$`, "m"));
     const status = await second.json() as { csrf: string };
     const combined = current + "; " + old;
     assert.equal((await fetch(x.base + "/auth/admin/logout", { method: "POST", headers: { cookie: combined, origin: x.base, "x-csrf-token": oldStatus.csrf } })).status, 403);
     const logout = await fetch(x.base + "/auth/admin/logout", { method: "POST", headers: { cookie: combined, origin: x.base, "x-csrf-token": status.csrf } });
     assert.equal(logout.status, 200);
     assert.match(logout.headers.get("set-cookie")!, /northstar_admin=;/);
+    assert.match(logout.headers.get("set-cookie")!, /healthsystem_admin=;/);
     assert.match(logout.headers.get("set-cookie")!, /healthsystems_admin=;/);
-    for (const cookie of [old, current]) assert.equal((await fetch(x.base + "/api/keys", { headers: { cookie } })).status, 401);
+    for (const cookie of [old, current, plural]) assert.equal((await fetch(x.base + "/api/keys", { headers: { cookie } })).status, 401);
   } finally { await x.close(); }
 });

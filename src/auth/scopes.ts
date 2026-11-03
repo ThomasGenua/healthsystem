@@ -41,7 +41,7 @@ export function effectiveScopes(granted: Iterable<string>): Set<Scope> {
 /**
  * SMART on FHIR scopes map onto the three above. A token minted by an identity
  * provider speaks `system/Patient.read`, not `read`, so translate rather than
- * demanding callers configure HealthSystems-specific scope names in their IdP.
+ * demanding callers configure HealthSystem-specific scope names in their IdP.
  *
  * Both SMART v1 (`.read` / `.write` / `.*`) and v2 (`.rs` / `.cud` / `.cruds`)
  * verb syntax are accepted.
@@ -53,14 +53,14 @@ export function scopesFromSmart(raw: Iterable<string>): Set<Scope> {
       out.add(s);
       continue;
     }
-    // healthsystems/admin is the escape hatch for operator tokens, since SMART
+    // healthsystem/admin is the escape hatch for operator tokens, since SMART
     // has no notion of "administer the interface engine". `portage/admin` is
     // the pre-rename spelling and stays accepted: the scope is a string inside
     // tokens that have already been issued and inside identity-provider
     // configuration this repository does not control, so dropping it would not
     // fail a token — it would silently demote an operator to no admin rights
     // and turn every administrative call into a 403 nobody could explain.
-    if (s === "healthsystems/admin" || s === "northstar/admin" || s === "portage/admin" || s === "system/*.admin") {
+    if (s === "healthsystem/admin" || s === "healthsystems/admin" || s === "northstar/admin" || s === "portage/admin" || s === "system/*.admin") {
       out.add("admin");
       continue;
     }
@@ -124,7 +124,7 @@ export function requiredScope(method: string, path: string): Scope | null {
   // Nothing is trusted because it came from here. The engine reaches these
   // over HTTP as `JwtVerifier` reaches any JWKS, and a token from them is
   // checked the same way a token from Entra is. The provider only exists at
-  // all when HEALTHSYSTEMS_DEV_IDP=on, which server.ts refuses to combine with a
+  // all when HEALTHSYSTEM_DEV_IDP=on, which server.ts refuses to combine with a
   // configured issuer; when it is off these paths 404 like any other.
   if (path === "/dev-idp" || path.startsWith("/dev-idp/")) return null;
 

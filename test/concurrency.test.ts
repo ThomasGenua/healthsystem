@@ -67,8 +67,8 @@ const RESIDENT = { actorId: "dr-hale", actorKind: "practitioner" };
 
 /** Two connections onto one database, as two processes would have. */
 function site() {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-race-"));
-  const path = join(dir, "healthsystems.db");
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-race-"));
+  const path = join(dir, "healthsystem.db");
   const a = new Db(path);
   const b = new Db(path);
   return {

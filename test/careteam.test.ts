@@ -16,8 +16,8 @@ import { CareTeam } from "../src/clinical/careteam.ts";
 import { Refusal } from "../src/core/refusal.ts";
 
 function clinic() {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-team-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-team-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   const directory = new Directory(db);
   directory.addPractitioner({ id: "dr-tetso", family: "Tetso", given: "Jean" });
   directory.addPractitioner({ id: "dr-hale", family: "Hale", given: "Sarah" });
@@ -92,8 +92,8 @@ test("a covering locum is not the primary, and retiring ends the stretch", () =>
 });
 
 test("one custodian's care team is not another's", () => {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-team-iso-"));
-  const root = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-team-iso-"));
+  const root = new Db(join(dir, "healthsystem.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");

@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 /** Synthetic receiver only: keeps no labels, annotations, URLs or patient data. */
 export function createStagingAlertSink() {
-  const allowed = new Set(["HealthSystemsServiceDown", "HealthSystemsScannerBacklog", "HealthSystemsDeliveryFailures", "HealthSystemsBackupFailed", "HealthSystemsBackupStale"]);
+  const allowed = new Set(["HealthSystemServiceDown", "HealthSystemScannerBacklog", "HealthSystemDeliveryFailures", "HealthSystemBackupFailed", "HealthSystemBackupStale"]);
   const events: Array<{ name: string; status: "firing" | "resolved" }> = [];
   return createServer(async (req, res) => {
     res.setHeader("cache-control", "no-store");

@@ -35,8 +35,8 @@ const channel = (over: Partial<ChannelConfig> = {}): ChannelConfig => ({
 });
 
 async function boot() {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-silent-"));
-  const engine = new Engine({ dbPath: join(dir, "healthsystems.db"), tickMs: 100_000 });
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-silent-"));
+  const engine = new Engine({ dbPath: join(dir, "healthsystem.db"), tickMs: 100_000 });
   await engine.start();
   return {
     engine,

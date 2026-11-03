@@ -48,8 +48,8 @@ async function collector(): Promise<{ port: number; got: string[]; close: () => 
 }
 
 async function boot() {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-subscope-"));
-  const engine = new Engine({ dbPath: join(dir, "healthsystems.db"), tickMs: 25 });
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-subscope-"));
+  const engine = new Engine({ dbPath: join(dir, "healthsystem.db"), tickMs: 25 });
   await engine.start();
   const api = await startApi(engine, 0, "127.0.0.1", { auth: new AuthGate({ keys: engine.keys }) });
   return {

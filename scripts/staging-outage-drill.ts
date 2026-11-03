@@ -3,13 +3,13 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 const execute = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
-const project = "healthsystems-alert-drill";
+const project = "healthsystem-alert-drill";
 const compose = ["compose", "-p", project, "-f", "deploy/staging/compose.yaml", "-f", "deploy/staging/monitoring.yaml", "--profile", "monitoring"];
 let cancelled = false;
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => { cancelled = true; });
 async function docker(args: string[]) {
   const result = await execute("docker", args, { cwd: root, timeout: 240_000, maxBuffer: 8 * 1024 * 1024,
-    env: { ...process.env, HEALTHSYSTEMS_STAGING_PORT: "18986" }, windowsHide: true });
+    env: { ...process.env, HEALTHSYSTEM_STAGING_PORT: "18986" }, windowsHide: true });
   return result.stdout;
 }
 async function json<T>(url: string): Promise<T> {
@@ -34,7 +34,7 @@ async function main() {
     console.log("Starting isolated synthetic alert drill (no external notifications)");
     await docker([...compose, "up", "--build", "-d", "--wait", "--wait-timeout", "120", "app", "prometheus", "alertmanager", "alert-sink"]);
     await until(async () => {
-      const response = await json<{ data?: { result?: Array<{ value: [number, string] }> } }>("http://127.0.0.1:19090/api/v1/query?query=up%7Bjob%3D%22healthsystems%22%7D");
+      const response = await json<{ data?: { result?: Array<{ value: [number, string] }> } }>("http://127.0.0.1:19090/api/v1/query?query=up%7Bjob%3D%22healthsystem%22%7D");
       return response.data?.result?.[0]?.value?.[1] === "1";
     }, "successful metrics scrape");
     const baseline = (await json<{ events: unknown[] }>("http://127.0.0.1:19094/events")).events.length;
@@ -42,7 +42,7 @@ async function main() {
     await docker([...compose, "stop", "app"]);
     const observed = async (status: string) => {
       const body = await json<{ events: Array<{ name: string; status: string }> }>("http://127.0.0.1:19094/events");
-      return body.events.slice(baseline).some((event: { name: string; status: string }) => event.name === "HealthSystemsServiceDown" && event.status === status);
+      return body.events.slice(baseline).some((event: { name: string; status: string }) => event.name === "HealthSystemServiceDown" && event.status === status);
     };
     await until(() => observed("firing"), "firing notification");
     console.log("Firing received; restarting drill app and waiting for resolved notification");
@@ -53,4 +53,4 @@ async function main() {
     await docker([...compose, "down"]); // No -v: retain the dedicated synthetic data volume.
   }
 }
-main().catch(() => { console.error("Outage drill failed or interrupted; inspect the isolated healthsystems-alert-drill project. No remote service was modified."); process.exitCode = 1; });
+main().catch(() => { console.error("Outage drill failed or interrupted; inspect the isolated healthsystem-alert-drill project. No remote service was modified."); process.exitCode = 1; });

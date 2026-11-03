@@ -35,8 +35,8 @@ const EVIDENCE = {
 };
 
 function site() {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-gov-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-gov-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   const directory = new Directory(db);
   directory.addPractitioner({ id: "dr-tetso", family: "Tetso", given: "Jean" });
   return {
@@ -110,8 +110,8 @@ test("explicit units must name every governed scale exactly", () => {
 });
 
 test("opening main's approval schema adds evidence columns without changing existing decisions", () => {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-gov-upgrade-"));
-  const path = join(dir, "healthsystems.db");
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-gov-upgrade-"));
+  const path = join(dir, "healthsystem.db");
   let db = new Db(path);
   try {
     new Directory(db).addPractitioner({ id: "dr-tetso", family: "Tetso", given: "Jean" });
@@ -137,8 +137,8 @@ test("opening main's approval schema adds evidence columns without changing exis
 });
 
 test("draft approvals retain their evidence on upgrade but need a registered owner before use", () => {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-gov-draft-"));
-  const path = join(dir, "healthsystems.db");
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-gov-draft-"));
+  const path = join(dir, "healthsystem.db");
   let db = new Db(path);
   try {
     new Directory(db).addPractitioner({ id: "dr-tetso", family: "Tetso", given: "Jean" });

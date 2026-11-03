@@ -3,61 +3,61 @@ evaluation_interval: 1m
 tests:
   - interval: 1m
     input_series:
-      - series: 'up{job="healthsystems"}'
+      - series: 'up{job="healthsystem"}'
         values: '0+0x10'
-      - series: 'healthsystems_upload_scan_oldest_age_seconds{job="healthsystems"}'
+      - series: 'healthsystem_upload_scan_oldest_age_seconds{job="healthsystem"}'
         values: '901+0x10'
-      - series: 'healthsystems_dead_letters{job="healthsystems"}'
+      - series: 'healthsystem_dead_letters{job="healthsystem"}'
         values: '1+0x10'
-      - series: 'healthsystems_backup_remote_configured{job="healthsystems"}'
+      - series: 'healthsystem_backup_remote_configured{job="healthsystem"}'
         values: '1+0x10'
-      - series: 'healthsystems_backup_remote_ok{job="healthsystems"}'
+      - series: 'healthsystem_backup_remote_ok{job="healthsystem"}'
         values: '0+0x10'
-      - series: 'healthsystems_backup_remote_age_seconds{job="healthsystems"}'
+      - series: 'healthsystem_backup_remote_age_seconds{job="healthsystem"}'
         values: '90000+0x10'
     alert_rule_test:
       - eval_time: 10m
-        alertname: HealthSystemsServiceDown
+        alertname: HealthSystemServiceDown
         exp_alerts:
-          - exp_labels: {job: healthsystems, severity: critical}
-            exp_annotations: {summary: HealthSystems metrics endpoint unavailable}
+          - exp_labels: {job: healthsystem, severity: critical}
+            exp_annotations: {summary: HealthSystem metrics endpoint unavailable}
       - eval_time: 10m
-        alertname: HealthSystemsScannerBacklog
+        alertname: HealthSystemScannerBacklog
         exp_alerts:
-          - exp_labels: {job: healthsystems, severity: warning}
+          - exp_labels: {job: healthsystem, severity: warning}
             exp_annotations: {summary: Quarantined uploads are older than fifteen minutes}
       - eval_time: 10m
-        alertname: HealthSystemsDeliveryFailures
+        alertname: HealthSystemDeliveryFailures
         exp_alerts:
-          - exp_labels: {job: healthsystems, severity: warning}
+          - exp_labels: {job: healthsystem, severity: warning}
             exp_annotations: {summary: Delivery dead letters require review}
       - eval_time: 10m
-        alertname: HealthSystemsBackupFailed
+        alertname: HealthSystemBackupFailed
         exp_alerts:
-          - exp_labels: {job: healthsystems, severity: critical}
+          - exp_labels: {job: healthsystem, severity: critical}
             exp_annotations: {summary: Configured backup has no verified successful replica}
       - eval_time: 10m
-        alertname: HealthSystemsBackupStale
+        alertname: HealthSystemBackupStale
         exp_alerts:
-          - exp_labels: {job: healthsystems, severity: warning}
+          - exp_labels: {job: healthsystem, severity: warning}
             exp_annotations: {summary: Verified backup is older than the staging 24-hour threshold}
   - interval: 1m
     input_series:
-      - series: 'up{job="healthsystems"}'
+      - series: 'up{job="healthsystem"}'
         values: '1+0x10'
-      - series: 'healthsystems_upload_scan_oldest_age_seconds{job="healthsystems"}'
+      - series: 'healthsystem_upload_scan_oldest_age_seconds{job="healthsystem"}'
         values: '0+0x10'
-      - series: 'healthsystems_dead_letters{job="healthsystems"}'
+      - series: 'healthsystem_dead_letters{job="healthsystem"}'
         values: '0+0x10'
-      - series: 'healthsystems_backup_remote_configured{job="healthsystems"}'
+      - series: 'healthsystem_backup_remote_configured{job="healthsystem"}'
         values: '0+0x10'
-      - series: 'healthsystems_backup_remote_ok{job="healthsystems"}'
+      - series: 'healthsystem_backup_remote_ok{job="healthsystem"}'
         values: '0+0x10'
-      - series: 'healthsystems_backup_remote_age_seconds{job="healthsystems"}'
+      - series: 'healthsystem_backup_remote_age_seconds{job="healthsystem"}'
         values: '-1+0x10'
     alert_rule_test:
-      - {eval_time: 10m, alertname: HealthSystemsServiceDown, exp_alerts: []}
-      - {eval_time: 10m, alertname: HealthSystemsScannerBacklog, exp_alerts: []}
-      - {eval_time: 10m, alertname: HealthSystemsDeliveryFailures, exp_alerts: []}
-      - {eval_time: 10m, alertname: HealthSystemsBackupFailed, exp_alerts: []}
-      - {eval_time: 10m, alertname: HealthSystemsBackupStale, exp_alerts: []}
+      - {eval_time: 10m, alertname: HealthSystemServiceDown, exp_alerts: []}
+      - {eval_time: 10m, alertname: HealthSystemScannerBacklog, exp_alerts: []}
+      - {eval_time: 10m, alertname: HealthSystemDeliveryFailures, exp_alerts: []}
+      - {eval_time: 10m, alertname: HealthSystemBackupFailed, exp_alerts: []}
+      - {eval_time: 10m, alertname: HealthSystemBackupStale, exp_alerts: []}

@@ -80,7 +80,7 @@ export type StationState =
 /**
  * When the data in a snapshot was true.
  *
- * `takeBackup` names files `healthsystems-<ISO with : and . replaced by ->.db`, so
+ * `takeBackup` names files `healthsystem-<ISO with : and . replaced by ->.db`, so
  * the stamp is recoverable from the name. A file that does not carry one falls
  * back to its modification time — later than the truth by however long the
  * copy took, which errs toward reporting the chart as *fresher* than it is.
@@ -105,7 +105,7 @@ export interface FillOptions {
   cachePath: string;
   /** Identifies this station on every audit row it writes. */
   stationId: string;
-  /** Overrides HEALTHSYSTEMS_STATION_BUDGET_HOURS and the 72-hour default. */
+  /** Overrides HEALTHSYSTEM_STATION_BUDGET_HOURS and the 72-hour default. */
   budgetHours?: number;
   /** Skip the at-rest check. For tests and for an operator who has asserted it. */
   allowUnencrypted?: boolean;
@@ -137,7 +137,7 @@ export function resolveBudgetHours(explicit: number | undefined, env: NodeJS.Pro
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new Refusal(
-      `HEALTHSYSTEMS_STATION_BUDGET_HOURS is set to "${raw}", which is not a positive number of hours; ` +
+      `HEALTHSYSTEM_STATION_BUDGET_HOURS is set to "${raw}", which is not a positive number of hours; ` +
         "refusing to fill rather than quietly serving under the default budget",
       400
     );

@@ -29,7 +29,7 @@ Optional synthetic chart seed: before the first `up`, on a fresh dedicated
 volume only:
 
 ```sh
-docker compose -f deploy/staging/compose.yaml run --rm app node scripts/portal-demo.ts /var/lib/healthsystems
+docker compose -f deploy/staging/compose.yaml run --rm app node scripts/portal-demo.ts /var/lib/healthsystem
 ```
 
 Do not run the seed against a running server or a volume containing real records.

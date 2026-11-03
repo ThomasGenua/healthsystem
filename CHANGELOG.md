@@ -3,7 +3,7 @@
 Notable changes per release. Dates are the release date; a version is cut when
 a coherent block of capability is finished and tested, not on a calendar.
 
-HealthSystems is pre-1.0: minor versions may change interfaces. Database upgrades are
+HealthSystem is pre-1.0: minor versions may change interfaces. Database upgrades are
 always forward-compatible and run automatically on open — see
 [Upgrading](docs/RUNBOOK.md#upgrading).
 
@@ -11,7 +11,9 @@ always forward-compatible and run automatically on open — see
 
 **Branding**
 
-- Renamed the application to HealthSystems across public pages, the clinical
+- Corrected the product name to singular **HealthSystem**. The previously used plural configuration, storage, session, backup, and token names remain supported for compatibility.
+
+- Renamed the application to HealthSystem across public pages, the clinical
   workspace, patient portal, favicon metadata, contact email subjects, configuration,
   package metadata, deployment examples, and documentation. Existing Northstar and
   Portage databases, backups, environment variables, API credentials, token claims,
@@ -200,7 +202,7 @@ always forward-compatible and run automatically on open — see
   the board returned. After it, the board flipped: the morning's patients
   vanished and tomorrow's appeared as today's, expected and unprepared.
 
-  `HEALTHSYSTEMS_CLINIC_TIMEZONE` says where the clinic is — a place like
+  `HEALTHSYSTEM_CLINIC_TIMEZONE` says where the clinic is — a place like
   `America/Yellowknife`, which follows daylight saving, or a fixed offset
   like `-07:00`. One calendar, in `src/schedule/clinic-day.ts`, now answers
   "what is today" for everything that asks: the board's list, its capacity
@@ -335,7 +337,7 @@ always forward-compatible and run automatically on open — see
 
 - **`Strict-Transport-Security`, on the nodes that can honestly send it
   (item 16).** A node holding its own certificate sends it with every
-  response, a year by default and `HEALTHSYSTEMS_HSTS_MAX_AGE` to change or
+  response, a year by default and `HEALTHSYSTEM_HSTS_MAX_AGE` to change or
   disable it. A node behind a TLS-terminating proxy sends nothing: the
   requests arrive as plain HTTP, and the only evidence otherwise would be a
   forwarded header anyone who can reach the port is able to write — which is
@@ -712,7 +714,7 @@ drill that verifies recovery instead of assuming it.
   leaves every upload `pending-scan` indefinitely rather than defaulting to
   safe. An infected verdict deletes the bytes from the row on the spot. The
   bundled `SyntheticScanner` recognizes the EICAR test string and nothing
-  else, and is wired only behind `HEALTHSYSTEMS_DEV_MALWARE_SCANNER=on` — loud,
+  else, and is wired only behind `HEALTHSYSTEM_DEV_MALWARE_SCANNER=on` — loud,
   explicit, opt-in, the same shape as the development identity provider.
 
   The portal gained an eighth tab, "Before your visit," in both languages,
@@ -901,13 +903,13 @@ drill that verifies recovery instead of assuming it.
   claim — see `docs/PROVINCIAL.md` §20.
 
 - **A development identity provider, for demonstrating the portal without
-  production credentials.** `HEALTHSYSTEMS_DEV_IDP=on` runs a synthetic issuer at
-  `/dev-idp`. HealthSystems stays a resource server: there is no branch in the
+  production credentials.** `HEALTHSYSTEM_DEV_IDP=on` runs a synthetic issuer at
+  `/dev-idp`. HealthSystem stays a resource server: there is no branch in the
   gate for development, and its tokens are validated over JWKS exactly as a
   real provider's are, so what a demo exercises is the production path with a
   different issuer behind it.
 
-  It refuses to start beside `HEALTHSYSTEMS_OIDC_ISSUER` rather than warning; its
+  It refuses to start beside `HEALTHSYSTEM_OIDC_ISSUER` rather than warning; its
   signing key is generated at boot and never written down; and it lists only
   subjects that already hold a live grant, so it cannot create authority that
   a named clerk did not. `node scripts/portal-demo.ts` seeds synthetic people,
@@ -971,7 +973,7 @@ drill that verifies recovery instead of assuming it.
 
 - **Placed orders now leave for the laboratory on their own.** The dispatch
   sweep existed but nothing called it. It now runs inside the engine on a
-  timer: default every minute, `HEALTHSYSTEMS_ORDER_DISPATCH_INTERVAL_MS` to
+  timer: default every minute, `HEALTHSYSTEM_ORDER_DISPATCH_INTERVAL_MS` to
   change it, `0` to send only when somebody presses
   `POST /api/clinical/order-send`. An order placed in clinic reaches the
   laboratory over MLLP, and the acknowledgement lands back on the order,
@@ -1081,7 +1083,7 @@ drill that verifies recovery instead of assuming it.
   this codebase.
 
 - **Governed provenance for every clinical risk score.** A result now carries
-  the exact instrument and HealthSystems implementation versions, original source,
+  the exact instrument and HealthSystem implementation versions, original source,
   intended population, exclusions, required units, calculation time and a
   copy of the supplied inputs. The assurance state is deliberately machine
   readable and unresolved: source-linked golden vectors exercise the
@@ -1404,7 +1406,7 @@ drill that verifies recovery instead of assuming it.
   IPS-conformant: no IPS package has been fetched and nothing has been
   validated against the published profiles.
 
-  Export refuses without `HEALTHSYSTEMS_SUMMARY_SIGNING_KEY`. An unsigned summary
+  Export refuses without `HEALTHSYSTEM_SUMMARY_SIGNING_KEY`. An unsigned summary
   cannot be told from one edited after it left, and this is the copy that
   leaves. Verification catches either half being altered.
 
@@ -1560,7 +1562,7 @@ drill that verifies recovery instead of assuming it.
   too.** It was issued only on the `apikey` path, so a demo came up with a
   working portal and no way into the clinic side of it — which is half the
   journey, and the half that shows the patient's question arriving on the
-  worklist. The boot banner also reported `HEALTHSYSTEMS_AUTH_MODE` rather than
+  worklist. The boot banner also reported `HEALTHSYSTEM_AUTH_MODE` rather than
   what was actually enforcing.
 
 - **The tenant-isolation scan was reading 4 of the 81 statements in `db.ts`.**
@@ -1637,7 +1639,7 @@ drill that verifies recovery instead of assuming it.
 
   A failed poll is now recorded per channel, durably and tenant-scoped, with a
   run length. Three consecutive failed reads degrade the health check and raise
-  `healthsystems_channel_source_failures{channel,stage}`. Reading the source and
+  `healthsystem_channel_source_failures{channel,stage}`. Reading the source and
   handling one thing on it are separate stages, because they are different
   phone calls: a bad file is reported and never degrades the interface. A pass
   that reads and handles everything clears the record, so recovery needs no
@@ -1833,7 +1835,7 @@ drill that verifies recovery instead of assuming it.
 
   A failed poll is now recorded per channel, durably and tenant-scoped, with a
   run length. Three consecutive failed reads degrade the health check and raise
-  `healthsystems_channel_source_failures{channel,stage}`. Reading the source and
+  `healthsystem_channel_source_failures{channel,stage}`. Reading the source and
   handling one thing on it are separate stages, because they are different
   phone calls: a bad file is reported and never degrades the interface. A pass
   that reads and handles everything clears the record, so recovery needs no
@@ -1948,23 +1950,23 @@ drill that verifies recovery instead of assuming it.
   `actions/setup-node@v4`, which every run was reporting as targeting the
   deprecated Node 20 runtime.
 
-- **`HEALTHSYSTEMS_OIDC_AUDIENCE` is now required when OAuth is enabled, and a
+- **`HEALTHSYSTEM_OIDC_AUDIENCE` is now required when OAuth is enabled, and a
   site without it will not boot.** It was optional, and an absent audience
   skipped the check entirely: every token the configured issuer had ever
   signed was accepted, including tokens minted for a different application in
   the same directory. An identity provider serves many resource servers, so a
   token for the expenses system, signed by the same Entra or Keycloak tenant,
-  was a valid HealthSystems token — and the deployments that never set the
+  was a valid HealthSystem token — and the deployments that never set the
   variable were exactly the ones running without the check.
 
   **Breaking, deliberately.** A site that cannot start is a site somebody
   fixes; one that starts and honours another application's tokens is not. Set
-  `HEALTHSYSTEMS_OIDC_AUDIENCE` to the identifier this deployment is registered
+  `HEALTHSYSTEM_OIDC_AUDIENCE` to the identifier this deployment is registered
   under at the issuer. A token carrying no `aud` claim at all is now refused
   for the same reason as one naming somebody else. Hazard H-162.
 
 - **`.well-known/smart-configuration`**, generated from what this deployment
-  is configured with. HealthSystems is a resource server — it validates tokens and
+  is configured with. HealthSystem is a resource server — it validates tokens and
   does not issue them — so the document advertises the site's own
   authorization server, and lists only capabilities this end actually
   enforces. A discovery document claiming a capability the server does not
@@ -1997,7 +1999,7 @@ become facts with structure, which is what makes their absence visible.
 Enrolment is attested by a named clerk who writes how they checked, rather than
 inferred from a token.
 
-And the product is now called HealthSystems — a rename carried out on the
+And the product is now called HealthSystem — a rename carried out on the
 principle that it must not move anything a running site depends on. The
 database, the backups, the environment, the tenant claim, the metrics and the
 wire all still answer to their old names, because every one of those failures
@@ -2121,12 +2123,12 @@ would have been silent.
   high score is a prompt to address modifiable risk, not a reason to withhold
   anticoagulation. Hazards H-100 through H-102.
 
-  This is decision support, not a decision, and HealthSystems is not a certified
+  This is decision support, not a decision, and HealthSystem is not a certified
   medical device.
 
 **Changed**
 
-- **Portage is now HealthSystems.** The product, the documentation, the admin UI
+- **Portage is now HealthSystem.** The product, the documentation, the admin UI
   and the package name. Release notes below this entry keep the old name,
   because that is what those versions shipped as.
 
@@ -2135,7 +2137,7 @@ would have been silent.
   loudly, and every one of these would have been silent:
 
   - **The database.** SQLite creates what it cannot open. A build looking for
-    `healthsystems.db` in a directory holding `portage.db` does not error — it
+    `healthsystem.db` in a directory holding `portage.db` does not error — it
     makes an empty database, and the site comes up healthy with no patients in
     it. An existing file now always wins over the preferred name, whichever
     name it carries, and opening one under its old name is announced at boot.
@@ -2147,11 +2149,11 @@ would have been silent.
     restore, and a reading-station check reporting no recent backup, for a site
     whose snapshots were sitting right there. Both prefixes are matched on
     every read path. Ordering moved off the filename at the same time: a plain
-    sort puts `healthsystems-` before `portage-`, which would have placed today's
+    sort puts `healthsystem-` before `portage-`, which would have placed today's
     snapshot at the oldest end of the list, handed a restore a two-month-old
     database, and had retention delete the newest file it had.
 
-  - **Environment variables.** `PORTAGE_*` is read alongside `HEALTHSYSTEMS_*`, the
+  - **Environment variables.** `PORTAGE_*` is read alongside `HEALTHSYSTEM_*`, the
     new name winning where both are set, so a unit file can migrate one line at
     a time. Reading only the new names would not have thrown; the values would
     have gone absent, and absent means TLS off, encryption unasserted,
@@ -2166,7 +2168,7 @@ would have been silent.
     charts. `portage/admin` likewise still grants admin, because the scope is
     inside tokens already issued.
 
-  - **Metrics.** Every series is exposed under both `healthsystems_*` and
+  - **Metrics.** Every series is exposed under both `healthsystem_*` and
     `portage_*`. A renamed metric does not break an alerting rule loudly — the
     series stops existing, the rule evaluates against no data, and the alert
     watching for a dead-letter backlog quietly never fires again.
@@ -2176,7 +2178,7 @@ would have been silent.
     typed into their own interface configuration, and changing it unilaterally
     has their engine reject our acknowledgements — visible at their end as
     messages never acknowledged, and not visible at ours at all. It moves when
-    a deployment sets `HEALTHSYSTEMS_HL7_APPLICATION`, having agreed the change
+    a deployment sets `HEALTHSYSTEM_HL7_APPLICATION`, having agreed the change
     with the sites on the other end.
 
   Two identifier namespaces also keep their spelling: the audit-export URN

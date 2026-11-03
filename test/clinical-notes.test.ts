@@ -28,8 +28,8 @@ function desk(): {
   enc2: string;
   cleanup: () => void;
 } {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-notes-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-notes-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   const rec = new ClinicalRecord(db);
   // Real visits, because a note names the encounter it was written at and the
   // record now refuses one that does not exist. The fixture used to invent

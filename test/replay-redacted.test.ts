@@ -39,8 +39,8 @@ async function sink(): Promise<{ port: number; got: string[]; close: () => Promi
 
 test("a redacted delivery is refused, and no tombstone reaches the remote", async () => {
   const s = await sink();
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-replay-"));
-  const engine = new Engine({ dbPath: join(dir, "healthsystems.db"), tickMs: 25 });
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-replay-"));
+  const engine = new Engine({ dbPath: join(dir, "healthsystem.db"), tickMs: 25 });
   await engine.start();
   try {
     await engine.addChannel({
@@ -94,8 +94,8 @@ test("a redacted delivery is refused, and no tombstone reaches the remote", asyn
 test("an unredacted delivery still replays, so the refusal is narrow", async () => {
   // The guard must not cost the feature it sits in front of.
   const s = await sink();
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-replay-ok-"));
-  const engine = new Engine({ dbPath: join(dir, "healthsystems.db"), tickMs: 25 });
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-replay-ok-"));
+  const engine = new Engine({ dbPath: join(dir, "healthsystem.db"), tickMs: 25 });
   await engine.start();
   try {
     await engine.addChannel({
@@ -130,8 +130,8 @@ test("an unredacted delivery still replays, so the refusal is narrow", async () 
 });
 
 test("the admin API returns the reason rather than a generic conflict", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-replay-api-"));
-  const engine = new Engine({ dbPath: join(dir, "healthsystems.db"), tickMs: 100_000 });
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-replay-api-"));
+  const engine = new Engine({ dbPath: join(dir, "healthsystem.db"), tickMs: 100_000 });
   await engine.start();
   const api = await startApi(engine, 0, "127.0.0.1");
   try {

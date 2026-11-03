@@ -159,7 +159,7 @@ test("metrics are exposed in Prometheus text format", async () => {
       "backup_remote_ok",
       "backup_remote_age_seconds",
     ];
-    for (const name of series.flatMap((n) => [`healthsystems_${n}`, `portage_${n}`])) {
+    for (const name of series.flatMap((n) => [`healthsystem_${n}`, `portage_${n}`])) {
       assert.match(text, new RegExp(`^# HELP ${name} `, "m"), `${name} needs a HELP line`);
       assert.match(text, new RegExp(`^# TYPE ${name} `, "m"), `${name} needs a TYPE line`);
       assert.match(text, new RegExp(`^${name}[{ ]`, "m"), `${name} needs a sample`);

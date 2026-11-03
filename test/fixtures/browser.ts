@@ -19,7 +19,7 @@ import { join, resolve } from "node:path";
 
 /** The first Chromium this machine actually has, or undefined. */
 export const chromePath = [
-  process.env.HEALTHSYSTEMS_TEST_CHROME ?? process.env.NORTHSTAR_TEST_CHROME,
+  process.env.HEALTHSYSTEM_TEST_CHROME ?? process.env.HEALTHSYSTEMS_TEST_CHROME ?? process.env.NORTHSTAR_TEST_CHROME,
   "C:/Program Files/Google/Chrome/Application/chrome.exe",
   "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
   "/usr/bin/google-chrome",
@@ -30,13 +30,13 @@ export const chromePath = [
 /**
  * Why a browser test is skipped, or `false` to run it.
  *
- * `HEALTHSYSTEMS_REQUIRE_BROWSER` turns a missing browser into a failure. CI
+ * `HEALTHSYSTEM_REQUIRE_BROWSER` turns a missing browser into a failure. CI
  * sets it, so "no Chromium on the runner" fails the job instead of quietly
  * reporting a pass for a journey nobody exercised.
  */
 export function browserSkip(): string | false {
-  return !chromePath && !(process.env.HEALTHSYSTEMS_REQUIRE_BROWSER ?? process.env.NORTHSTAR_REQUIRE_BROWSER)
-    ? "Chromium not installed; set HEALTHSYSTEMS_TEST_CHROME"
+  return !chromePath && !(process.env.HEALTHSYSTEM_REQUIRE_BROWSER ?? process.env.HEALTHSYSTEMS_REQUIRE_BROWSER ?? process.env.NORTHSTAR_REQUIRE_BROWSER)
+    ? "Chromium not installed; set HEALTHSYSTEM_TEST_CHROME"
     : false;
 }
 
@@ -61,8 +61,8 @@ export interface Browser {
 
 export async function launchBrowser(opts: { mobile?: boolean } = {}): Promise<Browser> {
   const chrome = chromePath;
-  if (!chrome) throw new Error("no Chromium found; set HEALTHSYSTEMS_TEST_CHROME");
-  const profile = mkdtempSync(join(tmpdir(), "healthsystems-portal-browser-"));
+  if (!chrome) throw new Error("no Chromium found; set HEALTHSYSTEM_TEST_CHROME");
+  const profile = mkdtempSync(join(tmpdir(), "healthsystem-portal-browser-"));
   const child: ChildProcess = spawn(
     chrome,
     ["--headless=new", "--remote-debugging-port=0", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",

@@ -9,7 +9,7 @@ test("code + PKCE creates an HttpOnly session; existing patient authorization an
     const signed = await finishLogin(f.base);
     assert.equal(signed.response.headers.get("location"), "/me");
     assert.ok(signed.info.authenticated);
-    assert.match(signed.response.headers.getSetCookie().find(c => c.startsWith("healthsystems-session="))!, /HttpOnly; SameSite=Lax/);
+    assert.match(signed.response.headers.getSetCookie().find(c => c.startsWith("healthsystem-session="))!, /HttpOnly; SameSite=Lax/);
     assert.ok(!JSON.stringify(signed.info).includes("access_token"));
     assert.equal(signed.session.split("=")[1].split(".").length, 1);
     const get = (path: string) => fetch(`${f.base}${path}`, { headers: { cookie: signed.session } });
@@ -32,7 +32,7 @@ test("cookie writes and logout require both the exact origin and session CSRF to
     const signed = await finishLogin(f.base);
     const write = (origin?: string, csrf?: string, path = "/patient/thread-open") => fetch(`${f.base}${path}`, {
       method: "POST", headers: { cookie: signed.session, "content-type": "application/json", ...(origin ? { origin } : {}),
-        ...(csrf ? { "x-healthsystems-csrf": csrf } : {}) }, body: JSON.stringify({ patient: "PATIENT-A", subject: "Follow-up", body: "A question for the clinic" }),
+        ...(csrf ? { "x-healthsystem-csrf": csrf } : {}) }, body: JSON.stringify({ patient: "PATIENT-A", subject: "Follow-up", body: "A question for the clinic" }),
     });
     assert.equal((await write()).status, 403);
     assert.equal((await write("https://attacker.invalid", signed.info.csrf)).status, 403);
@@ -57,7 +57,7 @@ for (const attack of ["missing-binding", "wrong-binding", "wrong-state", "duplic
       if (attack === "wrong-issuer") url.searchParams.set("iss", "https://attacker.invalid");
       if (attack === "provider-error") url.searchParams.set("error", "access_denied");
       if (attack === "expired") t.mock.timers.enable({ apis: ["Date"], now: Date.now() + 301_000 });
-      const binding = attack === "missing-binding" ? "" : attack === "wrong-binding" ? "healthsystems-login=wrong" : pending.binding;
+      const binding = attack === "missing-binding" ? "" : attack === "wrong-binding" ? "healthsystem-login=wrong" : pending.binding;
       const response = await fetch(url, { redirect: "manual", headers: { cookie: binding } });
       assert.equal(response.headers.get("location"), "/me?signin=failed");
       assert.equal(f.exchanges, 0);

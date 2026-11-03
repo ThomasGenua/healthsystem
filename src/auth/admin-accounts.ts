@@ -5,8 +5,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ApiKeyStore } from "./keys.ts";
 import { DEFAULT_TENANT } from "../db.ts";
 
-const COOKIE = "healthsystems_admin";
-const COOKIE_NAMES = [COOKIE, "northstar_admin"];
+const COOKIE = "healthsystem_admin";
+const COOKIE_NAMES = [COOKIE, "healthsystems_admin", "northstar_admin"];
 const SESSION_MS = 8 * 60 * 60 * 1000;
 const digest = (s: string) => createHash("sha256").update(s).digest("hex");
 const dummySalt = randomBytes(16).toString("hex");

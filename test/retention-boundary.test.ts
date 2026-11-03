@@ -48,8 +48,8 @@ const RECORD_TABLES = [
 ];
 
 test("a retention sweep ages out the message log and leaves the record alone", () => {
-  const dir = mkdtempSync(join(tmpdir(), "healthsystems-retb-"));
-  const db = new Db(join(dir, "healthsystems.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystem-retb-"));
+  const db = new Db(join(dir, "healthsystem.db"));
   try {
     // A message log old enough to be well past any cutoff.
     db.upsertChannel("adt", "adt", true, "{}");
