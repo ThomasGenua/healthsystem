@@ -1,5 +1,5 @@
 /**
- * The governed identity of every clinical score Northstar computes.
+ * The governed identity of every clinical score HealthSystems computes.
  *
  * Arithmetic without this catalogue is not reproducible evidence. A result
  * needs to say which published instrument it means, which version of that
@@ -67,7 +67,7 @@ const UNREVIEWED = {
 const SOURCE_TERMS = {
   status: "source-terms-apply",
   note:
-    "Northstar cites the source and implements arithmetic; it asserts no right to redistribute a publisher's instrument text. A deployment must review the source's current terms.",
+    "HealthSystems cites the source and implements arithmetic; it asserts no right to redistribute a publisher's instrument text. A deployment must review the source's current terms.",
 } as const;
 
 /**
@@ -242,7 +242,7 @@ export const SCORE_DEFINITIONS: Readonly<Record<ScoreId, ScoreDefinition>> = {
     requiredUnits: { respiratoryRate: "breaths/min", oxygenSaturation: "%", systolicBp: "mmHg", heartRate: "beats/min", temperatureC: "degC" },
     licensing: {
       status: "attribution-permitted",
-      note: "RCP permits use with acknowledgement; official charts must not be modified. Northstar does not reproduce the chart artwork.",
+      note: "RCP permits use with acknowledgement; official charts must not be modified. HealthSystems does not reproduce the chart artwork.",
     },
     assurance: UNREVIEWED,
   },

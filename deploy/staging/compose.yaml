@@ -1,24 +1,24 @@
-name: northstar-staging
+name: healthsystems-staging
 services:
   app:
     build:
       context: ../..
-    image: northstar-staging:local
+    image: healthsystems-staging:local
     init: true
     read_only: true
     security_opt: ["no-new-privileges:true"]
     cap_drop: ["ALL"]
     ports:
-      - "127.0.0.1:${NORTHSTAR_STAGING_PORT:-18686}:8686"
+      - "127.0.0.1:${HEALTHSYSTEMS_STAGING_PORT:-${NORTHSTAR_STAGING_PORT:-18686}}:8686"
     environment:
-      NORTHSTAR_AUTH_MODE: apikey
-      NORTHSTAR_DEV_IDP: "off"
-      NORTHSTAR_DEV_MALWARE_SCANNER: "off"
-      NORTHSTAR_RATE_LIMIT: "on"
+      HEALTHSYSTEMS_AUTH_MODE: apikey
+      HEALTHSYSTEMS_DEV_IDP: "off"
+      HEALTHSYSTEMS_DEV_MALWARE_SCANNER: "off"
+      HEALTHSYSTEMS_RATE_LIMIT: "on"
       # Scanner shares this container's network namespace, never a remote endpoint.
-      NORTHSTAR_CLAMD_PORT: "3310"
+      HEALTHSYSTEMS_CLAMD_PORT: "3310"
     volumes:
-      - staging-data:/var/lib/northstar
+      - staging-data:/var/lib/healthsystems
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m
     stop_grace_period: 60s
@@ -42,4 +42,6 @@ services:
     stop_grace_period: 60s
 volumes:
   staging-data:
+    # Keep the existing volume when upgrading the project name.
+    name: ${HEALTHSYSTEMS_DATA_VOLUME:-northstar-staging_staging-data}
   clamav-signatures:

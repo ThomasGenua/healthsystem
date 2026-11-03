@@ -1,7 +1,7 @@
 /**
  * The ways a bearer token is accepted when it should not be.
  *
- * Northstar is a resource server: it validates tokens a site's own identity
+ * HealthSystems is a resource server: it validates tokens a site's own identity
  * provider issued, and does not mint them. So the attacks that matter here
  * are the ones against validation — a token meant for something else, one
  * signed with a key that has been rotated away, one naming an algorithm the
@@ -11,7 +11,7 @@
  * audience skipped the check entirely: every token that issuer had ever
  * signed was accepted. An identity provider serves many applications, so a
  * token for the expenses system, signed by the same directory, was a valid
- * Northstar token — and the deployments that never set the variable were
+ * HealthSystems token — and the deployments that never set the variable were
  * precisely the ones running without the check.
  */
 import { test } from "node:test";
@@ -21,7 +21,7 @@ import { generateKeyPairSync, sign as cryptoSign } from "node:crypto";
 import { JwtVerifier } from "../src/auth/jwt.ts";
 import { AuthGate } from "../src/auth/gate.ts";
 
-const AUD = "northstar-yellowknife";
+const AUD = "healthsystems-yellowknife";
 
 /**
  * A cache lifetime that has always already expired.

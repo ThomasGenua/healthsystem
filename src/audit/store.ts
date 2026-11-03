@@ -3,7 +3,7 @@
  *
  * Canadian health privacy law — PHIPA in Ontario, HIA in Alberta, ATIPP and
  * the Health Information Act in the territories — obliges a custodian to know
- * who looked at whose record. Northstar stores patient data in the facade and
+ * who looked at whose record. HealthSystems stores patient data in the facade and
  * raw HL7 in the message log, so it has to answer that question.
  *
  * What is recorded, and what deliberately is not:

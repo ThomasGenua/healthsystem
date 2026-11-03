@@ -38,7 +38,7 @@ import { writeSync } from "node:fs";
  * teardown timer running, which had been holding them open for exactly that
  * long. Overridable so the tests of this file need not wait ten seconds.
  */
-const graceMs = Number(process.env.NORTHSTAR_TEST_EXIT_GRACE_MS ?? 10_000);
+const graceMs = Number(process.env.HEALTHSYSTEMS_TEST_EXIT_GRACE_MS ?? 10_000);
 
 after(() => {
   setTimeout(() => {

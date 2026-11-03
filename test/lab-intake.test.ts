@@ -38,8 +38,8 @@ const PROFILE: LabProfile = {
 };
 
 function lab() {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-lab-"));
-  const db = new Db(join(dir, "northstar.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-lab-"));
+  const db = new Db(join(dir, "healthsystems.db"));
   const record = new ClinicalRecord(db);
   const orders = new OrderStore(db);
   record.record({
@@ -601,8 +601,8 @@ test("parsing keeps what the laboratory actually sent beside the mapped meaning"
 });
 
 test("one custodian's laboratory feed cannot reach another's charts", () => {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-lab-iso-"));
-  const root = new Db(join(dir, "northstar.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-lab-iso-"));
+  const root = new Db(join(dir, "healthsystems.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");

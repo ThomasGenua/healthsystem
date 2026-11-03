@@ -1,5 +1,5 @@
 /**
- * Portage became Northstar, and what a rename breaks when nobody checks.
+ * Portage became HealthSystems, and what a rename breaks when nobody checks.
  *
  * Every test here is a site that upgrades into the new name and must not
  * notice. That is the whole requirement: a rename is a marketing event, and a
@@ -43,7 +43,7 @@ import { JwtVerifier } from "../src/auth/jwt.ts";
 import { buildAck, parseHl7 } from "../src/hl7/parser.ts";
 
 function dir(tag: string): { path: string; cleanup: () => void } {
-  const path = mkdtempSync(join(tmpdir(), `northstar-rename-${tag}-`));
+  const path = mkdtempSync(join(tmpdir(), `healthsystems-rename-${tag}-`));
   return { path, cleanup: () => rmSync(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
 
@@ -62,7 +62,7 @@ test("a deployment still on PORTAGE_* keeps every value it configured", () => {
 
 test("the new name wins where both are set, so migration can go one at a time", () => {
   resetLegacyEnvTracking();
-  const env = { NORTHSTAR_PORT: "9000", PORTAGE_PORT: "8686" };
+  const env = { HEALTHSYSTEMS_PORT: "9000", PORTAGE_PORT: "8686" };
   assert.equal(readEnv("PORT", env), "9000");
   assert.deepEqual(legacyEnvNamesInUse(), [], "the old one was never consulted, so it is not reported");
 });
@@ -138,9 +138,9 @@ test("a directory holding both prefers the new name and says nothing", () => {
 
 test("snapshots taken under the old name are still found", () => {
   assert.ok(BACKUP_FILE_RE.test("portage-2026-01-01T00-00-00.db"));
-  assert.ok(BACKUP_FILE_RE.test("northstar-2026-01-01T00-00-00.db"));
+  assert.ok(BACKUP_FILE_RE.test("healthsystems-2026-01-01T00-00-00.db"));
   assert.ok(!BACKUP_FILE_RE.test("something-else.db"));
-  assert.equal(backupFileName("2026-01-01T00-00-00"), "northstar-2026-01-01T00-00-00.db");
+  assert.equal(backupFileName("2026-01-01T00-00-00"), "healthsystems-2026-01-01T00-00-00.db");
 });
 
 test("mixed prefixes still sort by time, not alphabetically", () => {
@@ -150,13 +150,13 @@ test("mixed prefixes still sort by time, not alphabetically", () => {
   // lands at the *oldest* end of the list.
   const names = [
     "portage-2026-01-01T00-00-00.db",
-    "northstar-2026-03-01T00-00-00.db",
+    "healthsystems-2026-03-01T00-00-00.db",
     "portage-2026-02-01T00-00-00.db",
   ];
   assert.deepEqual(sortSnapshots(names), [
     "portage-2026-01-01T00-00-00.db",
     "portage-2026-02-01T00-00-00.db",
-    "northstar-2026-03-01T00-00-00.db",
+    "healthsystems-2026-03-01T00-00-00.db",
   ]);
   assert.notDeepEqual(sortSnapshots(names), [...names].sort(), "a plain filename sort gets this wrong");
 });
@@ -170,14 +170,14 @@ test("retention deletes the oldest across both prefixes, not the newest", () => 
     const names = [
       "portage-2026-01-01T00-00-00.db",
       "portage-2026-02-01T00-00-00.db",
-      "northstar-2026-03-01T00-00-00.db",
+      "healthsystems-2026-03-01T00-00-00.db",
     ];
     for (const n of names) writeFileSync(join(d.path, n), "x");
 
     const removed = prune(d.path, 2);
     assert.deepEqual(removed.map((p) => p.split("/").pop()), ["portage-2026-01-01T00-00-00.db"]);
     assert.deepEqual(readdirSync(d.path).sort(), [
-      "northstar-2026-03-01T00-00-00.db",
+      "healthsystems-2026-03-01T00-00-00.db",
       "portage-2026-02-01T00-00-00.db",
     ]);
   } finally {
@@ -188,7 +188,7 @@ test("retention deletes the oldest across both prefixes, not the newest", () => 
 test("the newest snapshot is the newest one, whichever name it carries", () => {
   const d = dir("latest");
   try {
-    writeFileSync(join(d.path, "northstar-2026-03-01T00-00-00.db"), "x");
+    writeFileSync(join(d.path, "healthsystems-2026-03-01T00-00-00.db"), "x");
     writeFileSync(join(d.path, "portage-2026-08-01T00-00-00.db"), "x");
     assert.ok(
       latestSnapshot(d.path)?.endsWith("portage-2026-08-01T00-00-00.db"),
@@ -200,8 +200,8 @@ test("the newest snapshot is the newest one, whichever name it carries", () => {
 });
 
 test("the remote store finds old-named replicas too", () => {
-  const names = ["portage-2026-01-02T00-00-00.db.enc", "northstar-2026-01-03T00-00-00.db.enc"];
-  assert.equal(latestRemoteName(names), "northstar-2026-01-03T00-00-00.db.enc");
+  const names = ["portage-2026-01-02T00-00-00.db.enc", "healthsystems-2026-01-03T00-00-00.db.enc"];
+  assert.equal(latestRemoteName(names), "healthsystems-2026-01-03T00-00-00.db.enc");
   assert.equal(latestRemoteName(["portage-2026-01-02T00-00-00.db.enc"]), "portage-2026-01-02T00-00-00.db.enc");
 });
 
@@ -212,7 +212,7 @@ test("a reading station reads the age off an old-named snapshot", () => {
   const legacy = snapshotTakenAt("/backups/portage-2026-01-01T03-00-00.db");
   assert.equal(legacy.fromName, true);
   assert.equal(legacy.takenAt, "2026-01-01T03:00:00.000Z");
-  const current = snapshotTakenAt("/backups/northstar-2026-01-01T03-00-00.db");
+  const current = snapshotTakenAt("/backups/healthsystems-2026-01-01T03-00-00.db");
   assert.deepEqual(current, legacy);
 });
 
@@ -223,7 +223,7 @@ test("an operator token carrying portage/admin is still an operator", () => {
   // configuration this repository does not control. Dropping it would not fail
   // a token; it would silently demote somebody and 403 every admin call.
   assert.ok(scopesFromSmart(["portage/admin"]).has("admin"));
-  assert.ok(scopesFromSmart(["northstar/admin"]).has("admin"));
+  assert.ok(scopesFromSmart(["healthsystems/admin"]).has("admin"));
   assert.ok(!scopesFromSmart(["someone/admin"]).has("admin"));
 });
 
@@ -233,27 +233,27 @@ test("a token asserting portage_tenant still resolves to that tenant", async () 
   // every downstream check then makes a tenancy decision on an absence.
   const idp = await fakeIdp();
   try {
-    const verifier = new JwtVerifier({ issuer: idp.issuer, audience: "northstar" });
+    const verifier = new JwtVerifier({ issuer: idp.issuer, audience: "healthsystems" });
 
     const legacy = await verifier.verify(
-      idp.sign({ sub: "rn-tetso", aud: "northstar", portage_tenant: "gnwt", portage_practitioner: "prac-1" })
+      idp.sign({ sub: "rn-tetso", aud: "healthsystems", portage_tenant: "gnwt", portage_practitioner: "prac-1" })
     );
     assert.equal(legacy.tenantId, "gnwt");
     assert.equal(legacy.practitionerId, "prac-1");
 
     const current = await verifier.verify(
-      idp.sign({ sub: "rn-tetso", aud: "northstar", northstar_tenant: "gnwt" })
+      idp.sign({ sub: "rn-tetso", aud: "healthsystems", healthsystems_tenant: "gnwt" })
     );
     assert.equal(current.tenantId, "gnwt");
 
     // Precedence: the prefixed claims exist for an issuer whose bare `tenant`
     // means something else, so the bare one must not shadow them.
     const both = await verifier.verify(
-      idp.sign({ sub: "x", aud: "northstar", northstar_tenant: "new", portage_tenant: "old", tenant: "bare" })
+      idp.sign({ sub: "x", aud: "healthsystems", healthsystems_tenant: "new", portage_tenant: "old", tenant: "bare" })
     );
     assert.equal(both.tenantId, "new");
     const noNew = await verifier.verify(
-      idp.sign({ sub: "x", aud: "northstar", portage_tenant: "old", tenant: "bare" })
+      idp.sign({ sub: "x", aud: "healthsystems", portage_tenant: "old", tenant: "bare" })
     );
     assert.equal(noNew.tenantId, "old");
   } finally {
@@ -275,7 +275,7 @@ test("the rename does not touch what goes out on the wire", () => {
 });
 
 test("a deployment that has agreed the change with its partners can move it", () => {
-  assert.equal(hl7ApplicationName({ NORTHSTAR_HL7_APPLICATION: "NORTHSTAR" }), "NORTHSTAR");
+  assert.equal(hl7ApplicationName({ HEALTHSYSTEMS_HL7_APPLICATION: "HEALTHSYSTEMS" }), "HEALTHSYSTEMS");
   assert.equal(hl7ApplicationName({ PORTAGE_HL7_APPLICATION: "SITE-A" }), "SITE-A");
 });
 
@@ -319,3 +319,61 @@ async function fakeIdp(): Promise<{
     close: () => new Promise<void>((r) => server.close(() => r())),
   };
 }
+
+
+test("Northstar configuration stays active, with explicit HealthSystems values taking precedence", () => {
+  resetLegacyEnvTracking();
+  assert.equal(readEnv("TLS_KEY", { NORTHSTAR_TLS_KEY: "/existing/tls.key" }), "/existing/tls.key");
+  assert.equal(readEnv("HOST", { NORTHSTAR_HOST: "127.0.0.1", PORTAGE_HOST: "0.0.0.0" }), "127.0.0.1");
+  assert.deepEqual(legacyEnvNamesInUse(), ["NORTHSTAR_HOST", "NORTHSTAR_TLS_KEY"]);
+  assert.match(legacyEnvWarning()!, /HEALTHSYSTEMS_/);
+  assert.equal(readEnv("PORT", { HEALTHSYSTEMS_PORT: "9001", NORTHSTAR_PORT: "9000", PORTAGE_PORT: "8686" }), "9001");
+  assert.equal(readEnv("BACKUP_REMOTE", { HEALTHSYSTEMS_BACKUP_REMOTE: "", NORTHSTAR_BACKUP_REMOTE: "fs:/old" }), "");
+  assert.equal(hl7ApplicationName({ NORTHSTAR_HL7_APPLICATION: "LAB-AGREED" }), "LAB-AGREED");
+});
+
+test("HealthSystems reuses northstar.db before portage.db without creating another database", () => {
+  const d = dir("northstar-db");
+  try {
+    writeFileSync(join(d.path, "portage.db"), "old");
+    writeFileSync(join(d.path, "northstar.db"), "existing");
+    assert.deepEqual(resolveDbPath(d.path), { path: join(d.path, "northstar.db"), legacy: true });
+    assert.equal(readdirSync(d.path).length, 2);
+    writeFileSync(join(d.path, "healthsystems.db"), "current");
+    assert.deepEqual(resolveDbPath(d.path), { path: join(d.path, "healthsystems.db"), legacy: false });
+  } finally { d.cleanup(); }
+});
+
+test("backups across all three names remain discoverable and retain by timestamp", () => {
+  const d = dir("three-backups");
+  try {
+    const names = ["portage-2026-01-01T00-00-00.db", "healthsystems-2026-02-01T00-00-00.db", "northstar-2026-03-01T00-00-00.db"];
+    for (const name of names) {
+      writeFileSync(join(d.path, name), "x");
+      assert.ok(BACKUP_FILE_RE.test(name));
+      assert.equal(snapshotTakenAt(join(d.path, name)).fromName, true);
+    }
+    assert.deepEqual(sortSnapshots([...names].reverse()), names);
+    assert.ok(latestSnapshot(d.path)?.endsWith(names[2]));
+    assert.equal(latestRemoteName(names.map(n => n + ".enc")), names[2] + ".enc");
+    prune(d.path, 2);
+    assert.deepEqual(readdirSync(d.path).sort(), names.slice(1));
+  } finally { d.cleanup(); }
+});
+
+test("existing Northstar tokens retain scopes and tenant, organization and practitioner bindings", async () => {
+  assert.ok(scopesFromSmart(["northstar/admin"]).has("admin"));
+  const idp = await fakeIdp();
+  try {
+    const verifier = new JwtVerifier({ issuer: idp.issuer, audience: "northstar-existing-deployment" });
+    const verified = await verifier.verify(idp.sign({ sub: "operator", aud: "northstar-existing-deployment", scope: "northstar/admin",
+      northstar_tenant: "existing", northstar_organization: "org", northstar_practitioner: "practitioner" }));
+    assert.equal(verified.tenantId, "existing");
+    assert.equal(verified.organizationId, "org");
+    assert.equal(verified.practitionerId, "practitioner");
+    assert.ok(verified.scopes.has("admin"));
+    const current = await verifier.verify(idp.sign({ aud: "northstar-existing-deployment",
+      healthsystems_tenant: "current", northstar_tenant: "previous", portage_tenant: "old", tenant: "bare" }));
+    assert.equal(current.tenantId, "current");
+  } finally { await idp.close(); }
+});

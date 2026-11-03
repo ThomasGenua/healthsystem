@@ -65,6 +65,13 @@ test("public contact journey keeps addresses out of text and HTML and prefills e
       await b.navigate(f.base + path);
       await b.wait("!!document.querySelector('h1')");
       assert.doesNotMatch(await b.evaluate("document.body.innerText"), emailPattern);
+      assert.match(await b.evaluate("document.title"), /HealthSystems/);
+      assert.match(await b.evaluate("document.body.innerText"), /HealthSystems/);
+      assert.doesNotMatch(await b.evaluate("document.body.innerText"), /northstar/i);
+      for (const width of [1440, 390]) {
+        await b.cdp("Emulation.setDeviceMetricsOverride", { width, height: 1000, deviceScaleFactor: 1, mobile: width === 390 });
+        assert.equal(await b.evaluate("document.documentElement.scrollWidth <= innerWidth"), true, `${path} fits at ${width}`);
+      }
       const html = await (await fetch(f.base + path)).text();
       assert.doesNotMatch(html, emailPattern);
       assert.ok(!html.includes("mailto:"));
@@ -76,10 +83,32 @@ test("public contact journey keeps addresses out of text and HTML and prefills e
       assert.ok(button.text.trim());
       const r = await fetch(f.base + button.href, { redirect: "manual" });
       assert.equal(r.status, 303);
-      assert.match(r.headers.get("location")!, /^mailto:[^?]+\?subject=Northstar%20/);
+      assert.match(r.headers.get("location")!, /^mailto:[^?]+\?subject=HealthSystems%20/);
       assert.equal(r.headers.get("cache-control"), "no-store");
       assert.equal(r.headers.get("x-robots-tag"), "noindex, nofollow");
     }
     assert.equal((await fetch(f.base + "/contact/email?topic=https://evil.example", { redirect: "manual" })).status, 400);
+  } finally { await b.close(); await f.close(); }
+});
+
+
+test("existing browser API keys migrate to HealthSystems and sign-out clears legacy credentials", { skip: browserSkip(), timeout: 90000 }, async () => {
+  const f = await fixture(), b = await launchBrowser();
+  try {
+    const issued = f.engine.keys.issue("migration-admin", ["admin"]);
+    await b.navigate(f.base + "/login");
+    await b.evaluate(`localStorage.setItem('northstar.apikey',${JSON.stringify(issued.key)})`);
+    await b.navigate(f.base + "/ui");
+    await b.wait("document.documentElement.dataset.workspaceReady === 'yes'");
+    assert.equal(await b.evaluate("localStorage.getItem('healthsystems.apikey')"), issued.key);
+    assert.equal(await b.evaluate("localStorage.getItem('northstar.apikey')"), null);
+    assert.match(await b.evaluate("document.title"), /HealthSystems/);
+    assert.doesNotMatch(await b.evaluate("document.body.innerText"), /northstar/i);
+    await b.evaluate(`localStorage.setItem('northstar.apikey',${JSON.stringify(issued.key)});localStorage.setItem('portage.apikey',${JSON.stringify(issued.key)})`);
+    await b.evaluate("document.getElementById('sign-out').click()");
+    await b.wait("location.pathname === '/login'");
+    assert.equal(await b.evaluate("['healthsystems.','northstar.','portage.'].every(p=>localStorage.getItem(p+'apikey')===null)"), true);
+    await b.navigate(f.base + "/ui");
+    await b.wait("location.pathname === '/login'");
   } finally { await b.close(); await f.close(); }
 });

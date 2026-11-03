@@ -91,8 +91,8 @@ npm test                           # the full suite
 npm run hazardcheck -- origin/main # hazard identifiers vs the branch being merged into
 ```
 
-`NORTHSTAR_REQUIRE_BROWSER=1` makes a missing Chromium fail rather than skip
-the browser journey; set `NORTHSTAR_TEST_CHROME` to the binary.
+`HEALTHSYSTEMS_REQUIRE_BROWSER=1` makes a missing Chromium fail rather than skip
+the browser journey; set `HEALTHSYSTEMS_TEST_CHROME` to the binary.
 
 The heavier rehearsals, which used to run nightly:
 

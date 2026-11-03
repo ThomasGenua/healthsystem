@@ -13,7 +13,7 @@
  * The restore itself was a documented sequence of `mv`, `rm` and `cp`. Three
  * things go wrong with that, and all three are silent:
  *
- *   The stale sidecars. `rm -f data/northstar.db-wal` is the step people skip,
+ *   The stale sidecars. `rm -f data/healthsystems.db-wal` is the step people skip,
  *   and skipping it points SQLite at a write-ahead log belonging to the
  *   database that was just replaced. The README says so; a procedure that
  *   relies on nobody skipping a step under pressure at 03:00 is not a
@@ -224,7 +224,7 @@ export function restore(opts: RestoreOptions): RestoreResult {
   let verified: BackupResult["verified"] | undefined;
   let migratedFromOlderSchema: boolean | undefined;
   if (!opts.skipPreflight) {
-    const scratchDir = mkdtempSync(join(tmpdir(), "northstar-preflight-"));
+    const scratchDir = mkdtempSync(join(tmpdir(), "healthsystems-preflight-"));
     const scratch = join(scratchDir, "candidate.db");
     try {
       copyFileSync(opts.snapshot, scratch);

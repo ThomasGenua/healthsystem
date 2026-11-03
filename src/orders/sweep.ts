@@ -16,7 +16,7 @@
  * the retention sweep's cadence — is far too slow for that. A second is a
  * table scan per custodian for a queue that is almost always empty. A minute
  * is the right order of magnitude and is not a number anybody should have to
- * think about; `NORTHSTAR_ORDER_DISPATCH_INTERVAL_MS` is there for the site
+ * think about; `HEALTHSYSTEMS_ORDER_DISPATCH_INTERVAL_MS` is there for the site
  * that has to.
  *
  * Setting it to `0` turns the sweep off, and a site that wants orders to
@@ -105,7 +105,7 @@ export function resolveInterval(env: NodeJS.ProcessEnv = process.env): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 0) {
     throw new Error(
-      `NORTHSTAR_ORDER_DISPATCH_INTERVAL_MS must be a non-negative number of milliseconds, got ${JSON.stringify(raw)}. ` +
+      `HEALTHSYSTEMS_ORDER_DISPATCH_INTERVAL_MS must be a non-negative number of milliseconds, got ${JSON.stringify(raw)}. ` +
         "Use 0 to send orders only when somebody presses send."
     );
   }

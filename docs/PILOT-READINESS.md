@@ -45,8 +45,8 @@ daemon, not an installed antivirus engine or evidence of current signatures.
   separately and compare against the same unmodified base.
 - `npm run hazardcheck -- origin/main` and `npm run invariants`.
 
-Set `NORTHSTAR_TEST_CHROME` to a Chromium executable if not auto-detected.
-CI sets `NORTHSTAR_REQUIRE_BROWSER=1` so browser absence fails the job.
+Set `HEALTHSYSTEMS_TEST_CHROME` to a Chromium executable if not auto-detected.
+CI sets `HEALTHSYSTEMS_REQUIRE_BROWSER=1` so browser absence fails the job.
 The browser test uses an isolated temporary profile and synthetic patients.
 
 Local evidence on Windows / Node 24.11.0: type-checking and the hazard-ID
@@ -68,7 +68,7 @@ behavior. Complete the full regression and deployment rehearsal before release.
 | Clinical use | Named clinical owner reviews hazards, workflows and residual risk for the site's intended use. |
 | Accessibility/security | Independent usability, assistive-technology and security testing on the deployed application; repository tests do not establish these outcomes. |
 | Operations | Verify encryption, monitoring, off-machine backups, recoverable backup keys, restoration and rollback on the actual deployment. |
-| Clinic location | Set `NORTHSTAR_CLINIC_TIMEZONE`, preferably to a place such as `America/Yellowknife`; a fixed offset such as `-07:00` does not follow daylight saving. Unset, the board, the worklist and the privacy review's after-hours all use UTC (H-211, R-19). Then check the boot line against the clinic's clocks: a place name is resolved with the time-zone data compiled into Node, and copies differ — between patch releases of one Node line, too. From November 2026: Node 22.22.2 (tzdata 2025c) falls back to UTC-07:00 for `America/Yellowknife`, which it treats as `America/Edmonton`, and for `America/Inuvik`; Node 24.21.0 (tzdata 2026c) keeps Yellowknife on UTC-06:00 and still falls back in Inuvik; Node 22.23.4 (tzdata 2026e) keeps both on UTC-06:00. Which matches the law at the site is for the site to confirm, and to re-confirm after any Node upgrade, patch releases included (H-214). |
+| Clinic location | Set `HEALTHSYSTEMS_CLINIC_TIMEZONE`, preferably to a place such as `America/Yellowknife`; a fixed offset such as `-07:00` does not follow daylight saving. Unset, the board, the worklist and the privacy review's after-hours all use UTC (H-211, R-19). Then check the boot line against the clinic's clocks: a place name is resolved with the time-zone data compiled into Node, and copies differ — between patch releases of one Node line, too. From November 2026: Node 22.22.2 (tzdata 2025c) falls back to UTC-07:00 for `America/Yellowknife`, which it treats as `America/Edmonton`, and for `America/Inuvik`; Node 24.21.0 (tzdata 2026c) keeps Yellowknife on UTC-06:00 and still falls back in Inuvik; Node 22.23.4 (tzdata 2026e) keeps both on UTC-06:00. Which matches the law at the site is for the site to confirm, and to re-confirm after any Node upgrade, patch releases included (H-214). |
 
 ## Open questions for the clinical owner
 

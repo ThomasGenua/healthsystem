@@ -134,7 +134,7 @@ submission that will raise its own; an infected verdict deletes the bytes from
 the row on the spot, so no later code path can serve them by forgetting to
 check status. `SyntheticScanner` recognizes exactly the EICAR test string —
 the industry-standard, harmless file antivirus vendors publish for this
-purpose — and is wired only behind `NORTHSTAR_DEV_MALWARE_SCANNER=on`, the
+purpose — and is wired only behind `HEALTHSYSTEMS_DEV_MALWARE_SCANNER=on`, the
 same explicit, loud, opt-in-only shape as the development identity provider.
 
 A new `"intake"` patient permission (`src/patient/access.ts`) gates six new
@@ -704,7 +704,7 @@ authorised `curl` could already see it.
   medications, messages, care team, access history and requests, each with its
   own loading, error and empty states.
 - **A development identity provider**, off unless deliberately switched on,
-  that mints tokens the ordinary `JwtVerifier` validates ordinarily. Northstar
+  that mints tokens the ordinary `JwtVerifier` validates ordinarily. HealthSystems
   stays a resource server: there is no branch in the gate for development, and
   the portal signs in against whatever issuer is configured. In development
   that issuer happens to be local and synthetic.

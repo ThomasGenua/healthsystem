@@ -5,7 +5,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ApiKeyStore } from "./keys.ts";
 import { DEFAULT_TENANT } from "../db.ts";
 
-const COOKIE = "northstar_admin";
+const COOKIE = "healthsystems_admin";
+const COOKIE_NAMES = [COOKIE, "northstar_admin"];
 const SESSION_MS = 8 * 60 * 60 * 1000;
 const digest = (s: string) => createHash("sha256").update(s).digest("hex");
 const dummySalt = randomBytes(16).toString("hex");
@@ -61,11 +62,21 @@ export class AdminAccounts {
   }
 
   private token(cookie: string | undefined): string | undefined {
-    return cookie?.split(";").map(s => s.trim()).find(s => s.startsWith(COOKIE + "="))?.slice(COOKIE.length + 1);
+    const parts = cookie?.split(";").map(s => s.trim()) ?? [];
+    for (const name of COOKIE_NAMES) {
+      const matches = parts.filter(s => s.startsWith(name + "="));
+      if (matches.length > 1) return undefined;
+      if (matches.length === 1) return matches[0].slice(name.length + 1);
+    }
+    return undefined;
   }
   revoke(cookie: string | undefined): void {
-    const token = this.token(cookie);
-    if (token) this.sql.prepare("DELETE FROM admin_sessions WHERE token_hash=?").run(digest(token));
+    for (const part of cookie?.split(";") ?? []) {
+      const value = part.trim();
+      if (COOKIE_NAMES.some(name => value.startsWith(name + "="))) {
+        this.sql.prepare("DELETE FROM admin_sessions WHERE token_hash=?").run(digest(value.slice(value.indexOf("=") + 1)));
+      }
+    }
   }
   csrfAllowed(req: IncomingMessage, session: AdminSession): boolean {
     return this.sameOrigin(req) && req.headers["x-csrf-token"] === session.csrf;
@@ -96,7 +107,7 @@ export class AdminAccounts {
     if (path === "/auth/admin/logout" && req.method === "POST") {
       if (!session || !this.csrfAllowed(req, session)) { send(403, { error: "Session verification failed" }); return true; }
       this.revoke(req.headers.cookie);
-      res.setHeader("set-cookie", `${COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`);
+      res.setHeader("set-cookie", COOKIE_NAMES.map(name => `${name}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`));
       send(200, { ok: true }); return true;
     }
     if (path !== "/auth/admin/login" || req.method !== "POST") { send(405, { error: "Method not allowed" }); return true; }

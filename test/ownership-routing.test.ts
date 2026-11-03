@@ -12,9 +12,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { OWNER_COLUMNS } from "../src/work/ownership.ts";
 
-const here = new URL(".", import.meta.url).pathname;
+const here = fileURLToPath(new URL(".", import.meta.url));
 const src = join(here, "..", "src");
 
 /** Every .ts file under src/, read once. */

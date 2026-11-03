@@ -23,7 +23,7 @@ import { AuthGate } from "../src/auth/gate.ts";
 import { JwtVerifier } from "../src/auth/jwt.ts";
 import { DevIdentityProvider } from "../src/auth/dev-idp.ts";
 
-const AUDIENCE = "northstar-test";
+const AUDIENCE = "healthsystems-test";
 const PATIENT = "NT123456";
 const OTHER = "NT999999";
 const CLERK = { actorId: "clerk", actorKind: "practitioner" };

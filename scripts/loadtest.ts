@@ -50,8 +50,8 @@ const ms = (started: number): number => Date.now() - started;
 const rate = (n: number, elapsed: number): string => `${Math.round((n / elapsed) * 1000).toLocaleString()}/s`;
 
 async function main(): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-load-"));
-  const dbPath = join(dir, "northstar.db");
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-load-"));
+  const dbPath = join(dir, "healthsystems.db");
   const engine = new Engine({ dbPath, tickMs: TICK });
   engine.registerMapping(MAPPING);
   await engine.start();
@@ -68,7 +68,7 @@ async function main(): Promise<void> {
   };
   await engine.addChannel(channel);
 
-  console.log(`Northstar load test: ${MESSAGES.toLocaleString()} messages, tick ${TICK}ms, batch ${BATCH}\n`);
+  console.log(`HealthSystems load test: ${MESSAGES.toLocaleString()} messages, tick ${TICK}ms, batch ${BATCH}\n`);
 
   /* ------------------------------- ingest -------------------------------- */
 

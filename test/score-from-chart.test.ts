@@ -26,8 +26,8 @@ const NURSE = { authorId: "rn-tetso", authorKind: "practitioner" };
 const NOW = "2026-08-27T20:00:00.000Z";
 
 function ward() {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-score-"));
-  const db = new Db(join(dir, "northstar.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-score-"));
+  const db = new Db(join(dir, "healthsystems.db"));
   const clinical = new ClinicalRecord(db);
   const vitals = new Vitals(clinical);
   clinical.record({

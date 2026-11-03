@@ -35,7 +35,7 @@ const PROFILE: LabProfile = {
 const CONNECTION = {
   host: "lab.example",
   port: 6661,
-  sendingApplication: "NORTHSTAR",
+  sendingApplication: "HEALTHSYSTEMS",
   sendingFacility: "GNWT",
   receivingApplication: "LABAPP",
   receivingFacility: "STANTON",

@@ -11,7 +11,7 @@
  *
  * Those are different questions. The source check says the queries written
  * so far are scoped. It cannot speak for a database that was restored from
- * two sites' snapshots, edited outside Northstar, migrated by a script
+ * two sites' snapshots, edited outside HealthSystems, migrated by a script
  * somebody wrote once, or written by a version of this code from before the
  * check existed. A row in one custodian's chart pointing at another
  * custodian's record produces no error at any layer: every tenant-bound read

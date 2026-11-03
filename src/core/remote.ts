@@ -25,7 +25,7 @@
  *
  * Encryption is required. A remote that holds plaintext PHI is a second
  * copy of the chart on a disk this process cannot see. The key lives in
- * `NORTHSTAR_BACKUP_KEY_FILE` and must survive the host; a key that only this
+ * `HEALTHSYSTEMS_BACKUP_KEY_FILE` and must survive the host; a key that only this
  * machine can read unlocks nothing after it dies. See `backup-crypto.ts`.
  *
  * Immutability is the destination's job, not ours. A backup an attacker
@@ -138,7 +138,7 @@ function sameBytes(a: Buffer, b: Buffer): boolean {
 }
 
 export function remoteSnapshotName(localPath: string): string {
-  const base = localPath.split(/[/\\]/).pop() ?? "northstar.db";
+  const base = localPath.split(/[/\\]/).pop() ?? "healthsystems.db";
   return base.endsWith(".enc") ? base : `${base}.enc`;
 }
 
@@ -343,7 +343,7 @@ export function parseRemoteUri(uri: string): RemoteUri {
     return { kind: "fs", dir: localBackupDir(uri) };
   }
   throw new RemoteConfigError(
-    `NORTHSTAR_BACKUP_REMOTE must be s3://, sftp://, fs: or file:// (got ${uri.split(":")[0] ?? uri})`
+    `HEALTHSYSTEMS_BACKUP_REMOTE must be s3://, sftp://, fs: or file:// (got ${uri.split(":")[0] ?? uri})`
   );
 }
 
@@ -393,7 +393,7 @@ function storeFromUri(uri: RemoteUri, env: NodeJS.ProcessEnv, deps: RemoteBackup
     const secretKey = readEnv("BACKUP_S3_SECRET_KEY", env) ?? env.AWS_SECRET_ACCESS_KEY;
     if (!accessKey || !secretKey) {
       throw new RemoteConfigError(
-        "s3:// destination needs NORTHSTAR_BACKUP_S3_ACCESS_KEY and NORTHSTAR_BACKUP_S3_SECRET_KEY (or AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY)"
+        "s3:// destination needs HEALTHSYSTEMS_BACKUP_S3_ACCESS_KEY and HEALTHSYSTEMS_BACKUP_S3_SECRET_KEY (or AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY)"
       );
     }
     return s3Store({
@@ -410,7 +410,7 @@ function storeFromUri(uri: RemoteUri, env: NodeJS.ProcessEnv, deps: RemoteBackup
   const password = readEnv("BACKUP_SFTP_PASSWORD", env);
   const keyPath = readEnv("BACKUP_SFTP_KEY", env);
   if (!password && !keyPath) {
-    throw new RemoteConfigError("sftp:// destination needs NORTHSTAR_BACKUP_SFTP_PASSWORD or NORTHSTAR_BACKUP_SFTP_KEY");
+    throw new RemoteConfigError("sftp:// destination needs HEALTHSYSTEMS_BACKUP_SFTP_PASSWORD or HEALTHSYSTEMS_BACKUP_SFTP_KEY");
   }
   let privateKey: Buffer | undefined;
   if (keyPath) privateKey = readFileSync(keyPath);
@@ -432,7 +432,7 @@ function storeFromUri(uri: RemoteUri, env: NodeJS.ProcessEnv, deps: RemoteBackup
 function parseKeep(raw: string | undefined): number | undefined {
   if (raw === undefined || raw === "") return undefined;
   const n = Number(raw);
-  if (!Number.isInteger(n) || n < 1) throw new RemoteConfigError(`NORTHSTAR_BACKUP_REMOTE_KEEP must be a positive integer, got: ${raw}`);
+  if (!Number.isInteger(n) || n < 1) throw new RemoteConfigError(`HEALTHSYSTEMS_BACKUP_REMOTE_KEEP must be a positive integer, got: ${raw}`);
   return n;
 }
 
@@ -456,14 +456,14 @@ function unconfiguredStatus(): RemoteBackupStatus {
     configured: false,
     ok: false,
     detail:
-      "no NORTHSTAR_BACKUP_REMOTE; a snapshot that never leaves this machine does not survive the failures that need a restore",
+      "no HEALTHSYSTEMS_BACKUP_REMOTE; a snapshot that never leaves this machine does not survive the failures that need a restore",
   };
 }
 
 export function remoteBackupWarning(status: RemoteBackupStatus): string | undefined {
   if (!status.configured) {
     return (
-      "no off-machine backup destination is configured (NORTHSTAR_BACKUP_REMOTE). " +
+      "no off-machine backup destination is configured (HEALTHSYSTEMS_BACKUP_REMOTE). " +
       "Local snapshots survive a process crash and a bad upgrade; they do not survive " +
       "the disk dying, the machine being stolen, or the building flooding. The stated " +
       "RPO is only real for failures that spare the backup directory."
@@ -471,7 +471,7 @@ export function remoteBackupWarning(status: RemoteBackupStatus): string | undefi
   }
   if (status.keyOnSameVolume) {
     return (
-      "NORTHSTAR_BACKUP_KEY_FILE is on the same volume as the database. " +
+      "HEALTHSYSTEMS_BACKUP_KEY_FILE is on the same volume as the database. " +
       "A key that dies with the machine cannot unlock the copy that was meant to outlive it."
     );
   }
@@ -543,7 +543,7 @@ export async function replicateSnapshot(
   }
 
   const decrypted = decryptSnapshot(readBack, key);
-  const scratchDir = mkdtempSync(join(tmpdir(), "northstar-remote-verify-"));
+  const scratchDir = mkdtempSync(join(tmpdir(), "healthsystems-remote-verify-"));
   const scratch = join(scratchDir, "candidate.db");
   let verified: BackupResult["verified"];
   try {
@@ -587,7 +587,7 @@ export async function fetchSnapshot(
 ): Promise<{ path: string; name: string; verified: BackupResult["verified"] }> {
   const available = (await store.list()).map((o) => o.name);
   const chosen = resolveRemoteName(name, available);
-  if (!chosen) throw new Error(`no northstar-*.db snapshots at ${store.location}`);
+  if (!chosen) throw new Error(`no healthsystems-*.db snapshots at ${store.location}`);
   if (name && !available.includes(chosen)) {
     throw new Error(`no snapshot ${name} at ${store.location}`);
   }
@@ -630,7 +630,7 @@ export class RemoteBackup {
   }
 
   /**
-   * Builds from the environment. Missing `NORTHSTAR_BACKUP_REMOTE` is a
+   * Builds from the environment. Missing `HEALTHSYSTEMS_BACKUP_REMOTE` is a
    * posture, not an error — the operator has chosen local-only snapshots,
    * and health will say so. A remote that is half-configured (URI without a
    * key, s3:// without credentials) throws: fail closed rather than upload
@@ -646,7 +646,7 @@ export class RemoteBackup {
     const keyPath = readEnv("BACKUP_KEY_FILE", env);
     if (!keyPath) {
       throw new RemoteConfigError(
-        "NORTHSTAR_BACKUP_REMOTE is set but NORTHSTAR_BACKUP_KEY_FILE is not. " +
+        "HEALTHSYSTEMS_BACKUP_REMOTE is set but HEALTHSYSTEMS_BACKUP_KEY_FILE is not. " +
           "A remote copy of the database is the clinical record on someone else's disk; " +
           "it is encrypted here, and the key has to live somewhere that survives this machine."
       );
@@ -701,7 +701,7 @@ export class RemoteBackup {
 
   async replicate(localPath: string): Promise<ReplicateResult> {
     if (!this.parsed) {
-      throw new RemoteConfigError("no NORTHSTAR_BACKUP_REMOTE; nothing to replicate to");
+      throw new RemoteConfigError("no HEALTHSYSTEMS_BACKUP_REMOTE; nothing to replicate to");
     }
     const attempted = this.nowIso();
     try {
@@ -739,7 +739,7 @@ export class RemoteBackup {
 
   async fetch(dest: string, name?: string): Promise<{ path: string; name: string; verified: BackupResult["verified"] }> {
     if (!this.parsed) {
-      throw new RemoteConfigError("no NORTHSTAR_BACKUP_REMOTE; nothing to fetch from");
+      throw new RemoteConfigError("no HEALTHSYSTEMS_BACKUP_REMOTE; nothing to fetch from");
     }
     return fetchSnapshot(this.parsed.store, this.parsed.key, dest, name);
   }

@@ -50,8 +50,8 @@ const PROXY = {
 };
 
 function store() {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-par-"));
-  const db = new Db(join(dir, "northstar.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-par-"));
+  const db = new Db(join(dir, "healthsystems.db"));
   const orders = new OrderStore(db);
   const tasks = new TaskStore(db);
   return {
@@ -212,13 +212,13 @@ async function boot() {
   const port = await freePort();
   const issuer = `http://127.0.0.1:${port}/dev-idp`;
   const idp = new DevIdentityProvider({
-    issuer, audience: "northstar-test",
+    issuer, audience: "healthsystems-test",
     liveSubjects: () => engine.forTenant("default").patientAccess.liveSubjects().map((s) => ({ ...s, tenantId: "default" })),
   });
   const api = await startApi(engine, port, "127.0.0.1", {
     auth: new AuthGate({
       keys: engine.keys,
-      jwt: new JwtVerifier({ issuer, audience: "northstar-test", jwksUri: `${issuer}/.well-known/jwks.json` }),
+      jwt: new JwtVerifier({ issuer, audience: "healthsystems-test", jwksUri: `${issuer}/.well-known/jwks.json` }),
       tenants: engine.db,
     }),
     devIdp: idp,

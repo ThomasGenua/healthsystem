@@ -156,7 +156,7 @@ export function buildSummary(
   if (!signingKey || !signingKey.trim()) {
     throw new Refusal(
       "a patient summary cannot be exported without a signing key: an unsigned summary cannot be told from one " +
-        "altered after it left. Set NORTHSTAR_SUMMARY_SIGNING_KEY. Viewing a chart is unaffected.",
+        "altered after it left. Set HEALTHSYSTEMS_SUMMARY_SIGNING_KEY. Viewing a chart is unaffected.",
       503
     );
   }

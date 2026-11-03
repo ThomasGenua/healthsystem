@@ -43,7 +43,7 @@ test("shutdown waits for the active scan before closing its database", async () 
 });
 
 test("preflight fails incomplete and development configuration without leaking values", async () => {
-  const checks = await pilotPreflight({ NORTHSTAR_DEV_IDP: "on", NORTHSTAR_DEV_MALWARE_SCANNER: "on", NORTHSTAR_RATE_LIMIT: "off", NORTHSTAR_PORTAL_CLIENT_SECRET_FILE: "private-secret-path", NORTHSTAR_OIDC_ISSUER: "http://private-host" });
+  const checks = await pilotPreflight({ HEALTHSYSTEMS_DEV_IDP: "on", HEALTHSYSTEMS_DEV_MALWARE_SCANNER: "on", HEALTHSYSTEMS_RATE_LIMIT: "off", HEALTHSYSTEMS_PORTAL_CLIENT_SECRET_FILE: "private-secret-path", HEALTHSYSTEMS_OIDC_ISSUER: "http://private-host" });
   for (const id of ["development", "authentication", "identity", "backup", "scanner-config", "rate-limits"]) assert.equal(checks.find(c => c.id === id)?.status, "blocker");
   assert.ok(checks.some(c => c.status === "review"));
   assert.equal(JSON.stringify(checks).includes("private-"), false);

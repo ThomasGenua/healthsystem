@@ -6,7 +6,7 @@ digests. Their dashboards are bound to localhost (19090 and 19093); the test
 receiver is on localhost 19094. Metrics, silences and test events are ephemeral.
 
 Run `npm run staging:drill` from the repository root. It creates only the fixed
-`northstar-alert-drill` project, refuses existing project containers, builds the
+`healthsystems-alert-drill` project, refuses existing project containers, builds the
 app, waits for a successful metrics scrape, stops only that app, verifies a
 firing webhook, restarts it and verifies a resolved webhook. The app uses
 localhost port 18986. Allow several minutes for image downloads and the

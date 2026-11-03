@@ -23,7 +23,7 @@ test("a Windows absolute path is an absolute path", () => {
   // `C:\backups` has no leading slash, so the old check called it relative and
   // refused the one setting whose job is to put backups on another volume.
   assert.equal(localBackupDir("fs:C:\\backups", true), "C:\\backups");
-  assert.equal(localBackupDir("fs:D:\\northstar\\snapshots", true), "D:\\northstar\\snapshots");
+  assert.equal(localBackupDir("fs:D:\\healthsystems\\snapshots", true), "D:\\healthsystems\\snapshots");
 });
 
 test("a Windows file:// URI resolves to a drive path, not a directory named C:", () => {
@@ -36,7 +36,7 @@ test("a Windows file:// URI resolves to a drive path, not a directory named C:",
 });
 
 test("percent-encoded spaces survive the round trip", () => {
-  assert.equal(localBackupDir("file:///C:/Program%20Files/northstar", true), "C:\\Program Files\\northstar");
+  assert.equal(localBackupDir("file:///C:/Program%20Files/healthsystems", true), "C:\\Program Files\\healthsystems");
   assert.equal(localBackupDir("file:///srv/back%20ups", false), "/srv/back ups");
 });
 
@@ -69,18 +69,18 @@ test("the Linux detection path is exercised from any host", () => {
   // or asserted nothing about the logic it exists to cover.
   const mounts = [
     { device: "/dev/sda1", point: "/", fsType: "ext4" },
-    { device: "/dev/mapper/northstar-data", point: "/srv", fsType: "ext4" },
+    { device: "/dev/mapper/healthsystems-data", point: "/srv", fsType: "ext4" },
   ];
   const encrypted = encryptionAtRest("/srv", {} as NodeJS.ProcessEnv, mounts, "linux", path => path);
   assert.equal(encrypted.state, "encrypted");
-  assert.equal(encrypted.device, "/dev/mapper/northstar-data");
+  assert.equal(encrypted.device, "/dev/mapper/healthsystems-data");
 
   const plain = encryptionAtRest("/", {} as NodeJS.ProcessEnv, mounts, "linux", path => path);
   assert.equal(plain.state, "not-encrypted");
 });
 
 test("a non-Linux host says it cannot check, and names the host", () => {
-  const r = encryptionAtRest("C:\\northstar", {} as NodeJS.ProcessEnv, [], "win32");
+  const r = encryptionAtRest("C:\\healthsystems", {} as NodeJS.ProcessEnv, [], "win32");
   assert.equal(r.state, "unknown");
   assert.match(r.detail, /cannot check encryption at rest on win32/);
   // Unknown is not "off", and must not read as a clean bill of health.
@@ -89,7 +89,7 @@ test("a non-Linux host says it cannot check, and names the host", () => {
 
 test("an operator's assertion outranks the platform check on any host", () => {
   for (const os of ["linux", "win32", "darwin"]) {
-    const r = encryptionAtRest("/anywhere", { NORTHSTAR_ENCRYPTED_AT_REST: "yes" } as NodeJS.ProcessEnv, [], os);
+    const r = encryptionAtRest("/anywhere", { HEALTHSYSTEMS_ENCRYPTED_AT_REST: "yes" } as NodeJS.ProcessEnv, [], os);
     assert.equal(r.state, "asserted", `${os} should honour the assertion`);
     assert.match(r.detail, /not verified here/);
   }

@@ -20,8 +20,8 @@ import { Immunizations } from "../src/clinical/immunizations.ts";
 import { Refusal } from "../src/core/refusal.ts";
 
 function clinic() {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-imm-"));
-  const db = new Db(join(dir, "northstar.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-imm-"));
+  const db = new Db(join(dir, "healthsystems.db"));
   const record = new ClinicalRecord(db);
   return {
     db,
@@ -107,8 +107,8 @@ test("a retraction leaves the original on the chart chain", () => {
 });
 
 test("one custodian's immunizations are not another's", () => {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-imm-iso-"));
-  const root = new Db(join(dir, "northstar.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-imm-iso-"));
+  const root = new Db(join(dir, "healthsystems.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");

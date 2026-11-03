@@ -1,4 +1,4 @@
-# Northstar runbook
+# HealthSystems runbook
 
 ## Local staging package
 
@@ -17,9 +17,9 @@ command does not contact the identity provider or send notifications.
 
 ## Local upload antivirus
 
-Set `NORTHSTAR_CLAMD_SOCKET` to an absolute local clamd socket path, or
-`NORTHSTAR_CLAMD_PORT=3310` for TCP restricted by the client to `127.0.0.1`.
-Configure exactly one, with `NORTHSTAR_DEV_MALWARE_SCANNER` off. On Windows,
+Set `HEALTHSYSTEMS_CLAMD_SOCKET` to an absolute local clamd socket path, or
+`HEALTHSYSTEMS_CLAMD_PORT=3310` for TCP restricted by the client to `127.0.0.1`.
+Configure exactly one, with `HEALTHSYSTEMS_DEV_MALWARE_SCANNER` off. On Windows,
 use loopback TCP; UNC and named-pipe paths are refused. Without a scanner,
 uploads remain quarantined. Do not expose clamd to the public network;
 INSTREAM has no authentication or encryption. Restrict daemon socket access to
@@ -36,9 +36,9 @@ persisted exponential retry delays from 30 seconds up to one hour. Restart keeps
 retry timing; suspended tenants are not scanned. Shutdown waits for the active
 scan before closing the database. The manual route remains available.
 `/api/health` reports uploadScanning and degrades when the oldest pending file
-is over 15 minutes old. Alert on `northstar_upload_scan_oldest_age_seconds > 900`,
-and monitor `northstar_uploads_pending_scan`, `northstar_uploads_retrying_scan`
-and `northstar_upload_scanner_configured`. A monitor must be configured at the
+is over 15 minutes old. Alert on `healthsystems_upload_scan_oldest_age_seconds > 900`,
+and monitor `healthsystems_uploads_pending_scan`, `healthsystems_uploads_retrying_scan`
+and `healthsystems_upload_scanner_configured`. A monitor must be configured at the
 site; adding metrics does not deliver an alert by itself.
 Filenames are not transmitted and raw daemon replies are not stored.
 
@@ -60,7 +60,7 @@ mistake — please fix it here. The hazards those mechanisms exist to prevent,
 with severity and the test that pins each one, live in
 [CLINICAL-SAFETY.md](CLINICAL-SAFETY.md).
 
-**Northstar carries personal health information. Two rules apply to every
+**HealthSystems carries personal health information. Two rules apply to every
 paragraph below:** never paste a message body, a chart entry or a patient
 identifier into a ticket, a chat channel or a search engine; and never work
 around a refusal by disabling the thing that refused. A consent check, a
@@ -108,9 +108,9 @@ The escape hatch is break-glass, which is loud and recorded — see
 
 - **Node 22.18 or later.** 24.x is the production target: `node:sqlite` is no
   longer flagged experimental there, and 22.x prints a warning on every boot.
-- **A local filesystem for `NORTHSTAR_DATA`.** Not NFS, not SMB, not a network
+- **A local filesystem for `HEALTHSYSTEMS_DATA`.** Not NFS, not SMB, not a network
   block device with write caching you cannot reason about. SQLite's durability
-  guarantee is only as good as the filesystem's `fsync`, and Northstar's
+  guarantee is only as good as the filesystem's `fsync`, and HealthSystems's
   acknowledgement means *durably queued* — a lie at this layer makes it a lie
   all the way up.
 - **Disk**: roughly 4 KB per message stored, plus backups. Size for the
@@ -121,29 +121,29 @@ The escape hatch is break-glass, which is loud and recorded — see
 ### First install
 
 ```bash
-git clone https://github.com/ThomasGenua/healthsystem.git northstar
-cd northstar
+git clone https://github.com/ThomasGenua/healthsystem.git healthsystems
+cd healthsystems
 npm ci
 npm run typecheck && npm test    # 1172 tests; do not deploy a node that fails one
 
-export NORTHSTAR_DATA=/var/lib/northstar
-export NORTHSTAR_PORT=8686
+export HEALTHSYSTEMS_DATA=/var/lib/healthsystems
+export HEALTHSYSTEMS_PORT=8686
 node src/server.ts
 ```
 
 Then, before any real feed is pointed at it:
 
-1. **Set `NORTHSTAR_AUTH_MODE`.** It defaults to `apikey`. `off` exists for
+1. **Set `HEALTHSYSTEMS_AUTH_MODE`.** It defaults to `apikey`. `off` exists for
    development and must never reach a machine that can see a real feed.
    The patient boundary additionally requires `oauth` and a configured OIDC
    issuer; API keys and authentication-off mode can never act as patients.
 2. **Issue an admin key** and store it in whatever your site uses for secrets,
    not in a shell history. See [API keys](../README.md#api-keys).
-3. **Turn on TLS** (`NORTHSTAR_TLS_CERT` / `_KEY`), and mutual TLS if the
-   destinations support it (`NORTHSTAR_TLS_CLIENT_CA`).
+3. **Turn on TLS** (`HEALTHSYSTEMS_TLS_CERT` / `_KEY`), and mutual TLS if the
+   destinations support it (`HEALTHSYSTEMS_TLS_CLIENT_CA`).
 
    A node holding its own certificate sends `Strict-Transport-Security` with
-   it, for a year by default (`NORTHSTAR_HSTS_MAX_AGE`, `0` to send none).
+   it, for a year by default (`HEALTHSYSTEMS_HSTS_MAX_AGE`, `0` to send none).
    **If you terminate TLS at a proxy instead, set HSTS there** — requests
    arrive here as plain HTTP and the engine will not send it, because the only
    evidence to the contrary would be a forwarded header anyone who can reach
@@ -154,16 +154,16 @@ Then, before any real feed is pointed at it:
    hostname may ever have to serve plain HTTP again. The engine never sends
    `includeSubDomains` or `preload`: both reach hostnames this deployment may
    not own, and belong at the edge where the rest of the domain is configured.
-4. **Set `NORTHSTAR_BACKUP_DIR`** to something on a different physical device
-   than `NORTHSTAR_DATA`, and **set `NORTHSTAR_BACKUP_REMOTE`** to a destination
+4. **Set `HEALTHSYSTEMS_BACKUP_DIR`** to something on a different physical device
+   than `HEALTHSYSTEMS_DATA`, and **set `HEALTHSYSTEMS_BACKUP_REMOTE`** to a destination
    that is not this machine (`s3://bucket/prefix` or `sftp://user@host/path`)
-   with `NORTHSTAR_BACKUP_KEY_FILE` pointing at a 32-byte key that lives
+   with `HEALTHSYSTEMS_BACKUP_KEY_FILE` pointing at a 32-byte key that lives
    somewhere this host dying does not take with it. A backup on the disk
    that failed is not a backup; a key that only this machine can read
-   unlocks nothing after it dies. `npm run backup -- --init-key /etc/northstar/backup.key`
+   unlocks nothing after it dies. `npm run backup -- --init-key /etc/healthsystems/backup.key`
    writes one; store a copy off-box before the first real feed.
-5. **Decide retention deliberately.** `NORTHSTAR_REDACT_AFTER_DAYS` and
-   `NORTHSTAR_PURGE_AFTER_DAYS` are unset by default and affect the *message
+5. **Decide retention deliberately.** `HEALTHSYSTEMS_REDACT_AFTER_DAYS` and
+   `HEALTHSYSTEMS_PURGE_AFTER_DAYS` are unset by default and affect the *message
    log only* — never the chart, medications, allergies, orders, results or
    referrals. An active legal hold on the tenant skips the whole sweep:
    messages are not patient-keyed. See [What retention does not touch](../README.md#what-retention-does-not-touch).
@@ -177,8 +177,8 @@ Then, before any real feed is pointed at it:
    orders are swept onto the outbound queue every minute — the delay between
    a clinician placing an order and the laboratory being able to see it, so
    it is set against how long a patient takes to walk to the draw station.
-   `NORTHSTAR_ORDER_DISPATCH_INTERVAL_MS` changes it;
-   `NORTHSTAR_ORDER_DISPATCH_INTERVAL_MS=0` turns automatic send off, leaving
+   `HEALTHSYSTEMS_ORDER_DISPATCH_INTERVAL_MS` changes it;
+   `HEALTHSYSTEMS_ORDER_DISPATCH_INTERVAL_MS=0` turns automatic send off, leaving
    `POST /api/clinical/order-send` as the only way out. Set the `0`
    explicitly if that is the decision: it should read as a decision rather
    than as something nobody configured. Note that one enabled `lab-order`
@@ -198,14 +198,14 @@ v0.3.0 file and exercises the whole platform against the result.
 curl -sS -X POST -H "authorization: Bearer $ADMIN_KEY" http://localhost:8686/api/backup
 
 # 2. Stop the engine. SIGTERM; it drains.
-systemctl stop northstar
+systemctl stop healthsystems
 
 # 3. Update, and re-run the suite against the new code on this machine.
 git fetch --tags && git checkout v0.9.0
 npm ci && npm run typecheck && npm test
 
 # 4. Start. Watch the log: the migration announces each table it rebuilds.
-systemctl start northstar
+systemctl start healthsystems
 curl -sS http://localhost:8686/api/health
 ```
 
@@ -236,7 +236,9 @@ append a decision rather than rewriting the history.
 
 ### Upgrading a site installed as Portage
 
-Northstar was called Portage. Nothing about that rename requires you to change
+HealthSystems was previously Northstar, and before that Portage. See also
+[HealthSystems upgrade compatibility](LOCAL-ADMIN.md#healthsystems-upgrade-compatibility)
+for Northstar configuration, database, session, and container-volume compatibility. Nothing about that rename requires you to change
 anything: **an existing site upgrades with no configuration changes at all.**
 This section is what you may optionally tidy afterwards, and the two things you
 must not do casually.
@@ -246,14 +248,14 @@ spelling:
 
 | Still works | Current spelling | Where it lives |
 |---|---|---|
-| `PORTAGE_*` environment variables | `NORTHSTAR_*` | your unit file or `.env` |
-| `data/portage.db` | `data/northstar.db` | the data directory |
-| `portage-<stamp>.db` snapshots | `northstar-<stamp>.db` | the backup directory |
-| `portage_*` Prometheus series | `northstar_*` | scrape config, dashboards, alert rules |
-| `portage/admin` scope | `northstar/admin` | issued tokens, IdP config |
-| `portage_tenant`, `portage_organization`, `portage_practitioner` claims | `northstar_*` | your identity provider |
+| `NORTHSTAR_*`, `PORTAGE_*` environment variables | `HEALTHSYSTEMS_*` | your unit file or `.env` |
+| `data/northstar.db`, `data/portage.db` | `data/healthsystems.db` | the data directory |
+| `northstar-<stamp>.db`, `portage-<stamp>.db` snapshots | `healthsystems-<stamp>.db` | the backup directory |
+| `northstar_*`, `portage_*` Prometheus series | `healthsystems_*` | scrape config, dashboards, alert rules |
+| `northstar/admin`, `portage/admin` scopes | `healthsystems/admin` | issued tokens, IdP config |
+| `northstar_*` and `portage_*` tenant, organization, practitioner claims | `healthsystems_*` | your identity provider |
 
-Where both spellings are set, the `NORTHSTAR_*` one wins, so you can move one
+Where both spellings are set, the `HEALTHSYSTEMS_*` one wins, so you can move one
 variable at a time. The engine lists the legacy variables still in play once at
 boot; that line is informational, not a deprecation warning.
 
@@ -264,15 +266,15 @@ database that is no longer there, and applying it to another one is how a
 restore produces a chart that never existed:
 
 ```bash
-systemctl stop northstar
-cd /var/lib/northstar
-for ext in "" -wal -shm; do [ -e "portage.db$ext" ] && mv "portage.db$ext" "northstar.db$ext"; done
-systemctl start northstar
+systemctl stop healthsystems
+cd /var/lib/healthsystems
+for ext in "" -wal -shm; do [ -e "portage.db$ext" ] && mv "portage.db$ext" "healthsystems.db$ext"; done
+systemctl start healthsystems
 ```
 
 If you leave it alone, the engine finds it and says so at boot. An existing
 file always wins over the preferred name — the alternative is SQLite creating
-an empty `northstar.db` beside your real one and the site coming up healthy
+an empty `healthsystems.db` beside your real one and the site coming up healthy
 with no patients in it.
 
 **Do not change what goes out on the wire without agreeing it first.** MSH-3 on
@@ -280,9 +282,9 @@ outbound acknowledgements is still `PORTAGE`, because it is the receiving
 application name each sending facility has configured at *their* end. Change it
 unilaterally and their engine rejects your acknowledgements — visible to them
 as messages that were never acknowledged, and not visible to you at all. When
-every partner has scheduled the change, set `NORTHSTAR_HL7_APPLICATION`.
+every partner has scheduled the change, set `HEALTHSYSTEMS_HL7_APPLICATION`.
 
-Metrics are exposed under both prefixes, so existing dashboards and alert rules
+Metrics are exposed under all three prefixes, so existing dashboards and alert rules
 keep working untouched. Move them when convenient; a renamed metric does not
 break a rule loudly, it just evaluates against a series that no longer exists.
 
@@ -295,13 +297,13 @@ OAuth surface that was already there. Nothing about it can widen a grant.
 **Clinic sign-in**, using the server-side authorization-code client:
 
 ```bash
-NORTHSTAR_AUTH_MODE=apikey+oauth
-NORTHSTAR_OIDC_ISSUER=https://login.example.ca/realms/clinic
-NORTHSTAR_OIDC_AUDIENCE=northstar-prod     # required; the engine refuses to start without it
-NORTHSTAR_PUBLIC_ORIGIN=https://patients.example.ca
-NORTHSTAR_PORTAL_CLIENT_ID=northstar-patient-portal
-NORTHSTAR_PORTAL_CLIENT_SECRET_FILE=/run/secrets/northstar-portal-client
-NORTHSTAR_PORTAL_SCOPES='openid patient/*.read'
+HEALTHSYSTEMS_AUTH_MODE=apikey+oauth
+HEALTHSYSTEMS_OIDC_ISSUER=https://login.example.ca/realms/clinic
+HEALTHSYSTEMS_OIDC_AUDIENCE=healthsystems-prod     # required; the engine refuses to start without it
+HEALTHSYSTEMS_PUBLIC_ORIGIN=https://patients.example.ca
+HEALTHSYSTEMS_PORTAL_CLIENT_ID=healthsystems-patient-portal
+HEALTHSYSTEMS_PORTAL_CLIENT_SECRET_FILE=/run/secrets/healthsystems-portal-client
+HEALTHSYSTEMS_PORTAL_SCOPES='openid patient/*.read'
 ```
 
 Register the exact redirect URI `https://patients.example.ca/auth/portal/callback`
@@ -322,7 +324,7 @@ existing authorization path.
 
 Sessions end after 15 minutes without a patient API request, at token expiry,
 after at most eight hours, on logout, or when this process restarts. There is
-no refresh-token storage or silent renewal. Logout ends the Northstar session,
+no refresh-token storage or silent renewal. Logout ends the HealthSystems session,
 not the provider's SSO session. Pending logins expire after five minutes.
 Pending logins and active sessions are each bounded to 1,000 entries.
 
@@ -333,57 +335,57 @@ settings are required together; invalid or insecure configuration fails boot.
 Without a login client the portal explains that clinic sign-in is unavailable.
 Manual token entry is available only with the development issuer.
 Use `node --test --import ./test/exit-watchdog.ts test/portal-login.test.ts test/portal-browser.test.ts`
-for a synthetic rehearsal; set `NORTHSTAR_REQUIRE_BROWSER=1` to refuse a skipped
+for a synthetic rehearsal; set `HEALTHSYSTEMS_REQUIRE_BROWSER=1` to refuse a skipped
 browser test. A real provider still needs a site-specific acceptance run.
 
 **In development**, where you have no provider yet:
 
 ```bash
 node scripts/portal-demo.ts            # synthetic people, a released result, a held one
-NORTHSTAR_DEV_IDP=on npm start
+HEALTHSYSTEMS_DEV_IDP=on npm start
 open http://localhost:8686/me
 ```
 
-`NORTHSTAR_DEV_IDP=on` runs a synthetic issuer at `/dev-idp`. The engine
+`HEALTHSYSTEMS_DEV_IDP=on` runs a synthetic issuer at `/dev-idp`. The engine
 still validates its tokens over JWKS exactly as it validates a real
 provider's — there is no branch in the gate for development — so what you see
 working is the production path with a different issuer behind it.
 
 Three things constrain it, and none is a setting:
 
-- It **refuses to start beside a real issuer.** `NORTHSTAR_DEV_IDP=on` and
-  `NORTHSTAR_OIDC_ISSUER` together is a boot failure, not a warning. There is
+- It **refuses to start beside a real issuer.** `HEALTHSYSTEMS_DEV_IDP=on` and
+  `HEALTHSYSTEMS_OIDC_ISSUER` together is a boot failure, not a warning. There is
   no half-and-half deployment.
 - Its **signing key is generated at boot and never written down.** No key file
   exists, and every token it has ever issued stops verifying when the process
   exits.
 - It **cannot invent authority.** The sign-in list is exactly the OAuth
-  subjects that already hold a live grant in `NORTHSTAR_DEV_IDP_TENANT`
+  subjects that already hold a live grant in `HEALTHSYSTEMS_DEV_IDP_TENANT`
   (default `default`). If nobody has been enrolled, nobody can sign in, and
   the page says so rather than showing a broken picker.
 
 | Variable | Meaning |
 |---|---|
-| `NORTHSTAR_DEV_IDP` | `on` to run the synthetic issuer. Anything else, including unset, and `/dev-idp/*` returns 404. |
-| `NORTHSTAR_DEV_IDP_TENANT` | Which custodian's grants the picker lists. Defaults to `default`. |
-| `NORTHSTAR_OIDC_AUDIENCE` | Reused as the audience for synthetic tokens. Defaults to `northstar-development`. |
+| `HEALTHSYSTEMS_DEV_IDP` | `on` to run the synthetic issuer. Anything else, including unset, and `/dev-idp/*` returns 404. |
+| `HEALTHSYSTEMS_DEV_IDP_TENANT` | Which custodian's grants the picker lists. Defaults to `default`. |
+| `HEALTHSYSTEMS_OIDC_AUDIENCE` | Reused as the audience for synthetic tokens. Defaults to `healthsystems-development`. |
 
 **Pre-visit intake and uploads (item 60)** need a questionnaire to answer and,
 to see a file leave quarantine, a scanner:
 
 ```bash
 node scripts/portal-demo.ts            # also publishes a "pre-visit" questionnaire
-NORTHSTAR_DEV_IDP=on NORTHSTAR_DEV_MALWARE_SCANNER=on npm start
+HEALTHSYSTEMS_DEV_IDP=on HEALTHSYSTEMS_DEV_MALWARE_SCANNER=on npm start
 ```
 
-`NORTHSTAR_DEV_MALWARE_SCANNER=on` wires `SyntheticScanner`
+`HEALTHSYSTEMS_DEV_MALWARE_SCANNER=on` wires `SyntheticScanner`
 (`src/patient/intake.ts`) in place of a real antivirus integration. It
 recognizes exactly the EICAR test string — the harmless file antivirus
 vendors publish for testing detection pipelines — and nothing else. Without
 it, an uploaded file stays `pending-scan` forever and cannot be downloaded or
 filed onto the chart, which is the correct behaviour for a deployment that
 has not configured a real scanner, not a bug in the demo. **Never set this in
-production.** Unlike `NORTHSTAR_DEV_IDP`, nothing here refuses to start
+production.** Unlike `HEALTHSYSTEMS_DEV_IDP`, nothing here refuses to start
 alongside a real configuration, because a real scanner has no equivalent
 environment variable to check against — it is wired in code, by passing a
 real `MalwareScanner` to `Engine`. Left on by mistake, the risk is not a
@@ -407,14 +409,14 @@ confidential client in front of it.
 
 ### Rolling back
 
-Northstar's migrations move forward only. **A database opened by a newer version
+HealthSystems's migrations move forward only. **A database opened by a newer version
 may not be readable by an older one**, so rolling back the code is not enough:
 
 ```bash
-systemctl stop northstar
+systemctl stop healthsystems
 git checkout v0.4.0 && npm ci
-# restore the pre-upgrade backup over NORTHSTAR_DATA — see Restoring, below
-systemctl start northstar
+# restore the pre-upgrade backup over HEALTHSYSTEMS_DATA — see Restoring, below
+systemctl start healthsystems
 ```
 
 Messages that arrived after the backup was taken are lost from the log by this,
@@ -429,7 +431,7 @@ call for help.
 | When | What | How |
 | --- | --- | --- |
 | Continuously | `degraded`, dead letters, silent channels | alert on `/metrics` |
-| Daily | A backup exists, is recent, verified, and has left the machine | `remoteBackup` on `/api/health`; `northstar_backup_remote_ok` on `/metrics` |
+| Daily | A backup exists, is recent, verified, and has left the machine | `remoteBackup` on `/api/health`; `healthsystems_backup_remote_ok` on `/metrics` |
 | Daily | Break-glass queues are being drained | `GET /api/clinical/break-glass` |
 | Weekly | Chain verification across all channels | `GET /api/chain/verify`, `GET /api/audit/verify` |
 | Weekly | Unacknowledged results and open referrals past their deadline | `GET /api/clinical/results`, `/referrals` |
@@ -464,7 +466,7 @@ snapshots are the only ones you have. Then go to the matching section below.
 
 ### A channel is stalled
 
-Work is arriving and not leaving. The destination is the suspect, not Northstar.
+Work is arriving and not leaving. The destination is the suspect, not HealthSystems.
 
 ```bash
 curl -sS -H "authorization: Bearer $ADMIN_KEY" \
@@ -533,7 +535,7 @@ the source is still failing — check the detail again rather than the signal.
 A channel you deliberately disabled stops being reported without losing its
 record, so re-enabling one does not start from a clean slate it has not earned.
 
-`northstar_channel_source_failures{channel,stage}` is the same count in
+`healthsystems_channel_source_failures{channel,stage}` is the same count in
 Prometheus. Alert on `stage="read"` above three; `stage="item"` is a ticket,
 not a page.
 
@@ -555,14 +557,14 @@ same failure and tells you nothing new. Fix the cause, then replay.
 
 ### The disk is full
 
-Northstar refuses writes rather than half-writing them, and recovers on its own
+HealthSystems refuses writes rather than half-writing them, and recovers on its own
 once space is freed — this is exercised by `npm run diskfulltest` and nightly
 in CI. So the engine is not the problem; the disk is.
 
-1. Free space. Old backups in `NORTHSTAR_BACKUP_DIR` are usually the largest
-   thing that is safe to delete, and `NORTHSTAR_BACKUP_KEEP` governs how many are
+1. Free space. Old backups in `HEALTHSYSTEMS_BACKUP_DIR` are usually the largest
+   thing that is safe to delete, and `HEALTHSYSTEMS_BACKUP_KEEP` governs how many are
    retained.
-2. **Do not delete anything inside `NORTHSTAR_DATA`.** Not the WAL, not the
+2. **Do not delete anything inside `HEALTHSYSTEMS_DATA`.** Not the WAL, not the
    journal, not "the big one".
 3. Confirm recovery: `/api/health` should return to `ok` without a restart.
 
@@ -578,7 +580,7 @@ answer.
 - **`no such column: …`** — a migration did not run, which should be
   impossible on a supported path. Do not hand-edit the schema. Take a copy of
   the file, roll back to the previous version, and report it.
-- **Port in use** — something else is on `NORTHSTAR_PORT`.
+- **Port in use** — something else is on `HEALTHSYSTEMS_PORT`.
 
 ### The engine crashed
 
@@ -692,7 +694,7 @@ backup taken first.
 
 This is serious and is **not** a thing to fix by re-verifying until it passes.
 The chain exists to detect exactly two situations: a database that has been
-edited outside Northstar, and one whose history has been truncated.
+edited outside HealthSystems, and one whose history has been truncated.
 
 1. Do not restart the engine. Do not run retention. Do not take a new backup
    over the old one.
@@ -734,7 +736,7 @@ Two things are worth knowing before you reach for break-glass:
   chart is blank" is describing something else; check `/api/health` first.
 - **A `withhold-from-organization` directive withholds from a credential that
   carries no organization.** Credentials carry one now — set at issue
-  time for API keys, from the `organization` (or `northstar_organization`) claim
+  time for API keys, from the `organization` (or `healthsystems_organization`) claim
   for OAuth — and a directive naming one clinic no longer withholds from the
   rest of the territory. A caller whose credential names no organization cannot
   show it is outside the withheld one and is still refused, which fails closed
@@ -783,9 +785,9 @@ that.
 
 ### Sent is not told
 
-`notice_dispatched_at` says Northstar handed the notice to the delivery
+`notice_dispatched_at` says HealthSystems handed the notice to the delivery
 machinery. It does not say the patient received it, and a portal message that
-bounced is neither. Telling them still finishes on a channel Northstar does not
+bounced is neither. Telling them still finishes on a channel HealthSystems does not
 own — a letter, a call, a conversation — so record it once it has happened:
 
 ```bash
@@ -820,7 +822,7 @@ curl -sS -H "authorization: Bearer $ADMIN_KEY" \
 
 If patient data was served to it, that is a privacy incident and follows your
 jurisdiction's breach process, not this document. If the credential is a
-vulnerability in Northstar rather than a leaked secret, see [SECURITY.md](../SECURITY.md).
+vulnerability in HealthSystems rather than a leaked secret, see [SECURITY.md](../SECURITY.md).
 
 ### Expiries that are not dates
 
@@ -838,7 +840,7 @@ typed is still on the row.
 Find them, in the data directory:
 
 ```bash
-sqlite3 northstar.db "
+sqlite3 healthsystems.db "
   SELECT tenant_id, id, patient_id, subject_id, expires_at FROM patient_authority
    WHERE revoked_at IS NULL AND expires_at IS NOT NULL
      AND expires_at NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*';
@@ -868,21 +870,21 @@ If the disk that held the database is still there and you are rolling back
 an upgrade or undoing a bad write, the local snapshot is enough:
 
 ```bash
-systemctl stop northstar                         # nothing may hold the file
-npm run restore -- --from /var/lib/northstar/backups
-systemctl start northstar
+systemctl stop healthsystems                         # nothing may hold the file
+npm run restore -- --from /var/lib/healthsystems/backups
+systemctl start healthsystems
 curl -sS http://localhost:8686/api/health
 ```
 
 If the disk, the machine or the building is gone, the local directory is
-gone with it. Fetch the off-machine copy — this needs `NORTHSTAR_BACKUP_KEY_FILE`
+gone with it. Fetch the off-machine copy — this needs `HEALTHSYSTEMS_BACKUP_KEY_FILE`
 to be present on the replacement host, which is why that file must not have
 lived only on the dead one:
 
 ```bash
 npm run restore -- --from remote
 # or a specific name, with or without the .enc suffix
-npm run restore -- --from remote --snapshot northstar-2026-08-19T14-00-00.db
+npm run restore -- --from remote --snapshot healthsystems-2026-08-19T14-00-00.db
 ```
 
 `npm run restore -- --snapshot <file>` picks a specific local file. The
@@ -921,13 +923,13 @@ not from when you type the command.
 | What failed | What you still have | RPO |
 | --- | --- | --- |
 | Process crash, bad upgrade | The local snapshot | time since the last local snapshot |
-| The disk, the machine, the building | The last verified replica at `NORTHSTAR_BACKUP_REMOTE` | time since the last *successful* replication |
+| The disk, the machine, the building | The last verified replica at `HEALTHSYSTEMS_BACKUP_REMOTE` | time since the last *successful* replication |
 | The disk, and no remote was configured | Nothing | everything |
 
 A daily snapshot means a 24-hour RPO for a crash. The same cadence against a
 dead disk is only real if the last replica left the machine and
-`northstar_backup_remote_ok` is 1. Alert on that gauge going to 0, and on
-`northstar_backup_remote_age_seconds` growing past your cadence. A snapshot of
+`healthsystems_backup_remote_ok` is 1. Alert on that gauge going to 0, and on
+`healthsystems_backup_remote_age_seconds` growing past your cadence. A snapshot of
 a 96 MB database costs about 2.5 seconds against a live engine, so if 24
 hours of loss is not acceptable at your site, run it hourly — the cost is
 not the reason to hold back.
@@ -946,10 +948,10 @@ Escalate immediately, before further diagnosis, for any of:
 - patient data served to the wrong tenant, or to a credential that should not
   have seen it
 - a backup that will not restore
-- any suspicion that the database file has been modified outside Northstar
+- any suspicion that the database file has been modified outside HealthSystems
 
 For these, preserving the current state matters more than restoring service.
 Copy the database file and the backups somewhere read-only **first**.
 
-A suspected vulnerability in Northstar itself goes through private disclosure —
+A suspected vulnerability in HealthSystems itself goes through private disclosure —
 see [SECURITY.md](../SECURITY.md) — not a public issue.

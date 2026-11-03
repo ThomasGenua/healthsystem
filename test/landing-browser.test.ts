@@ -18,7 +18,7 @@ test("landing: public, bilingual, responsive and separate from chart access", { 
       assert.equal(await b.evaluate("document.querySelectorAll('h1').length"), 1);
       assert.ok(await b.evaluate("!!document.querySelector('a[href=\"/me\"]') && !!document.querySelector('a[href=\"/ui\"]')"));
       assert.deepEqual(await b.evaluate("performance.getEntriesByType('resource').filter(r => /\\/patient\\/|\\/api\\//.test(r.name)).map(r => r.name)"), [], "public landing does not fetch clinical APIs");
-      if (process.env.NORTHSTAR_LANDING_SCREENSHOTS === "on") {
+      if (process.env.HEALTHSYSTEMS_LANDING_SCREENSHOTS === "on") {
         await b.evaluate("Promise.all(document.getAnimations().map(animation => animation.finished))");
         const dir = join(process.cwd(), ".pilot-artifacts", "landing");
         mkdirSync(dir, { recursive: true });
@@ -40,6 +40,6 @@ test("landing: public, bilingual, responsive and separate from chart access", { 
     assert.equal(await b.evaluate("location.hash"), "#Channels", "legacy console bookmarks retain their fragment");
     assert.equal((await fetch(f.base + "/api/channels")).status, 401);
     const ui = await (await fetch(f.base + "/ui")).text();
-    assert.ok(ui.includes("<title>Northstar</title>"), "clinical console is retained at /ui");
+    assert.ok(ui.includes("<title>HealthSystems</title>"), "clinical console is retained at /ui");
   } finally { await b.close(); await f.close(); }
 });

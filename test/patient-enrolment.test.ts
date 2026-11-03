@@ -38,8 +38,8 @@ const CHANNEL = JSON.stringify({
 });
 
 function clinic(channelId: string | null = null) {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-enrol-"));
-  const db = new Db(join(dir, "northstar.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-enrol-"));
+  const db = new Db(join(dir, "healthsystems.db"));
   if (channelId) db.upsertChannel(channelId, "Patient notices", true, CHANNEL);
   const orders = new OrderStore(db);
   const tasks = new TaskStore(db);

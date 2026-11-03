@@ -1,5 +1,5 @@
 import { AdminAccounts } from "./auth/admin-accounts.ts";
-/** Northstar entry point. */
+/** HealthSystems entry point. */
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { encryptionAtRest, shouldWarn } from "./core/atrest.ts";
 import { readEnv, legacyEnvWarning, resolveDbPath, legacyDbNotice } from "./core/naming.ts";
@@ -108,7 +108,7 @@ function buildDevIdp(engine: Engine, port: number): { idp: DevIdentityProvider; 
   // Loopback, and the port this process is about to listen on: the verifier
   // fetches this JWKS over HTTP from inside the same process.
   const issuer = `http://127.0.0.1:${port}/dev-idp`;
-  const audience = readEnv("OIDC_AUDIENCE") ?? "northstar-development";
+  const audience = readEnv("OIDC_AUDIENCE") ?? "healthsystems-development";
   const tenantId = readEnv("DEV_IDP_TENANT") ?? DEFAULT_TENANT;
 
   const idp = new DevIdentityProvider({
@@ -127,7 +127,7 @@ function buildDevIdp(engine: Engine, port: number): { idp: DevIdentityProvider; 
   console.warn(
     [
       "",
-      "  WARNING: NORTHSTAR_DEV_IDP=on — a synthetic identity provider is running.",
+      "  WARNING: HEALTHSYSTEMS_DEV_IDP=on — a synthetic identity provider is running.",
       "",
       `    issuer   ${issuer}`,
       `    tenant   ${tenantId}`,
@@ -135,7 +135,7 @@ function buildDevIdp(engine: Engine, port: number): { idp: DevIdentityProvider; 
       "  It mints patient tokens for anyone the clinic has already granted a chart to.",
       "  Its signing key was generated at boot and is never written down, so every token",
       "  it issues stops verifying when this process exits. Never run this in production;",
-      "  set NORTHSTAR_OIDC_ISSUER instead and this refuses to start.",
+      "  set HEALTHSYSTEMS_OIDC_ISSUER instead and this refuses to start.",
       "",
     ].join("\n")
   );
@@ -159,13 +159,13 @@ function buildAuthGate(engine: Engine, dev: { jwt: JwtVerifier } | null, adminAc
     return new AuthGate({ keys: engine.keys, jwt: dev.jwt, tenants: engine.db, adminAccounts });
   }
   if (AUTH_MODE === "off") {
-    console.warn("WARNING: NORTHSTAR_AUTH_MODE=off — the API is unauthenticated and open to anyone who can reach it");
+    console.warn("WARNING: HEALTHSYSTEMS_AUTH_MODE=off — the API is unauthenticated and open to anyone who can reach it");
     return new AuthGate();
   }
 
   const modes = new Set(AUTH_MODE.split(/[+,\s]+/).filter(Boolean));
   const unknown = [...modes].filter((m) => m !== "apikey" && m !== "oauth");
-  if (unknown.length) throw new Error(`unknown NORTHSTAR_AUTH_MODE value(s): ${unknown.join(", ")}`);
+  if (unknown.length) throw new Error(`unknown HEALTHSYSTEMS_AUTH_MODE value(s): ${unknown.join(", ")}`);
 
   // The tenant directory, so a suspended custodian's credentials stop working
   // at once rather than at the next restart.
@@ -180,7 +180,7 @@ function buildAuthGate(engine: Engine, dev: { jwt: JwtVerifier } | null, adminAc
 
   if (modes.has("oauth")) {
     const issuer = readEnv("OIDC_ISSUER");
-    if (!issuer) throw new Error("NORTHSTAR_AUTH_MODE includes oauth but NORTHSTAR_OIDC_ISSUER is not set");
+    if (!issuer) throw new Error("HEALTHSYSTEMS_AUTH_MODE includes oauth but HEALTHSYSTEMS_OIDC_ISSUER is not set");
     // Refusing to boot is the point. This was optional, and an unset audience
     // meant every token the issuer had ever signed was accepted — so the
     // deployments that never set it were the ones running without the check.
@@ -189,7 +189,7 @@ function buildAuthGate(engine: Engine, dev: { jwt: JwtVerifier } | null, adminAc
     const audience = readEnv("OIDC_AUDIENCE");
     if (!audience) {
       throw new Error(
-        "NORTHSTAR_AUTH_MODE includes oauth but NORTHSTAR_OIDC_AUDIENCE is not set. Without it every token " +
+        "HEALTHSYSTEMS_AUTH_MODE includes oauth but HEALTHSYSTEMS_OIDC_AUDIENCE is not set. Without it every token " +
           "this issuer has signed is accepted, including tokens minted for other applications in the same " +
           "directory. Set it to the identifier this deployment is registered under at the issuer."
       );
@@ -273,7 +273,7 @@ async function main(): Promise<void> {
     : devScanner ? new SyntheticScanner() : undefined;
   if (devScanner) {
     console.warn(
-      "  WARNING: NORTHSTAR_DEV_MALWARE_SCANNER=on — uploads are scanned by a synthetic " +
+      "  WARNING: HEALTHSYSTEMS_DEV_MALWARE_SCANNER=on — uploads are scanned by a synthetic " +
         "pattern match, not a real antivirus engine. Never run this in production."
     );
   }
@@ -301,7 +301,7 @@ async function main(): Promise<void> {
   // the clinic's clocks read now, for the person who knows to compare.
   if (engine.clinicDay.kind === "utc") {
     console.warn(
-      "WARNING: no clinic time zone is configured (NORTHSTAR_CLINIC_TIMEZONE). The clinic board and worklist " +
+      "WARNING: no clinic time zone is configured (HEALTHSYSTEMS_CLINIC_TIMEZONE). The clinic board and worklist " +
         "treat the UTC calendar day as today, and the privacy review reads after hours on UTC clocks — both wrong " +
         "for part of every day anywhere that is not on UTC. Set it to a place like America/Yellowknife."
     );
@@ -399,10 +399,10 @@ async function main(): Promise<void> {
   });
   console.log(
     // What is actually enforcing, not what the variable says. With the
-    // development provider on, NORTHSTAR_AUTH_MODE is not what decided this,
+    // development provider on, HEALTHSYSTEMS_AUTH_MODE is not what decided this,
     // and a banner reporting it would be wrong at the one moment an
     // operator reads the line.
-    `Northstar listening on :${api.port} (${api.tls ? (tls?.mutual ? "mutual TLS" : "TLS") : "plain HTTP"}, ` +
+    `HealthSystems listening on :${api.port} (${api.tls ? (tls?.mutual ? "mutual TLS" : "TLS") : "plain HTTP"}, ` +
       `auth ${dev ? "apikey + development identity provider" : AUTH_MODE})`
   );
   for (const ch of engine.listChannels()) {
@@ -411,7 +411,7 @@ async function main(): Promise<void> {
   }
 
   if (!api.limiter.enabled) {
-    console.warn("WARNING: NORTHSTAR_RATE_LIMIT=off — a single client can saturate this node");
+    console.warn("WARNING: HEALTHSYSTEMS_RATE_LIMIT=off — a single client can saturate this node");
   }
 
   if (engine.retention.enabled) {

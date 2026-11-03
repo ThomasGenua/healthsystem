@@ -261,7 +261,7 @@ export class ClinicDay {
 /**
  * The configured clinic time zone, as written, or undefined.
  *
- * `NORTHSTAR_CLINIC_UTC_OFFSET` was the name for a few hours before this
+ * `HEALTHSYSTEMS_CLINIC_UTC_OFFSET` was the name for a few hours before this
  * replaced it, and never reached a release. It is refused rather than
  * quietly ignored, because an ignored setting reads as UTC — the board a
  * few hours out, with nothing to say why.
@@ -269,7 +269,7 @@ export class ClinicDay {
 export function resolveClinicTimeZone(env: NodeJS.ProcessEnv = process.env): string | undefined {
   if (readEnv("CLINIC_UTC_OFFSET", env) !== undefined) {
     throw new Error(
-      "NORTHSTAR_CLINIC_UTC_OFFSET was renamed before release to NORTHSTAR_CLINIC_TIMEZONE, " +
+      "HEALTHSYSTEMS_CLINIC_UTC_OFFSET was renamed before release to HEALTHSYSTEMS_CLINIC_TIMEZONE, " +
         "which also takes a place like America/Yellowknife; set that instead"
     );
   }

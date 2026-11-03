@@ -38,7 +38,7 @@ const PROFILE: LabProfile = {
 };
 
 const CTX: OmlContext = {
-  sendingApplication: "NORTHSTAR",
+  sendingApplication: "HEALTHSYSTEMS",
   sendingFacility: "GNWT",
   receivingApplication: "LABAPP",
   receivingFacility: "STANTON",
@@ -64,12 +64,12 @@ function controlIdOf(message: string): string {
 }
 
 function ack(code: string, controlId: string, text = ""): string {
-  return `MSH|^~\\&|LABAPP|STANTON|NORTHSTAR|GNWT|20260827153000||ACK|A1|P|2.5.1\rMSA|${code}|${controlId}|${text}\r`;
+  return `MSH|^~\\&|LABAPP|STANTON|HEALTHSYSTEMS|GNWT|20260827153000||ACK|A1|P|2.5.1\rMSA|${code}|${controlId}|${text}\r`;
 }
 
 function site(reply: (sent: string) => string | Promise<string>) {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-send-"));
-  const db = new Db(join(dir, "northstar.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-send-"));
+  const db = new Db(join(dir, "healthsystems.db"));
   const orders = new OrderStore(db);
   const clinical = new ClinicalRecord(db);
   clinical.record({
@@ -91,7 +91,7 @@ function site(reply: (sent: string) => string | Promise<string>) {
     { transmits: true, destination: "Stanton Laboratory", detail: "MLLP over the site VPN", connection: {
         host: "lab.example",
         port: 6661,
-        sendingApplication: "NORTHSTAR",
+        sendingApplication: "HEALTHSYSTEMS",
         sendingFacility: "GNWT",
         receivingApplication: "LABAPP",
         receivingFacility: "STANTON",
@@ -209,7 +209,7 @@ test("the attempt is recorded before the send, so a crash mid-flight does not re
 });
 
 test("a reply that is not an acknowledgement is not read as one", async () => {
-  const s = site(() => "MSH|^~\\&|LABAPP|STANTON|NORTHSTAR|GNWT|20260827||ORU^R01|X|P|2.5.1\r");
+  const s = site(() => "MSH|^~\\&|LABAPP|STANTON|HEALTHSYSTEMS|GNWT|20260827||ORU^R01|X|P|2.5.1\r");
   try {
     const id = s.place();
     const out = await sendOrder(s.deps, id, TARGET, CTX, GP);

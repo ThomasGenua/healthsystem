@@ -3,61 +3,61 @@ evaluation_interval: 1m
 tests:
   - interval: 1m
     input_series:
-      - series: 'up{job="northstar"}'
+      - series: 'up{job="healthsystems"}'
         values: '0+0x10'
-      - series: 'northstar_upload_scan_oldest_age_seconds{job="northstar"}'
+      - series: 'healthsystems_upload_scan_oldest_age_seconds{job="healthsystems"}'
         values: '901+0x10'
-      - series: 'northstar_dead_letters{job="northstar"}'
+      - series: 'healthsystems_dead_letters{job="healthsystems"}'
         values: '1+0x10'
-      - series: 'northstar_backup_remote_configured{job="northstar"}'
+      - series: 'healthsystems_backup_remote_configured{job="healthsystems"}'
         values: '1+0x10'
-      - series: 'northstar_backup_remote_ok{job="northstar"}'
+      - series: 'healthsystems_backup_remote_ok{job="healthsystems"}'
         values: '0+0x10'
-      - series: 'northstar_backup_remote_age_seconds{job="northstar"}'
+      - series: 'healthsystems_backup_remote_age_seconds{job="healthsystems"}'
         values: '90000+0x10'
     alert_rule_test:
       - eval_time: 10m
-        alertname: NorthstarServiceDown
+        alertname: HealthSystemsServiceDown
         exp_alerts:
-          - exp_labels: {job: northstar, severity: critical}
-            exp_annotations: {summary: Northstar metrics endpoint unavailable}
+          - exp_labels: {job: healthsystems, severity: critical}
+            exp_annotations: {summary: HealthSystems metrics endpoint unavailable}
       - eval_time: 10m
-        alertname: NorthstarScannerBacklog
+        alertname: HealthSystemsScannerBacklog
         exp_alerts:
-          - exp_labels: {job: northstar, severity: warning}
+          - exp_labels: {job: healthsystems, severity: warning}
             exp_annotations: {summary: Quarantined uploads are older than fifteen minutes}
       - eval_time: 10m
-        alertname: NorthstarDeliveryFailures
+        alertname: HealthSystemsDeliveryFailures
         exp_alerts:
-          - exp_labels: {job: northstar, severity: warning}
+          - exp_labels: {job: healthsystems, severity: warning}
             exp_annotations: {summary: Delivery dead letters require review}
       - eval_time: 10m
-        alertname: NorthstarBackupFailed
+        alertname: HealthSystemsBackupFailed
         exp_alerts:
-          - exp_labels: {job: northstar, severity: critical}
+          - exp_labels: {job: healthsystems, severity: critical}
             exp_annotations: {summary: Configured backup has no verified successful replica}
       - eval_time: 10m
-        alertname: NorthstarBackupStale
+        alertname: HealthSystemsBackupStale
         exp_alerts:
-          - exp_labels: {job: northstar, severity: warning}
+          - exp_labels: {job: healthsystems, severity: warning}
             exp_annotations: {summary: Verified backup is older than the staging 24-hour threshold}
   - interval: 1m
     input_series:
-      - series: 'up{job="northstar"}'
+      - series: 'up{job="healthsystems"}'
         values: '1+0x10'
-      - series: 'northstar_upload_scan_oldest_age_seconds{job="northstar"}'
+      - series: 'healthsystems_upload_scan_oldest_age_seconds{job="healthsystems"}'
         values: '0+0x10'
-      - series: 'northstar_dead_letters{job="northstar"}'
+      - series: 'healthsystems_dead_letters{job="healthsystems"}'
         values: '0+0x10'
-      - series: 'northstar_backup_remote_configured{job="northstar"}'
+      - series: 'healthsystems_backup_remote_configured{job="healthsystems"}'
         values: '0+0x10'
-      - series: 'northstar_backup_remote_ok{job="northstar"}'
+      - series: 'healthsystems_backup_remote_ok{job="healthsystems"}'
         values: '0+0x10'
-      - series: 'northstar_backup_remote_age_seconds{job="northstar"}'
+      - series: 'healthsystems_backup_remote_age_seconds{job="healthsystems"}'
         values: '-1+0x10'
     alert_rule_test:
-      - {eval_time: 10m, alertname: NorthstarServiceDown, exp_alerts: []}
-      - {eval_time: 10m, alertname: NorthstarScannerBacklog, exp_alerts: []}
-      - {eval_time: 10m, alertname: NorthstarDeliveryFailures, exp_alerts: []}
-      - {eval_time: 10m, alertname: NorthstarBackupFailed, exp_alerts: []}
-      - {eval_time: 10m, alertname: NorthstarBackupStale, exp_alerts: []}
+      - {eval_time: 10m, alertname: HealthSystemsServiceDown, exp_alerts: []}
+      - {eval_time: 10m, alertname: HealthSystemsScannerBacklog, exp_alerts: []}
+      - {eval_time: 10m, alertname: HealthSystemsDeliveryFailures, exp_alerts: []}
+      - {eval_time: 10m, alertname: HealthSystemsBackupFailed, exp_alerts: []}
+      - {eval_time: 10m, alertname: HealthSystemsBackupStale, exp_alerts: []}

@@ -99,3 +99,27 @@ test("administrator sessions and key setup stay inside the stored tenant", async
     assert.equal((await fetch(x.base + "/api/keys", { headers: { cookie } })).status, 403);
   } finally { await x.close(); }
 });
+
+
+test("legacy admin sessions survive the rebrand and logout revokes both cookie names", async () => {
+  const x = await boot();
+  try {
+    const first = await x.login();
+    const old = first.headers.get("set-cookie")!.split(";")[0].replace("healthsystems_admin=", "northstar_admin=");
+    const oldStatus = await first.json() as { csrf: string };
+    assert.equal((await fetch(x.base + "/api/keys", { headers: { cookie: old } })).status, 200);
+    const second = await x.login();
+    const current = second.headers.get("set-cookie")!.split(";")[0];
+    assert.match(current, /^healthsystems_admin=/);
+    const metrics = await (await fetch(x.base + "/metrics", { headers: { cookie: current } })).text();
+    for (const prefix of ["healthsystems", "northstar", "portage"]) assert.match(metrics, new RegExp(`^${prefix}_channels 0$`, "m"));
+    const status = await second.json() as { csrf: string };
+    const combined = current + "; " + old;
+    assert.equal((await fetch(x.base + "/auth/admin/logout", { method: "POST", headers: { cookie: combined, origin: x.base, "x-csrf-token": oldStatus.csrf } })).status, 403);
+    const logout = await fetch(x.base + "/auth/admin/logout", { method: "POST", headers: { cookie: combined, origin: x.base, "x-csrf-token": status.csrf } });
+    assert.equal(logout.status, 200);
+    assert.match(logout.headers.get("set-cookie")!, /northstar_admin=;/);
+    assert.match(logout.headers.get("set-cookie")!, /healthsystems_admin=;/);
+    for (const cookie of [old, current]) assert.equal((await fetch(x.base + "/api/keys", { headers: { cookie } })).status, 401);
+  } finally { await x.close(); }
+});

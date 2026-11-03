@@ -30,7 +30,7 @@ const GP_AUTHOR = { authorId: "dr-tetso", authorKind: "practitioner" };
 async function boot() {
   // The summary export refuses without one, deliberately: an unsigned summary
   // cannot be told from one edited after it left.
-  process.env.NORTHSTAR_SUMMARY_SIGNING_KEY = "a-signing-key-for-the-route-tests";
+  process.env.HEALTHSYSTEMS_SUMMARY_SIGNING_KEY = "a-signing-key-for-the-route-tests";
   // A pharmacy channel, so the prescription routes exercise the transmit path
   // rather than the refusal a deployment without one gets.
   // A scanner, so upload-scan exercises its own clean/infected logic rather
@@ -71,7 +71,7 @@ async function boot() {
       connection: {
         host: "127.0.0.1",
         port: 1,
-        sendingApplication: "NORTHSTAR",
+        sendingApplication: "HEALTHSYSTEMS",
         sendingFacility: "GNWT",
         receivingApplication: "LABAPP",
         receivingFacility: "STANTON",

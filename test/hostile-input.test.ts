@@ -22,7 +22,7 @@ import { Engine } from "../src/core/engine.ts";
 import { startApi } from "../src/api/admin.ts";
 import { AuthGate } from "../src/auth/gate.ts";
 
-const MSH = "MSH|^~\\&|LAB|SITE|NORTHSTAR|SITE|20260101120000||ADT^A01|MSG0001|P|2.5.1";
+const MSH = "MSH|^~\\&|LAB|SITE|HEALTHSYSTEMS|SITE|20260101120000||ADT^A01|MSG0001|P|2.5.1";
 /** Written this way so the literal never appears in a source file or a diff. */
 const NUL = String.fromCharCode(0);
 

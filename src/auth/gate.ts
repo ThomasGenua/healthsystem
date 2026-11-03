@@ -120,7 +120,7 @@ export class AuthGate {
   /**
    * The SMART App Launch discovery document, or undefined where OAuth is off.
    *
-   * Northstar is a resource server: it validates tokens, it does not issue
+   * HealthSystems is a resource server: it validates tokens, it does not issue
    * them. So this advertises the site's own authorization server, and lists
    * only what this end actually enforces. A discovery document claiming a
    * capability the server does not have is how a client comes to trust a
@@ -146,7 +146,7 @@ export class AuthGate {
 
   /** The WWW-Authenticate value to return with a 401. */
   get challenge(): string {
-    return this.opts.jwt ? 'Bearer realm="northstar"' : 'Bearer realm="northstar", scheme="api-key"';
+    return this.opts.jwt ? 'Bearer realm="healthsystems"' : 'Bearer realm="healthsystems", scheme="api-key"';
   }
 
   async check(method: string, path: string, headers: IncomingHttpHeaders): Promise<AuthOutcome> {

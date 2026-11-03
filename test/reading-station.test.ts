@@ -30,7 +30,7 @@ const NURSE = { actorId: "nurse-tetso", actorKind: "staff" };
  * filled from that snapshot — the shape every test here starts from.
  */
 async function outageRig(opts: { budgetHours?: number; stamp?: string } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-station-"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-station-"));
   const primaryPath = join(dir, "primary.db");
   const primary = new Db(primaryPath);
 
@@ -103,7 +103,7 @@ test("a station dates its cache from when the data was true, not when the copy l
   // A snapshot taken at 02:00 and filled at 06:00 is four hours old the
   // moment it arrives. A chart dated from the copy would understate its own
   // age, which is the one direction staleness must never err in.
-  const dir = mkdtempSync(join(tmpdir(), "northstar-stamp-"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-stamp-"));
   try {
     const named = join(dir, "portage-2026-08-20T03-15-00.db");
     writeFileSync(named, "x");
@@ -265,7 +265,7 @@ test("the safety check still answers during an outage", async () => {
         check.blocking.some((f) => f.kind === "allergy"),
         "the cached penicillin allergy still blocks a penicillin prescription"
       );
-      assert.equal(res.headers.get("x-northstar-station-as-of"), rig.fill.manifest.takenAt);
+      assert.equal(res.headers.get("x-healthsystems-station-as-of"), rig.fill.manifest.takenAt);
     } finally {
       await s.close();
     }
@@ -283,8 +283,8 @@ test("every station response says what it serves from", async () => {
     try {
       const res = await s.get(`/api/clinical/allergies?patient=${P}`);
       assert.equal(res.status, 200);
-      assert.equal(res.headers.get("x-northstar-station-as-of"), rig.fill.manifest.takenAt);
-      assert.ok(Number(res.headers.get("x-northstar-station-age-hours")) >= 0);
+      assert.equal(res.headers.get("x-healthsystems-station-as-of"), rig.fill.manifest.takenAt);
+      assert.ok(Number(res.headers.get("x-healthsystems-station-age-hours")) >= 0);
     } finally {
       await s.close();
     }

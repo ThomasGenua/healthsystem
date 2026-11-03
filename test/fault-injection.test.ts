@@ -74,7 +74,7 @@ function seedChannel(db: Db, id: string, enabled = true): void {
 }
 
 test("a source that cannot be read becomes an outage, not silence", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-fault-"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-fault-"));
   writeFileSync(join(dir, "001.txt"), "ADT one");
   const sink = await collector();
   const engine = new Engine({ dbPath: ":memory:", tickMs: 15 });
@@ -119,7 +119,7 @@ test("a source that cannot be read becomes an outage, not silence", async () => 
 });
 
 test("the source coming back clears the outage without anyone saying so", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-fault-"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-fault-"));
   const sink = await collector();
   const engine = new Engine({ dbPath: ":memory:", tickMs: 15 });
   const cap = captureErr();
@@ -147,7 +147,7 @@ test("the source coming back clears the outage without anyone saying so", async 
 });
 
 test("one bad file is reported without declaring the link down", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-fault-"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-fault-"));
   // An archive directory that cannot exist: its parent is a regular file.
   // A real misconfiguration, and it fails *after* the message is stored.
   const blocker = join(dir, "blocker");
@@ -309,7 +309,7 @@ test("a health check does not throw on a record it cannot read", () => {
 });
 
 test("an unreachable source reaches the operator's three surfaces, and the detail only reaches one", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-fault-"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-fault-"));
   rmSync(dir, { recursive: true, force: true });
   const sink = await collector();
   const engine = new Engine({ dbPath: ":memory:", tickMs: 15 });
@@ -338,7 +338,7 @@ test("an unreachable source reaches the operator's three surfaces, and the detai
 
     // Open, so labelled by channel and stage and nothing unbounded.
     const metrics = await (await fetch(`${base}/metrics`)).text();
-    assert.match(metrics, /northstar_channel_source_failures\{channel="t-api",stage="read"\} [1-9]/);
+    assert.match(metrics, /healthsystems_channel_source_failures\{channel="t-api",stage="read"\} [1-9]/);
     assert.ok(!metrics.includes(dir));
 
     // Authenticated, so this is where an operator reads what happened.

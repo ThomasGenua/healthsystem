@@ -11,14 +11,14 @@ test("synthetic alert sink records firing/recovery but drops arbitrary payload f
   try {
     for (const status of ["firing", "resolved"]) {
       const res = await fetch(base + "/alerts", { method: "POST", body: JSON.stringify({ alerts: [
-        { status, labels: { alertname: "NorthstarServiceDown", patient: "do-not-retain" }, annotations: { secret: "do-not-retain" } },
-        { status, labels: { alertname: "NorthstarPrivatePatientName" } },
+        { status, labels: { alertname: "HealthSystemsServiceDown", patient: "do-not-retain" }, annotations: { secret: "do-not-retain" } },
+        { status, labels: { alertname: "HealthSystemsPrivatePatientName" } },
       ] }) });
       assert.equal(res.status, 200); await res.body?.cancel();
     }
     const events = await (await fetch(base + "/events")).json();
     assert.deepEqual(events, { syntheticOnly: true, events: [
-      { name: "NorthstarServiceDown", status: "firing" }, { name: "NorthstarServiceDown", status: "resolved" },
+      { name: "HealthSystemsServiceDown", status: "firing" }, { name: "HealthSystemsServiceDown", status: "resolved" },
     ] });
     const bad = await fetch(base + "/alerts", { method: "POST", body: "not JSON" });
     assert.equal(bad.status, 400); await bad.body?.cancel();

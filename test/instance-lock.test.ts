@@ -23,8 +23,8 @@ import { until } from "./helpers.ts";
 import type { ChannelConfig } from "../src/types.ts";
 
 function tempDb(): { dir: string; path: string; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-lock-"));
-  return { dir, path: join(dir, "northstar.db"), cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-lock-"));
+  return { dir, path: join(dir, "healthsystems.db"), cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
 
 test("a second engine on the same database refuses to start", async () => {
@@ -40,7 +40,7 @@ test("a second engine on the same database refuses to start", async () => {
       (err: Error) => {
         // The message has to tell an operator what to do, not just that
         // something is wrong.
-        assert.match(err.message, /another Northstar instance owns this database/);
+        assert.match(err.message, /another HealthSystems instance owns this database/);
         assert.match(err.message, new RegExp(`pid ${process.pid}`));
         assert.match(err.message, /duplicate messages/);
         return true;
@@ -74,7 +74,7 @@ test("stopping a refused engine does not free the claim it lost to", async () =>
 
     // And it is still enforced, rather than merely present.
     const third = new Engine({ dbPath: path, tickMs: 100_000 });
-    await assert.rejects(() => third.start(), /another Northstar instance owns this database/);
+    await assert.rejects(() => third.start(), /another HealthSystems instance owns this database/);
     await third.stop();
   } finally {
     await first.stop();

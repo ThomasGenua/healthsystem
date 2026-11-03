@@ -23,8 +23,8 @@ import { VisitView } from "../src/workspace/visit.ts";
 import { Refusal } from "../src/core/refusal.ts";
 
 function clinic() {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-proc-"));
-  const db = new Db(join(dir, "northstar.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-proc-"));
+  const db = new Db(join(dir, "healthsystems.db"));
   const record = new ClinicalRecord(db);
   return {
     db,
@@ -143,8 +143,8 @@ test("a retraction leaves the original on the chart chain", () => {
 });
 
 test("one custodian cannot read another's procedures", () => {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-proc-iso-"));
-  const root = new Db(join(dir, "northstar.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-proc-iso-"));
+  const root = new Db(join(dir, "healthsystems.db"));
   try {
     root.createTenant("north", "Northern Health");
     root.createTenant("south", "Southern Health");

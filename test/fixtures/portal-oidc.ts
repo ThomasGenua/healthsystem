@@ -56,7 +56,7 @@ export async function portalFixture(options: {
           res.writeHead(400).end(); return;
         }
         return json({ token_type: "Bearer", expires_in: 3600,
-          access_token: mint({ aud: "northstar", scope: "patient/*.read", ...options.accessClaims }),
+          access_token: mint({ aud: "healthsystems", scope: "patient/*.read", ...options.accessClaims }),
           id_token: mint({ aud: "portal", nonce: p.get("nonce"), ...options.idClaims }),
         });
       }
@@ -84,10 +84,10 @@ export async function portalFixture(options: {
   tenant.patientAccess.hold({ resultId: held.id, category: "clinician-will-discuss", reason: "Review with clinician",
     releaseAt: new Date(Date.now() + 86400_000).toISOString(), by: actor });
   const config: PortalLoginConfig = { issuer, clientId: "portal", clientSecret: "fixture-secret", origin: base,
-    audience: "northstar", scopes: "openid patient/*.read", allowLoopbackHttp: true };
+    audience: "healthsystems", scopes: "openid patient/*.read", allowLoopbackHttp: true };
   const login = new PortalLogin(config);
   const api = await startApi(engine, port, "127.0.0.1", {
-    auth: new AuthGate({ jwt: new JwtVerifier({ issuer, audience: "northstar", jwksUri: `${issuer}/jwks` }), tenants: engine.db }),
+    auth: new AuthGate({ jwt: new JwtVerifier({ issuer, audience: "healthsystems", jwksUri: `${issuer}/jwks` }), tenants: engine.db }),
     portalLogin: login, rateLimit: { enabled: false },
   });
   return { engine, base, issuer, config, login, grant, actor, mint, get exchanges() { return exchanges; },
@@ -141,7 +141,7 @@ export function responseCookie(response: Response, name: string): string {
 }
 export async function beginLogin(base: string) {
   const start = await fetch(`${base}/auth/portal/login`, { redirect: "manual" });
-  const binding = responseCookie(start, "northstar-login");
+  const binding = responseCookie(start, "healthsystems-login");
   if (start.status !== 303) throw new Error(`login start returned ${start.status}`);
   const authorization = await fetch(start.headers.get("location")!, { redirect: "manual" });
   return { binding, callback: authorization.headers.get("location")!, authorizationUrl: start.headers.get("location")! };
@@ -149,7 +149,7 @@ export async function beginLogin(base: string) {
 export async function finishLogin(base: string) {
   const pending = await beginLogin(base);
   const response = await fetch(pending.callback, { redirect: "manual", headers: { cookie: pending.binding } });
-  const session = responseCookie(response, "northstar-session");
+  const session = responseCookie(response, "healthsystems-session");
   const info = await (await fetch(`${base}/auth/portal`, { headers: { cookie: session } })).json() as { authenticated: boolean; csrf: string };
   return { ...pending, response, session, info };
 }

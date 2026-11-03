@@ -41,4 +41,4 @@ jobs:
         run: npm run staging:drill
       - name: Ensure drill containers are stopped, retain volumes
         if: always()
-        run: docker compose -p northstar-alert-drill -f deploy/staging/compose.yaml -f deploy/staging/monitoring.yaml --profile monitoring down
+        run: docker compose -p healthsystems-alert-drill -f deploy/staging/compose.yaml -f deploy/staging/monitoring.yaml --profile monitoring down

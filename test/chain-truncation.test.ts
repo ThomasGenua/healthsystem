@@ -30,8 +30,8 @@ import { AuditStore } from "../src/audit/store.ts";
 import { takeBackup, verifyBackup } from "../src/core/backup.ts";
 
 function tempDb(): { db: Db; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-trunc-"));
-  const db = new Db(join(dir, "northstar.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-trunc-"));
+  const db = new Db(join(dir, "healthsystems.db"));
   return {
     db,
     cleanup: () => {
@@ -174,8 +174,8 @@ test("a truncated snapshot is rejected at backup-verify time", async () => {
   // snapshot fails when it is taken rather than on the day it is restored.
   // Half of that was not true: verification walked the links, so a snapshot
   // with its tail removed passed. This is the half that was missing.
-  const dir = mkdtempSync(join(tmpdir(), "northstar-snap-"));
-  const db = new Db(join(dir, "northstar.db"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-snap-"));
+  const db = new Db(join(dir, "healthsystems.db"));
   try {
     seed(db, 10);
     const audit = new AuditStore(db);

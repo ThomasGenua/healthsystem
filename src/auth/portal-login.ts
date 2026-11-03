@@ -59,8 +59,8 @@ export class PortalLogin {
       throw new Error("portal login needs an exact public origin, issuer, client id/secret, audience and openid scopes (no offline_access)");
     }
     const prefix = origin.protocol === "https:" ? "__Host-" : "";
-    this.sessionCookie = `${prefix}northstar-session`;
-    this.loginCookie = `${prefix}northstar-login`;
+    this.sessionCookie = `${prefix}healthsystems-session`;
+    this.loginCookie = `${prefix}healthsystems-login`;
   }
 
   private setCookie(res: ServerResponse, name: string, value: string, maxAge: number): void {
@@ -92,7 +92,7 @@ export class PortalLogin {
     req.headers.authorization = `Bearer ${session.token}`;
     const safe = req.method === "GET" || req.method === "HEAD";
     if (req.headers["sec-fetch-site"] === "cross-site" || (!safe &&
-        (req.headers.origin !== this.config.origin || req.headers["x-northstar-csrf"] !== session.csrf))) {
+        (req.headers.origin !== this.config.origin || (req.headers["x-healthsystems-csrf"] ?? req.headers["x-northstar-csrf"]) !== session.csrf))) {
       return { ok: false, status: 403, error: "request origin or CSRF token invalid" };
     }
     session.idle = Date.now() + 15 * 60_000;
@@ -147,7 +147,7 @@ export class PortalLogin {
       return true;
     }
     if (req.method === "POST" && path === `${PATH}/logout`) {
-      if (req.headers.origin !== this.config.origin || (session && req.headers["x-northstar-csrf"] !== session.csrf)) {
+      if (req.headers.origin !== this.config.origin || (session && (req.headers["x-healthsystems-csrf"] ?? req.headers["x-northstar-csrf"]) !== session.csrf)) {
         json(res, 403, { error: "request origin or CSRF token invalid" });
         return true;
       }

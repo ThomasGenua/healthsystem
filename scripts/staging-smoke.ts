@@ -5,7 +5,7 @@ try {
   const checks = await stagingSmoke(process.argv[2] ?? "http://127.0.0.1:18686");
   if (process.argv.includes("--scanner")) {
     const scanner = new ClamAvScanner({ port: 3310, timeoutMs: 10_000 });
-    if ((await scanner.scan(Buffer.from("Northstar synthetic scanner probe"), "probe.txt")).verdict !== "clean" ||
+    if ((await scanner.scan(Buffer.from("HealthSystems synthetic scanner probe"), "probe.txt")).verdict !== "clean" ||
         (await scanner.scan(Buffer.from(EICAR_TEST_STRING), "eicar.txt")).verdict !== "infected") {
       throw new Error("Scanner did not classify the synthetic clean/EICAR probes correctly");
     }

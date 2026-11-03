@@ -28,7 +28,7 @@ const CHANNEL: ChannelConfig = {
 
 /** A live engine on a real file, since the point is backing up a live database. */
 async function liveEngine(dir: string, messages = 5): Promise<Engine> {
-  const engine = new Engine({ dbPath: join(dir, "northstar.db"), tickMs: 15 });
+  const engine = new Engine({ dbPath: join(dir, "healthsystems.db"), tickMs: 15 });
   engine.registerMapping(MAPPING);
   await engine.start();
   // SQLite auto-checkpoints WAL back into the main file once it crosses a
@@ -50,7 +50,7 @@ async function liveEngine(dir: string, messages = 5): Promise<Engine> {
 }
 
 test("a snapshot of a live database is consistent and independently verifiable", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-backup-"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-backup-"));
   const engine = await liveEngine(dir);
   try {
     // The engine is running and has committed data through WAL, which is the
@@ -86,11 +86,11 @@ test("a snapshot of a live database is consistent and independently verifiable",
 test("a copied file is not a backup, but a snapshot of the same database is", async () => {
   // The reason this module exists. Under WAL, committed rows can still live in
   // the -wal sidecar, so the main file alone is not the database.
-  const dir = mkdtempSync(join(tmpdir(), "northstar-wal-"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-wal-"));
   const engine = await liveEngine(dir, 5);
   try {
     const naive = join(dir, "naive-copy.db");
-    writeFileSync(naive, readFileSync(join(dir, "northstar.db")));
+    writeFileSync(naive, readFileSync(join(dir, "healthsystems.db")));
 
     // Under WAL the main file can lack even the schema until a checkpoint, so
     // reading the copy may fail outright rather than merely come up short.
@@ -120,7 +120,7 @@ test("a copied file is not a backup, but a snapshot of the same database is", as
 });
 
 test("verification rejects a corrupt snapshot rather than reporting success", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-corrupt-"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-corrupt-"));
   const engine = await liveEngine(dir, 4);
   try {
     const result = await takeBackup(engine.db, { dir: join(dir, "backups") });
@@ -141,7 +141,7 @@ test("verification rejects a corrupt snapshot rather than reporting success", as
 });
 
 test("retention keeps the newest snapshots and removes the rest", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-prune-"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-prune-"));
   const engine = await liveEngine(dir, 2);
   const backups = join(dir, "backups");
   try {
@@ -152,9 +152,9 @@ test("retention keeps the newest snapshots and removes the rest", async () => {
     // Each snapshot is exactly one file: no -wal or -shm left beside it, or a
     // restore would apply a write-ahead log from a different database.
     assert.deepEqual(readdirSync(backups).sort(), [
-      "northstar-2026-01-01T00-00-00.db",
-      "northstar-2026-01-02T00-00-00.db",
-      "northstar-2026-01-03T00-00-00.db",
+      "healthsystems-2026-01-01T00-00-00.db",
+      "healthsystems-2026-01-02T00-00-00.db",
+      "healthsystems-2026-01-03T00-00-00.db",
     ]);
 
     const removed = prune(backups, 2);
@@ -162,7 +162,7 @@ test("retention keeps the newest snapshots and removes the rest", async () => {
     assert.match(removed[0], /2026-01-01/, "the oldest goes first");
 
     const left = readdirSync(backups).sort();
-    assert.deepEqual(left, ["northstar-2026-01-02T00-00-00.db", "northstar-2026-01-03T00-00-00.db"]);
+    assert.deepEqual(left, ["healthsystems-2026-01-02T00-00-00.db", "healthsystems-2026-01-03T00-00-00.db"]);
 
     // Keeping more than exist is not an error.
     assert.deepEqual(prune(backups, 10), []);
@@ -173,7 +173,7 @@ test("retention keeps the newest snapshots and removes the rest", async () => {
 });
 
 test("the backup endpoint writes, verifies and records a snapshot", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-api-backup-"));
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-api-backup-"));
   const engine = await liveEngine(dir, 3);
   const api = await startApi(engine, 0, "127.0.0.1");
   const previous = process.env.PORTAGE_BACKUP_DIR;

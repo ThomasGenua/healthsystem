@@ -54,8 +54,8 @@ const GP = { actorId: "dr-tetso", actorKind: "practitioner" };
 const CLERK = { actorId: "clerk-hale", actorKind: "staff" };
 
 function site() {
-  const dir = mkdtempSync(join(tmpdir(), "northstar-lifecycle-"));
-  const path = join(dir, "northstar.db");
+  const dir = mkdtempSync(join(tmpdir(), "healthsystems-lifecycle-"));
+  const path = join(dir, "healthsystems.db");
   const a = new Db(path);
   const b = new Db(path);
   return {

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Northstar</title>
+<title>HealthSystems</title>
 <link rel="icon" type="image/x-icon" sizes="16x16 32x32 48x48 64x64" href="/favicon.ico">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
@@ -113,7 +113,7 @@ input,select{min-height:44px;max-width:100%}button,select{font:inherit}
 @media(max-width:600px){header{padding:18px 14px}header label{margin-left:0}main{padding:18px 12px}nav{flex-wrap:nowrap;overflow:auto}nav button{white-space:nowrap}.grid3{grid-template-columns:1fr}.cards .card{flex:1}pre{max-width:100%}}
 </style>
 <style>
-:root{--bg:#f4f7fb;--panel:#fff;--line:#dce5ef;--text:#162b46;--dim:#60748d;--acc:#087e74;--ok:#147762;--warn:#986300;--bad:#b53345}body{font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;font-size:14px}header{background:#fff;color:var(--text);padding:20px max(24px,calc((100vw - 1280px)/2));align-items:center;gap:18px;border-bottom:1px solid var(--line)}header h1{font-size:26px;letter-spacing:-1.1px;text-transform:lowercase}header h1 a{color:#142d49}header h1 .brand-star{color:#168d81;margin-right:8px}header .sub{color:var(--dim);font-size:11px;border-left:1px solid var(--line);padding-left:17px}header .account{margin-left:auto;display:flex;align-items:center;gap:12px;font-size:12px;color:var(--dim)}.avatar{background:#dcf3ed;color:#137363;font-weight:700;border-radius:50%;width:35px;height:35px;display:inline-grid;place-items:center}.signout{border:1px solid var(--line);border-radius:7px;background:#fff;padding:8px 12px;cursor:pointer;color:var(--text)}
+:root{--bg:#f4f7fb;--panel:#fff;--line:#dce5ef;--text:#162b46;--dim:#60748d;--acc:#087e74;--ok:#147762;--warn:#986300;--bad:#b53345}body{font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;font-size:14px}header{background:#fff;color:var(--text);padding:20px max(24px,calc((100vw - 1280px)/2));align-items:center;gap:18px;border-bottom:1px solid var(--line)}header h1{font-size:26px;letter-spacing:-1.1px;text-transform:none}header h1 a{color:#142d49}header h1 .brand-star{color:#168d81;margin-right:8px}header .sub{color:var(--dim);font-size:11px;border-left:1px solid var(--line);padding-left:17px}header .account{margin-left:auto;display:flex;align-items:center;gap:12px;font-size:12px;color:var(--dim)}.avatar{background:#dcf3ed;color:#137363;font-weight:700;border-radius:50%;width:35px;height:35px;display:inline-grid;place-items:center}.signout{border:1px solid var(--line);border-radius:7px;background:#fff;padding:8px 12px;cursor:pointer;color:var(--text)}
 nav{padding:0 max(24px,calc((100vw - 1280px)/2));gap:24px;background:#fff;align-items:center;overflow:visible}nav>button,nav>details>summary{font:inherit;font-size:13px;font-weight:550;color:var(--dim);min-height:58px;padding:17px 8px;cursor:pointer;border:0;border-bottom:3px solid transparent;background:none;white-space:nowrap;list-style:none}nav>button.on,nav>details.on>summary{color:#087e74;border-bottom-color:#168d81;background:none;border-radius:0}nav>details{position:relative}nav summary:after{content:"⌄";margin-left:10px;color:#8091a5}.submenu{position:absolute;left:0;top:58px;width:235px;padding:9px;z-index:30;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 15px 35px #132a4717}.submenu button{display:block;width:100%;text-align:left;border:0;border-radius:7px;padding:11px 13px;min-height:40px;font-size:13px}.submenu button.on{background:#e9f6f1;color:#087e74}.submenu button:hover{background:#f0f5fa}.workspace-top{max-width:1280px;margin:0 auto;padding:31px 24px 0}.crumb{color:#75869b;font-size:11px;margin-bottom:8px}.workspace-top h2{font-size:29px;letter-spacing:-1px;margin:0;font-weight:650}.workspace-top p{color:var(--dim);font-size:13px;margin:7px 0 0}.workspace-top .page-heading{display:flex;justify-content:space-between;align-items:center;gap:20px}.live-pill{display:inline-flex;align-items:center;gap:7px;padding:7px 12px;border:1px solid #cde5dc;background:#edf8f3;color:#24725e;border-radius:20px;font-size:11px}.live-pill:before{content:"";width:6px;height:6px;background:#1b9c7c;border-radius:50%}main{max-width:1280px;padding:24px;margin:0 auto;min-height:55vh}.cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:17px;margin-bottom:24px}.card{border-radius:13px;box-shadow:0 3px 8px #132a4703;padding:23px;min-width:0}.card .n{font-size:33px;font-weight:650;letter-spacing:-1.2px;margin:10px 0 7px;line-height:1.1}.card .l{font-size:11px;font-weight:600;letter-spacing:.15px;text-transform:uppercase}.metric-note{font-size:11px;color:#71839a}.metric-icon{float:right;width:31px;height:31px;display:grid;place-items:center;background:#eff4fa;border-radius:8px;color:#507393;font-size:18px}.dashboard-grid{display:grid;grid-template-columns:1.5fr 1fr;gap:20px}.dashboard-grid .card{padding:26px}.section-title{font-size:16px;font-weight:650;letter-spacing:-.3px;margin:0 0 8px}.muted{color:var(--dim);font-size:12px}.empty-state{padding:34px 15px;text-align:center;background:#f7f9fc;border:1px dashed #d4dfeb;border-radius:10px;margin-top:24px}.empty-state .empty-icon{color:#8099b1;font-size:30px}.empty-state h3{font-size:14px;font-weight:600;margin:10px 0 5px}.empty-state p{color:var(--dim);font-size:12px;max-width:330px;margin:0 auto 16px}.status-line{display:flex;justify-content:space-between;gap:16px;align-items:center;padding:14px 0;border-bottom:1px solid #edf1f6;font-size:12px}.status-line:last-child{border-bottom:0}.status-label{color:var(--dim)}.quick-actions{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:21px}.quick-action{border:1px solid var(--line);border-radius:12px;background:#fff;padding:18px;text-align:left;cursor:pointer;color:var(--text)}.quick-action span{display:block;font-size:12px;font-weight:650;margin-bottom:5px}.quick-action small{color:var(--dim);font-size:11px}.quick-action:hover{border-color:#80c6b6;background:#f4fbf8}.workspace-footer{max-width:1280px;padding:25px 24px;margin:auto;display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;color:#7a899d;font-size:11px}.workspace-footer a{color:#60748d;margin-left:18px}.key-state{display:flex;align-items:center;justify-content:space-between;gap:18px;border:1px solid #cce6dd;border-radius:10px;background:#edf8f3;color:#286d5e;padding:13px 17px;margin-bottom:23px;font-size:12px}.key-state button{background:transparent;border:0;cursor:pointer;font-size:12px;color:#146c5d;font-weight:650}.key-box{max-width:690px;margin:30px auto;padding:38px;background:white;border:1px solid var(--line);border-radius:19px;box-shadow:0 14px 40px #132a4708}.key-box h2{font-size:26px;letter-spacing:-.7px;margin:12px 0}.key-box p{color:var(--dim);line-height:1.8}.key-box .key-icon{width:52px;height:52px;border-radius:14px;background:#dcf3eb;color:#087e74;display:grid;place-items:center;font-size:26px}.key-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:23px}.key-box button.primary,button.primary{background:#153451;color:#fff;border-color:#153451}.key-box label{display:block;margin-top:15px;font-size:12px;color:var(--dim)}.key-box input{width:100%;margin-top:7px}.key-box pre{background:#f3f8f6;color:#164e43}.panel .why,.rowlist .item{background:#f1f6fa}.tag.ok{background:#e2f4eb}.tag.warn{background:#fff2d8}.tag.bad{background:#fce6eb}.tag.dim{background:#edf2f7}table{border-radius:12px}th{background:#f6f9fc;padding:12px;font-weight:600;color:#667c94}td{padding:12px}button.act{background:#f0f6f7;border-color:#d3e1e5;border-radius:8px;padding:9px 15px;font-size:12px}input,select,textarea{border-radius:8px;font-size:13px}.bar h2{margin-right:auto}pre{font-size:12px}.setup-error{color:var(--bad)}[hidden]{display:none!important}
 @media(max-width:850px){.cards{grid-template-columns:repeat(2,minmax(0,1fr))}.dashboard-grid{grid-template-columns:1fr}.quick-actions{grid-template-columns:1fr 1fr}nav{gap:14px;padding:0 16px}header{padding:18px 20px}header .sub{display:none}.workspace-top{padding:25px 20px 0}main{padding:20px}.key-box{padding:27px}.account-email{display:none}}
 @media(max-width:520px){nav{gap:3px;justify-content:space-between}nav>button,nav>details>summary{font-size:11px;padding:16px 4px}nav summary:after{margin-left:3px}.submenu{width:195px}nav>details:nth-last-child(-n+2) .submenu{right:0;left:auto}.workspace-top .page-heading{align-items:start}.workspace-top h2{font-size:25px}.live-pill{font-size:10px;white-space:nowrap}.cards{gap:10px}.card{padding:17px}.quick-actions{grid-template-columns:1fr}.key-state{align-items:start}.workspace-footer{padding:20px}header .account{gap:8px}.key-box{margin:10px auto}.dashboard-grid .card{padding:20px}}
@@ -121,11 +121,11 @@ nav{padding:0 max(24px,calc((100vw - 1280px)/2));gap:24px;background:#fff;align-
 <style>button.act.primary{background:#153451;color:#fff;border-color:#153451}label[for="key-name"]{display:block;font-size:12px;color:var(--dim);margin:18px 0 7px}#key-name{width:min(100%,380px)}.notice{padding:17px;background:#edf8f3;border:1px solid #cce6dd;border-radius:10px}</style></head>
 <body>
 <a class="skip" href="#main">Skip to main content</a>
-<header><h1><a href="/"><span class="brand-star">✦</span>northstar.</a></h1><span class="sub">CLINICAL WORKSPACE</span><div class="account"><span class="avatar" aria-hidden="true">T</span><span class="account-email" id="account-email">Administrator</span><button class="signout" id="sign-out" type="button">Sign out</button></div></header>
+<header><h1><a href="/"><span class="brand-star">✦</span>HealthSystems</a></h1><span class="sub">CLINICAL WORKSPACE</span><div class="account"><span class="avatar" aria-hidden="true">T</span><span class="account-email" id="account-email">Administrator</span><button class="signout" id="sign-out" type="button">Sign out</button></div></header>
 <nav id="nav" aria-label="Workspace"></nav>
 <div class="workspace-top" id="workspace-top"><div class="crumb">Workspace / <span id="breadcrumb">Overview</span></div><div class="page-heading"><div><h2 id="page-title">Your workspace, at a glance.</h2><p id="page-description">A clear view of your connections, activity, and next steps.</p></div><span class="live-pill">Local workspace</span></div></div>
 <main id="main" tabindex="-1"><p role="status">Checking your session…</p></main>
-<footer class="workspace-footer"><span>Northstar · Connected care</span><div><a href="/privacy">Privacy policy</a><a href="/terms">Terms of service</a><a href="/contact">Help & setup ↗</a></div></footer>
+<footer class="workspace-footer"><span>HealthSystems · Connected care</span><div><a href="/privacy">Privacy policy</a><a href="/terms">Terms of service</a><a href="/contact">Help & setup ↗</a></div></footer>
 <script nonce="{{nonce}}">
 const $=(s,el=document)=>el.querySelector(s);
 /* Escapes apostrophes as well as the usual four, so a value is safe in a
@@ -145,13 +145,15 @@ const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&
 // not fail — it would silently log every clinician out, drop the stored API
 // key, and lose the chart they had open, on the first load after an upgrade.
 const store=(s,k)=>{
-  const cur=s.getItem("northstar."+k);
+  const cur=s.getItem("healthsystems."+k);
   if(cur!==null)return cur;
-  const old=s.getItem("portage."+k);
-  if(old!==null){try{s.setItem("northstar."+k,old);s.removeItem("portage."+k);}catch{}}
-  return old;
+  for(const prefix of ["northstar.","portage."]){
+    const old=s.getItem(prefix+k);
+    if(old!==null){try{s.setItem("healthsystems."+k,old);s.removeItem(prefix+k);}catch{}return old;}
+  }
+  return null;
 };
-const KEY="northstar.apikey";
+const KEY="healthsystems.apikey";
 const apiKey=()=>store(localStorage,"apikey")||"";
 const j=async(url,opts={})=>{
   // `allow403` is for the caller that renders a 403 itself. A 403 is two
@@ -445,13 +447,13 @@ window.findPatient=async()=>{
   }catch(e){out.innerHTML=`<p class="err">${esc(e.message||e)}</p>`}
 };
 
-window.openChart=id=>{sessionStorage.setItem("northstar.patient",id);$("#pt").value=id;loadChart()};
+window.openChart=id=>{sessionStorage.setItem("healthsystems.patient",id);$("#pt").value=id;loadChart()};
 
 window.loadChart=async()=>{
   const id=$("#pt").value.trim();
   const out=$("#chart");
   if(!id){out.innerHTML="";return}
-  sessionStorage.setItem("northstar.patient",id);
+  sessionStorage.setItem("healthsystems.patient",id);
   out.innerHTML=`<p class="none">loading…</p>`;
   let c;
   try{
@@ -545,7 +547,7 @@ window.loadWorklist=async()=>{
   const who=$("#cl").value.trim();
   const out=$("#wl");
   if(!who){out.innerHTML="";return}
-  localStorage.setItem("northstar.clinician",who);
+  localStorage.setItem("healthsystems.clinician",who);
   try{
     const {data:w}=await j("/api/clinical/worklist?clinician="+encodeURIComponent(who));
     const {data:res}=await j("/api/clinical/results");
@@ -834,10 +836,10 @@ const SOURCES={
   mllp:[["port","number","6661"],["host","text","0.0.0.0"]],
   http:[["path","text","channel id if blank"]],
   fhir:[["resourceTypes","text","Patient,Observation (blank = all)"]],
-  filedrop:[["dir","text","/var/spool/northstar"],["pattern","text","\\\\.hl7$"],["archiveDir","text","optional"],["pollMs","number","2000"],["cron","text","optional, e.g. */5 * * * *"]],
+  filedrop:[["dir","text","/var/spool/healthsystems"],["pattern","text","\\\\.hl7$"],["archiveDir","text","optional"],["pollMs","number","2000"],["cron","text","optional, e.g. */5 * * * *"]],
   dbpoll:[["dbPath","text","/var/lib/lab/results.db"],["query","text","SELECT * FROM r WHERE id > ? ORDER BY id"],["cursorColumn","text","id"],["pollMs","number","2000"],["cron","text","optional"]],
   sqlpoll:[["driver","text","postgres | mysql"],["dsn","text","postgres://user:pw@host:5432/db"],["query","text","SELECT * FROM r WHERE id > ? ORDER BY id"],["cursorColumn","text","id"],["initialCursor","text","0"],["pollMs","number","2000"],["cron","text","optional"]],
-  sftp:[["host","text","sftp.example.org"],["port","number","22"],["username","text","northstar"],["password","text",""],["privateKeyPath","text","/etc/northstar/id_ed25519"],["dir","text","/outbound"],["pattern","text","\\\\.hl7$"],["archiveDir","text","optional"],["pollMs","number","5000"],["cron","text","optional"]],
+  sftp:[["host","text","sftp.example.org"],["port","number","22"],["username","text","healthsystems"],["password","text",""],["privateKeyPath","text","/etc/healthsystems/id_ed25519"],["dir","text","/outbound"],["pattern","text","\\\\.hl7$"],["archiveDir","text","optional"],["pollMs","number","5000"],["cron","text","optional"]],
 };
 const STEPS={
   "filter.hl7Type":[["allow","text","ADT^A01,ADT^A04"]],
@@ -1111,13 +1113,13 @@ async function showSetup(){
   $('#workspace-top').hidden=true;$('#nav').hidden=true;
   const count=adminSession.activeKeys;
   $('#main').innerHTML=`<section class="key-box"><div class="key-icon" aria-hidden="true">⚿</div><p class="muted" style="text-transform:uppercase;letter-spacing:1.5px;font-size:10px;margin-top:22px">WORKSPACE SETUP · API ACCESS</p><h2>${count?'Your API keys are already set up.':'Let’s set up your first API key.'}</h2><p>${count?`This instance has ${count} active API key${count===1?'':'s'}. Existing keys stay private and cannot be shown again. You can continue with your admin session, or generate a separate key for an integration.`:'Generate an API key before proceeding. Your admin account signs you in; API keys connect your integrations.'}</p><div class="key-state"><span>${count?'✓ API key already generated':'API key generation required'}</span></div><div id="key-output" aria-live="polite"></div><div class="key-actions"><button class="act primary" id="continue-workspace" ${count?'':'disabled'}>Continue to workspace →</button><button class="act" id="setup-generate">Generate a new API key</button></div><p class="muted">You are signed in with your administrator account. Keep generated keys in a secure password manager.</p></section>`;
-  $('#continue-workspace').addEventListener('click',()=>{sessionStorage.setItem('northstar.setupConfirmed','yes');openWorkspace()});
+  $('#continue-workspace').addEventListener('click',()=>{sessionStorage.setItem('healthsystems.setupConfirmed','yes');openWorkspace()});
   $('#setup-generate').addEventListener('click',async()=>{await generateKey();if($('#generated-secret')){$('#continue-workspace').disabled=false;$('#setup-generate').disabled=true;$('#setup-generate').textContent='New API key generated'}});
 }
 function openWorkspace(){workspaceReady=true;document.documentElement.dataset.workspaceReady='yes';$('#workspace-top').hidden=false;$('#nav').hidden=false;nav();render()}
-$('#sign-out').addEventListener('click',async()=>{if(!adminSession){localStorage.removeItem(KEY);localStorage.removeItem('portage.apikey');location.assign('/login');return}try{const r=await fetch('/auth/admin/logout',{method:'POST',headers:{'x-csrf-token':adminSession.csrf}});if(!r.ok)throw Error('Could not sign out. Refresh and try again.');sessionStorage.removeItem('northstar.setupConfirmed');location.assign('/login')}catch(e){alert(e.message)}});
+$('#sign-out').addEventListener('click',async()=>{if(!adminSession){localStorage.removeItem(KEY);localStorage.removeItem('northstar.apikey');localStorage.removeItem('portage.apikey');location.assign('/login');return}try{const r=await fetch('/auth/admin/logout',{method:'POST',headers:{'x-csrf-token':adminSession.csrf}});if(!r.ok)throw Error('Could not sign out. Refresh and try again.');for(const prefix of ['healthsystems.','northstar.','portage.'])sessionStorage.removeItem(prefix+'setupConfirmed');location.assign('/login')}catch(e){alert(e.message)}});
 async function boot(){
-  try{const r=await fetch('/auth/admin/session');if(r.ok){const s=await r.json();if(s.enabled===false&&s.apiKeyRequired===false){$('#account-email').textContent='Local workspace';$('#sign-out').hidden=true;openWorkspace();return}if(s.authenticated){adminSession=s;$('#account-email').textContent='Administrator';if(s.activeKeys&&sessionStorage.getItem('northstar.setupConfirmed')==='yes')openWorkspace();else await showSetup();return}}}
+  try{const r=await fetch('/auth/admin/session');if(r.ok){const s=await r.json();if(s.enabled===false&&s.apiKeyRequired===false){$('#account-email').textContent='Local workspace';$('#sign-out').hidden=true;openWorkspace();return}if(s.authenticated){adminSession=s;$('#account-email').textContent='Administrator';if(s.activeKeys&&store(sessionStorage,"setupConfirmed")==='yes')openWorkspace();else await showSetup();return}}}
   catch{ $('#main').innerHTML='<p class="err" role="alert">Unable to check your session. Refresh to try again.</p>';return }
   if(apiKey()){try{const r=await fetch('/api/keys',{headers:{authorization:'Bearer '+apiKey()}});if(r.ok){$('#account-email').textContent='API key access';openWorkspace();return}}catch{}}
   location.replace('/login'+location.hash);

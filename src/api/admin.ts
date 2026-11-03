@@ -118,7 +118,7 @@ function uiHtml(): string {
     try {
       UI_HTML = readFileSync(new URL("./ui.html", import.meta.url), "utf8");
     } catch {
-      UI_HTML = "<h1>Northstar</h1><p>ui.html not found</p>";
+      UI_HTML = "<h1>HealthSystems</h1><p>ui.html not found</p>";
     }
   }
   return UI_HTML;
@@ -130,7 +130,7 @@ function patientHtml(): string {
     try {
       PATIENT_HTML = readFileSync(new URL("./portal.html", import.meta.url), "utf8");
     } catch {
-      PATIENT_HTML = "<h1>Northstar</h1><p>portal.html not found</p>";
+      PATIENT_HTML = "<h1>HealthSystems</h1><p>portal.html not found</p>";
     }
   }
   return PATIENT_HTML;
@@ -200,7 +200,7 @@ export function hstsHeader(env: NodeJS.ProcessEnv = process.env): string | null 
   // HTTP again should lower this before it ships, not after.
   if (configured === undefined) return "max-age=31536000";
   if (!/^\d+$/.test(configured.trim())) {
-    throw new Error(`NORTHSTAR_HSTS_MAX_AGE must be a whole number of seconds, or 0 to send no header; got "${configured}"`);
+    throw new Error(`HEALTHSYSTEMS_HSTS_MAX_AGE must be a whole number of seconds, or 0 to send no header; got "${configured}"`);
   }
   const seconds = Number(configured.trim());
   return seconds === 0 ? null : `max-age=${seconds}`;
@@ -261,7 +261,7 @@ export interface ApiOptions {
   /**
    * A development identity provider, when one is running.
    *
-   * Present only where `NORTHSTAR_DEV_IDP=on`, which `server.ts` refuses to
+   * Present only where `HEALTHSYSTEMS_DEV_IDP=on`, which `server.ts` refuses to
    * combine with a configured issuer. Its routes are mounted like any other
    * and its tokens are validated by the ordinary verifier over the ordinary
    * JWKS fetch; there is no branch anywhere in the gate for it.
@@ -489,7 +489,7 @@ async function route(
   }
   // Expose the recipient only when a visitor follows an email button, not in public HTML.
   if (method === "GET" && path === "/contact/email") {
-    const subjects: Record<string,string> = { demo: "Northstar demo request", setup: "Northstar setup enquiry", privacy: "Northstar privacy enquiry", terms: "Northstar terms enquiry", general: "Northstar enquiry" };
+    const subjects: Record<string,string> = { demo: "HealthSystems demo request", setup: "HealthSystems setup enquiry", privacy: "HealthSystems privacy enquiry", terms: "HealthSystems terms enquiry", general: "HealthSystems enquiry" };
     const topic = url.searchParams.get("topic") ?? "general";
     if (!Object.hasOwn(subjects, topic)) return send(res, 400, { error: "Unknown contact topic" });
     const recipient = readEnv("CONTACT_EMAIL") ?? "segun@oodler.ca";
@@ -562,7 +562,7 @@ async function route(
       configured: false,
       ok: false,
       detail:
-        "no NORTHSTAR_BACKUP_REMOTE; a snapshot that never leaves this machine does not survive the failures that need a restore",
+        "no HEALTHSYSTEMS_BACKUP_REMOTE; a snapshot that never leaves this machine does not survive the failures that need a restore",
     };
     return send(res, 200, {
       ok: true,
@@ -614,8 +614,8 @@ async function route(
       fhir: Record<string, number>;
     };
     const lines: string[] = [];
-    // Every series is exposed twice: once as `northstar_*` and once under the
-    // pre-rename `portage_*`.
+    // Every series is exposed as `healthsystems_*` and under the
+    // legacy `northstar_*` and `portage_*` aliases.
     //
     // A metric name is not branding — it is the string in somebody's dashboard
     // query and, more importantly, in their alerting rules. A renamed metric
@@ -625,7 +625,7 @@ async function route(
     // hundred bytes per scrape and keeps every existing rule working until the
     // dashboards have been moved by hand.
     const metric = (name: string, help: string, type: string, samples: Array<[string, number]>): void => {
-      for (const full of [`northstar_${name}`, `portage_${name}`]) {
+      for (const full of [`healthsystems_${name}`, `northstar_${name}`, `portage_${name}`]) {
         lines.push(`# HELP ${full} ${help}`, `# TYPE ${full} ${type}`);
         for (const [labels, value] of samples) lines.push(`${full}${labels} ${value}`);
       }
@@ -723,7 +723,7 @@ async function route(
     const remoteStatus = remote?.status() ?? {
       configured: false,
       ok: false,
-      detail: "no NORTHSTAR_BACKUP_REMOTE",
+      detail: "no HEALTHSYSTEMS_BACKUP_REMOTE",
     };
     metric("backup_remote_configured", "1 when an off-machine backup destination is configured.", "gauge", [
       ["", remoteStatus.configured ? 1 : 0],
@@ -1803,7 +1803,9 @@ async function route(
       // Every station response says what it is serving from, so a consumer
       // that never opens the assembled chart still cannot mistake outage
       // data for current data without ignoring the response saying so.
+      res.setHeader("x-healthsystems-station-as-of", stationState.asOf);
       res.setHeader("x-northstar-station-as-of", stationState.asOf);
+      res.setHeader("x-healthsystems-station-age-hours", String(stationState.ageHours));
       res.setHeader("x-northstar-station-age-hours", String(stationState.ageHours));
 
       // Break-glass works offline — §6 of the design, and the reason a
@@ -5684,7 +5686,7 @@ async function route(
     });
   }
 
-  // SMART App Launch discovery. Northstar is a resource server: it validates
+  // SMART App Launch discovery. HealthSystems is a resource server: it validates
   // tokens, it does not issue them, so this advertises the site's own
   // authorization server and the capabilities this end actually enforces.
   // Nothing is listed here that is not implemented — a discovery document

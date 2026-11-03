@@ -1,15 +1,15 @@
 /**
  * Online backup.
  *
- * Losing this database is the worst thing that can happen to a Northstar node.
+ * Losing this database is the worst thing that can happen to a HealthSystems node.
  * It holds the queue that has not drained yet, the lineage that proves what
  * flowed, the audit trail that proves who read it, and the facade a consumer
  * is reading from. A community site with a week of backlog waiting out a
  * satellite outage has a week of unsent clinical messages in one file.
  *
  * Copying that file is not a backup. The engine runs SQLite in WAL mode, so
- * committed data lives in `northstar.db-wal` until a checkpoint folds it in;
- * `cp northstar.db` while the process is running yields a torn or stale
+ * committed data lives in `healthsystems.db-wal` until a checkpoint folds it in;
+ * `cp healthsystems.db` while the process is running yields a torn or stale
  * snapshot that looks fine until the day it is needed. This uses SQLite's
  * online backup API instead, which takes a consistent snapshot of a live
  * database without stopping writes.
