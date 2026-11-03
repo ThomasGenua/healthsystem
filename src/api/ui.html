@@ -86,14 +86,40 @@ svg text{fill:var(--dim);font-size:10px}
 .chartgrid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
 @media(max-width:900px){.chartgrid{grid-template-columns:1fr}}
 </style>
+<style>
+:root{--bg:#f4f1ea;--panel:#fffefa;--line:#d7dfd5;--text:#19392d;--dim:#52665a;--acc:#235943;--ok:#21643a;--warn:#805607;--bad:#a22929}
+body{font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{background:#173c30;color:#fff;flex-wrap:wrap;padding:24px max(20px,calc((100vw - 1360px)/2));gap:12px}
+header h1{font-size:25px;letter-spacing:-.06em}header .sub{color:#d5e4db}
+header input{max-width:100%;min-height:44px}header label{margin-left:auto}
+nav{background:var(--panel);padding:8px 16px;gap:4px}nav button{border-radius:8px;min-height:44px}
+nav button.on{background:#e5eee4;border-bottom-color:var(--acc);font-weight:650}
+main{max-width:1360px;margin:auto;padding:28px 20px;overflow-wrap:anywhere}
+h2{font-size:16px;text-transform:none;letter-spacing:0;font-weight:650;color:var(--text)}
+.card{border-radius:14px;padding:20px}.card .n{font-size:30px}.card .l,th{font-size:13px}
+.panel{border-radius:12px;padding:18px}.panel .why,.rowlist .item{background:#eef2e9}
+.banner{background:#fff6df}.banner.bad{background:#fff0ed}
+.tag.ok{background:#e3f1e4}.tag.warn{background:#fff0c8}.tag.bad{background:#ffe4df}.tag.dim{background:#e9ede7}
+tr.row:hover td{background:#eef2e9}button.act{background:#e5eee4;color:var(--text);min-height:44px}
+input,select{min-height:44px;max-width:100%}button,select{font:inherit}
+:focus-visible{outline:3px solid #b17813;outline-offset:3px}
+.skip{position:absolute;left:-9999px}.skip:focus{left:12px;top:8px;z-index:10;background:#fff;padding:10px}
+.table-scroll{overflow:auto;max-width:100%}.table-scroll table{min-width:650px}
+.arrangements{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:16px}
+.arrangements .card{min-width:0}.arrangements h3{margin:0 0 8px}.arrangements dl{margin-bottom:0}
+.arrangements dt{color:var(--dim);font-size:13px;margin-top:10px}.arrangements dd{margin:0}
+.arrangements details{margin-top:16px;border-top:1px solid var(--line);padding-top:12px}.arrangements summary{cursor:pointer;min-height:44px}.arrangements label{display:block;margin:8px 0}.arrangements input,.arrangements textarea{width:100%}.arrangements textarea{min-height:90px}.arrangements form{margin-bottom:18px}.arrangements button:disabled{opacity:.6;cursor:wait}
+@media(max-width:600px){header{padding:18px 14px}header label{margin-left:0}main{padding:18px 12px}nav{flex-wrap:nowrap;overflow:auto}nav button{white-space:nowrap}.grid3{grid-template-columns:1fr}.cards .card{flex:1}pre{max-width:100%}}
+</style>
 </head>
 <body>
+<a class="skip" href="#main">Skip to main content</a>
 <header><h1>NORTHSTAR</h1><span class="sub">health integration engine</span>
-  <span class="sub" style="margin-left:auto">api key</span>
+  <label class="sub" for="apikey">API key</label>
   <input id="apikey" type="password" placeholder="ptg_… (blank if auth is off)" title="Stored in this browser only and sent with every request">
 </header>
-<nav id="nav"></nav>
-<main id="main"></main>
+<nav id="nav" aria-label="Workspace"></nav>
+<main id="main" tabindex="-1"></main>
 <script nonce="{{nonce}}">
 const $=(s,el=document)=>el.querySelector(s);
 /* Escapes apostrophes as well as the usual four, so a value is safe in a
@@ -138,10 +164,10 @@ const j=async(url,opts={})=>{
 };
 const tag=(t,cls)=>`<span class="tag ${cls}">${esc(t)}</span>`;
 const stTag=s=>tag(s,{processed:"ok",delivered:"ok",filtered:"dim",queued:"warn",retrying:"warn",inflight:"warn",error:"bad",dead:"bad",discarded:"dim",active:"ok"}[s]||"dim");
-const TABS=["Dashboard","Chart","Worklist","Break-glass","Privacy","History","Audit","Channels","Designer","Mappings","Messages","Deliveries","FHIR","Subscriptions","Terminology","Conformance"];
+const TABS=["Dashboard","Chart","Worklist","Clinic board","Arrangements","Break-glass","Privacy","History","Audit","Channels","Designer","Mappings","Messages","Deliveries","FHIR","Subscriptions","Terminology","Conformance"];
 let tab="Dashboard",timer=null;
 
-function nav(){$("#nav").innerHTML=TABS.map(t=>`<button class="${t===tab?"on":""}" data-act="go" data-tab="${esc(t)}">${t}</button>`).join("")}
+function nav(){$("#nav").innerHTML=TABS.map(t=>`<button class="${t===tab?"on":""}" ${t===tab?'aria-current="page"':''} data-act="go" data-tab="${esc(t)}">${t}</button>`).join("");$("#nav .on")?.scrollIntoView({block:'nearest',inline:'nearest'})}
 window.go=t=>{tab=t;if(timer){clearInterval(timer);timer=null}nav();render()};
 
 /* Every handler is bound here rather than written into the markup.
@@ -224,6 +250,7 @@ document.addEventListener("click",e=>{
   call(CLICK,el.dataset.act,el);
 });
 document.addEventListener("input",e=>{call(TYPED,e.target.dataset.fn,e.target)});
+document.addEventListener("submit",e=>{if(e.target.matches('form[data-arrangement]')){e.preventDefault();saveArrangement(e.target)}});
 document.addEventListener("change",e=>{
   const el=e.target;
   const key=el.dataset.set;
@@ -238,10 +265,13 @@ document.addEventListener("change",e=>{
 
 async function render(){
   const m=$("#main");
+  const renderingTab=tab;
   try{
     if(tab==="Dashboard")await dash(m);
     else if(tab==="Chart")await chartTab(m);
     else if(tab==="Worklist")await worklistTab(m);
+    else if(tab==="Arrangements")await arrangementsTab(m);
+    else if(tab==="Clinic board")await clinicBoardTab(m);
     else if(tab==="Break-glass")await glassTab(m);
     else if(tab==="Privacy")await privacyTab(m);
     else if(tab==="History")await history(m);
@@ -255,7 +285,69 @@ async function render(){
     else if(tab==="Subscriptions")await subsTab(m);
     else if(tab==="Terminology")await termTab(m);
     else if(tab==="Conformance")await confTab(m);
-  }catch(e){m.innerHTML=`<p class="err">${esc(e.message||e)}</p>`}
+    m.querySelectorAll('table').forEach(table=>{if(table.parentElement.classList.contains('table-scroll'))return;const wrap=document.createElement('div');wrap.className='table-scroll';wrap.tabIndex=0;wrap.setAttribute('role','region');wrap.setAttribute('aria-label','Scrollable data table');table.before(wrap);wrap.append(table)});
+  }catch(e){if(tab===renderingTab)m.innerHTML=`<p class="err" role="alert">${esc(e.message||e)}</p><button class="act" data-act="render">Try again</button>`}
+}
+
+async function arrangementsTab(m){
+  m.innerHTML='<h2>Outstanding care arrangements</h2><p role="status">Loading arrangements…</p>';
+  const r=await j('/api/clinical/arrangements-outstanding');
+  if(tab!=="Arrangements")return;
+  if(r.status!==200||!Array.isArray(r.data.rows))throw new Error(r.data.error||'Arrangements could not be loaded.');
+  const {rows,withheldCount}=r.data;
+  m.innerHTML=`<div class="bar"><h2>Outstanding care arrangements</h2><button class="act" data-act="render">Refresh</button></div>
+    <p>Transport, accommodation, interpreters and other support awaiting confirmation. A request is not a confirmed booking.</p>
+    ${withheldCount?'<div class="banner" role="status">Some arrangements are withheld by patient directives. This list is incomplete.</div>':''}
+    <p role="status" data-arrangement-count="${rows.length}">${rows.length} visible outstanding arrangement${rows.length===1?'':'s'}</p>
+    <div class="arrangements">${rows.map(a=>`<article class="card"><h3>${esc(a.kind)}</h3>${tag(a.status,'warn')}
+      <p>${esc(a.detail)}</p><dl><dt>Patient</dt><dd>${esc(a.patient_id||'Visit-wide support')}</dd>
+      <dt>Visit</dt><dd>${esc(a.visit_id)}</dd><dt>Responsible person</dt><dd data-owner>${esc(a.owner_id||'Unassigned — ownership needed')}</dd>
+      <dt>Last updated</dt><dd data-updated>${esc(a.updated_at)}</dd></dl>
+      <details><summary>Manage arrangement</summary>
+      ${[['assign','ownerId','Responsible person ID','Assign responsibility'],['confirm','evidence','Written confirmation evidence','Confirm arrangement'],['cancel','reason','Cancellation reason','Cancel arrangement']].map(([operation,field,label,button])=>`
+        <form data-arrangement="${esc(a.id)}" data-operation="${operation}" data-field="${field}">
+          <label>${label}${operation==='assign'?`<input name="value" required autocomplete="off" value="${esc(a.owner_id||'')}">`:'<textarea name="value" required></textarea>'}</label>
+          <button class="act" type="submit">${button}</button><p data-feedback role="status" aria-live="polite"></p>
+        </form>`).join('')}
+      </details><p data-outcome role="status" aria-live="polite"></p></article>`).join('')}</div>
+    ${!rows.length?'<p>No visible outstanding arrangements.</p>':''}`;
+}
+
+async function saveArrangement(form){
+  const card=form.closest('article'), feedback=form.querySelector('[data-feedback]');
+  if(card.dataset.saving)return;
+  const value=form.elements.value.value.trim();
+  if(!value){feedback.textContent='Enter the required details before saving.';return}
+  card.dataset.saving='yes';card.querySelectorAll('button').forEach(b=>b.disabled=true);
+  feedback.className='';feedback.textContent='Saving…';
+  try{
+    const r=await j('/api/clinical/arrangement-'+form.dataset.operation,{allow403:true,method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:form.dataset.arrangement,[form.dataset.field]:value})});
+    if(r.status!==200)throw new Error(r.data.error||'Could not save this change.');
+    card.querySelector('[data-owner]').textContent=r.data.owner_id||'Unassigned — ownership needed';
+    card.querySelector('[data-updated]').textContent=r.data.updated_at;
+    if(form.dataset.operation==='assign'){feedback.textContent='Responsibility assigned.'}
+    else{
+      card.querySelector('.tag').textContent=r.data.status;
+      card.querySelector('[data-outcome]').textContent=r.data.status==='confirmed'?'Confirmation saved. This item is no longer outstanding.':'Cancellation saved. This item is no longer outstanding.';
+      card.querySelector('details').remove();
+      const count=card.closest('main')?.querySelector('[data-arrangement-count]');
+      if(count){const n=Math.max(0,Number(count.dataset.arrangementCount)-1);count.dataset.arrangementCount=String(n);count.textContent=n+' visible outstanding arrangement'+(n===1?'':'s')}
+    }
+  }catch(error){feedback.textContent=error.message||'Could not save. Your details are still here.';feedback.className='err'}
+  finally{delete card.dataset.saving;card.querySelectorAll('button').forEach(b=>b.disabled=false)}
+}
+
+async function clinicBoardTab(m){
+  m.innerHTML='<h2>Clinic attention board</h2><p role="status">Loading clinic queues…</p>';
+  const r=await j('/api/clinical/clinic-attention');
+  if(tab!=='Clinic board')return;
+  if(r.status!==200)throw new Error(r.data.error||'Clinic queues could not be loaded.');
+  m.innerHTML=`<div class="bar"><h2>Clinic attention board</h2><button class="act" data-act="render">Refresh</button></div>
+    <p>Outstanding work across this clinic. Counts include only items visible to you.</p>
+    <div class="arrangements">${[['arrangements','Unconfirmed arrangements'],['intake','Intake awaiting review'],['unreachable','Patients not reached'],['handoffs','Unaccepted handoffs'],['followUps','Open follow-ups']].map(([key,title])=>{
+      const panel=r.data[key];
+      return `<section class="card"><h3>${title}</h3>${panel?.available?`<div class="n">${esc(panel.count)} visible</div><p>${esc(panel.because)}</p>${panel.withheldCount?'<p class="banner">Some items are withheld. This count is incomplete.</p>':''}`:'<p class="err">This queue is unavailable; its count is unknown.</p>'}${key==='arrangements'?'<button class="act" data-act="go" data-tab="Arrangements">Manage arrangements</button>':''}</section>`;
+    }).join('')}</div>`;
 }
 
 /* ---------------------------------------------------------------- clinical

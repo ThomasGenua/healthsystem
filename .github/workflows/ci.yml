@@ -81,13 +81,35 @@ jobs:
       - run: npm ci
       - name: bill of materials
         run: npm run --silent sbom > sbom.cdx.json
+      # Before packing the one that gets published: two independent checkouts
+      # of this commit, packed, compared. The attestation below says where an
+      # artifact came from, which is not the same as anybody else being able
+      # to produce it.
+      - name: the package builds the same twice
+        run: npm run repro
       - name: the tarball a site would install
         run: npm pack --pack-destination .
+      # Published beside the artifact rather than only in the log, because a
+      # digest somebody has to go and find in a build's output is a digest
+      # nobody checks.
+      - name: digests
+        run: |
+          sha256sum sbom.cdx.json *.tgz | tee SHA256SUMS
+          {
+            echo '### Supply chain'
+            echo
+            echo 'Reproducible: two checkouts of this commit packed to the same bytes.'
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: supply-chain
           path: |
             sbom.cdx.json
+            SHA256SUMS
             *.tgz
           if-no-files-found: error
       # Only on the default branch. An attestation says this artifact was built

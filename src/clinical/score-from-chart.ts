@@ -277,7 +277,7 @@ export function news2FromChart(
 export function curb65FromChart(
   deps: ChartScoreDeps,
   patientId: string,
-  supplied: { confusion?: boolean; ureaMmolL?: number } = {},
+  supplied: { confusion?: boolean; ureaMmolL?: number; units?: { ureaMmolL?: string } } = {},
   opts: { asOf?: string; maxAgeHours?: number } = {}
 ): ChartScore {
   const asOf = opts.asOf ?? new Date().toISOString();
@@ -318,6 +318,11 @@ export function curb65FromChart(
         "serum urea is not read from results here: the LOINC code and units a deployment receives are its own, " +
         "and guessing which result is the urea is how the wrong analyte reaches a disposition decision",
     });
+  } else if (supplied.units !== undefined && supplied.units.ureaMmolL !== "mmol/L") {
+    unavailable.push({
+      input: "ureaMmolL",
+      reason: "supplied urea requires mmol/L; no implicit conversion is made inside a clinical score",
+    });
   }
 
   const result = curb65({
@@ -326,7 +331,8 @@ export function curb65FromChart(
     diastolicBp: values.diastolicBp,
     ...(age === undefined ? {} : { ageYears: age }),
     ...(supplied.confusion === undefined ? {} : { confusion: supplied.confusion }),
-    ...(supplied.ureaMmolL === undefined ? {} : { ureaMmolL: supplied.ureaMmolL }),
+    ...(supplied.ureaMmolL === undefined || (supplied.units !== undefined && supplied.units.ureaMmolL !== "mmol/L")
+      ? {} : { ureaMmolL: supplied.ureaMmolL }),
   });
   return finish(result, used, unavailable, asOf);
 }

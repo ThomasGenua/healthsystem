@@ -296,7 +296,7 @@ to activate it in production. See `43` below.
 
 ## 55. Independent conformance laboratory
 
-- **Current capability** — 1500 tests, typecheck, and resilience workflows,
+- **Current capability** — 1599 tests, typecheck, and resilience workflows,
   all run by this project on Ubuntu only.
 - **Target standard** — Runs the official HL7 validator; version pinned once
   the artifact can be fetched.
@@ -309,17 +309,20 @@ to activate it in production. See `43` below.
 ## 56. Verifiable software supply chain
 
 - **Current capability** — A CycloneDX SBOM per CI run, from `npm sbom`, over
-  the tree an ordinary `npm ci` produces; the packed tarball beside it; both
-  uploaded as build artifacts; and, on the default branch only, a build
-  provenance attestation over both. CI actions are pinned by commit.
+  the tree an ordinary `npm ci` produces; the packed tarball beside it; a
+  `SHA256SUMS` of both; all three uploaded as build artifacts with the digests
+  also in the run summary; and, on the default branch only, a build provenance
+  attestation over the SBOM and the tarball. Every run first packs two
+  independent checkouts of the commit and refuses to continue unless they are
+  byte-identical. CI actions are pinned by commit.
 - **Target standard** — SPDX or CycloneDX SBOM; SLSA build provenance —
   **the version named in the specification given to this project ("1.2") could
   not be verified**, and `slsa.dev` is blocked from this environment. The
   version this project knows as published is `1.0`. No version is pinned here
   until one is confirmed against the canonical source. NIST SSDF `SP 800-218`
   `[unverified]`.
-- **Status** — `SELF_TESTED` for the SBOM; `IMPLEMENTED` for the attestation;
-  `NOT_IMPLEMENTED` for reproducibility.
+- **Status** — `SELF_TESTED` for the SBOM and for reproducibility;
+  `IMPLEMENTED` for the attestation.
 
   The attestation is not `SELF_TESTED` because nothing in this repository
   exercises it: it is produced by `actions/attest-build-provenance` on a
@@ -337,13 +340,31 @@ to activate it in production. See `43` below.
   optional driver a default install takes is listed, because "no required
   runtime dependency" is not the same claim as an empty install and the
   document is what tells them apart.
-- **Known gap** — Nothing here makes the build reproducible: two runs produce
-  two tarballs, and no one has checked they are identical. The attestation
-  says where an artifact came from, not that anyone else can produce it.
+
+  `test/reproducible-build.test.ts` runs `scripts/repro-pack.ts`, which packs
+  two independent checkouts of HEAD and compares them — two checkouts rather
+  than one tree twice, because the usual cause of a difference is a timestamp
+  and a second pack of the same tree sees the same mtimes. The detector was
+  checked against a build deliberately made unreproducible (a `prepack` step
+  writing the clock into a file): it reports the two digests and exits
+  non-zero, so a pass means something.
+- **What reproducibility was measured across, and what it was not** — the
+  same commit packed identically from: two checkouts minutes apart, two
+  checkouts five hours apart with different mtimes, a shallow clone and a full
+  one, and npm 10 against npm 11. Each of those was run by hand once, and the
+  two-checkout case is the one CI repeats. **Not** measured: a different
+  platform, architecture, locale, or Node major. The check runs whatever
+  invokes it, so what it defends against is a change to this repository that
+  makes the package vary — not a claim that any machine anywhere lands on the
+  same bytes.
+- **Known gap** — No independent rebuild. Everything above is this project
+  checking its own output; nobody outside it has taken the published digest
+  and produced a matching tarball, which is the only thing that would make
+  the word "verifiable" mean what a reader assumes.
 - **External validation required** — Independent verification of build
   reproducibility and provenance.
-- **Risk and rollback** — Low. Additive CI and one npm script; rolling back is
-  deleting the job.
+- **Risk and rollback** — Low. Additive CI and two npm scripts; rolling back
+  is deleting the job.
 
 ## 57. Accessibility and human-factors evidence
 

@@ -65,9 +65,32 @@ export interface ApprovalRow {
   clinicalOwnerId: string | null;
   clinicalOwnerDisplay: string | null;
   reviewDue: string | null;
+  approvedPopulation: string | null;
+  reviewedAt: string | null;
+  licensingAcceptedBy: string | null;
+  licensingAcceptedAt: string | null;
   recordedBy: { id: string; kind: string };
   supersedes: string | null;
   recordedAt: string;
+}
+
+interface ReviewEvidence {
+  implementationVersion: string;
+  approvedPopulation: string;
+  reviewedAt: string;
+  licensingAcceptedBy: string;
+}
+
+export interface ScoreAuthorization {
+  approvalId: string;
+  scoreId: ScoreId;
+  implementationVersion: string;
+  clinicalOwner: string | null;
+  approvedPopulation: string | null;
+  reviewedAt: string | null;
+  reviewDue: string | null;
+  licensingAcceptedBy: string | null;
+  licensingAcceptedAt: string | null;
 }
 
 export interface ScoreState {
@@ -98,6 +121,10 @@ function rowToApproval(r: Record<string, unknown>): ApprovalRow {
     clinicalOwnerId: (r.clinical_owner_id as string | null) ?? null,
     clinicalOwnerDisplay: (r.clinical_owner_display as string | null) ?? null,
     reviewDue: (r.review_due as string | null) ?? null,
+    approvedPopulation: (r.approved_population as string | null) ?? null,
+    reviewedAt: (r.reviewed_at as string | null) ?? null,
+    licensingAcceptedBy: (r.licensing_accepted_by as string | null) ?? null,
+    licensingAcceptedAt: (r.licensing_accepted_at as string | null) ?? null,
     recordedBy: { id: String(r.recorded_by_id), kind: String(r.recorded_by_kind) },
     supersedes: (r.supersedes as string | null) ?? null,
     recordedAt: String(r.recorded_at),
@@ -165,6 +192,15 @@ export class ScoreGovernance {
         enabled: false,
         daysUntilReview: null,
         detail: `${definition.name} was disabled on ${approval.recordedAt} by ${approval.recordedBy.id}: ${approval.reason}`,
+      };
+    }
+    if (approval.clinicalOwnerId === null) {
+      return {
+        ...base,
+        status: "disabled",
+        enabled: false,
+        daysUntilReview: null,
+        detail: `${definition.name} has a legacy approval without a directory-registered clinical owner; re-approval is required`,
       };
     }
     if (approval.implementationVersion !== runningVersion) {
@@ -253,6 +289,9 @@ export class ScoreGovernance {
    * that a caller who forgets to check cannot accidentally serve a number.
    */
   require(scoreId: ScoreId, asOf: Date = new Date()): ScoreState {
+    if (!(SCORE_IDS as readonly string[]).includes(scoreId)) {
+      throw new Refusal(`unknown score ${scoreId}`, 400);
+    }
     const state = this.state(scoreId, { asOf });
     if (!state.enabled) {
       throw new Refusal(
@@ -261,6 +300,21 @@ export class ScoreGovernance {
       );
     }
     return state;
+  }
+
+  requireEnabled(scoreId: ScoreId, asOf: Date = new Date()): ScoreAuthorization {
+    const a = this.require(scoreId, asOf).approval!;
+    return {
+      approvalId: a.id,
+      scoreId: a.scoreId,
+      implementationVersion: a.implementationVersion,
+      clinicalOwner: a.clinicalOwnerDisplay,
+      approvedPopulation: a.approvedPopulation,
+      reviewedAt: a.reviewedAt,
+      reviewDue: a.reviewDue,
+      licensingAcceptedBy: a.licensingAcceptedBy,
+      licensingAcceptedAt: a.licensingAcceptedAt,
+    };
   }
 
   /**
@@ -275,6 +329,7 @@ export class ScoreGovernance {
     reason: string;
     clinicalOwnerId?: string;
     reviewDue?: string;
+    evidence?: ReviewEvidence;
     by: { id: string; kind: string };
     at?: Date;
   }): ApprovalRow {
@@ -333,7 +388,23 @@ export class ScoreGovernance {
     }
 
     const at = (input.at ?? new Date()).toISOString();
-    return this.db.transaction(() => this.write(scoreId, decision, reason, ownerId, ownerDisplay, reviewDue, by, at));
+    if (input.evidence) {
+      const evidence = input.evidence;
+      if (evidence.implementationVersion !== SCORE_DEFINITIONS[scoreId].implementationVersion) {
+        throw new Refusal("approval for a different implementation cannot enable this score", 400);
+      }
+      if (!evidence.approvedPopulation.trim() || !evidence.licensingAcceptedBy.trim()) {
+        throw new Refusal("score approval needs the locally approved population and the person accepting the source licensing terms", 400);
+      }
+      if (!isIsoDate(evidence.reviewedAt) || new Date(evidence.reviewedAt).getTime() > new Date(at).getTime()) {
+        throw new Refusal("reviewedAt must be an ISO date-time not in the future", 400);
+      }
+      if (new Date(reviewDue!).getTime() <= new Date(at).getTime() ||
+          new Date(reviewDue!).getTime() <= new Date(evidence.reviewedAt).getTime()) {
+        throw new Refusal("reviewDue must be in the future and after reviewedAt", 400);
+      }
+    }
+    return this.db.transaction(() => this.write(scoreId, decision, reason, ownerId, ownerDisplay, reviewDue, by, at, input.evidence));
   }
 
   /**
@@ -353,7 +424,8 @@ export class ScoreGovernance {
     ownerDisplay: string | null,
     reviewDue: string | null,
     by: { id: string; kind: string },
-    at: string
+    at: string,
+    evidence?: ReviewEvidence
   ): ApprovalRow {
     const prior = this.latest(scoreId);
     const row: ApprovalRow = {
@@ -367,6 +439,10 @@ export class ScoreGovernance {
       clinicalOwnerId: ownerId,
       clinicalOwnerDisplay: ownerDisplay,
       reviewDue,
+      approvedPopulation: evidence?.approvedPopulation.trim() ?? (decision === "disabled" ? prior?.approvedPopulation ?? null : null),
+      reviewedAt: evidence?.reviewedAt ?? (decision === "disabled" ? prior?.reviewedAt ?? null : null),
+      licensingAcceptedBy: evidence?.licensingAcceptedBy.trim() ?? (decision === "disabled" ? prior?.licensingAcceptedBy ?? null : null),
+      licensingAcceptedAt: evidence ? at : (decision === "disabled" ? prior?.licensingAcceptedAt ?? null : null),
       recordedBy: { id: by.id, kind: by.kind },
       supersedes: prior?.id ?? null,
       recordedAt: at,
@@ -376,13 +452,15 @@ export class ScoreGovernance {
         `INSERT INTO score_approvals
            (tenant_id, id, score_id, implementation_version, decision, reason,
             clinical_owner_id, clinical_owner_display, review_due,
-            recorded_by_id, recorded_by_kind, supersedes, recorded_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            recorded_by_id, recorded_by_kind, supersedes, recorded_at,
+            approved_population, reviewed_at, licensing_accepted_by, licensing_accepted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         this.db.tenantId, row.id, row.scoreId, row.implementationVersion, row.decision, row.reason,
         row.clinicalOwnerId, row.clinicalOwnerDisplay, row.reviewDue,
-        row.recordedBy.id, row.recordedBy.kind, row.supersedes, row.recordedAt
+        row.recordedBy.id, row.recordedBy.kind, row.supersedes, row.recordedAt,
+        row.approvedPopulation, row.reviewedAt, row.licensingAcceptedBy, row.licensingAcceptedAt
       );
     return row;
   }
@@ -392,6 +470,7 @@ export class ScoreGovernance {
     scoreId: ScoreId;
     clinicalOwnerId: string;
     reviewDue: string;
+    evidence?: ReviewEvidence;
     reason: string;
     by: { id: string; kind: string };
     at?: Date;
@@ -408,4 +487,22 @@ export class ScoreGovernance {
   }): ApprovalRow {
     return this.record({ ...input, decision: "disabled" });
   }
+}
+
+export function requireScoreUnits(value: string, units: unknown): Readonly<Record<string, string>> {
+  if (!(SCORE_IDS as readonly string[]).includes(value)) {
+    throw new Refusal(`unknown score ${value}`, 400);
+  }
+  const id = value as ScoreId;
+  const supplied = units && typeof units === "object" && !Array.isArray(units) ? (units as Record<string, unknown>) : {};
+  const accepted: Record<string, string> = {};
+  for (const [field, expected] of Object.entries(SCORE_DEFINITIONS[id].requiredUnits)) {
+    const actual = supplied[field];
+    if (actual === undefined) throw new Refusal(`${id} requires units.${field} = ${JSON.stringify(expected)}; unit was omitted`, 400);
+    if (actual !== expected) {
+      throw new Refusal(`${id} requires units.${field} = ${JSON.stringify(expected)}; incompatible unit`, 400);
+    }
+    accepted[field] = expected;
+  }
+  return Object.freeze(accepted);
 }

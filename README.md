@@ -86,7 +86,7 @@ v0.7.0. The v0.3.0 core (channels; MLLP, HTTP, FHIR, filedrop and dbpoll sources
 - **Documents, procedures and care plans as chart facts rather than notes**, so their absence is visible and structured rather than a gap in prose.
 - **Enrolment attested by a named clerk** who records how they checked, rather than inferred from a token.
 
-1500 tests. Backend first, then the interface that makes the backend's honesty visible.
+1599 tests. Backend first, then the interface that makes the backend's honesty visible.
 
 ### What this is not
 
@@ -114,7 +114,7 @@ Optional, and only if you use the source that needs it: `pg` for a Postgres poll
 npm start
 ```
 
-Boots the engine on port 8686 (override with `NORTHSTAR_PORT`), creates `./data/northstar.db`, registers every mapping in `./mappings`, loads terminology packs from `./terminology` and conformance packs from `./conformance`, and seeds any channel in `./channels` that does not already exist in the database. Four channels ship: ADT to Patient on MLLP 6661, lab ORU to Observation on 6662 (split per OBX), ADT diagnoses to Condition on 6663 (split per DG1), and pharmacy RDE to MedicationRequest on 6664. All four deliver in strict order into the local FHIR facade, so a fresh boot is immediately queryable. The admin UI is at `http://localhost:8686/`.
+Boots the engine on port 8686 (override with `NORTHSTAR_PORT`), creates `./data/northstar.db`, registers every mapping in `./mappings`, loads terminology packs from `./terminology` and conformance packs from `./conformance`, and seeds any channel in `./channels` that does not already exist in the database. Four channels ship: ADT to Patient on MLLP 6661, lab ORU to Observation on 6662 (split per OBX), ADT diagnoses to Condition on 6663 (split per DG1), and pharmacy RDE to MedicationRequest on 6664. All four deliver in strict order into the local FHIR facade, so a fresh boot is immediately queryable. The public landing page is at `http://localhost:8686/`; the admin UI is at `http://localhost:8686/ui` and the patient portal at `/me`.
 
 **The API is authenticated by default.** With no key configured, one is minted at boot and printed once:
 
@@ -142,7 +142,7 @@ curl localhost:8686/fhir/metadata          # open: a discovery document
 ```
 
 ```bash
-npm test          # 1500 tests
+npm test          # 1599 tests
 npm run demo      # scripted satellite outage: store-and-forward through a dead link, ordered drain
 npm run typecheck # strict type check
 ```
@@ -662,6 +662,14 @@ Allergy, immunization, vital-sign, procedure, care-plan and patient-document sta
 
 ### Governed risk scores
 
+Every score is disabled until locally approved. The governance panel and
+`GET /api/clinical/score-governance` report approvals, expiry and withdrawal;
+`POST /api/clinical/score-approve` requires a registered clinical owner, an
+explicit review date and a written reason. Population, review and source-license
+evidence can also be recorded. The draft `score-approval` and `score-approvals`
+routes remain available; `score-approval` requires that evidence and now names
+the owner by directory ID, not free text. See the [runbook](docs/RUNBOOK.md#upgrading).
+
 `POST /api/clinical/score` computes ten deterministic published instruments;
 `POST /api/clinical/chart-score` can assemble NEWS2 and CURB-65 from the chart
 while refusing stale or unavailable inputs. A number without its definition is
@@ -686,7 +694,13 @@ checked. A mismatch that needs a fact about the substance rather than the units
 is refused instead of guessed: relating bilirubin in µmol/L to a mg/dL
 threshold needs that analyte's molar mass, and choosing one on a caller's
 behalf is the silent rescaling the contract exists to prevent. `POST
-/api/clinical/score` is unchanged and still supported.
+/api/clinical/score` remains supported; an optional `units` map, when supplied
+with a complete calculation, must match every catalogue unit exactly. New
+callers should prefer v2's explicit measurements. Chart-derived inputs retain
+main's conversion evidence and compatibility with older unlabelled readings.
+All three routes return an `authorization` snapshot identifying the exact
+approval, owner, review date and any recorded population/licensing evidence;
+their audit rows identify the implementation and approval without copying inputs.
 
 Inputs are checked against a domain before any arithmetic runs. A domain says
 what a measurement *can* be — a saturation is a percentage, a count of
@@ -1715,7 +1729,7 @@ All of these are engine sources, so everything downstream — pipeline, lineage,
 
 ## Admin UI
 
-`GET /` serves a single-file, no-build UI over the public API: a dashboard with live counts, history charts, an access audit view, channels with hash-chain verification, a channel designer, a mapping editor with live fixtures, a message browser with per-step lineage, the delivery queue with dead-letter replay and discard, a FHIR facade browser, subscription management, terminology lookups, a conformance validator, and a **Privacy** tab over the office queues. It is deliberately thin; anything it does, curl does.
+`GET /ui` serves a single-file, no-build UI over the public API: a dashboard with live counts, history charts, an access audit view, channels with hash-chain verification, a channel designer, a mapping editor with live fixtures, a message browser with per-step lineage, the delivery queue with dead-letter replay and discard, a FHIR facade browser, subscription management, terminology lookups, a conformance validator, and a **Privacy** tab over the office queues. It is deliberately thin; anything it does, curl does.
 
 `GET /me` is a separate English/French patient application. Its public document contains no patient records; chart data is fetched only through authorized patient APIs. It is not a certified portal and does not itself enrol anyone.
 

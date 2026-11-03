@@ -13,12 +13,12 @@
 */
 :root{
   --bg:#f4f1ea;--panel:#fff;--line:#d7d0c4;--text:#1f1b16;--dim:#5c564c;
-  --acc:#1d4f8c;--warn:#8a5a12;--held:#6b4f9e;--bad:#8c1d1d;--ok:#1d6b3f;
+  --acc:#235943;--warn:#8a5a12;--held:#6b4f9e;--bad:#8c1d1d;--ok:#1d6b3f;
   font-size:18px;
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);
-  font:1rem/1.55 Georgia,Cambria,"Times New Roman",serif}
+  font:1rem/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
 a{color:var(--acc)}
 button{font:inherit}
 .skip{position:absolute;left:-999px;width:1px;height:1px;overflow:hidden}
@@ -67,6 +67,18 @@ ul.plain li:last-child{border-bottom:none}
 footer{max-width:46rem;margin:0 auto;padding:14px 16px 30px;color:var(--dim);font-size:.85rem}
 [hidden]{display:none !important}
 @media (max-width:34rem){:root{font-size:17px}main{padding:12px}}
+header{padding:24px 16px;background:#173c30;color:#fff}
+.bar h1{font-size:1.5rem;letter-spacing:-.06em}.bar .sub{color:#d5e4db}
+.bar select{color:var(--text)}
+.who{background:#e5eee4;padding:14px 16px}
+main{padding-top:28px;min-height:45vh}
+h2{font-family:Georgia,serif;font-size:1.8rem;font-weight:normal;line-height:1.2}
+.card{border-radius:16px;padding:22px;margin-bottom:18px;box-shadow:0 4px 18px #173c3006}
+.card h3{font-size:1.1rem}.note,.err{border-radius:0 12px 12px 0}
+button.act,select,input,textarea{border-radius:8px;min-height:44px}
+button.link{min-height:44px}nav a{padding:14px 12px}
+.card,.who,.plain li{overflow-wrap:anywhere}
+@media(max-width:34rem){header{padding:18px 12px}.card{padding:16px}h2{font-size:1.6rem}}
 </style>
 </head>
 <body>

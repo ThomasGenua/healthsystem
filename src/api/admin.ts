@@ -73,6 +73,7 @@ import { readFhirBundle, readFhirNdjson } from "../migrate/read-fhir.ts";
 import { score as computeScore, SCORE_IDS } from "../clinical/scores.ts";
 import { ingest, MEASURED_FIELDS, SCORE_MEASUREMENTS, type Measurement } from "../clinical/measurement.ts";
 import type { ScoreId } from "../clinical/score-definitions.ts";
+import { requireScoreUnits, type ScoreAuthorization } from "../clinical/score-governance.ts";
 import type { PublicationStatus } from "../conformance/standards.ts";
 import { buildSummary, emptyReasonFor, type SummarySection } from "../clinical/summary.ts";
 import { news2FromChart, curb65FromChart } from "../clinical/score-from-chart.ts";
@@ -107,6 +108,10 @@ import { sendOrder, sendOrderCancellation } from "../orders/send.ts";
 import type { SpecimenDetail } from "../orders/outbound.ts";
 
 let UI_HTML: string | null = null;
+let LANDING_HTML: string | null = null;
+function landingHtml(): string {
+  return LANDING_HTML ??= readFileSync(new URL("./landing.html", import.meta.url), "utf8");
+}
 function uiHtml(): string {
   if (UI_HTML === null) {
     try {
@@ -459,7 +464,11 @@ async function route(
   if (portalLogin && await portalLogin.handle(req, res, path, url)) return;
   if (method === "GET" && path === "/auth/portal") return send(res, 200, { enabled: false, authenticated: false });
 
-  if (method === "GET" && (path === "/" || path === "/ui")) {
+  if (method === "GET" && path === "/") {
+    sendHtml(res, landingHtml());
+    return;
+  }
+  if (method === "GET" && path === "/ui") {
     sendHtml(res, uiHtml());
     return;
   }
@@ -1925,7 +1934,8 @@ async function route(
       resourceType: string,
       produce: (withheldTypes: ReadonlySet<string>) => T,
       count?: (v: T) => number,
-      covers: readonly string[] = [resourceType]
+      covers: readonly string[] = [resourceType],
+      detail?: (v: T) => string
     ): void => {
       const patient = subject;
       let withheldTypes: ReadonlySet<string> = new Set();
@@ -1966,6 +1976,7 @@ async function route(
         resourceType,
         patient,
         ...(count ? { count: count(value) } : {}),
+        ...(detail ? { detail: detail(value) } : {}),
         // A partly withheld read is not an ordinary one, and the trail is
         // where a privacy office finds out the directive did something. Only
         // the types, never the content: which sections were locked is the
@@ -1989,8 +2000,9 @@ async function route(
       resourceType: string,
       produce: (withheldTypes: ReadonlySet<string>) => T,
       count?: (v: T) => number,
-      covers: readonly string[] = [resourceType]
-    ): void => phiFor(patient, resourceType, produce, count, covers);
+      covers: readonly string[] = [resourceType],
+      detail?: (v: T) => string
+    ): void => phiFor(patient, resourceType, produce, count, covers, detail);
 
     /**
      * Privacy-office reads and writes. Audits, then sends, like `phi` — but
@@ -2956,20 +2968,46 @@ async function route(
           })
       );
     }
+    if (path === "/api/clinical/clinic-attention" && method === "GET") {
+      return phiFor(undefined, "Task", () => {
+        const board = tenant.board.attention();
+        // Counts are disclosures too. Do not count a withheld row as visible,
+        // and do not turn an unwired source into a reassuring zero.
+        const summary = (panel: { rows: Array<{ patient_id: string | null }>; because: string } | undefined, covers: string[]) => {
+          if (!panel) return { available: false };
+          const visible = panel.rows.filter(row => !row.patient_id || !withheld(row.patient_id, covers));
+          return { available: true, count: visible.length, withheldCount: panel.rows.length - visible.length, because: panel.because };
+        };
+        return {
+          arrangements: summary(board.unconfirmedArrangements, ["Appointment"]),
+          intake: summary(board.intakeAwaitingReview, ["QuestionnaireResponse", "DocumentReference", "Task"]),
+          unreachable: summary(board.unreachablePatients, ["Task"]),
+          handoffs: summary(board.unacceptedHandoffs, ["Task", "Encounter"]),
+          followUps: summary(board.openFollowUps, ["Task", "Encounter"]),
+        };
+      });
+    }
+    if (path === "/api/clinical/arrangements-outstanding" && method === "GET") {
+      return phiFor(undefined, "Appointment", () => {
+        const all = tenant.arrangements.unconfirmed();
+        const rows = all.filter(row => !row.patient_id || !withheld(row.patient_id, ["Appointment"]));
+        return { rows, withheldCount: all.length - rows.length };
+      }, result => result.rows.length);
+    }
     if (path === "/api/clinical/arrangements-unconfirmed" && method === "GET") {
       return phi("Appointment", () => tenant.arrangements.unconfirmed(), (r) => r.length);
     }
     if (path === "/api/clinical/arrangement-assign" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as { id?: string; ownerId?: string };
-      if (!body.id || !body.ownerId) return send(res, 400, { error: "id and ownerId required" });
+      if (typeof body.id !== "string" || typeof body.ownerId !== "string" || !body.id || !body.ownerId.trim()) return send(res, 400, { error: "id and ownerId required" });
       const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
-      return phi("Appointment", () => tenant.arrangements.assign(body.id!, body.ownerId!, by));
+      return phiFor(tenant.arrangements.get(body.id)?.patient_id ?? undefined, "Appointment", () => tenant.arrangements.assign(body.id!, body.ownerId!.trim(), by));
     }
     if (path === "/api/clinical/arrangement-confirm" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as { id?: string; evidence?: string };
-      if (!body.id || !body.evidence) return send(res, 400, { error: "id and evidence required" });
+      if (typeof body.id !== "string" || typeof body.evidence !== "string" || !body.id || !body.evidence.trim()) return send(res, 400, { error: "id and evidence required" });
       const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
-      return phi("Appointment", () => tenant.arrangements.confirm(body.id!, { evidence: body.evidence!, by }));
+      return phiFor(tenant.arrangements.get(body.id)?.patient_id ?? undefined, "Appointment", () => tenant.arrangements.confirm(body.id!, { evidence: body.evidence!, by }));
     }
     if (path === "/api/clinical/arrangement-request-external" && method === "POST") {
       // requestExternally() is async (a real integration is a network call),
@@ -2996,9 +3034,9 @@ async function route(
     }
     if (path === "/api/clinical/arrangement-cancel" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as { id?: string; reason?: string };
-      if (!body.id || !body.reason) return send(res, 400, { error: "id and reason required" });
+      if (typeof body.id !== "string" || typeof body.reason !== "string" || !body.id || !body.reason.trim()) return send(res, 400, { error: "id and reason required" });
       const by = { actorId: auth.ok ? auth.principal.id : "unauthenticated", actorKind: auth.ok ? auth.principal.kind : "unknown" };
-      return phi("Appointment", () => tenant.arrangements.cancel(body.id!, { reason: body.reason!, by }));
+      return phiFor(tenant.arrangements.get(body.id)?.patient_id ?? undefined, "Appointment", () => tenant.arrangements.cancel(body.id!, { reason: body.reason!, by }));
     }
     if (path === "/api/clinical/waitlist" && method === "GET") {
       const service = url.searchParams.get("service");
@@ -3619,6 +3657,13 @@ async function route(
       });
       return send(res, 200, entry);
     }
+    const scoreDetail = (value: { authorization: ScoreAuthorization }) =>
+      `score ${value.authorization.scoreId} implementation ${value.authorization.implementationVersion} ` +
+      `approval ${value.authorization.approvalId} owner ${value.authorization.clinicalOwner} ` +
+      `review due ${value.authorization.reviewDue}`;
+    if (path === "/api/clinical/score-approvals" && method === "GET") {
+      return phiOffice("RiskAssessment", () => tenant.scoreGovernance.all(), (rows) => rows.length);
+    }
     if (path === "/api/clinical/score-governance" && method === "GET") {
       const within = Number(url.searchParams.get("expiringWithinDays") ?? 30);
       return phiOffice("RiskAssessment", () => ({
@@ -3643,12 +3688,16 @@ async function route(
       }
       return phiOffice("RiskAssessment", () => ({ withinDays: within, scores: tenant.scoreGovernance.expiring(within) }));
     }
-    if (path === "/api/clinical/score-approve" && method === "POST") {
+    if ((path === "/api/clinical/score-approve" || path === "/api/clinical/score-approval") && method === "POST") {
       const body = JSON.parse(await readBody(req)) as {
         score?: string;
         clinicalOwner?: string;
         reviewDue?: string;
         reason?: string;
+        implementationVersion?: string;
+        approvedPopulation?: string;
+        reviewedAt?: string;
+        licensingAcceptedBy?: string;
       };
       if (!body.score) return send(res, 400, { error: `score required; one of ${SCORE_IDS.join(", ")}` });
       const who = auth.ok ? auth.principal.id : "unauthenticated";
@@ -3659,6 +3708,15 @@ async function route(
         reviewDue: body.reviewDue ?? "",
         reason: body.reason ?? "",
         by: { id: who, kind },
+        ...(path === "/api/clinical/score-approval" || body.implementationVersion !== undefined ||
+            body.approvedPopulation !== undefined || body.reviewedAt !== undefined || body.licensingAcceptedBy !== undefined
+          ? { evidence: {
+              implementationVersion: body.implementationVersion ?? "",
+              approvedPopulation: body.approvedPopulation ?? "",
+              reviewedAt: body.reviewedAt ?? "",
+              licensingAcceptedBy: body.licensingAcceptedBy ?? "",
+            } }
+          : {}),
       });
       audit({
         action: "U",
@@ -3694,7 +3752,7 @@ async function route(
       return send(res, 200, row);
     }
     if (path === "/api/clinical/score" && method === "POST") {
-      const body = JSON.parse(await readBody(req)) as { score?: string; patient?: string; input?: unknown };
+      const body = JSON.parse(await readBody(req)) as { score?: string; patient?: string; input?: unknown; units?: unknown };
       if (!body.score) return send(res, 400, { error: `score required; one of ${SCORE_IDS.join(", ")}` });
       // Computed over values the caller supplies rather than read from a
       // chart, so there is nothing to filter by directive here — but it is
@@ -3705,10 +3763,14 @@ async function route(
         // approved for this site does not compute here, and the empty
         // approvals table is the safe default rather than an unconfigured
         // one.
-        tenant.scoreGovernance.require(body.score as ScoreId);
-        return computeScore(body.score!, body.input ?? {});
+        const authorization = tenant.scoreGovernance.requireEnabled(body.score as ScoreId);
+        const result = computeScore(body.score!, body.input ?? {});
+        const units = result.complete && body.units !== undefined ? requireScoreUnits(body.score!, body.units) : Object.freeze({});
+        return { ...result, authorization, units };
       };
-      return body.patient ? phiFor(body.patient, resource, produce) : phi(resource, produce);
+      return body.patient
+        ? phiFor(body.patient, resource, produce, undefined, [resource], scoreDetail)
+        : phi(resource, produce, undefined, [resource], scoreDetail);
     }
     // v2 takes measurements rather than bare numbers: the unit travels with
     // the value instead of being spelled into the parameter name and restated
@@ -3752,6 +3814,7 @@ async function route(
         return {
           ...result,
           ingestion,
+          authorization: tenant.scoreGovernance.requireEnabled(body.score as ScoreId),
           governance: {
             status: governance.status,
             approvalId: governance.approval?.id ?? null,
@@ -3761,7 +3824,9 @@ async function route(
           },
         };
       };
-      return body.patient ? phiFor(body.patient, resource, produce) : phi(resource, produce);
+      return body.patient
+        ? phiFor(body.patient, resource, produce, undefined, [resource], scoreDetail)
+        : phi(resource, produce, undefined, [resource], scoreDetail);
     }
     if (path === "/api/clinical/chart-score" && method === "POST") {
       const body = JSON.parse(await readBody(req)) as {
@@ -3777,11 +3842,13 @@ async function route(
       const deps = { vitals: tenant.vitals, clinical: tenant.clinical };
       const supplied = (body.supplied ?? {}) as never;
       const options = body.maxAgeHours === undefined ? {} : { maxAgeHours: body.maxAgeHours };
-      return phiFor(body.patient, "RiskAssessment", () =>
-        body.score === "news2"
+      return phiFor(body.patient, "RiskAssessment", () => {
+        const authorization = tenant.scoreGovernance.requireEnabled(body.score as ScoreId);
+        const chart = body.score === "news2"
           ? news2FromChart(deps, body.patient!, supplied, options)
-          : curb65FromChart(deps, body.patient!, supplied, options)
-      );
+          : curb65FromChart(deps, body.patient!, supplied, options);
+        return { ...chart, authorization };
+      }, undefined, ["RiskAssessment"], scoreDetail);
     }
     if (path === "/api/clinical/prescriptions" && method === "GET") {
       if (!patient) return send(res, 400, { error: "patient required" });
