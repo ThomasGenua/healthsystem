@@ -69,6 +69,16 @@ valid for the commits they were minted against. Anyone cutting a release
 while CI is off should start `CI` by hand from the Actions tab on the release
 commit, which mints the attestation for that tree.
 
+## Changed since it was switched off
+
+Each of these adds to what a run checks or narrows what it may do. None removes
+a check, and none makes anything pass that would have failed.
+
+| When | Change | Files |
+| --- | --- | --- |
+| 2026-10-07, `60878b9` (item 19) | The supply-chain job also packs the package from two separate checkouts of the commit, compares the bytes, and publishes `SHA256SUMS` beside the artifact. | `ci.yml` |
+| 2026-11-03 | The staging and monitoring workflows run their actions pinned to a commit, the same pins as `ci.yml` and `resilience.yml`. They were added four days before those were pinned and were missed, so they were still taking `actions/checkout@v4` and `actions/setup-node@v4` by tag, on the Node 20 action runtime the pinning moved everything else off. Every workflow also declares a read-only token at the top instead of taking the repository's default setting; the supply-chain job still asks for the two permissions its attestation needs. `test/workflows.test.ts` holds both rules from now on. | all four |
+
 ## What still has to be run, and how
 
 Nothing below needs CI. It is what CI was running, in the form a person runs

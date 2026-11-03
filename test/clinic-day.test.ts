@@ -2,11 +2,13 @@
  * What "today" and "after hours" mean at the clinic.
  *
  * Every instant below that names a real zone is one on which the runtimes
- * this is tested with agree. They do not agree everywhere: tzdata 2026c
- * (Node 24.21) keeps America/Edmonton — and America/Yellowknife, which it
- * treats as Edmonton — on UTC-06:00 from November 2026, where 2025c (Node
- * 22.22) falls back to UTC-07:00. A test pinned to a date after that would
- * pass on one runtime and fail on the other, and it would be testing the
+ * this is tested with agree. They do not agree everywhere. From November
+ * 2026, tzdata 2025c (Node 22.22.2) falls back to UTC-07:00 in
+ * America/Edmonton — and in America/Yellowknife, which it treats as
+ * Edmonton — where 2026c (Node 24.21.0) and 2026e (Node 22.23.4) stay on
+ * UTC-06:00; and America/Inuvik falls back in 2025c and 2026c but not in
+ * 2026e. A test pinned to a date after that would pass on one runtime and
+ * fail on another, and it would be testing the
  * zone database rather than this code. So the transitions used are ones
  * both copies record the same way: Edmonton's spring forward in March 2026
  * and fall back in November 2025, and Havana's two midnight transitions in

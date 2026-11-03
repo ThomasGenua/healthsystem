@@ -16,11 +16,13 @@
  * 25 hours long are 23 and 25 hours long. The rules come from the time-zone
  * database compiled into the Node runtime. That is no dependency, but it is
  * a dependence: the answer is only as current as the runtime's copy, and two
- * runtimes can disagree. Node 24.21 carries tzdata 2026c, in which
- * America/Edmonton stays on UTC-06:00 from November 2026 — and it treats
- * America/Yellowknife as another name for Edmonton, so Yellowknife does too.
- * Node 22.22 carries 2025c, in which both fall back to UTC-07:00 as before.
- * America/Inuvik, the territory's other zone, falls back in both. Which is
+ * runtimes can disagree — two patch releases of one Node line included. For
+ * November 2026 onward, the copies seen so far say three different things.
+ * tzdata 2025c (Node 22.22.2) falls back to UTC-07:00 in America/Edmonton,
+ * in America/Yellowknife — which the database treats as another name for
+ * Edmonton — and in America/Inuvik, the territory's other zone. 2026c (Node
+ * 24.21.0) keeps Edmonton and Yellowknife on UTC-06:00 and still falls back
+ * in Inuvik. 2026e (Node 22.23.4) keeps all three on UTC-06:00. Which is
  * right for a given clinic is a fact about the law where it is, not
  * something this module can know — so `describe()` says what the name
  * resolved to and which copy of the rules said so, and the engine prints it
