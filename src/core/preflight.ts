@@ -34,7 +34,7 @@ export async function pilotPreflight(env: NodeJS.ProcessEnv, probeScanner = fals
         detail: day.kind === "offset"
           ? "A fixed offset, the same all year: correct only where the clinic does not observe daylight saving."
           : `A place name, resolved against this runtime's time-zone data (tzdata ${process.versions.tz ?? "unknown"}). ` +
-            `Confirm the offset it gives matches the clinic's clocks, and again after any Node upgrade: ${day.now()}.`,
+            `Confirm the offset it gives matches the clinic's clocks, and again after any Node upgrade, patch releases included: ${day.now()}.`,
       });
     }
   } catch {

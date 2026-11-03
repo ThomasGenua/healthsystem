@@ -341,6 +341,21 @@ always forward-compatible and run automatically on open — see
 
 **Changed**
 
+- **The time-zone notes said the wrong thing about this territory after a
+  routine Node patch.** H-214 and `docs/PILOT-READINESS.md` said Node 24
+  keeps `America/Yellowknife` on UTC-06:00 from November 2026 while Node 22
+  falls back to UTC-07:00, and that `America/Inuvik` falls back in both.
+  That was true of Node 22.22.2, which carries tzdata 2025c. Node 22.23.4, a
+  patch release on the same line, carries 2026e: it keeps Yellowknife on
+  UTC-06:00 as Node 24.21.0 (2026c) does, and it keeps Inuvik there too,
+  where 2026c still falls back. Asked of each runtime for the same instants,
+  2026-10-31 to 2027-11-08. The notes, the comments in
+  `src/schedule/clinic-day.ts` and `test/clinic-day.test.ts`, and R-19 now
+  list all three copies of the rules. The pilot preflight's time-zone item
+  now says to re-check after any Node upgrade "patch releases included",
+  because a patch release is what changed the answer here. Nothing about how
+  the clinic's day is computed changed.
+
 - **Continuous integration is disabled, at the repository owner's request.**
   All four workflows — `ci.yml`, `monitoring.yml`, `resilience.yml`,
   `staging.yml` — keep every job, step, action pin and assertion they had.
