@@ -7,9 +7,10 @@ on:
 # changes are reviewed and promoted by hand rather than gated by an automatic
 # run. This workflow no longer starts on a push or a pull request.
 #
-# Nothing here has been weakened. Every job, step, action pin and assertion
-# below is exactly what it was while CI was running, and none of them has been
-# made to pass, skip or swallow a failure. What changed is the `on:` block
+# Nothing here was weakened to switch it off, and nothing has since been made
+# to pass, skip or swallow a failure. Changes made after it was switched off
+# only add checks or narrow what a run may do; docs/CI-DISABLED.md lists them.
+# What changed to switch it off is the `on:` block
 # above this comment: only `workflow_dispatch` remains, so the workflow runs
 # when somebody deliberately starts it from the Actions tab and at no other
 # time.
@@ -24,7 +25,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      # Pinned to a commit, with the release beside it, for the reason given at
+      # the top of ci.yml; the same pins that file and resilience.yml use.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Validate configuration
         run: docker compose -f deploy/staging/compose.yaml config --quiet
       - name: Build and start isolated staging app

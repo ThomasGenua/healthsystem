@@ -375,6 +375,21 @@ always forward-compatible and run automatically on open — see
 
 **Security**
 
+- **Two workflows ran their actions by tag, and two never said what their
+  token could do.** `staging.yml` and `monitoring.yml` were added four days
+  before the actions in `ci.yml` and `resilience.yml` were pinned to commits,
+  and were missed: they still ran `actions/checkout@v4` and
+  `actions/setup-node@v4` by tag, a pointer its owner can move, in steps that
+  hold a checkout and a token — and on the Node 20 action runtime the pinning
+  had moved everything else off. They now use the same pins as the other two,
+  which ran green in `ci.yml` as recently as 2026-11-02. `ci.yml`'s test job
+  and every job in `resilience.yml` declared no permissions, so they got
+  whatever the repository's default token setting grants; all four workflows
+  now declare a read-only token at the top, and the supply-chain job still
+  asks for the two permissions its attestation needs. `test/workflows.test.ts`
+  fails on a tag-pinned action, a commit pin with no release named beside it,
+  or a workflow with no `permissions:`. CI stays disabled; nothing was run.
+
 - **A caregiver's access, or an API key, could be given an end the clock
   never reached (H-30).** An expiry was stored exactly as it was typed and
   compared as text against the clock. `December 31, 2027` sorts after every

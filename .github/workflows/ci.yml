@@ -14,9 +14,10 @@ on:
 # changes are reviewed and promoted by hand rather than gated by an automatic
 # run. This workflow no longer starts on a push to any branch or on a pull request.
 #
-# Nothing here has been weakened. Every job, step, action pin and assertion
-# below is exactly what it was while CI was running, and none of them has been
-# made to pass, skip or swallow a failure. What changed is the `on:` block
+# Nothing here was weakened to switch it off, and nothing has since been made
+# to pass, skip or swallow a failure. Changes made after it was switched off
+# only add checks or narrow what a run may do; docs/CI-DISABLED.md lists them.
+# What changed to switch it off is the `on:` block
 # above this comment: only `workflow_dispatch` remains, so the workflow runs
 # when somebody deliberately starts it from the Actions tab and at no other
 # time.
@@ -24,6 +25,13 @@ on:
 # To turn it back on, restore the trigger block recorded for this file in
 # docs/CI-DISABLED.md.
 # ---------------------------------------------------------------------------
+
+# Read-only for every job that does not say otherwise. Unset, a job gets
+# whatever the repository's default token setting grants, which this file
+# cannot see and a reviewer cannot check. supply-chain below asks for the two
+# extra permissions its attestation needs; nothing else needs more.
+permissions:
+  contents: read
 
 jobs:
   check:
