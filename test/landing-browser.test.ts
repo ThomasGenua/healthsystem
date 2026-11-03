@@ -36,7 +36,7 @@ test("landing: public, bilingual, responsive and separate from chart access", { 
     }
     assert.equal((await fetch(f.base + "/patient/authorities")).status, 401);
     await b.navigate(f.base + "/#Channels");
-    await b.wait("location.pathname === '/ui'");
+    await b.wait("location.pathname === '/login'");
     assert.equal(await b.evaluate("location.hash"), "#Channels", "legacy console bookmarks retain their fragment");
     assert.equal((await fetch(f.base + "/api/channels")).status, 401);
     const ui = await (await fetch(f.base + "/ui")).text();

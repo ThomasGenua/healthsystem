@@ -351,6 +351,7 @@ test(
             expression: `(async()=>{
               const HOSTILE = /&lt;img|&lt;script|&lt;svg|onmouseover/i;
               ${prep[tab] ?? ""}
+              {const readyBy=Date.now()+10000;while(document.documentElement.dataset.workspaceReady!=='yes'&&Date.now()<readyBy)await new Promise(r=>setTimeout(r,50));}
               if(typeof go==='function') go(${JSON.stringify(tab)});
               const deadline = Date.now() + ${budgetMs};
               let escaped = false;

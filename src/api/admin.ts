@@ -1,3 +1,4 @@
+import type { AdminAccounts } from "../auth/admin-accounts.ts";
 /**
  * Admin and ingest HTTP API. No framework: node:http with a small router.
  *
@@ -89,7 +90,7 @@ import {
   type WorkflowMeasureResult,
 } from "../population/effectiveness.ts";
 import { releaseWorkflowMeasure } from "../population/release.ts";
-import { AuthGate } from "../auth/gate.ts";
+import { AuthGate, bearerToken } from "../auth/gate.ts";
 import { RateLimiter, type RateLimitPolicy } from "./ratelimit.ts";
 import { VERSION } from "../version.ts";
 import type { AuditAction, AuditEntry } from "../audit/store.ts";
@@ -238,6 +239,7 @@ export interface ApiOptions {
    * startApi directly are opting out on purpose.
    */
   auth?: AuthGate;
+  adminAccounts?: AdminAccounts;
   tls?: TlsConfig;
   /** Request rate limits. Defaults apply unless disabled explicitly. */
   rateLimit?: RateLimitPolicy;
@@ -288,7 +290,7 @@ export function startApi(engine: Engine, port: number, host = "0.0.0.0", options
     res.setHeader("x-content-type-options", "nosniff");
     res.setHeader("referrer-policy", "no-referrer");
     if (hsts) res.setHeader("strict-transport-security", hsts);
-    void route(engine, req, res, gate, limiter, remote, options.station, options.devIdp, options.portalLogin).catch((err) => {
+    void route(engine, req, res, gate, limiter, remote, options.station, options.devIdp, options.portalLogin, options.adminAccounts).catch((err) => {
       // The net under the router, for a throw no route caught. It used to
       // send the exception message to the caller, which made it the one
       // path where a fault from any store — including the ones that name a
@@ -363,11 +365,23 @@ async function route(
   remote?: RemoteBackup,
   station?: ReadingStation,
   devIdp?: DevIdentityProvider,
-  portalLogin?: PortalLogin
+  portalLogin?: PortalLogin,
+  adminAccounts?: AdminAccounts
 ): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname.replace(/\/+$/, "") || "/";
   const method = req.method ?? "GET";
+  if (path.startsWith("/auth/admin") || path === "/ui" || path === "/login") res.setHeader("cache-control", "no-store");
+  if (adminAccounts && await adminAccounts.handle(req, res, path, tenantId => engine.forTenant(tenantId).keys, (success, userId) => {
+    engine.audit.record({ action: "E", outcome: success ? 0 : 4, principalId: userId ?? "unauthenticated",
+      principalKind: "session", method, path, sourceIp: req.socket.remoteAddress,
+      detail: success ? "Administrator signed in" : "Administrator sign-in refused" });
+  })) return;
+  if (adminAccounts && !bearerToken(req.headers) && !["GET", "HEAD", "OPTIONS"].includes(method)) {
+    const session = adminAccounts.verify(req.headers.cookie);
+    if (session && !adminAccounts.csrfAllowed(req, session)) return send(res, 403, { error: "Session verification failed. Refresh and try again." });
+  }
+
 
   // One gate, ahead of every route. The router below is a flat if-chain with
   // no middleware layer, so this is the only place a check cannot be
@@ -464,6 +478,25 @@ async function route(
   if (portalLogin && await portalLogin.handle(req, res, path, url)) return;
   if (method === "GET" && path === "/auth/portal") return send(res, 200, { enabled: false, authenticated: false });
 
+  if (method === "GET" && path === "/auth/admin/session") {
+    return send(res, 200, { enabled: false, authenticated: false, apiKeyRequired: gate.enabled });
+  }
+  // Expose the recipient only when a visitor follows an email button, not in public HTML.
+  if (method === "GET" && path === "/contact/email") {
+    const subjects: Record<string,string> = { demo: "Northstar demo request", setup: "Northstar setup enquiry", privacy: "Northstar privacy enquiry", terms: "Northstar terms enquiry", general: "Northstar enquiry" };
+    const topic = url.searchParams.get("topic") ?? "general";
+    if (!Object.hasOwn(subjects, topic)) return send(res, 400, { error: "Unknown contact topic" });
+    const recipient = readEnv("CONTACT_EMAIL") ?? "segun@oodler.ca";
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) return send(res, 503, { error: "Contact email is not configured correctly" });
+    res.writeHead(303, { location: "mailto:" + recipient + "?subject=" + encodeURIComponent(subjects[topic]),
+      "cache-control": "no-store", "x-robots-tag": "noindex, nofollow" });
+    res.end(); return;
+  }
+  if (method === "GET" && ["/login", "/privacy", "/terms", "/contact"].includes(path)) {
+    const pages: Record<string,string> = { "/login": "login.html", "/privacy": "privacy.html", "/terms": "terms.html", "/contact": "contact.html" };
+    sendHtml(res, readFileSync(new URL("./" + pages[path], import.meta.url), "utf8"));
+    return;
+  }
   if (method === "GET" && path === "/") {
     sendHtml(res, landingHtml());
     return;

@@ -1,3 +1,4 @@
+import type { AdminAccounts } from "./admin-accounts.ts";
 /**
  * The authentication gate.
  *
@@ -18,7 +19,7 @@ import { looksLikeApiKey, type ApiKeyStore } from "./keys.ts";
 import { looksLikeJwt, type JwtVerifier } from "./jwt.ts";
 
 export interface Principal {
-  kind: "apikey" | "oauth" | "anonymous";
+  kind: "apikey" | "oauth" | "anonymous" | "session";
   id: string;
   scopes: Set<Scope>;
   /**
@@ -93,6 +94,7 @@ const ANONYMOUS: Principal = {
 export const PURPOSES = ["TREAT", "HPAYMT", "HOPERAT", "HRESCH", "PATRQT", "PUBHLTH", "HLEGAL"] as const;
 
 export interface AuthGateOptions {
+  adminAccounts?: AdminAccounts;
   keys?: ApiKeyStore;
   jwt?: JwtVerifier;
   /**
@@ -112,7 +114,7 @@ export class AuthGate {
 
   /** True when at least one credential scheme is configured. */
   get enabled(): boolean {
-    return Boolean(this.opts.keys || this.opts.jwt);
+    return Boolean(this.opts.keys || this.opts.jwt || this.opts.adminAccounts);
   }
 
   /**
@@ -153,11 +155,12 @@ export class AuthGate {
     if (need === null) return { ok: true, principal: ANONYMOUS };
 
     const token = bearerToken(headers);
-    if (!token) return { ok: false, status: 401, error: "credentials required" };
+    const session = !token ? this.opts.adminAccounts?.verify(headers.cookie) : null;
+    if (!token && !session) return { ok: false, status: 401, error: "credentials required" };
 
     let principal: Principal;
     try {
-      const resolved = await this.resolve(token);
+      const resolved: Principal | null = session ? { kind: "session", id: session.id, tenantId: session.tenantId, scopes: new Set(ALL_SCOPES) } : await this.resolve(token!);
       if (!resolved) return { ok: false, status: 401, error: "invalid credentials" };
       principal = resolved;
     } catch (err) {
@@ -239,7 +242,7 @@ function purposeOfUse(headers: IncomingHttpHeaders): string | undefined {
   return (PURPOSES as readonly string[]).includes(code) ? code : undefined;
 }
 
-function bearerToken(headers: IncomingHttpHeaders): string | null {
+export function bearerToken(headers: IncomingHttpHeaders): string | null {
   const auth = headers.authorization;
   if (typeof auth === "string") {
     const m = /^Bearer\s+(.+)$/i.exec(auth.trim());

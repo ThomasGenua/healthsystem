@@ -12,6 +12,7 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Db, type SourceFailureStage } from "../db.ts";
 import { faultLine } from "./refusal.ts";
+import { readEnv } from "./naming.ts";
 import { DeliveryWorker } from "./queue.ts";
 import { FhirStore } from "../fhir/store.ts";
 import { SubscriptionManager } from "../fhir/subscriptions.ts";
@@ -890,7 +891,7 @@ export class Engine {
 
     if (config.source.type === "mllp") {
       const src = config.source;
-      rc.mllp = await startMllpServer(src.port, src.host ?? "0.0.0.0", async (raw) => {
+      rc.mllp = await startMllpServer(src.port, readEnv("HOST") ?? src.host ?? "0.0.0.0", async (raw) => {
         try {
           const result = this.ingest(config.id, raw, "x-application/hl7-v2+er7", "mllp");
           const parsed = parseHl7(raw);

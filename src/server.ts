@@ -1,3 +1,4 @@
+import { AdminAccounts } from "./auth/admin-accounts.ts";
 /** Northstar entry point. */
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { encryptionAtRest, shouldWarn } from "./core/atrest.ts";
@@ -20,6 +21,7 @@ import { unreadableExpiryWarnings } from "./core/instant.ts";
 import type { ChannelConfig, MappingDoc } from "./types.ts";
 
 const PORT = parseInt(readEnv("PORT") ?? "8686", 10);
+const HOST = readEnv("HOST") ?? "0.0.0.0";
 const DATA_DIR = readEnv("DATA") ?? join(process.cwd(), "data");
 const CHANNELS_DIR = readEnv("CHANNELS") ?? join(process.cwd(), "channels");
 const MAPPINGS_DIR = readEnv("MAPPINGS") ?? join(process.cwd(), "mappings");
@@ -144,7 +146,7 @@ function buildDevIdp(engine: Engine, port: number): { idp: DevIdentityProvider; 
   };
 }
 
-function buildAuthGate(engine: Engine, dev: { jwt: JwtVerifier } | null): AuthGate {
+function buildAuthGate(engine: Engine, dev: { jwt: JwtVerifier } | null, adminAccounts: AdminAccounts): AuthGate {
   if (dev) {
     // The development provider is the identity provider. API keys stay on for
     // the operator console, which is a different surface with a different
@@ -154,7 +156,7 @@ function buildAuthGate(engine: Engine, dev: { jwt: JwtVerifier } | null): AuthGa
     // working portal and no way into the clinic side of it — which is half
     // the journey, and the half that shows the patient's question arriving.
     bootstrapKey(engine);
-    return new AuthGate({ keys: engine.keys, jwt: dev.jwt, tenants: engine.db });
+    return new AuthGate({ keys: engine.keys, jwt: dev.jwt, tenants: engine.db, adminAccounts });
   }
   if (AUTH_MODE === "off") {
     console.warn("WARNING: NORTHSTAR_AUTH_MODE=off — the API is unauthenticated and open to anyone who can reach it");
@@ -167,8 +169,8 @@ function buildAuthGate(engine: Engine, dev: { jwt: JwtVerifier } | null): AuthGa
 
   // The tenant directory, so a suspended custodian's credentials stop working
   // at once rather than at the next restart.
-  const gate: { keys?: Engine["keys"]; jwt?: JwtVerifier; tenants?: { getTenant(id: string): { status: string } | undefined } } = {
-    tenants: engine.db,
+  const gate: { adminAccounts?: AdminAccounts; keys?: Engine["keys"]; jwt?: JwtVerifier; tenants?: { getTenant(id: string): { status: string } | undefined } } = {
+    tenants: engine.db, adminAccounts,
   };
 
   if (modes.has("apikey")) {
@@ -381,8 +383,10 @@ async function main(): Promise<void> {
   };
 
   const dev = buildDevIdp(engine, PORT);
-  const api = await startApi(engine, PORT, "0.0.0.0", {
-    auth: buildAuthGate(engine, dev),
+  const adminAccounts = new AdminAccounts(engine.db.sql);
+  const api = await startApi(engine, PORT, HOST, {
+    auth: buildAuthGate(engine, dev, adminAccounts),
+    adminAccounts,
     portalLogin,
     ...(dev ? { devIdp: dev.idp } : {}),
     tls: tls ?? undefined,

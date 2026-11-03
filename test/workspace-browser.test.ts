@@ -27,7 +27,7 @@ test('arrangements workspace distinguishes outstanding, withheld, failed and emp
     for (const width of [1440, 390]) {
       await b.cdp('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: width === 390 });
       await b.navigate(base + '/ui');
-      await b.wait('typeof go === "function"');
+      await b.wait('document.documentElement.dataset.workspaceReady === "yes"');
       await b.evaluate('go("Arrangements")');
       await b.wait('document.body.innerText.includes("Accessible vehicle needed")');
       assert.ok(await b.evaluate('document.body.innerText.includes("This list is incomplete")'));
@@ -40,7 +40,7 @@ test('arrangements workspace distinguishes outstanding, withheld, failed and emp
         writeFileSync(`.pilot-artifacts/workspace/console-${width}.png`, Buffer.from(shot.data, 'base64'));
       }
     }
-    await b.evaluate(`{document.querySelector('details').open=true;const form=document.querySelector('form[data-operation=assign]');form.elements.value.value='nurse-2';form.requestSubmit()}`);
+    await b.evaluate(`{document.querySelector('.arrangements details').open=true;const form=document.querySelector('form[data-operation=assign]');form.elements.value.value='nurse-2';form.requestSubmit()}`);
     await b.wait("document.body.innerText.includes('Responsibility assigned.')");
     assert.equal(tenant.arrangements.get(visible.id)!.owner_id, 'nurse-2');
     if (process.env.NORTHSTAR_WORKSPACE_SCREENSHOTS === 'on') {
@@ -63,7 +63,7 @@ test('arrangements workspace distinguishes outstanding, withheld, failed and emp
     const cancel = tenant.arrangements.request({ visitId: visit.id, patientId: 'PATIENT-A', kind: 'escort', detail: 'Cancel this synthetic support', by });
     await b.evaluate("document.querySelector('[data-tab=Arrangements]').click()");
     await b.wait("document.body.innerText.includes('Cancel this synthetic support')");
-    await b.evaluate(`{document.querySelector('details').open=true;const form=document.querySelector('form[data-operation=cancel]');form.elements.value.value='Patient has made other arrangements';form.requestSubmit()}`);
+    await b.evaluate(`{document.querySelector('.arrangements details').open=true;const form=document.querySelector('form[data-operation=cancel]');form.elements.value.value='Patient has made other arrangements';form.requestSubmit()}`);
     await b.wait("document.body.innerText.includes('Cancellation saved.')");
     assert.equal(tenant.arrangements.get(cancel.id)!.cancelled_reason, 'Patient has made other arrangements');
     await b.evaluate('render()');
