@@ -478,6 +478,12 @@ async function route(
   if (portalLogin && await portalLogin.handle(req, res, path, url)) return;
   if (method === "GET" && path === "/auth/portal") return send(res, 200, { enabled: false, authenticated: false });
 
+  if (["GET", "HEAD"].includes(method) && ["/favicon.svg", "/favicon.ico"].includes(path)) {
+    const icon = readFileSync(new URL(path === "/favicon.svg" ? "./favicon.svg" : "./favicon.ico", import.meta.url));
+    res.writeHead(200, { "content-type": path === "/favicon.svg" ? "image/svg+xml" : "image/x-icon",
+      "content-length": icon.length, "cache-control": "public, max-age=3600" });
+    res.end(method === "HEAD" ? undefined : icon); return;
+  }
   if (method === "GET" && path === "/auth/admin/session") {
     return send(res, 200, { enabled: false, authenticated: false, apiKeyRequired: gate.enabled });
   }

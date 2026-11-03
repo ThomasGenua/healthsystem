@@ -105,6 +105,7 @@ export function scopesFromSmart(raw: Iterable<string>): Set<Scope> {
  * authenticate against everything else.
  */
 export function requiredScope(method: string, path: string): Scope | null {
+  if (["GET", "HEAD"].includes(method) && ["/favicon.svg", "/favicon.ico"].includes(path)) return null;
   if (method === "GET" && ["/auth/admin/session", "/auth/portal", "/auth/portal/login", "/auth/portal/callback"].includes(path)) return null;
   if (method === "POST" && path === "/auth/portal/logout") return null;
   if (method === "GET" && (path === "/" || path === "/ui" || path === "/me" || ["/login", "/privacy", "/terms", "/contact", "/contact/email"].includes(path))) return null;
